@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward import cli, execution_evidence, repeatability, runner
 from collector.fpm_forward.config import with_kv_warmup_defaults
 from collector.fpm_forward.database import aggregate_cell
@@ -245,7 +246,7 @@ def campaign(tmp_path, no_models_or_timing_data):  # noqa: F811
     profile = _profile()
     for deployment in profile["deployments"]:
         deployment["backend_version"] = "0.28.0"
-    plan = _plan(profile)
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.28.0"})
     plan = replace(
         plan, options=replace(plan.options, prefill_cudagraph_policy="runtime", max_prefill_cudagraph_size=None)
     )
@@ -1045,7 +1046,7 @@ def test_execution_only_observation_does_not_enable_memory_conversion(version):
     profile = _profile()
     for deployment in profile["deployments"]:
         deployment["backend_version"] = version
-    plan = _plan(profile)
+    plan = _plan(profile, collector_config={"runtime_backend_version": version})
     for cell in plan.cells:
         args = runner._cell_generator_overrides(plan, cell, {})["params"]["agg"]["extra_cli_args"]
         assert runner._observe_runtime_memory(plan, cell) is False

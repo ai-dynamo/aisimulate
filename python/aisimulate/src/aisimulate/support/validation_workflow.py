@@ -161,6 +161,7 @@ def _execution_status(frozen: dict[str, Any]) -> str:
 def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, Path, list[dict[str, Any]]]:
     """Verify formal publication against every native row before qualification."""
     import pyarrow.parquet as pq
+
     from collector.fpm_forward.config import PrefillSamplingProfile
     from collector.fpm_forward.database import (
         aggregate_cell,
@@ -188,6 +189,10 @@ def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, 
         or plan.system != request.identity.gpu
         or plan.backend != request.identity.framework
         or plan.capability.aic_database_version != request.identity.framework_version
+        or (
+            request.identity.runtime_framework_version is not None
+            and getattr(plan, "runtime_backend_version", None) != request.identity.runtime_framework_version
+        )
         or request.fpm_profile is None
         or payload.get("fpm_profile") != request.fpm_profile.model_dump(mode="json")
     ):

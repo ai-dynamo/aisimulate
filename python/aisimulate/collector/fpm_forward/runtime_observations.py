@@ -604,7 +604,11 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
         raise ValueError("configuration requires an explicit active attempt identity")
     attempt = attempts[ids.index(active)]
     bundle_path = contained_file(root, attempt["bundle"]["manifest"])
-    bundle = load_instrumentation(bundle_path, expected_version=launch["identity"]["framework_version"])
+    identity = launch["identity"]
+    bundle = load_instrumentation(
+        bundle_path,
+        expected_version=identity.get("runtime_framework_version") or identity["framework_version"],
+    )
     _same(bundle.sha256, attempt["bundle"].get("sha256"), "instrumentation bundle hash")
     if not bundle.manifest.get("source_notes") or not bundle.manifest["runtime"].get("source_files"):
         raise ValueError("runtime source mapping requires hashed source_notes and runtime.source_files")

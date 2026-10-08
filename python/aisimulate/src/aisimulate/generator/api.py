@@ -816,6 +816,19 @@ def generate_from_request(
     """
     from .request import to_legacy_params
 
+    if req.emit.deployment_target == "fpm":
+        # Collection records Dynamo releases as provenance only. Remove both
+        # typed and legacy inputs before lowering applies image/schema defaults.
+        from dataclasses import replace
+
+        raw = dict(req.overrides.raw)
+        raw.pop("generator_dynamo_version", None)
+        req = replace(
+            req,
+            backend=replace(req.backend, dynamo_version=None),
+            overrides=replace(req.overrides, raw=raw),
+        )
+
     params = to_legacy_params(req)
     backend = req.backend.name
 

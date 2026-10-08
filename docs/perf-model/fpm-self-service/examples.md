@@ -290,7 +290,7 @@ Use a fresh absolute directory, on shared storage for a multi-node Slurm campaig
 export FPM_RUN=/absolute/new/path/m27-h200-tp4
 export FPM_MODEL_CONFIG=/absolute/path/to/pinned-checkpoint/config.json
 export FPM_MODEL_REVISION=REPLACE_WITH_IMMUTABLE_CHECKPOINT_REVISION
-export FPM_VLLM_VERSION=REPLACE_WITH_FULL_PINNED_VLLM_VERSION
+export FPM_VLLM_VERSION=my-vllm-patch-3
 export FPM_RESOURCE_OVERRIDES=/absolute/path/to/reviewed-resource-overrides.yaml
 mkdir -p "$(dirname "$FPM_RUN")"
 mkdir "$FPM_RUN"
@@ -312,6 +312,15 @@ init_args=(
 )
 aisimulate onboard init "${init_args[@]}" --output "$FPM_RUN/draft-request.yaml"
 ```
+
+`FPM_VLLM_VERSION` is the backend identity label for this campaign. Replace the
+illustrative custom label with your chosen version or build label; it need not
+equal the package version inside the image. Preserve the actual runtime build
+and image evidence separately. To autodetect the identity instead, omit
+`--framework-version` and use the detected label in later dataset paths. Both
+routes [observe the actual image version](implementation.md#create-the-request)
+before the first worker launch and continue in a `runtime-resolved/` child plan.
+This example keeps an explicit label so the dataset label stays fixed.
 
 The last four flags describe an optional synthetic validation workload. They do
 not define the collection grid. The context, scheduler, memory fraction and graph
@@ -367,24 +376,27 @@ end. The checkpoint command does not capture other commands automatically.
 Generate the plan from the accepted request and preview the intended deployment:
 
 ```bash
+export FPM_COLLECTION="$FPM_RUN/collection"
 aisimulate onboard plan \
-  --config "$FPM_RUN/request.yaml" --output-dir "$FPM_RUN/collection"
+  --config "$FPM_RUN/request.yaml" --output-dir "$FPM_COLLECTION"
 
 deployment_args=(
   --executor kubernetes
   --namespace REPLACE_WITH_EXISTING_NAMESPACE
   --image REPLACE_WITH_IMMUTABLE_COLLECTION_IMAGE
   --model-cache REPLACE_WITH_MODEL_PVC:/models:REPLACE_WITH_RELATIVE_CHECKPOINT_DIRECTORY
-  --dynamo-version REPLACE_WITH_MATCHING_DYNAMO_RELEASE
   --transport nvlink
 )
 collect_args=(
-  --config "$FPM_RUN/collection/request.yaml"
-  --output-dir "$FPM_RUN/collection"
+  --config "$FPM_COLLECTION/request.yaml"
+  --output-dir "$FPM_COLLECTION"
   "${deployment_args[@]}"
 )
 aisimulate onboard collect-fpm "${collect_args[@]}"
 ```
+
+If useful, add `--dynamo-version YOUR_DYNAMO_BUILD_LABEL` to record collection
+provenance. It does not select a template or validate the backend/runtime.
 
 Set the final `--model-cache` component to the pinned checkpoint directory
 relative to the PVC root; use `.` when its weights and config are at that root.
@@ -392,8 +404,8 @@ Keep the canonical Hugging Face model ID and declared revision in the request
 and profile; this path locates the same checkpoint on the PVC.
 
 For Slurm, replace the deployment array with the actual `--executor slurm`,
-`--image`, repeated `--container-mount`, `--cpus-per-task`, `--cpu-bind`, template
-version and transport options. Use a caller-owned allocation; Kubernetes-only
+`--image`, repeated `--container-mount`, `--cpus-per-task`, `--cpu-bind`, optional
+Dynamo provenance and transport options. Use a caller-owned allocation; Kubernetes-only
 namespace/PVC options do not apply. Inspect the
 [executor requirements](implementation.md#choose-the-collection-executor)
 before launch. Both executors are supported by the same guided commands.
@@ -457,8 +469,22 @@ bounded smoke and inspect readiness:
 
 ```bash
 aisimulate onboard collect-fpm "${collect_args[@]}" --execute --smoke
+
+# Use the resolved paths printed by the first execution.
+export FPM_COLLECTION="$FPM_RUN/collection/runtime-resolved"
+collect_args=(
+  --config "$FPM_COLLECTION/request.yaml"
+  --output-dir "$FPM_COLLECTION"
+  "${deployment_args[@]}"
+)
 aisimulate onboard collect-fpm "${collect_args[@]}" --check-readiness
 ```
+
+The first execution probes the actual image's package metadata without GPUs,
+then writes the resolved child plan before running smoke. The selected
+`FPM_VLLM_VERSION` label is preserved; the child request records the observed
+runtime separately. Keep the original request, parent plan and version-binding
+record. Later commands below use `FPM_COLLECTION` for the resolved child.
 
 Guided smoke covers all cells by default: both phases for this aggregated
 request. `--limit` can omit a required phase and leave readiness incomplete.
@@ -492,14 +518,18 @@ $FPM_RUN/
   collection/
     request.yaml
     support-plan.json
-    commands.json
-    fpm-model-profile.json
-    fpm-readiness.json
-    fpm-checkpoint/fpm_forward.json
-    fpm-artifacts/<plan-prefix>/...
-    systems/data/h200_sxm/vllm/<actual-version>/
-      fpm_forward_perf.parquet
-      fpm_forward_perf.metadata.json
+    runtime-version.json
+    runtime-resolved/
+      request.yaml
+      support-plan.json
+      commands.json
+      fpm-model-profile.json
+      fpm-readiness.json
+      fpm-checkpoint/fpm_forward.json
+      fpm-artifacts/<plan-prefix>/...
+      systems/data/h200_sxm/vllm/<backend-version-label>/
+        fpm_forward_perf.parquet
+        fpm_forward_perf.metadata.json
 ```
 
 Retain the frozen plan, manifests/scripts, raw measurements, runtime observations,
@@ -512,12 +542,14 @@ stage below checks independent measurements under matched execution conditions.
 
 ### B4. Inspect the published pair
 
-Verify the actual container's full vLLM version matches `FPM_VLLM_VERSION` before
-using that directory; the Generator's `--dynamo-version` is not the runtime
-version. Keep the Parquet and metadata together:
+Verify the published `backend_version` matches `FPM_VLLM_VERSION`, the selected
+identity label. Review the actual container's vLLM version in the retained
+collector provenance separately; it may differ from a custom label. The optional
+`--dynamo-version` is also provenance, not backend identity. Keep the Parquet and
+metadata together:
 
 ```bash
-export FPM_PARQUET="$FPM_RUN/collection/systems/data/h200_sxm/vllm/$FPM_VLLM_VERSION/fpm_forward_perf.parquet"
+export FPM_PARQUET="$FPM_COLLECTION/systems/data/h200_sxm/vllm/$FPM_VLLM_VERSION/fpm_forward_perf.parquet"
 python - "$FPM_PARQUET" > "$FPM_RUN/pair-inspection.json" <<'PY'
 import hashlib
 import json
@@ -554,8 +586,8 @@ PY
 Expect matching identities, positive rows and a verified hash. This structural
 check does not replace the native loader or quality gates. Historical version-6
 reuse in Example A follows its own schema check, not this new-publication check.
-`systems_paths` points to `collection/systems`, while the collector database root
-is `collection/systems/data`; there is no extra model-family directory.
+`systems_paths` points to `$FPM_COLLECTION/systems`, while the collector database
+root is `$FPM_COLLECTION/systems/data`; there is no extra model-family directory.
 
 Review and save the editable
 [validation policy](implementation.md#validate-collection-and-serving-accuracy)
@@ -564,7 +596,7 @@ holdout checks without GPU work:
 
 ```bash
 aisimulate onboard validate-collection \
-  --config "$FPM_RUN/collection/request.yaml" --output-dir "$FPM_RUN/collection" \
+  --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --validation-output-dir "$FPM_RUN/quality" --policy "$FPM_RUN/validation-policy.json"
 ```
 
@@ -574,7 +606,7 @@ execution is authorized, use the frozen assessment and source deployment:
 
 ```bash
 aisimulate onboard validate-collection \
-  --config "$FPM_RUN/collection/request.yaml" --output-dir "$FPM_RUN/collection" \
+  --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --validation-output-dir "$FPM_RUN/quality" --resume --execute
 ```
 
@@ -590,7 +622,7 @@ When the resource profile is pending, finalize from verified native observations
 
 ```bash
 aisimulate onboard finalize \
-  --config "$FPM_RUN/collection/request.yaml" --output-dir "$FPM_RUN/collection" \
+  --config "$FPM_COLLECTION/request.yaml" --output-dir "$FPM_COLLECTION" \
   --collection-report "$FPM_RUN/quality/collection-validation.json" \
   --resolved-output-dir "$FPM_RUN/resolved"
 ```
@@ -652,9 +684,9 @@ finally:
 PY
 ```
 
-If a custom runtime version is outside the copied query-version policy, use
+If a custom backend identity label is outside the copied query-version policy, use
 `AIC_ALLOW_UNLISTED_VERSIONS=1` for the query and later simulation only after
-confirming the actual identity. This permits version selection, not mismatched
+confirming the published identity. This permits version selection, not mismatched
 precision/topology or unsupported queries. A measured-point match validates the
 lookup path; it is not held-out accuracy evidence.
 

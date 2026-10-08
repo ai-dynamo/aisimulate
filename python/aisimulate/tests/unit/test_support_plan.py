@@ -114,6 +114,7 @@ def _request(**updates) -> SupportRequest:
             "model_revision": "checkpoint-2026-09-14",
             "model_kind": "moe",
             "framework_version": "0.25.1",
+            "runtime_framework_version": "0.25.1",  # Synthetic observed runtime for execution/resume fixtures.
             "gpu": "h200_sxm",
             "interconnect": "NVLink",
         },
@@ -746,9 +747,8 @@ def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(t
 
 
 def _mock_collector_execution(monkeypatch, calls):
-    from collector.fpm_forward import cli, entry
-
     from aisimulate.support import collection_readiness, fpm
+    from collector.fpm_forward import cli, entry
 
     def resolve(command):
         calls.append(command[3:])

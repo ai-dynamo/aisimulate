@@ -9,16 +9,16 @@ import json
 from pathlib import Path
 
 import pytest
-from collector.fpm_forward import cli as collector_cli
-from collector.fpm_forward import planner, repeatability
-from collector.fpm_forward.config import FPMCollectionOptions
-from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from aisimulate import main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support import finalization, validation_workflow
 from aisimulate.support.plan import check_plan, create_plan
 from aisimulate.support.schema import SupportRequest
+from collector.fpm_forward import cli as collector_cli
+from collector.fpm_forward import planner, repeatability
+from collector.fpm_forward.config import FPMCollectionOptions
+from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from .collector.test_fpm_repeatability import _runtime_config, _write_campaign
 from .test_onboard_finalization import _memory, _prepare_collection, _write, build_completed_collection
@@ -47,6 +47,7 @@ def assessed_collection(tmp_path, monkeypatch):
         model_architecture=original.fpm_profile.architecture,
         model_config_path=str(tmp_path / "config.json"),
         fpm_profile=original.fpm_profile,
+        collector_config={"runtime_backend_version": original.identity.runtime_framework_version},
     )
     campaign = root / "fpm-artifacts" / plan.sha256[:16]
     checkpoint = root / "fpm-checkpoint/fpm_forward.json"

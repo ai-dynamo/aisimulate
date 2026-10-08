@@ -17,6 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.config import (
     FPMCollectionOptions,
@@ -39,8 +41,6 @@ from collector.fpm_forward.planner import (
 )
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
-
-from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -2805,9 +2805,8 @@ def test_v41_cached_prefill_requires_real_computed_state(tmp_path, marker):
 
 @pytest.mark.parametrize("mode", [None, "PIECEWISE", "FULL", False])
 def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path, mode):
-    from collector.fpm_forward.native_artifact import _validate_execution_provenance
-
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+    from collector.fpm_forward.native_artifact import _validate_execution_provenance
 
     identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
     cell = SimpleNamespace(execution_identity=identity)
@@ -2980,4 +2979,64 @@ def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, c
             del payload["input_provenance"]
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="native"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_custom_profile_label_is_published_with_observed_runtime_provenance(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.fpm_profile = True
+    plan.deployment_profile = lambda _cell: SimpleNamespace(backend_version="my-vllm-patch-3")
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "my-vllm-patch-3"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_explicit_label_without_profile_uses_native_precision_not_database_version(monkeypatch):
+    from collector.fpm_forward import capabilities
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an explicit FPM data label must not resolve op-level database versions")
+
+    monkeypatch.setattr(capabilities, "get_latest_database_version", forbidden)
+    monkeypatch.setattr(capabilities, "get_database", forbidden)
+    args = _args()
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system="b200_sxm",
+        selected_ops={"dsa_context_module", "dsa_generation_module"},
+        options=FPMCollectionOptions.from_args(args),
+        collector_config={"aic_database_version": "private-vllm-build", "runtime_backend_version": "0.28.0"},
+    )
+    assert plan.fpm_profile is None
+    assert plan.backend_version == "private-vllm-build"
+    assert plan.capability.aic_database_version == "private-vllm-build"
+    assert plan.runtime_backend_version == "0.28.0"
+
+
+def test_explicit_label_without_profile_survives_native_publication(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "private-vllm-build"
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "private-vllm-build"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+
+
+def test_dynamo_versions_remain_per_pod_provenance_without_registration_gate(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    for index, path in enumerate(sorted((cell_dir / "raw").glob("*/collector-provenance.json"))):
+        provenance = json.loads(path.read_text())
+        provenance["dynamo_version"] = f"declared-build-{index}"
+        provenance["runtime"]["dynamo_version"] = f"observed-build-{index}"
+        path.write_text(json.dumps(provenance))
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_aggregation_rejects_observed_backend_drift_even_with_custom_label(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "my-vllm-patch-3"
+    plan.runtime_backend_version = "0.28.0"
+    with pytest.raises(ValueError, match="observed backend version differs"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")

@@ -11,11 +11,11 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
+from aisimulate_core.fpm_profile import FpmResourceProfile
 from collector.fpm_forward import planner, runner, runtime_memory
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
 from collector.fpm_forward.types import ParallelTopology
-
-from aisimulate_core.fpm_profile import FpmResourceProfile
 
 from .test_fpm_profile_collection import _plan, _profile, no_models_or_timing_data  # noqa: F401
 from .test_fpm_runner import _cell, _native_payload, _write_provenance
@@ -794,7 +794,7 @@ def _pending_plan(version="0.27.0"):
         deployment["backend_version"] = version
         for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
             deployment["resources"].pop(key)
-    return _plan(profile)
+    return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -868,9 +868,8 @@ def test_unaudited_runtime_keeps_native_timing_launch_and_pending_memory():
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
 def test_historical_v10_plan_keeps_hash_and_reaches_native_aggregation(tmp_path):
-    from collector.fpm_forward import database
-
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+    from collector.fpm_forward import database
 
     # Captured from the actual schema-10 producer at 4d702ff6b756b21e74b76f30273e9828fdde6861.
     # Absolute source paths are immutable provenance; this reader must not open them.
@@ -946,3 +945,20 @@ def test_historical_formal_publication_reports_unsupported_migration_without_cha
     with pytest.raises(ValueError, match="historical schema-6.*Automatic migration is unsupported"):
         database.validate_formal_database_commit(parquet, metadata, _pending_plan())
     assert (parquet.read_bytes(), metadata.read_bytes()) == original
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_custom_label_round_trips_independently_of_observed_memory_runtime():
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "local-vllm-branch"
+        for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            deployment["resources"].pop(key)
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.27.0"})
+    saved = runtime_memory.saved_plan_identity(plan.to_dict())
+    assert saved.backend_version == "local-vllm-branch"
+    assert saved.runtime_backend_version == "0.27.0"
+    assert runner._observe_runtime_memory(plan, plan.cells[0])
+    assert plan.to_dict()["runtime_memory_policy"]["selected_vllm_version"] == "0.27.0"
+    unknown = _plan(profile)
+    assert not runner._observe_runtime_memory(unknown, unknown.cells[0])

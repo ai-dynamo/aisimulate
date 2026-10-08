@@ -12,11 +12,11 @@ import shutil
 from dataclasses import replace
 
 import pytest
-from collector.fpm_forward import entry, planner, runner
 
 from aisimulate import main as cli
 from aisimulate.support import fpm
 from aisimulate.support.collection_readiness import assess_readiness, resume_without_workers
+from collector.fpm_forward import entry, planner, runner
 
 from .collector.test_fpm_measurement_evidence import _add_measurement_protocol
 from .test_support_serving_validation import materialized_workload  # noqa: F401
@@ -369,6 +369,7 @@ def _bounded_source(case, tmp_path, *, explicit=False):
         model_architecture=request.fpm_profile.architecture,
         model_config_path=str(model_config),
         fpm_profile=request.fpm_profile,
+        collector_config={"runtime_backend_version": request.identity.runtime_framework_version},
         generator_overrides=overrides,
         options=replace(
             case["plan"].options,

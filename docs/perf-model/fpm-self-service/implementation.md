@@ -65,7 +65,9 @@ Slurm needs a caller-owned `sbatch`/`salloc` allocation, Pyxis/Enroot, shared st
 and matching CPU/GPU resources. Neither path needs a prestarted HTTP server:
 AISimulate launches benchmark workers and Dynamo self-benchmark generates their
 measurements. Record the immutable image/model revisions and actual full runtime
-version, including custom-build suffixes. See
+version, including custom-build suffixes, separately from any user-selected backend
+version label. The optional Dynamo version is collection provenance; it does not
+select templates, infer the backend version or qualify a runtime. See
 [executor prerequisites](#choose-the-collection-executor)
 and [recovery and cleanup](#recovery-and-cleanup).
 
@@ -102,7 +104,7 @@ The agent handles checkout and environment checks: record the branch/commit, fol
 
 Establish the intended serving role before reviewing runtime settings. For P/D disaggregation, create independently accepted `--worker-type prefill` and `--worker-type decode` configurations; their topology, graph settings, scheduler limits and memory budget may differ. For aggregated serving, use `--worker-type aggregated`: both probe launches receive the same accepted serving configuration, while actual per-batch graph execution may differ. Inspect runtime support before proposing modes; do not assume every model/backend supports prefill FULL graphs. See [serving roles](#serving-roles-and-cuda-graph-settings) for the CLI and multi-configuration format. Omitted roles in existing requests retain their historical shared-profile behavior and are not relabeled as independently measured P/D profiles.
 
-At stage 2 entry, reuse stage 1's checkpoint revision and target hardware, and resolve the literal framework version from supplied or available deployment metadata. Ask for the missing version pin only if it remains unknown, then investigate that version before proposing precision choices. Resolve any remaining checkpoint identity or interconnect gaps from available metadata before asking. A model label, config hash or example revision does not establish a checkpoint pin. An existing vLLM launch command or configuration is optional evidence: preserve explicit choices, but do not require one or begin with a questionnaire about every topology and dtype. Do not ask for total available GPUs, node allocation, GPUs per node or replica budgets during onboarding; those are choices for actual prediction or recommendation runs.
+At stage 2 entry, reuse stage 1's checkpoint revision and target hardware, and inspect the intended runtime from supplied or available deployment metadata. Preserve an explicit `--framework-version` as the backend identity label, including a custom string such as `my-vllm-patch-3`. If omitted, leave the identity pending for automatic detection in the selected collection image; do not substitute a host package version or a Dynamo release mapping. Investigate the actual runtime build before proposing precision choices; a label alone does not establish its code, supported features or memory-adapter compatibility. Resolve any remaining checkpoint identity or interconnect gaps from available metadata before asking. A model label, config hash or example revision does not establish a checkpoint pin. An existing vLLM launch command or configuration is optional evidence: preserve explicit choices, but do not require one or begin with a questionnaire about every topology and dtype. Do not ask for total available GPUs, node allocation, GPUs per node or replica budgets during onboarding; those are choices for actual prediction or recommendation runs.
 
 Complete the [runtime investigation and options table](#investigate-runtime-constraints-and-precision-options) before asking for derivable precision or cache inputs. New config-based setup proposes `comm_quant_mode: half` with the current collector's identity source; this is not a claim that all NCCL tensors use FP16. The agent investigates and prepares supported inputs; the CLI does not import arbitrary launch arguments or automatically inspect a remote runtime.
 
@@ -114,7 +116,7 @@ Help choose one or more TP configurations, or the relevant TP/DEP/TEP configurat
 
 #### Investigate runtime constraints and precision options
 
-Perform this investigation proactively once the checkpoint, hardware and framework version are known. A local source checkout, user-supplied launch command, initialization logs and a prestarted server are optional evidence, not prerequisites. Use available local sources first and authorized official remote sources when needed. Do not download weight shards or launch GPU work merely to discover options.
+Perform this investigation proactively once the checkpoint, hardware and intended runtime build are known. A local source checkout, user-supplied launch command, initialization logs and a prestarted server are optional evidence, not prerequisites. Use available local sources first and authorized official remote sources when needed. Do not download weight shards or launch GPU work merely to discover options.
 
 1. Inspect the pinned checkpoint's config, quantization sidecars and lightweight tensor/index metadata where available. Identify quantized and unquantized weight parts and any fixed cache/state constraints; a repository name or one weight-quantization label does not describe every tensor. Distinguish metadata-derived estimates from measured allocations.
 2. Read the pinned official framework's model implementation, quantization/backend selection and attention/cache implementation. Trace model dtype validation, backend/kernel dispatch, cache dtype/block sizing and convolution or other state allocation, including version, GPU and topology conditions. Record the relevant flags, environment variables and defaults. For a supplied vendor/custom build, inspect its pinned image/build metadata and known patches; record uncertainty if they are unavailable. Unpatched release behavior alone does not establish that build's limits. General dtype enums or another version's documentation do not establish support for this model. If the pinned build lacks the model or a required backend, report that incompatibility explicitly.
@@ -226,7 +228,7 @@ aisimulate onboard checkpoint \
 {
   "inputs": {"model": "organization/model-name", "gpu": "h200_sxm"},
   "research": {"runtime": {"status": "pending", "sources": []}},
-  "pending_questions": ["Which pinned vLLM version will collection use?"],
+  "pending_questions": ["Which immutable runtime image/build will collection use?"],
   "progress": {"stage": 1, "status": "in_progress", "next_action": "Retrieve and inspect the model config."}
 }
 JSON
@@ -380,7 +382,7 @@ Use an environment installed from this checkout; see [development setup](../../.
 aisimulate onboard init --interactive --output support-request.yaml
 ```
 
-Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, pinned vLLM version, GPU system and interconnect. Choose a worker and review its context, scheduler and capture limits. Setup derives and displays the GPUs required for that worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
+Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, GPU system and interconnect. Supply a backend version label when desired, or leave it unset for target-runtime autodetection. Choose a worker and review its context, scheduler and capture limits. Setup derives and displays the GPUs required for that worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
 
 Both guided and scripted setup use onboarding. `--profile onboarding` is an optional spelling of the same behavior. For automation, supply the identity flags directly:
 
@@ -389,13 +391,57 @@ aisimulate onboard init \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
   --model-kind dense \
-  --framework-version YOUR_PINNED_VLLM_VERSION \
+  --framework-version YOUR_VLLM_VERSION_LABEL \
   --gpu h200_sxm --interconnect nvswitch \
   --tensor-parallel 2 --context-length YOUR_MODEL_CONTEXT_LIMIT \
   --output support-request.yaml
 ```
 
 Replace the model, runtime and hardware inputs with your deployment's values. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
+
+The backend identity and collection provenance have separate roles:
+
+| Field or option | Meaning |
+| --- | --- |
+| `identity.framework_version` / `--framework-version` | Optional dataset label. An explicit nonempty, path-safe custom string takes precedence over package-version detection and is preserved through profile, publication and queries. Omission leaves `null` until the collection container is probed. |
+| Profile deployment `backend_version` | The same selected label; it may be `null` in a pending collection profile, but a resolved version is required for publication and simulation. |
+| `identity.runtime_framework_version` | Actual package version observed in the selected collection image. Runtime adapter selection uses this evidence, not the dataset label. |
+| Collection `--dynamo-version` | Optional Dynamo build/version provenance. It does not gate registration, select templates or infer/validate the backend version. |
+
+For automatic identity detection, omit `--framework-version` from the setup
+command above. `onboard init` and `onboard plan` remain CPU-only and leave the
+label pending; that plan has no runnable prediction/recommendation configs.
+Previewing `collect-fpm` does not probe the image or launch workers.
+
+Both automatic and explicit-label requests need an observed runtime version
+before the first execution. Supply an explicit `--image`; this preflight cannot
+derive an image from a Dynamo release. For example, after creating the plan:
+
+```bash
+aisimulate onboard collect-fpm \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --image YOUR_PINNED_COLLECTION_IMAGE \
+  --namespace YOUR_EXISTING_NAMESPACE \
+  --model-cache YOUR_MODEL_PVC:/models \
+  --execute --smoke
+```
+
+When `identity.runtime_framework_version` is absent, execution first probes
+package metadata inside that image without requesting GPUs. A successful probe
+freezes a new resolved plan in `./aisimulate-support/runtime-resolved/`, records
+the observed version, and continues collection from that plan. An explicit label
+stays unchanged; an omitted label takes the detected vLLM version. Runtime adapter
+selection uses the observed version in either case, so a custom label does not
+hide an otherwise supported memory observer.
+
+The original request and plan remain intact, with a `runtime-version.json`
+binding to the resolved child. Use the printed resolved request/output paths and
+commands for readiness checks, formal collection, resume, finalization, queries
+and validation. Subsequent `collect-fpm` calls using the parent route to that
+child; other follow-up commands need the resolved paths. Do not look for the
+published pair under the original parent. A failed probe reports the failure
+and does not fall back to a host version, Dynamo mapping or database version.
 
 With `--model-config`, omitted parallelism flags trigger model/hardware-aware suggestions. Headless setup selects only a fully assessed default; otherwise it exits without saving. Identifier-only and supplied-profile setup retain TP1 when parallelism is omitted. Review the default limits below and change them through `aisimulate onboard init --help` options or config-based profile review.
 
@@ -506,7 +552,7 @@ aisimulate onboard init \
   --interactive --output support-request.yaml
 ```
 
-Setup reads that file and an adjacent `hf_quant_config.json` ModelOpt sidecar, when present, without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It records each source's SHA-256 separately, rejects conflicting inline/sidecar quantization declarations, and preserves explicit profile overrides. Weight quantization does not establish runtime FMHA or KV precision; only explicit KV metadata supplies a cache-precision fact. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before runtime/collection options so the model's context limit can bound the selected envelope. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
+Setup reads that file and an adjacent `hf_quant_config.json` ModelOpt sidecar, when present, without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It records each source's SHA-256 separately, rejects conflicting inline/sidecar quantization declarations, and preserves explicit profile overrides. Weight quantization does not establish runtime FMHA or KV precision; only explicit KV metadata supplies a cache-precision fact. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before runtime/collection options so the model's context limit can bound the selected envelope. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, GPU system and interconnect still need your input when absent. An explicit backend version label is preserved separately from observed runtime evidence; omission defers the label to the collection-image probe described above. The config's SHA-256 records the local source; it is not a checkpoint revision.
 
 With no parallelism flags, guided setup asks for missing shared precision/layout facts, shows a small topology shortlist with resource reasons, and lets you choose one worker with `--output`, or several with [`--output-dir`](#onboard-multiple-parallel-configurations). Enter selects only the displayed single default, and only when all required profile inputs are resolved and its estimated bytes fit the budget. Otherwise a candidate selection is required before setup resolves the remaining precision and cache geometry. Any explicit parallelism flag bypasses suggestions and retains the existing topology validation. Each chosen topology then follows the same profile review, edit, accept and cancellation flow below.
 
@@ -514,7 +560,7 @@ When present, `text_config` must be one nonempty decoder configuration object. O
 
 Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Known incompatible text-decoder cache layouts remain rejected, and unknown layouts require explicit resource accounting.
 
-Memory remains pending for the selected TP, DEP or TEP worker until collection. Prompts request only unresolved identity, precision and supported cache geometry. Optional legacy byte overrides describe a conservative per-rank estimate. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, runtime version, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
+Memory remains pending for the selected TP, DEP or TEP worker until collection. Prompts request only unresolved identity, precision and supported cache geometry. Optional legacy byte overrides describe a conservative per-rank estimate. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, backend identity, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
 
 Once all required inputs are available, guided setup shows the complete profile, sources, and selected deployment for review. Choose `edit` to replace an estimate, a previous answer, or a value from `--resource-overrides`. Choose a field by name, enter its value, and review the updated profile. For example, these illustrative inputs edit GPU memory utilization and record why:
 
@@ -556,7 +602,7 @@ aisimulate onboard init \
   --resource-overrides resource-overrides.yaml \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
-  --framework-version YOUR_PINNED_VLLM_VERSION \
+  --framework-version YOUR_VLLM_VERSION_LABEL \
   --gpu h200_sxm --interconnect nvswitch \
   --tensor-parallel 4 --output support-request.yaml
 ```
@@ -625,14 +671,14 @@ The native allocator shares one rank-local byte budget across groups and admits 
 
 ### Preview and choose parallelism
 
-`--suggest-parallel` emits one JSON report to stdout without creating a request, plan, timing data or output directory. It requires `--model-config` and the actual target identity; config hints can supply the model label and kind, but checkpoint revision and runtime version are never invented. Use your intended runtime/collection limits and shared precision declarations for meaningful resource accounting:
+`--suggest-parallel` emits one JSON report to stdout without creating a request, plan, timing data or output directory. It requires `--model-config` and the actual target identity; config hints can supply the model label and kind, but checkpoint revision and backend identity are never invented. Use your intended runtime/collection limits and shared precision declarations for meaningful resource accounting:
 
 ```bash
 aisimulate onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
-  --framework-version YOUR_PINNED_VLLM_VERSION \
+  --framework-version YOUR_VLLM_VERSION_LABEL \
   --gpu h200_sxm --interconnect nvswitch \
   --suggest-parallel
 ```
@@ -680,7 +726,7 @@ aisimulate onboard init \
   --model-config /models/your-pinned-checkpoint/config.json \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
-  --framework-version YOUR_PINNED_VLLM_VERSION \
+  --framework-version YOUR_VLLM_VERSION_LABEL \
   --gpu h200_sxm --interconnect nvswitch \
   --resource-overrides shared-overrides.yaml \
   --parallel-configs parallel-configs.yaml --output-dir ./onboarding
@@ -715,7 +761,7 @@ For a model without an analytical class, create a JSON or YAML FPM profile and p
 | `model`, `model_revision`, `architecture` | Exact timing model identity, pinned checkpoint revision, and architecture identifier matching the checkpoint configuration. An analytical model class is optional for direct interpolation. |
 | `context_length`, `num_experts`, `provenance` | Declared context limit, routed expert count (`0` for dense), and how the metadata was obtained. |
 | `deployments` | One or more exact deployment records, with one precision/resource identity per hardware/runtime/full parallel tuple. |
-| Deployment `system`, `backend`, `backend_version` | GPU system, `vllm`, and literal runtime version. |
+| Deployment `system`, `backend`, `backend_version` | GPU system, `vllm`, and the exact backend identity label selected by onboarding. Custom strings are allowed; this label is distinct from the observed runtime package version. `backend_version: null` is allowed while collection identity awaits the target-image probe; publication and simulation require the resolved label. |
 | Deployment `tp`, `pp`, `dp`, `moe_tp`, `moe_ep`, `cp` | Complete topology. PP and CP default to `1`; other dimensions are explicit. |
 | Deployment precision | Exact `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode`, `kv_cache_dtype`. They must match the collected cell; FP8 FMHA and BF16 FMHA are separate identities. |
 | Deployment runtime hints | `moe_backend`, `attention_backend` (default `auto`), `enable_wideep`, `enable_eplb` (currently both `false`). |
@@ -742,7 +788,7 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support
 ```
 
-The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records pending memory or the explicitly declared resource estimate, plus effective collection limits and their sources. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each deployment or collection envelope.
+For a resolved backend identity, the first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. A pending automatic-version plan omits runnable prediction/recommendation configs until the [collection-image probe](#create-the-request) produces its `runtime-resolved/` child plan. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records pending memory or the explicitly declared resource estimate, plus effective collection limits and their sources. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each deployment or collection envelope.
 
 The v2 plan's `request_id` identifies collection inputs: deployment identity, exact profile and collection settings. Its separate `validation_id` also includes synthetic workload/SLA, recommendation objective and seed. To change only those validation inputs, copy the request to a new file, edit that copy, then run `onboard plan --config UPDATED_REQUEST --output-dir EXISTING_PLAN --overwrite`. The command first validates the original saved request and every existing generated file against the saved plan, then refreshes validation examples and their hashes. It can also repair missing generated files for the same collection. If writing was interrupted before `support-plan.json` was created, repair requires an intact identical `request.yaml` and checks every existing generated input before writing. It preserves collected data, checkpoints and prior result directories. Changed collection/profile inputs or modified existing generated files are rejected; do not edit files inside the plan to bypass those checks.
 
@@ -773,21 +819,23 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support --execute
 ```
 
-Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector records the observed container's vLLM version before checking it against the profile's literal backend version and before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
+Execution requires a matching saved plan. Creating the initial plan records model revisions and backend identity without downloading a pinned checkpoint or inspecting the running runtime. Keep the actual checkpoint consistent with the declared model revision.
 
-Custom and development builds are supported with an exact full-version pin. Local and development suffixes are part of the identity: `0.25.1+custom` must match `0.25.1+custom`, and `0.25.2.dev3` must match `0.25.2.dev3`. Inspect the version **inside the collection container**:
+An explicit `--framework-version` is the published backend identity label. It must be nonempty and safe as a dataset directory component. It can be a release such as `0.28.0`, a development version such as `0.29.0.dev3+custom`, or a custom string such as `my-vllm-patch-3`; it need not parse as a release version or equal the package metadata. Use the same label in the request, profile, published dataset and simulation queries. A different observed package version does not by itself reject an explicitly labeled campaign.
+
+In addition to the preflight observation, the collector records the actual vLLM package version inside each collection container in `collector-provenance.json` under `runtime.backend_version`. Its top-level `backend_version` retains the explicit dataset label. Supplied Dynamo provenance is recorded separately as `dynamo_version`; the observed `ai-dynamo` package version, when installed, is `runtime.dynamo_version`. Inspect the runtime independently of the label:
 
 ```bash
 python3 -c "import importlib.metadata; print(importlib.metadata.version('vllm'))"
 ```
 
-Use that complete string for both the request's `--framework-version` and the collection profile's deployment `backend_version`. On a mismatch, the error reports the expected and observed strings, and the observed version remains in `collector-provenance.json`. Recover by using the pinned runtime, or by creating a new collection profile pinned to the observed full version and regenerating the request and collection plan in a new output directory.
+Retain the immutable image/build identity and actual runtime observations when reviewing custom builds. The label does not prove benchmark API support, native result-schema compatibility, memory-adapter support or model/topology/precision compatibility; those checks still apply. In particular, a custom label does not expand the audited memory observer's supported runtime builds.
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
-New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must select one literal runtime version for the target hardware/backend.
+New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
 
-Successful formal collection and resume verify that the published data's pod-reported runtime version exactly matches `framework_version`, including suffixes such as `+cu128`. A mismatch exits 1 and preserves collection artifacts. Use the declared runtime or create a new request and plan for the observed version; generated configs are never silently retargeted. Diagnostic smoke runs do not publish or verify formal data.
+Successful formal collection and resume verify that the published data uses the selected backend identity label. Actual runtime provenance remains separate; generated configs are not retargeted to the observed package version when an explicit label was supplied. Changed collection identity requires a new request and plan. Diagnostic smoke runs do not publish or verify formal data.
 
 ### Check timing readiness before full collection
 
@@ -842,12 +890,12 @@ Set deployment options directly on `onboard collect-fpm`:
 
 | Option | Kubernetes (default) | Slurm (`--executor slurm`) |
 | --- | --- | --- |
-| `--image IMAGE` | Overrides the worker image. | Required Pyxis image or accessible SquashFS image path. |
+| `--image IMAGE` | Explicit worker image; required for the initial runtime-version preflight. | Required Pyxis image or accessible SquashFS image path. |
 | `--container-mount SRC[:DST[:FLAGS]]` | Rejected; use the model-cache PVC option. | Repeat for checkpoint, cache or other required mounts; spelling and order are preserved. |
 | `--cpus-per-task N` | Rejected. | Positive CPUs for each node's one-task worker/scheduler pool; new campaigns default to 16. |
 | `--cpu-bind cores\|none` | Rejected. | Slurm binding for that node task; new campaigns default to `cores`. `none` retains the allowed mask imposed by the allocation/container. |
 | `--namespace`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--image-pull-secret` | Existing namespace, model PVC and registry-secret settings. A supplied mount is an absolute container path. | Rejected because they configure Kubernetes resources. |
-| `--dynamo-version VERSION` | Pinned template version. | Same template-version selection. |
+| `--dynamo-version VERSION` | Optional Dynamo build/version provenance; no release-matrix validation, template selection or backend-version inference. | Same provenance-only behavior. |
 | `--transport nvlink\|ib\|efa` | GPU networking transport. | GPU networking transport; it does not select the executor. |
 
 Prefer an immutable image digest or a pinned image file. Supply the same options when previewing, executing and resuming; deployment settings are part of the collector's frozen-plan identity, so changed settings require a new output directory. [Save these options in the session checkpoint](#preserve-collection-deployment-options). Arbitrary collector arguments and engine overrides are not accepted by this command.
@@ -1099,7 +1147,7 @@ An onboarding agent should investigate and author a campaign-local adapter when 
 
 | Checkpoint input | Required meaning |
 | --- | --- |
-| Identity fields | `model`, `model_revision`, `model_kind`, `framework`, literal `framework_version`, packaged `gpu`, and `interconnect`; optional `sm`. |
+| Identity fields | `model`, `model_revision`, `model_kind`, `framework`, selected `framework_version` label, packaged `gpu`, and `interconnect`; optional `sm`. |
 | Search fields | Explicit `tensor_parallel`, `attention_data_parallel`, `moe_tensor_parallel`, `moe_expert_parallel`, and `context_length`. This route currently represents PP1/CP1. |
 | `model_config` | Local `config.json` path, or `{ "path": "...", "sha256": "..." }`. Relative paths are based on the checkpoint directory. The runtime must load matching config bytes from its actual checkpoint path or local HF cache. A discovered adjacent `hf_quant_config.json` is pinned separately in `model_config.source_files`; its contents are not merged into or written over `config.json`. |
 | `precision` | `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kv_cache_dtype`, and `comm_quant_mode`; optional selected backends and `enable_wideep`/`enable_eplb`. A complete existing profile can supply this exact precision identity. |

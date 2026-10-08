@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward.config import add_fpm_generator_arguments, reject_fpm_arguments_without_fpm
 from collector.fpm_forward.entry import _load_generator_overrides, resolve_inputs, run_resolved
 
@@ -91,7 +92,7 @@ def test_fpm_generator_config_rejects_collector_owned_engine_fields(tmp_path):
     with pytest.raises(ValueError, match="deployment-only"):
         _load_generator_overrides(_generator_args(generator_config=str(config)))
 
-    with pytest.raises(ValueError, match="resolves generated_config_version"):
+    with pytest.raises(ValueError, match="uses the default benchmark templates"):
         _load_generator_overrides(_generator_args(generated_config_version="0.20.1"))
 
 

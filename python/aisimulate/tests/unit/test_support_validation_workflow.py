@@ -13,10 +13,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from collector.fpm_forward import cli as collector_cli
-from collector.fpm_forward import planner, repeatability
-from collector.fpm_forward.config import FPMCollectionOptions
-from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from aisimulate import main as cli
 from aisimulate.support import serving_validation as serving
@@ -24,6 +20,10 @@ from aisimulate.support import validation_workflow as workflow
 from aisimulate.support.fpm import fpm_cli_args
 from aisimulate.support.plan import create_plan
 from aisimulate.support.schema import SupportRequest
+from collector.fpm_forward import cli as collector_cli
+from collector.fpm_forward import planner, repeatability
+from collector.fpm_forward.config import FPMCollectionOptions
+from collector.fpm_forward.database import aggregate_cell, write_formal_database
 
 from .collector.test_fpm_repeatability import _write_campaign
 from .test_support_serving_validation import materialized_workload, write_server_tokenization  # noqa: F401
@@ -60,6 +60,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, 
     replay_args, request, root, trace, replay_output = validation_case
     payload = request.model_dump(mode="json")
     payload["identity"]["framework_version"] = "0.27.0"
+    payload["identity"]["runtime_framework_version"] = "0.27.0"
     payload["fpm_profile"]["deployments"][0].update(backend_version="0.27.0", fmha_quant_mode="fp8")
     payload["collection"]["prefill_cudagraph_policy"] = "runtime"
     if worker_type is not None:
@@ -161,6 +162,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, 
         model_architecture=request.fpm_profile.architecture,
         model_config_path=str(model_config),
         fpm_profile=request.fpm_profile,
+        collector_config={"runtime_backend_version": request.identity.runtime_framework_version},
         generator_overrides=overrides,
         **runtime,
     )
@@ -1027,10 +1029,9 @@ def test_serving_threshold_reassessment_preserves_measurements(
 def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacity(
     tmp_path, monkeypatch, legacy_provenance
 ):
-    from collector.fpm_forward.repeatability import load_repeatability_source
-
     from aisimulate import supervision
     from aisimulate.support.finalization import _merge_resources, _verify_collection, finalize
+    from collector.fpm_forward.repeatability import load_repeatability_source
 
     from .test_onboard_finalization import build_completed_collection
 
@@ -1110,10 +1111,9 @@ def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacit
 
 
 def test_replay_revalidates_capacity_revision_against_original_timing_collection(tmp_path, capsys, monkeypatch):
-    from collector.fpm_forward.repeatability import load_repeatability_source
-
     from aisimulate import supervision
     from aisimulate.support.finalization import finalize
+    from collector.fpm_forward.repeatability import load_repeatability_source
 
     from .test_onboard_runtime import _reviewed_capacity_revision
 

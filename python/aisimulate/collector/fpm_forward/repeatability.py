@@ -24,7 +24,7 @@ from aisimulate.fpm_contract import FPM_MANIFEST_FILENAME
 
 from . import planner
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile
-from .config import FPMCollectionOptions, with_kv_warmup_defaults
+from .config import FPMCollectionOptions, semantic_generator_overrides, with_kv_warmup_defaults
 from .execution_evidence import file_evidence, inspect_execution_evidence
 from .measurement_evidence import compare_measurements, extract_measurement_evidence
 from .memory_admission import DTypeMemoryEstimate, TopologyMemoryDecision
@@ -76,7 +76,10 @@ def load_repeatability_deployment(source_campaign_dir: str | Path) -> dict[str, 
         raise ValueError("archived deployment inputs must be an object")
     if not isinstance(overrides.get("K8sConfig", {}), dict):
         raise ValueError("archived K8sConfig must be an object")
-    if _canonical_hash(with_kv_warmup_defaults(overrides)) != saved["generator_config_sha256"]:
+    if saved["generator_config_sha256"] not in {
+        _canonical_hash(semantic_generator_overrides(overrides)),
+        _canonical_hash(with_kv_warmup_defaults(overrides)),  # Historical schema-v11 launch hash.
+    }:
         raise ValueError("archived deployment inputs differ from the source plan")
     return overrides
 
@@ -165,6 +168,13 @@ def load_repeatability_source(source_campaign_dir: str | Path) -> FPMCollectionP
         cells=tuple(cell_from_dict(item) for item in saved["cells"]),
         _fpm_profile_json=json.dumps(saved["fpm_profile"]) if "fpm_profile" in saved else None,
         _runtime_observation_json=json.dumps(saved["runtime_observation"]) if "runtime_observation" in saved else None,
+        runtime_backend_version=saved.get("runtime_backend_version"),
+        backend_version=saved.get("backend_version"),
+        _legacy_runtime_memory_policy_json=(
+            json.dumps(saved["runtime_memory_policy"])
+            if "runtime_backend_version" not in saved and "runtime_memory_policy" in saved
+            else None
+        ),
     )
     if plan.to_dict() != saved:
         raise ValueError("saved repeatability source cannot be reconstructed exactly by this collector version")
@@ -423,7 +433,13 @@ def _subset_plan(
         "cells": [cell.to_dict() for cell in plan.cells],
     }
     serialized = plan.to_dict()
-    for key in ("fpm_profile", "runtime_memory_policy", "runtime_observation"):
+    for key in (
+        "fpm_profile",
+        "runtime_memory_policy",
+        "runtime_observation",
+        "runtime_backend_version",
+        "backend_version",
+    ):
         if key in serialized:
             payload[key] = serialized[key]
     return replace(plan, sha256=_canonical_hash(payload))
@@ -1042,7 +1058,7 @@ def run_repeatability(
     """
     if retry_failed and not resume:
         raise ValueError("repeatability retry_failed requires resume")
-    if _canonical_hash(with_kv_warmup_defaults(generator_overrides)) != source_plan.generator_config_sha256:
+    if _canonical_hash(semantic_generator_overrides(generator_overrides)) != source_plan.generator_config_sha256:
         raise ValueError("repeatability deployment inputs differ from the original launch")
     root = Path(output_dir).expanduser().resolve()
     previous = json.loads((root / PLAN_FILENAME).read_text()) if resume and (root / PLAN_FILENAME).exists() else None

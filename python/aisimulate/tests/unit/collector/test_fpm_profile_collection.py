@@ -12,6 +12,7 @@ from dataclasses import replace
 
 import pytest
 import yaml
+
 from collector.fpm_forward import capabilities, cli, memory_admission, planner, runner
 from collector.fpm_forward.config import FPMCollectionOptions, reject_fpm_arguments_without_fpm
 from collector.fpm_forward.model_capability import load_model_config
@@ -948,6 +949,7 @@ def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeyp
 @pytest.mark.parametrize(
     ("expected_version", "actual_version"),
     [
+        ("private-patch-3", "0.28.0"),
         ("0.25.1", "0.25.1"),
         ("0.25.1+custom", "0.25.1+custom"),
         ("0.25.2.dev3", "0.25.2.dev3"),
@@ -960,10 +962,18 @@ def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeyp
         ("0.25.2", "0.25.2.dev3"),
     ],
 )
-def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypatch, expected_version, actual_version):
+def test_profile_version_label_is_independent_of_observed_runtime(
+    tmp_path, monkeypatch, expected_version, actual_version
+):
     resource = object.__new__(runner.KubernetesCellRunner)
     monkeypatch.setattr(runner, "FPM_RESULTS_DIR", str(tmp_path))
-    monkeypatch.setattr(importlib.metadata, "version", lambda _: actual_version)
+
+    def package_version(name):
+        if name == "vllm":
+            return actual_version
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", package_version)
 
     def execute(_pod, command, timeout):
         if command[:2] == ["python3", "-c"]:
@@ -975,16 +985,7 @@ def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypa
     arguments = dict(
         cell_id="cell", plan_sha256="plan", attempt_id="attempt", expected_backend_version=expected_version
     )
-    if actual_version != expected_version:
-        with pytest.raises(RuntimeError, match="profile runtime mismatch") as failure:
-            resource.prepare_attempt(["pod-0"], **arguments)
-        message = str(failure.value)
-        assert f"actual={actual_version!r}, expected={expected_version!r}" in message
-        assert "Use the pinned runtime" in message
-        assert f"create a new collection profile with backend_version={actual_version!r}" in message
-        assert "regenerate the collection plan in a new output directory" in message
-    else:
-        resource.prepare_attempt(["pod-0"], **arguments)
+    resource.prepare_attempt(["pod-0"], **arguments)
     provenance = json.loads((tmp_path / "collector-provenance.json").read_text())
     assert provenance == {
         "schema_name": "aic_fpm_collector_provenance",
@@ -992,6 +993,7 @@ def test_profile_runtime_version_is_observed_before_execution(tmp_path, monkeypa
         "cell_id": "cell",
         "plan_sha256": "plan",
         "attempt_id": "attempt",
+        "backend_version": expected_version,
         "runtime": {"backend": "vllm", "backend_version": actual_version},
     }
 
@@ -1046,3 +1048,48 @@ def test_aggregated_profile_requires_shared_limit_for_different_bounds(no_models
     )
     with pytest.raises(ValueError, match="explicit shared --fpm-max-num-batched-tokens"):
         _plan(profile, options=options)
+
+
+def test_custom_profile_label_preserves_actual_runtime_capabilities(no_models_or_timing_data):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "my-vllm-patch-3"
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.27.0"})
+    assert plan.capability.aic_database_version == "my-vllm-patch-3"
+    assert plan.runtime_backend_version == "0.27.0"
+    assert plan.to_dict()["runtime_backend_version"] == "0.27.0"
+    assert plan.deployment_profile(plan.cells[0]).backend_version == "my-vllm-patch-3"
+    assert runner._observe_runtime_execution(plan, plan.cells[0])
+    from collector.fpm_forward.runtime_memory import validate_saved_plan
+
+    validate_saved_plan(plan.to_dict())
+    changed = _plan(profile, collector_config={"runtime_backend_version": "0.28.0"})
+    assert plan.sha256 != changed.sha256
+
+
+def test_dynamo_version_provenance_does_not_change_collection_plan(no_models_or_timing_data):
+    profile = _profile()
+    plain = _plan(profile)
+    arbitrary = _plan(profile, generator_overrides={"generator_dynamo_version": "my-unpublished-dynamo"})
+    assert arbitrary.generator_config_sha256 == plain.generator_config_sha256
+    assert arbitrary.sha256 == plain.sha256
+
+
+def test_observed_runtime_drift_fails_after_recording_provenance(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "FPM_RESULTS_DIR", str(tmp_path))
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.28.0" if name == "vllm" else "1.5.0")
+    command = runner._attempt_provenance_command(
+        cell_id="cell",
+        plan_sha256="plan",
+        attempt_id="attempt",
+        expected_backend_version="custom-label",
+        runtime_backend_version="0.27.0",
+        dynamo_version="custom-dynamo",
+    )
+    monkeypatch.setattr(sys, "argv", ["-c", *command[3:]])
+    with pytest.raises(RuntimeError, match="observed runtime changed"):
+        exec(command[2], {})
+    provenance = json.loads((tmp_path / "collector-provenance.json").read_text())
+    assert provenance["backend_version"] == "custom-label"
+    assert provenance["runtime"] == {"backend": "vllm", "backend_version": "0.28.0", "dynamo_version": "1.5.0"}
+    assert provenance["dynamo_version"] == "custom-dynamo"

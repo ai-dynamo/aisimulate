@@ -14,11 +14,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from collector.fpm_forward.runtime_probe import normalize_probe_launch
 
 import aisimulate.main as cli
 from aisimulate.support.checkpoint import _load, report, save_checkpoint
 from aisimulate.support.schema import SupportRequest
+from collector.fpm_forward.runtime_probe import normalize_probe_launch
 
 from .collector.test_runtime_observations import observation_fixture
 
@@ -250,6 +250,13 @@ def test_public_probe_partial_resume_recovers_saved_policy_before_validation(
     from collector.fpm_forward import runtime_probe
 
     checkpoint, index, launch = _campaign(tmp_path, cpu_policy=(32, "none"))
+    from aisimulate.support import versioning
+
+    monkeypatch.setattr(
+        versioning,
+        "detect_runtime_versions",
+        lambda deployment: {"backend_version": launch["identity"]["framework_version"]},
+    )
     if checkpoint_policy:
         assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
         capsys.readouterr()
@@ -728,10 +735,9 @@ def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acce
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     from types import SimpleNamespace
 
+    from aisimulate.support import collection_readiness, fpm
     from collector.fpm_forward import cli as collector_cli
     from collector.fpm_forward import entry
-
-    from aisimulate.support import collection_readiness, fpm
 
     commands = []
 
@@ -789,14 +795,13 @@ def _formal_bindings(index, cells=None):
 
 
 def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
+    from aisimulate.support.runtime import runtime_probe_manifest
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
     from collector.fpm_forward.entry import _load_generator_overrides
     from collector.fpm_forward.planner import build_collection_plan
     from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
-
-    from aisimulate.support.runtime import runtime_probe_manifest
 
     from .test_onboard_finalization import _native
 
@@ -923,11 +928,11 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
 @pytest.mark.parametrize("worker_type", ["prefill", "decode", "aggregated"])
 def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, capsys, worker_type):
     import pyarrow.parquet as pq
-    from collector.fpm_forward.repeatability import load_repeatability_source
 
     from aisimulate.support.finalization import finalization_manifest, finalize
     from aisimulate.support.plan import check_plan
     from aisimulate.support.runtime import verify_runtime_profile
+    from collector.fpm_forward.repeatability import load_repeatability_source
 
     checkpoint, request, _, root = _completed_runtime_collection(tmp_path, capsys, worker_type=worker_type)
     assert request.worker_type == request.profile_deployment().worker_type == worker_type

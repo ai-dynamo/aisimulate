@@ -16,8 +16,10 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import collector.fpm_forward.runner as fpm_runner
 import pytest
+
+import collector.fpm_forward.runner as fpm_runner
+from aisimulate.fpm_contract import FPM_CELL_LABEL
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile
 from collector.fpm_forward.model_capability import ResolvedModelConfig, load_model_config
 from collector.fpm_forward.planner import BackendPolicy, FPMCell, build_collection_plan
@@ -35,8 +37,6 @@ from collector.fpm_forward.runner import (
     run_collection,
 )
 from collector.fpm_forward.types import ParallelTopology
-
-from aisimulate.fpm_contract import FPM_CELL_LABEL
 
 pytestmark = pytest.mark.unit
 
@@ -1401,6 +1401,7 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
     cell = _cell()
     plan = _plan(cell)
     if pending_memory:
+        plan.runtime_backend_version = "0.27.0"
         plan.fpm_profile = True
         plan.deployment_profile = lambda _cell: SimpleNamespace(
             backend_version="0.27.0", resources=SimpleNamespace(memory_source="pending")
@@ -2096,10 +2097,9 @@ def test_render_uses_frozen_model_config_without_resolving_model_path(tmp_path, 
     resolution entry point, and require the three artifacts plus a
     generator-request whose ModelConfig agrees with the frozen capability."""
 
-    from collector.fpm_forward import planner as planner_module
-
     import aisimulate.sdk.utils as sdk_utils
     from aisimulate.generator import naive as generator_naive
+    from collector.fpm_forward import planner as planner_module
 
     monkeypatch.setattr(planner_module, "_git_revision", lambda: "test-revision")
 

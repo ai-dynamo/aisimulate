@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from collector.fpm_forward import cli, database, runner, runtime_memory
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.runtime import fpm_memory_observer as observer
@@ -96,6 +97,7 @@ def _slurm_plan(tmp_path, *, points_file=None):
         has_model_cases=False,
         selected_ops={"attention_context", "attention_generation"},
         generator_overrides=_GENERATOR_INPUTS,
+        collector_config={"runtime_backend_version": "0.27.0"},
     )
 
 
@@ -323,7 +325,7 @@ def test_slurm_profile_runtime_mismatch_preserves_observed_pin_without_benchmark
         provenance = json.loads((cell_dir / "raw/node0000/collector-provenance.json").read_text())
         assert provenance["runtime"]["backend_version"] == "0.28.0"
         failures = list((cell_dir / "logs/transport-failures").glob("*/stderr.log"))
-        assert len(failures) == 1 and "FPM profile runtime mismatch" in failures[0].read_text()
+        assert len(failures) == 1 and "FPM observed runtime changed" in failures[0].read_text()
     assert cluster.steps == {"1234.99": "unrelated-job"}
 
 
