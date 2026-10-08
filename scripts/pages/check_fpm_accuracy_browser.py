@@ -46,7 +46,7 @@ async def collection_fixture(route):
                 ("configuration", "provenance/agentx-job-123/collection_evidence.json"),
             ]
             if "Example--Alpha" in prefix
-            else [("truth", "benchmark_prefill.json"), ("window", "provenance/windows.tsv")]
+            else [("truth", "benchmark_prefill.json"), ("window", "provenance/agx_windows.tsv")]
         )
         await route.fulfill(
             json={
@@ -100,11 +100,36 @@ async def check_collection_provenance(page, url, data):
         f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/{data['snapshot']['hf_revision']}/{data['rows'][0]['configuration_path']}/measurements/provenance/agentx-job-123/collection_evidence.json",
     )
     beta = page.locator(".overview-config-row").nth(1)
+    await expect(beta.locator(".collection-note summary")).to_have_text("Test set · Self-benchmark")
     await beta.locator(".collection-note summary").click()
     await expect(beta.locator(".collection-content")).to_contain_text("Supporting collection evidence")
     await expect(beta.locator(".collection-content")).to_contain_text(
         "ISL: 128 · OSL: 256 · Concurrency: 4 · num_req: 20"
     )
+    await expect(beta.locator(".collection-content")).to_contain_text(
+        "replay measurements are not part of this evaluation"
+    )
+    # Categories describe declared truth, not the existence of unrelated helper runs.
+    pattern = "**/Example--Alpha/**/measurements/manifest.json"
+    root = data["rows"][0]["configuration_path"] + "/measurements/"
+    for names, label in (
+        ([("truth", "fpm_stream.jsonl.gz")], "General trace replay"),
+        ([("truth", "fpm_stream.jsonl.gz"), ("window", "provenance/agx_windows.tsv")], "AgentX trace replay"),
+        (
+            [("truth", "benchmark_prefill.json"), ("truth", "fpm_stream.jsonl.gz")],
+            "Self-benchmark + General trace replay",
+        ),
+        ([("window", "provenance/agx_windows.tsv")], "Collection method not recorded"),
+    ):
+        manifest = {
+            "configuration_path": data["rows"][0]["configuration_path"],
+            "snapshot_id": "fixture",
+            "files": [{"role": role, "path": root + name, "bytes": 1000} for role, name in names],
+        }
+        await page.route(pattern, lambda route, *, manifest=manifest: route.fulfill(json=manifest))
+        await page.reload()
+        await expect(page.locator(".collection-note summary").first).to_have_text("Test set · " + label)
+        await page.unroute(pattern)
     # A different snapshot's manifest must never be displayed as this row's provenance.
     pattern = "**/Example--Alpha/**/measurements/manifest.json"
     await page.route(pattern, lambda route: route.fulfill(json={"snapshot_id": "wrong-snapshot", "files": []}))
