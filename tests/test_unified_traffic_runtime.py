@@ -168,6 +168,26 @@ def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("prefill_limit,completed", [(32, 0), (33, 1)])
+def test_disaggregated_prefill_context_requires_room_for_first_token(backend, prefill_limit, completed):
+    engine = _engine("disaggregated")
+    engine["backend"] = backend
+    engine["workers"]["prefill"]["context_length"] = prefill_limit
+    engine["workers"]["decode"]["context_length"] = 36
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    assert report.metrics["completed_requests"] == completed
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
 def test_prediction_preserves_context_limit_for_all_backends(backend: str, mode: str) -> None:
     engine = _engine()
@@ -922,7 +942,9 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert stdout["details"] == saved["details"]
     from jsonschema import validate
 
-    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}

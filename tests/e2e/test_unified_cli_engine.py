@@ -94,7 +94,7 @@ def _assert_concrete(value: Any, *, path: str = "config") -> None:
 
 
 def _check_documented_candidate_renderer(recommendation_output: Path, tmp_path: Path) -> None:
-    guide = (_REPO_ROOT / "python/aisimulate/docs/dynamo_deployment_guide.md").read_text()
+    guide = (_REPO_ROOT / "docs/sweeper/deployment-generation.md").read_text()
     script = guide.split("```python\n", 1)[1].split("\n```", 1)[0]
     original = (recommendation_output / "recommendation.json").read_text()
     selected_id = json.loads(original)["views"]["top_n"][0]

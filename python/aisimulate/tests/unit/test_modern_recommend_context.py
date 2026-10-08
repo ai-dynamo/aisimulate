@@ -56,7 +56,7 @@ def test_aggregate_worker_context_limit_must_use_engine_field():
 
 @pytest.mark.parametrize(
     ("role", "context_length", "minimum"),
-    [("prefill", 1023, 1024), ("decode", 1151, 1152)],
+    [("prefill", 1023, 1025), ("prefill", 1024, 1025), ("decode", 1151, 1152)],
 )
 def test_role_context_limits_cover_configured_workload(role, context_length, minimum):
     config = _recommendation_config().model_dump(mode="python")
@@ -65,17 +65,21 @@ def test_role_context_limits_cover_configured_workload(role, context_length, min
         "load": {"type": "concurrency", "concurrency": 1},
         "stop": {"requests": 1},
     }
+    CoreRecommendationConfig.model_validate(config)
     config["engine"]["workers"][role]["context_length"] = context_length
 
     with pytest.raises(ValueError, match=f"{role}.*{minimum}"):
         CoreRecommendationConfig.model_validate(config)
 
+    config["engine"]["workers"][role]["context_length"] = minimum
+    CoreRecommendationConfig.model_validate(config)
+
 
 def test_role_context_limits_cover_default_workload_without_traffic():
     config = _recommendation_config().model_dump(mode="python")
-    config["engine"]["workers"]["prefill"]["context_length"] = 1023
+    config["engine"]["workers"]["prefill"]["context_length"] = 1024
 
-    with pytest.raises(ValueError, match="prefill.*1024"):
+    with pytest.raises(ValueError, match="prefill.*1025"):
         CoreRecommendationConfig.model_validate({**config, "traffic": None})
 
 
@@ -119,6 +123,15 @@ def test_disagg_sample_preserves_role_context_limits():
 
     payload = _engine_args_payload(sample, "prefill", backend_version="0.24.0")
     assert payload["max_model_len"] == 64_000
+    decode_payload = _engine_args_payload(sample, "decode", backend_version="0.24.0")
+    assert decode_payload["max_model_len"] == 128_000
+
+    for role in ("prefill", "decode"):
+        sample[f"{role}_context_length"] = None
+        assert _engine_args_payload(sample, role, backend_version="0.24.0")["max_model_len"] == 1_000_000
+    sample["context_length"] = None
+    for role in ("prefill", "decode"):
+        assert "max_model_len" not in _engine_args_payload(sample, role, backend_version="0.24.0")
 
 
 def test_role_context_limits_work_without_shared_model_context(monkeypatch):

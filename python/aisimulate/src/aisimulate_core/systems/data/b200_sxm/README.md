@@ -85,5 +85,5 @@ TP/EP configurations, `power_law_1.2`). Every point in each refreshed curve
 has unavailable power, so these curves do not interpolate between measured
 and unavailable power. Runtime zero energy is the existing missing-evidence
 sentinel: it contributes no covered latency, and the public power result is
-subject to the 90% coverage gate described in `docs/power-model.md`. The data
+subject to the 90% coverage gate described in `docs/perf-model/power.md`. The data
 refresh does not qualify power accuracy or change power interpolation rules.

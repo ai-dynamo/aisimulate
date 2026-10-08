@@ -129,7 +129,7 @@ def _validate_recommendation_context_lengths(traffic, engine) -> None:
     isl = source.input_tokens
     osl = source.output_tokens
     limits = {
-        "prefill": isl,
+        "prefill": isl + 1,
         "decode": isl + osl,
     }
     for role, minimum in limits.items():

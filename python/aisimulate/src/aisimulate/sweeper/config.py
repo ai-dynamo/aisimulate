@@ -4,7 +4,7 @@
 """Input schema for a Sweeper smart-search run.
 
 These Pydantic models are the single source of truth for the search inputs. See the repository's
-``docs/sweeper/architecture.md`` for the experimental design:
+``docs/sweeper/README.md`` for the experimental design:
 
 - :class:`SearchSpace`        — the knobs to sweep + pinned context, per component
 - :class:`Workload`           — the traffic every candidate is evaluated against
