@@ -58,6 +58,7 @@ areas:
       - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_output_adapter_discovery.py
+      - tests/test_output_adapter_context.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
       - tests/test_ngram_cli.py
@@ -221,6 +222,8 @@ shared:
   - glob: tests/test_stack_discovery.py
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_output_adapter_discovery.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_output_adapter_context.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/resources.py
     owners: [replay, sweeper, maintainers]
