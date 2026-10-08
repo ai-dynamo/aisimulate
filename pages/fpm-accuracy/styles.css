@@ -49,6 +49,16 @@
 .overview-config-row:hover { background: var(--accent-soft); }
 .overview-config-row[hidden] { display: none; }
 .overview-config-name { display: block; }
+.collection-note { margin: 6px 0; max-width: 380px; font-size: 11px; font-weight: 400; line-height: 1.5; white-space: normal; }
+.collection-note summary { cursor: pointer; color: var(--muted); }
+.collection-note summary:hover { color: var(--accent); }
+.collection-note summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.collection-content { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); overflow-wrap: anywhere; }
+.collection-content p { margin: 0 0 8px; }
+.collection-content dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 8px 0; }
+.collection-content dt { color: var(--muted); }
+.collection-content dd { margin: 0; }
+.collection-run { padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--border); }
 .overview-slice-tags, .overview-cell-note { margin-top: 3px; font-size: 11px; }
 .overview-cell-note, .overview-measurement-cell span, .overview-method-cell span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
 .overview-measurement-cell strong { display: block; color: var(--text); font-weight: 500; }

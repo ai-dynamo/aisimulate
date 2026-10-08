@@ -54,6 +54,21 @@ Details and 3D Visualization are separate tabs with independent controls.
   evaluation artifacts still retain all configurations.
 - Table headings, model/configuration labels, metrics, and evidence links are
   left-aligned across Overview, Predictors, Trends phase summaries, and Details.
+- Overview/Predictors configuration rows show the evaluated phases rather than
+  the evaluator's inferred `aggregated` worker role. That role combines phase
+  populations and does not establish an aggregated serving deployment.
+  Each row has expandable test-collection provenance from its measurement
+  manifest at the evaluation's exact HF revision. Benchmark truth filenames
+  identify self-benchmark point sweeps; declared AgentX collection evidence
+  identifies trace replay. These labels describe source artifacts, not a new
+  validation of the collection campaign or a train/test independence claim.
+  Small collection JSON and named-column window TSV files expose recorded
+  job/benchmark IDs, concurrency, duration, and request settings. Trace-defined
+  lengths and completed requests are distinguished from fixed ISL/OSL and
+  requested `num_req`; missing or unsupported metadata stays explicitly unknown.
+  Supporting runs alongside benchmark truth are labeled separately. MAPE remains
+  pooled per configuration, with phase detail in Details and run/worker points
+  in 3D. Provenance loads from public HF on demand; failures do not hide metrics.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
@@ -131,7 +146,7 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
-Dashboard script URLs carry a shared version (`evaluation-banner-1`) so returning
+Dashboard script URLs carry a shared version (`collection-provenance-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
 across all five tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.

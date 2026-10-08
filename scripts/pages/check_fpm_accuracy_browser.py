@@ -18,7 +18,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -32,6 +32,86 @@ ROOT = Path(__file__).resolve().parents[2]
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
         pass
+
+
+async def collection_fixture(route):
+    """Synthetic public provenance; never fetch real HF data in offline checks."""
+    path = "data/" + unquote(urlsplit(route.request.url).path).split("/data/", 1)[1]
+    prefix = path.split("/measurements/", 1)[0]
+    root = prefix + "/measurements/"
+    if path.endswith("/manifest.json"):
+        names = (
+            [
+                ("truth", "fpm_iterations.json.gz"),
+                ("configuration", "provenance/agentx-job-123/collection_evidence.json"),
+            ]
+            if "Example--Alpha" in prefix
+            else [("truth", "benchmark_prefill.json"), ("window", "provenance/windows.tsv")]
+        )
+        await route.fulfill(
+            json={
+                "configuration_path": prefix,
+                "snapshot_id": "fixture",
+                "files": [{"role": role, "path": root + name, "bytes": 1000} for role, name in names],
+            }
+        )
+    elif path.endswith("collection_evidence.json"):
+        await route.fulfill(
+            json={
+                "benchmark_id": "synthetic-run",
+                "completed_measured_requests": 635,
+                "input_config": {
+                    "phases": [{"timing_mode": "agentic_replay", "concurrency": 4, "duration": 3600}],
+                    "datasets": [{"dataset": "synthetic-traces"}],
+                },
+            }
+        )
+    elif path.endswith("windows.tsv"):
+        await route.fulfill(body="isl\tosl\tconcurrency\tnum_req\n128\t256\t4\t20\n")
+    else:
+        await route.fulfill(status=404)
+
+
+async def check_collection_provenance(page, url, data):
+    await page.goto(url + "?branch=main")
+    alpha = page.locator(".overview-config-row").first
+    await expect(alpha.locator(".overview-config-name")).not_to_contain_text("aggregated")
+    await expect(alpha.locator(".collection-note summary")).to_have_text("Test set · AgentX trace replay")
+    await alpha.locator(".collection-note summary").focus()
+    await page.keyboard.press("Enter")
+    content = alpha.locator(".collection-content")
+    await expect(content).to_contain_text("AgentX job 123")
+    await expect(content).to_contain_text("Trace-defined (variable)")
+    await expect(content).to_contain_text("Duration-based")
+    await expect(content.locator("dd")).to_contain_text(
+        [
+            "Agentic trace replay",
+            "Trace-defined (variable)",
+            "4",
+            "Duration-based",
+            "3,600",
+            "635",
+            "synthetic-run",
+            "synthetic-traces",
+        ]
+    )
+    await expect(content.get_by_role("link", name="AgentX job 123")).to_have_attribute(
+        "href",
+        f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/{data['snapshot']['hf_revision']}/{data['rows'][0]['configuration_path']}/measurements/provenance/agentx-job-123/collection_evidence.json",
+    )
+    beta = page.locator(".overview-config-row").nth(1)
+    await beta.locator(".collection-note summary").click()
+    await expect(beta.locator(".collection-content")).to_contain_text("Supporting collection evidence")
+    await expect(beta.locator(".collection-content")).to_contain_text(
+        "ISL: 128 · OSL: 256 · Concurrency: 4 · num_req: 20"
+    )
+    # A different snapshot's manifest must never be displayed as this row's provenance.
+    pattern = "**/Example--Alpha/**/measurements/manifest.json"
+    await page.route(pattern, lambda route: route.fulfill(json={"snapshot_id": "wrong-snapshot", "files": []}))
+    await page.reload()
+    await expect(page.locator(".collection-note summary").first).to_have_text("Test set · Provenance unavailable")
+    await expect(page.locator("#overall-value")).not_to_have_text("—")
+    await page.unroute(pattern)
 
 
 def prepare_visualization_fixtures(directory: Path):
@@ -283,6 +363,9 @@ async def check():
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
                 page = await browser.new_page(viewport={"width": 1600, "height": 1050}, color_scheme="light")
+                await page.route(
+                    "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/**", collection_fixture
+                )
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 url = f"http://127.0.0.1:{server.server_port}/fpm-accuracy/"
@@ -355,6 +438,9 @@ async def check():
                 await page.wait_for_timeout(650)
                 await expect(page.locator('[data-model="Release/Alpha"]')).to_be_visible()
                 await page.unroute_all(behavior="wait")
+                await page.route(
+                    "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/**", collection_fixture
+                )
                 if screenshot := os.environ.get("FPM_SCREENSHOT"):
                     await page.screenshot(path=screenshot, full_page=True)
                 await page.get_by_role("button", name="Switch to dark theme").click()
@@ -374,6 +460,7 @@ async def check():
                         path=str(Path(screenshot).with_stem(Path(screenshot).stem + "-mobile")), full_page=True
                     )
                 await check_predictor_views(page, url, data, screenshot)
+                await check_collection_provenance(page, url, data)
                 await page.set_viewport_size({"width": 1400, "height": 1000})
                 await page.goto(url + "trends.html?branch=main")
                 await expect(page.locator("#trend-table")).to_have_count(0)
