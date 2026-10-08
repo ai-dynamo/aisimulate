@@ -54,15 +54,9 @@ Details and 3D Visualization are separate tabs with independent controls.
   evaluation artifacts still retain all configurations.
 - Table headings, model/configuration labels, metrics, and evidence links are
   left-aligned across Overview, Predictors, Trends phase summaries, and Details.
-- Overview/Predictors configuration rows show **Agg** (same serving worker),
-  **PD disagg** (separate prefill/decode workers), or **Layout unknown**. Layout
-  comes from explicit `disaggregation_mode` in pinned resolved collection
-  configs, with source links inside the test-set details. For self-benchmark
-  truth, only configs whose benchmark output matches that truth determine the
-  label; unrelated supporting serving runs do not override it. Both layouts
-  are listed when matching evidence records both. Missing, unsupported, or
-  unavailable metadata stays unknown. Phases, the evaluator's `worker_role`,
-  and `DEP` (expert parallelism) do not establish a serving layout.
+- Overview/Predictors configuration rows show the evaluated phases rather than
+  the evaluator's inferred `aggregated` worker role. That role combines phase
+  populations and does not establish an aggregated serving deployment.
   Each row has expandable test-collection provenance from its measurement
   manifest at the evaluation's exact HF revision. Benchmark truth filenames
   identify self-benchmark point sweeps; declared AgentX collection evidence
@@ -152,7 +146,7 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
-Dashboard script URLs carry a shared version (`serving-layout-1`) so returning
+Dashboard script URLs carry a shared version (`collection-provenance-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
 across all five tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.

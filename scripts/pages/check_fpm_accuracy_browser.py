@@ -44,15 +44,9 @@ async def collection_fixture(route):
             [
                 ("truth", "fpm_iterations.json.gz"),
                 ("configuration", "provenance/agentx-job-123/collection_evidence.json"),
-                ("configuration", "provenance/resolved-config-decode.json"),
             ]
             if "Example--Alpha" in prefix
-            else [
-                ("truth", "benchmark_prefill_merged.json.gz"),
-                ("window", "provenance/windows.tsv"),
-                ("configuration", "provenance/resolved-config-prefill.json"),
-                ("configuration", "provenance/trace/resolved-config-decode.json"),
-            ]
+            else [("truth", "benchmark_prefill.json"), ("window", "provenance/windows.tsv")]
         )
         await route.fulfill(
             json={
@@ -74,25 +68,6 @@ async def collection_fixture(route):
         )
     elif path.endswith("windows.tsv"):
         await route.fulfill(body="isl\tosl\tconcurrency\tnum_req\n128\t256\t4\t20\n")
-    elif path.endswith("resolved-config-prefill.json"):
-        await route.fulfill(
-            json={
-                "config": {
-                    "disaggregation_mode": "DisaggregationMode.AGGREGATED",
-                    "benchmark_mode": "prefill",
-                    "benchmark_output_path": "/tmp/benchmark_prefill.json",
-                }
-            }
-        )
-    elif path.endswith("resolved-config-decode.json"):
-        await route.fulfill(
-            json={
-                "config": {
-                    "disaggregation_mode": "DisaggregationMode.DECODE",
-                    "benchmark_mode": None,
-                }
-            }
-        )
     else:
         await route.fulfill(status=404)
 
@@ -100,7 +75,7 @@ async def collection_fixture(route):
 async def check_collection_provenance(page, url, data):
     await page.goto(url + "?branch=main")
     alpha = page.locator(".overview-config-row").first
-    await expect(alpha.locator(".serving-layout")).to_have_text("PD disagg")
+    await expect(alpha.locator(".overview-config-name")).not_to_contain_text("aggregated")
     await expect(alpha.locator(".collection-note summary")).to_have_text("Test set · AgentX trace replay")
     await alpha.locator(".collection-note summary").focus()
     await page.keyboard.press("Enter")
@@ -125,11 +100,7 @@ async def check_collection_provenance(page, url, data):
         f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/{data['snapshot']['hf_revision']}/{data['rows'][0]['configuration_path']}/measurements/provenance/agentx-job-123/collection_evidence.json",
     )
     beta = page.locator(".overview-config-row").nth(1)
-    # Prefill-only benchmark truth is Agg despite its supporting PD serving run.
-    await expect(beta.locator(".serving-layout")).to_have_text("Agg")
     await beta.locator(".collection-note summary").click()
-    await expect(beta.get_by_role("link", name="Agg config")).to_have_count(1)
-    await expect(beta.get_by_role("link", name="PD disagg config")).to_have_count(0)
     await expect(beta.locator(".collection-content")).to_contain_text("Supporting collection evidence")
     await expect(beta.locator(".collection-content")).to_contain_text(
         "ISL: 128 · OSL: 256 · Concurrency: 4 · num_req: 20"
@@ -139,33 +110,8 @@ async def check_collection_provenance(page, url, data):
     await page.route(pattern, lambda route: route.fulfill(json={"snapshot_id": "wrong-snapshot", "files": []}))
     await page.reload()
     await expect(page.locator(".collection-note summary").first).to_have_text("Test set · Provenance unavailable")
-    await expect(page.locator(".serving-layout").first).to_have_text("Layout unknown")
     await expect(page.locator("#overall-value")).not_to_have_text("—")
     await page.unroute(pattern)
-    # Missing, unavailable, or unrelated layout metadata must not guess from phases/roles.
-    pattern = "**/provenance/resolved-config-*.json"
-    for config in (
-        None,
-        {},
-        {
-            "disaggregation_mode": "DisaggregationMode.AGGREGATED",
-            "benchmark_mode": "prefill",
-            "benchmark_output_path": "/tmp/unrelated.json",
-        },
-    ):
-        await page.route(
-            pattern,
-            lambda route, *, config=config: route.fulfill(
-                status=503 if config is None else 200, json={"config": config}
-            ),
-        )
-        await page.reload()
-        await expect(page.locator(".serving-layout")).to_have_text(["Layout unknown", "Layout unknown"])
-        await expect(page.locator("#overall-value")).not_to_have_text("—")
-        await page.unroute(pattern)
-    # The comparison tab uses the same labels and pinned evidence.
-    await page.goto(url + "predictors.html?branch=main")
-    await expect(page.locator(".serving-layout")).to_have_text(["PD disagg", "Agg"])
 
 
 def prepare_visualization_fixtures(directory: Path):

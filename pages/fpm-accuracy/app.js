@@ -68,6 +68,12 @@
     };
   }
 
+  function phaseLabel(row) {
+    const metrics = Object.values(row.results)[0]?.metrics;
+    const phases = ['prefill', 'decode', 'mixed'].filter(phase => metrics?.[phase]?.measured_count > 0);
+    return phases.length ? phases.join(' + ') : 'Phase not recorded';
+  }
+
   function cells(rows) {
     const metrics = comparison ? displayMethods.map(method => ({...aggregate(rows, method), method, label: labels[method]})) : [bestAggregate(rows)];
     return metrics.map((metric) => {
@@ -131,7 +137,7 @@
       return model + [...group.rows].sort((a, b) => [a.gpu, a.framework, a.framework_version, a.parallelism].join().localeCompare([b.gpu, b.framework, b.framework_version, b.parallelism].join())).map((row) => {
         const measurement = row.status === "ready" ? `${integer(row.measurement_count)} observations` : row.status.replaceAll("_", " ");
         const skipped = row.skipped_count ? `<span>${integer(row.skipped_count)} excluded or unavailable</span>` : "";
-        return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · <span class="serving-layout">Loading layout…</span></span><details class="collection-note" data-configuration="${escape(row.configuration_id)}"></details><a href="evaluation-detail.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}&amp;run=${summary.snapshot.run_id}-${summary.snapshot.run_attempt}">Details →</a> <a href="3d-visualization.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}">3D Viz →</a><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "Configuration ↗")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
+        return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(phaseLabel(row))}</span><details class="collection-note" data-configuration="${escape(row.configuration_id)}"></details><a href="evaluation-detail.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}&amp;run=${summary.snapshot.run_id}-${summary.snapshot.run_attempt}">Details →</a> <a href="3d-visualization.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}">3D Viz →</a><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "Configuration ↗")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
       }).join("");
     }).join("") || `<tr><td colspan="${columns}" class="empty-cell">No measurements available</td></tr>`;
     const rows = new Map(summary.rows.map(row => [row.configuration_id, row]));

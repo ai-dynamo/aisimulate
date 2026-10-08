@@ -11,33 +11,6 @@
   const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('en-US') : 'Not recorded';
   const fields = entries => `<dl>${entries.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join('')}</dl>`;
 
-  async function servingLayout(element, row, revision, files, method) {
-    const label = element.closest('th').querySelector('.serving-layout');
-    label.title = 'PD serving layout is not recorded in supported collection metadata.';
-    const stem = path => path.split('/').pop().replace(/\.json(?:\.gz)?$/, '').replace(/^(?:benchmark_results_|benchmark_|resolved-config-)/, '').replace(/_merged$/, '');
-    const truth = new Set(files.filter(file => ['truth', 'derived_truth'].includes(file.role)).map(file => stem(file.path)));
-    const benchmark = method === 'Self-benchmark point sweep';
-    const configs = files.filter(file => file.role === 'configuration' && /\/resolved-config[^/]*\.json$/.test(file.path)
-      && Number.isFinite(file.bytes) && file.bytes <= 2 * 1024 * 1024 && (!benchmark || truth.has(stem(file.path))));
-    const results = await Promise.allSettled(configs.map(async file => {
-      const config = JSON.parse(await read(revision, file.path)).config;
-      if (benchmark && !config?.benchmark_mode) return null;
-      if (config?.benchmark_mode && !truth.has(stem(config.benchmark_output_path || ''))) return null;
-      const mode = config?.disaggregation_mode;
-      const layout = ['aggregated', 'DisaggregationMode.AGGREGATED'].includes(mode) ? 'Agg'
-        : ['prefill', 'decode', 'DisaggregationMode.PREFILL', 'DisaggregationMode.DECODE'].includes(mode) ? 'PD disagg' : null;
-      return {layout, path:file.path};
-    }));
-    label.textContent = 'Layout unknown';
-    const evidence = results.filter(result => result.status === 'fulfilled' && result.value).map(result => result.value);
-    const modes = new Set(evidence.map(item => item.layout));
-    if (results.some(result => result.status === 'rejected') || modes.has(null) || !modes.size) return '';
-    label.textContent = modes.size === 1 ? evidence[0].layout : 'Agg / PD disagg';
-    label.title = modes.size > 1 ? 'Both layouts are recorded in this configuration’s collection evidence.'
-      : evidence[0].layout === 'Agg' ? 'Prefill and decode use the same serving worker.' : 'Prefill and decode use separate serving workers.';
-    return evidence.map(item => link(revision, item.path, `${item.layout} config`)).join(' · ');
-  }
-
   function read(revision, path) {
     const key = url(revision, path, 'resolve');
     if (!cache.has(key)) cache.set(key, (async () => {
@@ -90,7 +63,7 @@
     return unique.map(row => `<p>${escape(row)}</p>`).join('');
   }
 
-  async function expand(content, manifest, files, revision, method, layoutEvidence) {
+  async function expand(content, manifest, files, revision, method) {
     const evidence = files.filter(file => /\/(?:collection_evidence|aiperf_[^/]+)\.json$/.test(file.path) || (file.role === 'window' && file.path.endsWith('.tsv')));
     content.innerHTML = '<p>Loading collection evidence…</p>';
     const results = await Promise.allSettled(evidence.map(async file => {
@@ -111,7 +84,7 @@
     const runs = results.filter(result => result.status === 'fulfilled').map(result => result.value).join('');
     const failed = results.some(result => result.status === 'rejected');
     const campaign = manifest.provenance?.source_campaign_id;
-    content.innerHTML = `${layoutEvidence ? `<p>${layoutEvidence}</p>` : ''}<p>${escape(description)}</p>${campaign ? fields([['Campaign', campaign]]) : ''}`
+    content.innerHTML = `<p>${escape(description)}</p>${campaign ? fields([['Campaign', campaign]]) : ''}`
       + `<p>${link(revision, manifest.path, 'Measurement manifest')}</p>`
       + (runs ? `<strong>${heading}</strong>${runs}` : '<p>AgentX ID and fixed ISL / OSL / concurrency / num_req are not recorded in supported collection metadata.</p>')
       + (failed ? '<p>Some evidence could not be loaded. Open the measurement manifest to inspect its source links.</p>' : '');
@@ -127,18 +100,15 @@
       const files = manifest.files.filter(file => validPath(file.path) && file.path.startsWith(row.configuration_path + '/measurements/'));
       const method = kind(files);
       element.querySelector('summary').textContent = `Test set · ${method}`;
-      const layoutEvidence = servingLayout(element, row, revision, files, method);
       let loaded = false;
-      const show = async () => {
+      const show = () => {
         if (!element.open || loaded) return;
         loaded = true;
-        element.querySelector('.collection-content').innerHTML = '<p>Loading collection evidence…</p>';
-        expand(element.querySelector('.collection-content'), {...manifest, path:row.measurement_manifest}, files, revision, method, await layoutEvidence);
+        expand(element.querySelector('.collection-content'), {...manifest, path:row.measurement_manifest}, files, revision, method);
       };
       element.addEventListener('toggle', show);
       show();
     } catch (_) {
-      element.closest('th').querySelector('.serving-layout').textContent = 'Layout unknown';
       element.querySelector('summary').textContent = 'Test set · Provenance unavailable';
       element.querySelector('.collection-content').innerHTML = '<p>Could not load the pinned collection metadata. See the Measurements link.</p>';
     }
