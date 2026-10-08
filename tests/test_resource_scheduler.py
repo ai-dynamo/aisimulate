@@ -224,6 +224,62 @@ def test_unknown_peak_stops_wave_planning_and_keeps_serial_capacity(tmp_path, mo
     assert scans == {"coordinator": 9, "worker": 8}
 
 
+def test_unknown_peak_over_budget_retries_serially_without_workers(tmp_path, monkeypatch):
+    from aisimulate import resource_scheduler as scheduler
+    from aisimulate import resources
+
+    trace = tmp_path / "requests.jsonl"
+    trace.write_text('{"input_length":4,"output_length":1000000000000,"hash_ids":[1]}\n')
+    specs = [
+        SimpleNamespace(workload={"trace_path": str(trace), "trace_format": "agentic_mooncake"}, concurrency=None)
+        for _ in range(8)
+    ]
+    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(32 * GB, 16 * GB, 8))
+    monkeypatch.setattr(
+        resources,
+        "resolve_budget",
+        lambda *args: {
+            "memory_limit_bytes": 8 * GB,
+            "coordinator_memory_bytes": 320 * resources.MIB,
+            "reserved_host_memory_bytes": GB,
+            "cpu_limit": 8,
+        },
+    )
+    scans = 0
+    attempts = []
+    original_estimate = resources.estimate_workload
+    original_admit = GuardedRunnerFactory.admit_wave
+
+    def estimate(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return original_estimate(*args, **kwargs)
+
+    def admit(factory, wave):
+        attempts.append(len(wave))
+        return original_admit(factory, wave)
+
+    def unexpected_pool(**kwargs):
+        pytest.fail("over-budget candidates must not create workers")
+
+    monkeypatch.setattr(resources, "estimate_workload", estimate)
+    monkeypatch.setattr(GuardedRunnerFactory, "admit_wave", admit)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", unexpected_pool)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    results = list(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=8, timeout=10))
+    assert [index for index, _ in results] == list(range(8))
+    for _, result in results:
+        assert isinstance(result, InterruptedEvaluation)
+        assert result.resource_limited
+        assert "candidate lower bound plus worker baseline exceeds available host memory" in result.reason
+        assert result.metadata["status"] == "resource_limited"
+        assert result.metadata["estimate"]["estimated_peak_bytes"] is None
+        assert result.metadata["estimate"]["lower_bound_bytes"] == 4 * 10**12
+    assert attempts == [8] + [1] * 8
+    assert scans == 9
+
+
 def test_live_pressure_retries_only_unfinished_work_after_cleanup(monkeypatch):
     from concurrent.futures import Future
 

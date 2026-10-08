@@ -966,12 +966,12 @@ class GuardedRunnerFactory:
                 concurrency=spec.concurrency,
             )
             plans.append(plan)
-            require_plan(plan)
             if plan["estimate"]["estimated_peak_bytes"] is None and len(specs) > 1:
                 raise _SerialAdmissionRequired(
                     "candidate wave requires supervised serial execution",
                     plan={"status": "resource_limited", "workers": len(specs), "candidates": plans},
                 )
+            require_plan(plan)
         budget = resolve_budget(self.policy, host)
         budget["coordinator_memory_bytes"] += _child_memory_bytes()
         available = max(
