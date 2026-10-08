@@ -265,12 +265,14 @@ def run_fpm(
                 {
                     "status": "pending_runtime_version",
                     "simulation_ready": False,
-                    "next": "Use --execute --image IMAGE to detect the target runtime version.",
+                    "next": "Resolve the request's backend version before executing this existing campaign."
+                    if execute
+                    else "Use --execute --image IMAGE to detect the target runtime version.",
                 },
                 indent=2,
             )
         )
-        return 1 if check_readiness else 0
+        return 1 if check_readiness or execute else 0
     selected_checkpoint = _checkpoint_root(root, checkpoint_dir)
     if check_readiness:
         check_plan(request, root)

@@ -622,7 +622,8 @@ def test_runtime_probe_does_not_launch_a_configuration_whose_metadata_probe_fail
     )
 
 
-def test_custom_label_runtime_observation_import_keeps_actual_adapter_version(tmp_path, monkeypatch):
+@pytest.mark.parametrize("runtime_pin", [None, "0.28.0", "0.27.0"])
+def test_custom_label_runtime_observation_import_keeps_actual_adapter_version(tmp_path, monkeypatch, runtime_pin):
     from . import test_onboard_runtime as workflow
 
     original = workflow.normalize_probe_launch
@@ -631,7 +632,8 @@ def test_custom_label_runtime_observation_import_keeps_actual_adapter_version(tm
     def normalize(value):
         launch = original(value)
         launch["identity"]["framework_version"] = label
-        launch["identity"]["runtime_framework_version"] = "0.28.0"
+        if runtime_pin is not None:
+            launch["identity"]["runtime_framework_version"] = runtime_pin
         return launch
 
     # Adapt the independent observation fixture before it writes every launch,
@@ -641,11 +643,18 @@ def test_custom_label_runtime_observation_import_keeps_actual_adapter_version(tm
     assert launch["identity"]["framework_version"] == label
     before = {path: path.read_bytes() for path in index.parent.rglob("*") if path.is_file()}
     output = tmp_path / "imported"
-    assert workflow._import(checkpoint, index, output, configurations=["tp2"]) == 0
+    status = workflow._import(checkpoint, index, output, configurations=["tp2"])
+    assert all(path.read_bytes() == content for path, content in before.items())
+    if runtime_pin == "0.27.0":
+        assert status == 1
+        report = json.loads((output / "import.json").read_text())
+        assert "instrumentation runtime version differs" in str(report)
+        return
+    assert status == 0
     state = workflow._load(checkpoint)
     imported = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     assert imported.identity.framework_version == imported.profile_deployment().backend_version == label
-    assert imported.identity.runtime_framework_version == "0.28.0"
+    assert imported.identity.runtime_framework_version == runtime_pin
     assert imported.profile_deployment().resources.memory_source == "runtime"
     assert imported.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
     assert all(path.read_bytes() == content for path, content in before.items())
@@ -786,3 +795,91 @@ def test_detected_version_reopens_checkpoint_with_a_version_pending_profile(tmp_
     # Import and resume reconstruct this same launch from the saved checkpoint.
     _, launch, _ = runtime.checkpoint_launch(_load(checkpoint), "tp1", checkpoint)
     assert launch["identity"]["framework_version"] == "0.28.0"
+
+
+@pytest.mark.parametrize("existing", ["runtime_pin", "probe_manifest", "checkpoint"])
+@pytest.mark.parametrize("execute", [False, True])
+def test_unresolved_version_execute_does_not_report_success(tmp_path, monkeypatch, existing, execute, capsys):
+    from aisimulate.support import runtime, versioning
+
+    source, resources = _files(tmp_path)
+    draft = tmp_path / "draft.yaml"
+    assert cli.main(_args(draft, source, resources, framework_version=None)) == 0
+    payload = yaml.safe_load(draft.read_text())
+    if existing == "runtime_pin":
+        payload["identity"]["runtime_framework_version"] = "0.28.0"
+    request = SupportRequest.model_validate(payload)
+    root = tmp_path / "campaign"
+    create_plan(request, root)
+    if existing == "probe_manifest":
+        monkeypatch.setattr(runtime, "runtime_probe_manifest", lambda _request: {"synthetic": True})
+    elif existing == "checkpoint":
+        checkpoint = root / "fpm-checkpoint/fpm_forward.json"
+        checkpoint.parent.mkdir()
+        checkpoint.write_text("{}")
+    monkeypatch.setattr(
+        versioning, "detect_runtime_versions", lambda *_: pytest.fail("an existing runtime binding skips detection")
+    )
+    capsys.readouterr()
+    command = ["onboard", "collect-fpm", "-c", str(root / "request.yaml"), "--output-dir", str(root)]
+    assert cli.main([*command, *(["--execute"] if execute else [])]) == int(execute)
+    assert json.loads(capsys.readouterr().out)["status"] == "pending_runtime_version"
+
+
+@pytest.mark.parametrize(
+    "status,diagnostic",
+    [
+        (
+            {
+                "containerStatuses": [
+                    {
+                        "state": {
+                            "waiting": {"reason": "ImagePullBackOff", "message": "manifest unknown for image:fixture"}
+                        }
+                    }
+                ]
+            },
+            "ImagePullBackOff: manifest unknown for image:fixture",
+        ),
+        (
+            {
+                "phase": "Pending",
+                "conditions": [
+                    {
+                        "type": "PodScheduled",
+                        "status": "False",
+                        "reason": "Unschedulable",
+                        "message": "Insufficient cpu",
+                    }
+                ],
+            },
+            "Unschedulable: Insufficient cpu",
+        ),
+        ({}, "synthetic wait timeout"),
+        (None, "synthetic wait timeout"),
+        ("malformed", "synthetic wait timeout"),
+    ],
+)
+def test_metadata_probe_reports_pod_startup_failure_before_cleanup(monkeypatch, status, diagnostic):
+    from aisimulate.support import versioning
+
+    calls = []
+
+    def run(command, *, payload=None):
+        calls.append(command)
+        if "wait" in command:
+            raise ValueError("synthetic wait timeout")
+        if "get" in command:
+            if status is None:
+                raise ValueError("synthetic status retrieval failed")
+            return json.dumps({"status": status})
+        if "logs" in command:
+            pytest.fail("a container that never started has no probe output")
+        return ""
+
+    monkeypatch.setattr(versioning, "_run", run)
+    with pytest.raises(ValueError) as failure:
+        versioning.detect_runtime_versions(FPMDeployment(image="registry.example.invalid/image:fixture"))
+    assert diagnostic in str(failure.value)
+    assert any("get" in command for command in calls)
+    assert "delete" in calls[-1]

@@ -732,6 +732,20 @@ def _synthetic_collector(monkeypatch, version):
     return executions
 
 
+def test_formal_collection_rejects_observed_runtime_drift_from_frozen_pin(tmp_path, monkeypatch, capsys, timing_ready):
+    _synthetic_collector(monkeypatch, "0.28.0")
+    command = _local_collection_command(tmp_path, framework_version="my-vllm-patch-3", observed_version="0.27.0")
+    root = tmp_path / "plan"
+    capsys.readouterr()
+
+    assert cli.main(command) != 0
+    assert "observed backend version differs from the frozen runtime version" in capsys.readouterr().err
+    assert not list((root / "systems/data").rglob("*.parquet"))
+    provenance = list((root / "fpm-artifacts").rglob("collector-provenance.json"))
+    assert provenance
+    assert {json.loads(path.read_text())["runtime"]["backend_version"] for path in provenance} == {"0.28.0"}
+
+
 @pytest.mark.parametrize("smoke", [False, True])
 @pytest.mark.parametrize(
     "declared,observed",

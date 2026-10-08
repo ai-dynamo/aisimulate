@@ -81,15 +81,32 @@ def detect_runtime_versions(deployment: FPMDeployment) -> dict[str, str]:
             _run([*prefix, "create", "-f", "-"], payload=json.dumps(manifest))
             created = True
             # Waiting for termination covers both success and a missing package.
-            _run(
-                [
-                    *prefix,
-                    "wait",
-                    f"pod/{name}",
-                    "--for=jsonpath={.status.containerStatuses[0].state.terminated.exitCode}",
-                    "--timeout=240s",
-                ]
-            )
+            try:
+                _run(
+                    [
+                        *prefix,
+                        "wait",
+                        f"pod/{name}",
+                        "--for=jsonpath={.status.containerStatuses[0].state.terminated.exitCode}",
+                        "--timeout=240s",
+                    ]
+                )
+            except ValueError as wait_error:
+                try:
+                    status = json.loads(_run([*prefix, "get", "pod", name, "-o", "json"])).get("status", {})
+                    containers = status.get("initContainerStatuses", []) + status.get("containerStatuses", [])
+                    problems = [item.get("state", {}).get("waiting", {}) for item in containers]
+                    problems.extend(item for item in status.get("conditions", []) if item.get("status") == "False")
+                    detail = "; ".join(
+                        ": ".join(str(item[key]) for key in ("reason", "message") if item.get(key))
+                        for item in problems
+                        if item.get("reason") or item.get("message")
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    detail = ""
+                if detail:
+                    raise ValueError(f"{wait_error}; pod status: {detail}") from wait_error
+                raise
             output = _run([*prefix, "logs", name])
             status = json.loads(_run([*prefix, "get", "pod", name, "-o", "json"]))
             terminated = status["status"]["containerStatuses"][0]["state"]["terminated"]

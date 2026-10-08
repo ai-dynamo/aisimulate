@@ -607,7 +607,7 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
     identity = launch["identity"]
     bundle = load_instrumentation(
         bundle_path,
-        expected_version=identity.get("runtime_framework_version") or identity["framework_version"],
+        expected_version=identity.get("runtime_framework_version"),
     )
     _same(bundle.sha256, attempt["bundle"].get("sha256"), "instrumentation bundle hash")
     if not bundle.manifest.get("source_notes") or not bundle.manifest["runtime"].get("source_files"):
