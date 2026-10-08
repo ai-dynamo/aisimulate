@@ -205,8 +205,8 @@ class VisionEncoderConfig:
         projector_post_norm (bool): Whether to normalize the final projector output.
         encoder_type (str): Architecture-specific encoder contract tag.
         projector_pre_norm (bool): Normalize inputs before the projector's pixel shuffle.
-        image_size (int): Fixed square image-tile size in pixels. Zero denotes
-            a dynamic-resolution encoder such as Qwen3-VL.
+        image_size (int): Fixed square image-tile size, or Pixtral's maximum
+            image side in pixels. Zero denotes an uncapped dynamic encoder.
         has_cls_token (bool): Whether each tile appends a CLS token before the
             transformer and removes it before pixel shuffle/projector work.
         max_num_tiles (int): Maximum tile count selected by the checkpoint's
@@ -256,7 +256,8 @@ class VisionEncoderConfig:
     pool_temporal: bool = False
     video_attention_type: str = ""
     # Processor geometry: Kimi resizes to patch budgets, then pads to the
-    # patch/merge stride. Qwen retains its existing nearest-stride behavior.
+    # patch/merge stride. Pixtral caps the longest side and rounds up to that
+    # stride. Qwen retains its existing nearest-stride behavior.
     resize_mode: str = "qwen"
     image_max_patches: int = 0
     video_max_patches: int = 0

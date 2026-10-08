@@ -259,12 +259,14 @@ This material is licensed under the Apache License 2.0.
 
 The Mistral3 projector topology modeled in
 `src/aisimulate_core/sdk/models/blocks/vit.py` and parsed in
-`src/aisimulate_core/sdk/utils.py`, with regression coverage in
-`tests/unit/sdk/models/test_mistral3.py`, is adapted and modified for
+`src/aisimulate_core/sdk/utils.py`, and Pixtral image geometry and prompt-token
+accounting in `src/aisimulate_core/sdk/backends/base_backend.py`, with regression
+coverage in `tests/unit/sdk/models/test_mistral3.py`, are adapted and modified for
 performance modeling from vLLM v0.24.0 at immutable commit
 `ee0da84ab9e04ac7610e28580af62c365e898389`:
 
 https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
+https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
 
 Copyright contributors to the vLLM project. This material is licensed under
 the Apache License 2.0. The upstream license is available at:

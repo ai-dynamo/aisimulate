@@ -871,6 +871,7 @@ def _parse_hf_config_json(config: dict) -> dict:
     """
     architecture = config["architectures"][0]
     vision_cfg = config.get("vision_config")
+    vision_feature_layer = config.get("vision_feature_layer", -1)
     # Captured before the text_config flatten below drops top-level keys.
     # Mistral3/Pixtral keeps spatial_merge_size at the top level (Qwen3-VL
     # nests it inside vision_config).
@@ -1498,6 +1499,11 @@ def _parse_hf_config_json(config: dict) -> dict:
         if vision_cfg is not None:
             if not isinstance(vision_cfg, dict) or not vision_cfg:
                 raise ValueError("Mistral3 vision_config must be a non-empty object")
+            if type(vision_feature_layer) is not int or vision_feature_layer != -1:
+                raise ValueError("Mistral3 modeling supports only vision_feature_layer=-1")
+            image_size = vision_cfg.get("image_size")
+            if type(image_size) is not int or image_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer image_size")
             # spatial_merge_size sizes both the patch merger and the image-token
             # counts; a silent default would mispredict, so require a positive
             # integer (reject missing/None, bool, non-int, and <= 0).
@@ -1519,10 +1525,8 @@ def _parse_hf_config_json(config: dict) -> dict:
             merger_dim = vit_hidden * merge**2
             # ViT FFN is SwiGLU (hidden_act="silu"); gated_mlp=True adds the
             # separate gate projection the plain up/down builder omits. The
-            # generic projector builder adds an activation after every non-final
-            # GEMM (a spurious post-merger act vs Mistral3, which activates only
-            # after linear_1) and omits the pre-merger RMSNorm; both are tiny
-            # ElementWise terms and do not affect the projector GEMM cost.
+            # model selects the activation after linear_1 only. The pre-merger
+            # RMSNorm remains an unmodeled ElementWise term.
             extra_params = VisionEncoderConfig(
                 depth=vision_cfg["num_hidden_layers"],
                 hidden_size=vit_hidden,
@@ -1531,6 +1535,9 @@ def _parse_hf_config_json(config: dict) -> dict:
                 patch_size=vision_cfg["patch_size"],
                 temporal_patch_size=1,
                 spatial_merge_size=merge,
+                encoder_type="pixtral",
+                resize_mode="pixtral",
+                image_size=image_size,
                 out_hidden_size=text_hidden,
                 projector_dims=((merger_dim, vit_hidden), (vit_hidden, text_hidden), (text_hidden, text_hidden)),
                 projector_n_instances=1,

@@ -1,5 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Pixtral geometry cases derive from vLLM (Apache-2.0), modified for testing:
+# Copyright contributors to the vLLM project.
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 """Mistral-Medium-3.5 multimodal support.
 
@@ -50,6 +54,7 @@ def _raw_config():
             "num_attention_heads": 16,
             "num_hidden_layers": 48,
             "patch_size": 14,
+            "image_size": 1540,
         },
     }
 
@@ -116,6 +121,55 @@ class TestMistral3ConfigParsing:
         cfg["vision_config"] = bad
         with pytest.raises(ValueError, match="Mistral3 vision_config must be a non-empty object"):
             _parse_hf_config_json(cfg)
+
+    @pytest.mark.parametrize("layer", [-2, 0, 12, [-1], None, True])
+    def test_unsupported_vision_feature_layer_raises(self, layer):
+        cfg = _raw_config()
+        cfg["vision_feature_layer"] = layer
+        with pytest.raises(ValueError, match="vision_feature_layer=-1"):
+            _parse_hf_config_json(cfg)
+
+    @pytest.mark.parametrize("image_size", [None, 0, -1, True, 1540.0])
+    def test_invalid_image_size_raises(self, image_size):
+        cfg = _raw_config()
+        cfg["vision_config"]["image_size"] = image_size
+        with pytest.raises(ValueError, match="positive integer image_size"):
+            _parse_hf_config_json(cfg)
+
+
+class TestMistral3Workload:
+    @pytest.mark.parametrize(
+        ("height", "width", "patches", "embeddings", "context"),
+        [(70, 70, 36, 9, 12), (70, 112, 48, 12, 15), (3080, 1540, 6160, 1540, 1595)],
+    )
+    def test_image_geometry_reaches_prefill(self, height, width, patches, embeddings, context):
+        enc_cfg = _parse_hf_config_json(_raw_config())["extra_params"]
+        runtime = sdk_config.RuntimeConfig(isl=100, image_height=height, image_width=width, num_images_per_request=2)
+        workload = BaseBackend._encoder_workload_per_visual(runtime, enc_cfg)
+        assert workload.patch_tokens_per_sequence == patches
+        assert workload.transformer_tokens_per_sequence == patches
+        assert workload.output_tokens_per_image == embeddings
+        assert workload.context_tokens_per_image == context
+        assert BaseBackend.effective_prefill_isl(_MODEL_PATH, runtime) == 100 + 2 * context
+
+    @pytest.mark.parametrize(
+        "video",
+        [
+            {"num_videos_per_request": 1, "video_frames": 2, "video_height": 70, "video_width": 70},
+            {"num_videos_per_request": 1, "video_frames": 2, "num_video_tokens": 18},
+            {"video_frames": 1},
+        ],
+    )
+    def test_runtime_rejects_video_before_geometry(self, video):
+        with pytest.raises(ValueError, match="Video workloads are not modeled for the Pixtral"):
+            BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100, **video))
+
+    def test_image_token_override_needs_dimensions(self):
+        with pytest.raises(ValueError, match="Pixtral requires image_height and image_width"):
+            BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100, num_image_tokens=9))
+
+    def test_text_only_context_is_unchanged(self):
+        assert BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100)) == 100
 
 
 class TestGatedViTBuilder:

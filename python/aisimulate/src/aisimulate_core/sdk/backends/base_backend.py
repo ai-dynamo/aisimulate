@@ -6,6 +6,10 @@
 # Inc. team and HuggingFace Team (Apache-2.0):
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+# Pixtral image geometry and prompt tokens are adapted and modified from vLLM
+# (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 import copy
 import dataclasses
@@ -441,6 +445,8 @@ class BaseBackend:
             video_frames=video_frames,
             num_video_tokens=video_token_override,
         )
+        if enc_cfg.encoder_type == "pixtral" and has_any_video_input:
+            raise ValueError("Video workloads are not modeled for the Pixtral vision encoder.")
         has_video_dims = video_frames > 0 and video_height > 0 and video_width > 0
         has_video_override = video_token_override > 0
         if has_any_video_input:
@@ -473,6 +479,29 @@ class BaseBackend:
         if has_images and has_videos:
             raise ValueError(
                 "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
+            )
+
+        if enc_cfg.resize_mode == "pixtral":
+            if not has_images:
+                return zero
+            if not has_image_dims:
+                raise ValueError("Pixtral requires image_height and image_width to count image-row context tokens.")
+            # Match PixtralHFEncoderInfo's longest-side resize and upward
+            # rounding to the patch/merge stride. Each merged row contributes
+            # one separator token (the final separator is the end token).
+            ratio = max(image_height, image_width) / enc_cfg.image_size
+            if ratio > 1:
+                image_height = math.floor(image_height / ratio)
+                image_width = math.floor(image_width / ratio)
+            stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            rows = -(-image_height // stride)
+            cols = -(-image_width // stride)
+            if rows <= 0 or cols <= 0:
+                raise ValueError("Pixtral image dimensions resize to zero; use a less extreme aspect ratio.")
+            output_tokens = rows * cols
+            patch_tokens = output_tokens * enc_cfg.spatial_merge_size**2
+            return _EncoderVisualWorkload(
+                output_tokens, output_tokens + rows, output_tokens, patch_tokens, patch_tokens, 1, image_count
             )
 
         if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
