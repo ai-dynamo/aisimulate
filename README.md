@@ -127,6 +127,12 @@ aisimulate predict \
   --output-dir ./aisimulate-prediction
 ```
 
+### Python prediction API
+
+Use the same `prediction.yaml` with the
+[Python prediction API](docs/core-api.md#python-prediction-api).
+See the API reference for the runnable example, arguments and results.
+
 ### Dynamo-integrated prediction
 
 <!-- readme-check: dynamo-predict -->
@@ -202,6 +208,12 @@ aisimulate recommend \
   --config recommendation.yaml \
   --output-dir ./aisimulate-recommendation
 ```
+
+### Python recommendation API
+
+Use the same `recommendation.yaml` with the
+[Python recommendation API](docs/core-api.md#python-recommendation-api).
+See the API reference for the runnable example, arguments and results.
 
 ### Dynamo-integrated recommendation
 
@@ -310,6 +322,7 @@ Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
 - [Estimator/FPE Python and Rust SDK](docs/perf-model/api/python.md)
+- [Prediction and recommendation Python APIs](docs/core-api.md#python-prediction-api)
 - [FPM self-service: onboard a model on target hardware](docs/perf-model/fpm-self-service/README.md)
 - [FPM self-service implementation and CLI reference](docs/perf-model/fpm-self-service/implementation.md)
 - [FPM self-service examples](docs/perf-model/fpm-self-service/examples.md)
