@@ -179,10 +179,9 @@ def _engine_args_payload(
         )
     transfer_geometry = sample.get("kv_transfer_bytes_per_token")
     deferred_transfer = (
-        transfer_geometry == "auto"
+        (transfer_geometry is None or (transfer_geometry == "auto" and sample.get("fpm_profile") is None))
         and sample.get("kv_transfer_bandwidth")
         and sample.get("prefill_timing_model") is None
-        and sample.get("fpm_profile") is None
     )
     if role in {"prefill", "decode"} and transfer_geometry is not None and not deferred_transfer:
         payload["kv_transfer_bytes_per_token"] = (

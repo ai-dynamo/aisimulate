@@ -236,7 +236,9 @@ def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
     assert engine["native_host_offload"] == host_offload
 
 
-def test_disagg_auto_transfer_geometry_is_deferred_to_canonical_role_models(monkeypatch):
+@pytest.mark.parametrize("geometry", [None, "auto"])
+@pytest.mark.parametrize("custom_decode", [False, True])
+def test_disagg_auto_transfer_geometry_is_deferred_to_canonical_role_models(monkeypatch, geometry, custom_decode):
     monkeypatch.setattr(
         deploy_module,
         "estimate_kv_bytes_per_token",
@@ -253,10 +255,13 @@ def test_disagg_auto_transfer_geometry_is_deferred_to_canonical_role_models(monk
         prefill_max_num_seqs=1,
         decode_max_num_batched_tokens=8192,
         decode_max_num_seqs=256,
+        **({"decode_timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}} if custom_decode else {}),
     )
     sample = unroll_sample(
         search_space=_space(
-            kv_transfer_bytes_per_token="auto",
+            kv_transfer_bytes_per_token=geometry,
+            prefill_num_gpu_blocks=128,
+            decode_num_gpu_blocks=128,
             kv_transfer_bandwidth=400.0,
         ),
         selection=selection,
@@ -267,6 +272,11 @@ def test_disagg_auto_transfer_geometry_is_deferred_to_canonical_role_models(monk
 
     assert deployment.prefill_engine_args.get("kv_transfer_bytes_per_token") is None
     assert deployment.decode_engine_args.get("kv_transfer_bytes_per_token") is None
+
+    assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
+    assert deployment.decode_engine_args.get("kv_transfer_bandwidth") is None
+    if custom_decode:
+        assert deployment.decode_engine_args["timing_model"]["type"] == "fixed"
 
 
 def _role_geometry_profile(roles):
