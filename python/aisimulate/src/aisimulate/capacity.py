@@ -106,7 +106,9 @@ def materialize_aic_num_gpu_blocks(
             finally:
                 model.close()
             if diagnostics.get("readiness") != "ready":
-                raise ValueError("regression estimator is not ready; replay requires training observations")
+                from .estimator_readiness import unready_estimator_message
+
+                raise ValueError(unready_estimator_message(diagnostics))
             canonical_result = dict(raw)
             resolved = diagnostics["provenance"]["config"]
             if "worker_type" in lowered and lowered["worker_type"] != resolved["worker_type"]:

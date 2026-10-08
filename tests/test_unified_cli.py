@@ -286,6 +286,45 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("MoE data missing for test shape", "missing performance data: MoE data missing for test shape"),
+        ("perf file is an unresolved git-lfs pointer; run git lfs pull", "RuntimeError: perf database error:"),
+    ],
+)
+def test_predict_reports_missing_data_after_execution(tmp_path, monkeypatch, capsys, detail, expected):
+    class FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError(f"perf database error: {detail}")
+            error.fpm_query_coverage = {"schema_version": 1, "queries": []}
+            raise error
+
+    runner = FailingRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
+    assert f"aisimulate predict failed: {expected}" in capsys.readouterr().err
+    assert runner.closed
+    coverage = json.loads((output / "fpm-coverage.json").read_text())
+    assert coverage["status"] == "incomplete"
+    assert coverage["error"] == f"perf database error: {detail}"
+
+
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(

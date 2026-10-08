@@ -17,6 +17,7 @@ from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig, resolve_block_size
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
+from .estimator_readiness import unready_estimator_message
 from .state_size import resolve_state_size
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
@@ -128,7 +129,7 @@ def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> Backend
         finally:
             model.close()
         if diagnostics["readiness"] != "ready":
-            raise ValueError("regression estimator is not ready; replay requires training observations")
+            raise ValueError(unready_estimator_message(diagnostics))
         resolved = diagnostics["provenance"]["config"]
         versions.add(resolved["backend_version"])
         updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
