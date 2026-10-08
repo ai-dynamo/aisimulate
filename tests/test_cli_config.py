@@ -1235,13 +1235,18 @@ def test_worker_hardware_rejects_non_pd_modes(recommend, mode, role):
         ({"prefill": "gb200", "decode": "gb200"}, ("gb200", "gb200")),
     ],
 )
-def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected):
+@pytest.mark.parametrize("role_context", [False, True])
+def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expected, role_context):
     import yaml
 
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.parallel_enum import DisaggParallelConfig
 
-    source = CoreRecommendationConfig.model_validate(_pd_hardware_config(recommend=True, **overrides))
+    raw = _pd_hardware_config(recommend=True, **overrides)
+    for role, limit in (("prefill", 64_000), ("decode", 128_000)):
+        if role_context:
+            raw["engine"]["workers"][role]["context_length"] = limit
+    source = CoreRecommendationConfig.model_validate(raw)
     smart = recommendation_to_sweeper(source)
     assert tuple(smart.search_space.hardware_sku_for(role) for role in ("prefill", "decode")) == expected
     parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
@@ -1269,10 +1274,19 @@ def test_pd_hardware_survives_search_candidate_yaml_and_predict(overrides, expec
     compiled = prediction_to_replay_spec(concrete).backend_deployment
     assert concrete.engine.hardware == "h200_sxm"
     for role, hardware in zip(("prefill", "decode"), expected, strict=True):
+        context_length = (64_000 if role == "prefill" else 128_000) if role_context else 4096
+        assert ("context_length" in mapping["engine"]["workers"][role]) == role_context
+        assert getattr(compiled, f"{role}_engine_args")["max_model_len"] == context_length
+        assert getattr(deployment, f"{role}_engine_args")["max_model_len"] == context_length
         assert ("hardware" in mapping["engine"]["workers"][role]) == (role in overrides)
         assert getattr(compiled, f"{role}_engine_args")["timing_model"]["config"]["system"] == hardware
         assert compiled.performance_model_metadata[role]["config"]["system"] == hardware
         assert getattr(deployment, f"{role}_engine_args")["aic_system"] == hardware
+
+    mapping["engine"]["context_length"] = 8192
+    updated = prediction_to_replay_spec(CorePredictionConfig.model_validate(mapping)).backend_deployment
+    for role, limit in (("prefill", 64_000), ("decode", 128_000)):
+        assert getattr(updated, f"{role}_engine_args")["max_model_len"] == (limit if role_context else 8192)
 
 
 def test_pd_hardware_mixed_modes_and_auto_fallback():

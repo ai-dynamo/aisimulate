@@ -125,9 +125,11 @@ Each role has the same sub-blocks (`parallelism`, `scheduler`, `kv_cache`,
 only the roles its mode uses. An optional `encoder` role adds an analytical
 EPD encoder pool; see [EPD](analytical.md#epd).
 
-All roles share `model`, `backend`, `backend_version` and `context_length`;
+All roles share `model`, `backend` and `backend_version`;
 per-role overrides of these fields are rejected. Only disaggregated `prefill`
 and `decode` workers may override `hardware`.
+Workers may override the shared `context_length`; see
+[context limits](workers.md#context-limits) for prediction and recommendation rules.
 
 ## A complete P/D example
 

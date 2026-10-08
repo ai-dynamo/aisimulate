@@ -276,6 +276,21 @@ The selected mapping supplies the concrete six YAML fields. Trial metadata recor
 features, actual snapped features, projection distance, whether a categorical mode was projected, and
 the final complete parallel configuration.
 
+## Role-specific context limits
+
+`engine.workers.prefill.context_length` and
+`engine.workers.decode.context_length` map to SDK search-space fields
+`prefill_context_length` and `decode_context_length`. Both are fixed positive
+integers. Each role's KV-feasibility check uses its override, then shared
+`context_length`, then the resolved model maximum. Heterogeneous P/D workers
+and AFD companions use their own role's limit.
+
+Candidate serialization and generated worker payloads preserve explicit role
+or shared limits. When neither is set, the payload leaves `max_model_len`
+unset even though feasibility filtering used the model maximum. See
+[worker context limits](../replay/engine/workers.md#context-limits) for public
+configuration and synthetic workload validation.
+
 <a id="pinned-parallel-configurations"></a>
 
 ## SDK: Pinned Parallel Configurations

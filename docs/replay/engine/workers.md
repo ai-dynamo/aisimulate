@@ -31,6 +31,7 @@ engine:
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
 | `workers.<role>.hardware` | `engine.hardware` | fixed | `prefill` and `decode` in disaggregated mode only. One concrete system identifier; `auto` is rejected. |
+| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode`; aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
 | `workers.<role>.startup_seconds` | `0` | fixed | Nonnegative. Delay before a worker added during the run becomes ready. Initial workers are ready at time zero. |
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
@@ -49,6 +50,26 @@ engine:
 
 A backend-specific scheduler field set to a non-default value on another
 backend fails validation.
+
+## Context limits
+
+Each worker's `context_length` overrides `engine.context_length` for that role.
+Prediction supports the override on aggregated, prefill and decode workers;
+aggregated recommendations must use the shared engine field.
+Saved candidate YAML keeps inherited limits unset on the worker, so editing
+`engine.context_length` still updates every worker without an explicit override.
+
+For synthetic recommendation traffic, an explicit prefill limit must cover the
+input tokens plus one generated token. An explicit decode limit must cover input
+plus output tokens. The default synthetic workload applies when traffic is omitted.
+Trace traffic is checked by runtime admission, not this fixed-length validator.
+
+Sweeper uses the role limit, then the shared limit, then the model's maximum
+context for KV-feasibility filtering. Generated worker payloads use the role
+or shared limit; if both are unset, `max_model_len` remains unset. The model
+fallback used for filtering is not copied into that payload. AFD companion
+workers follow the same rule for their role. These are serving limits, not
+measured performance data.
 
 ## Parallelism
 

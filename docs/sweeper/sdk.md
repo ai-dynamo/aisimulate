@@ -104,6 +104,8 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
+| `prefill_context_length` | `None` | prefill role limit; overrides `context_length` |
+| `decode_context_length` | `None` | decode role limit; overrides `context_length` |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
@@ -111,9 +113,11 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 An explicit positive `context_length` is passed as AISimulate's internal
 `max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
 prefill/decode deployments. Prompts at or above the limit are rejected, and
-generation stops when prompt plus output reaches the limit. When omitted,
-Sweeper leaves this runtime limit unset. See [engine context limits](../perf-model/configuration.md)
-for the normalized contract and backend frontend differences.
+generation stops when prompt plus output reaches the limit. A role-specific
+`prefill_context_length` or `decode_context_length` overrides the shared limit
+for that worker. When neither is supplied, Sweeper leaves its runtime limit
+unset. See [worker context limits](../replay/engine/workers.md#context-limits)
+for fallback and validation rules.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,

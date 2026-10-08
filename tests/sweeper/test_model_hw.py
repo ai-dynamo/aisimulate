@@ -166,6 +166,43 @@ def test_max_seq_len_defaults_to_model_context(monkeypatch):
     assert seen["max_seq_len"] == 163840  # DeepSeek-V3 max context
 
 
+def test_none_role_max_seq_len_falls_back_to_default_context(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(
+        mh_mod,
+        "resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="model",
+            hardware_sku="hardware",
+            backend="vllm",
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        ),
+    )
+    monkeypatch.setattr(
+        mh_mod,
+        "feasible_shape_tokens",
+        lambda shapes, **kwargs: (seen.update(kwargs) or dict.fromkeys(shapes, 4096)),
+    )
+
+    parallel_configs_for(
+        "model",
+        "hardware",
+        gpu_budget=2,
+        deployment_mode="agg",
+        backend="vllm",
+        role_max_seq_len={"agg": None},
+    )
+
+    assert seen["max_seq_len"] == 2048
+
+
 # --- KV-cache validity (the sole feasibility filter; no weight floor) ---
 
 
