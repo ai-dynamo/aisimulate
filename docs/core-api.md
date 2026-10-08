@@ -101,9 +101,26 @@ Use `aisimulate.predict.run_prediction` to compile and execute one public
 `CorePredictionConfig`. It checks runner capabilities, creates and closes the
 runner, and returns a `PredictionResult` with the same summary the CLI renders.
 
-Start with the [README Python prediction example](../README.md#python-prediction-api),
-which uses the same `prediction.yaml` as the CLI. See the
-[prediction configuration guide](cli/user-guide.md) for timing and workload options.
+Use `prediction.yaml` from the [README prediction example](../README.md#predict-one-deployment).
+In the activated AISimulate environment, save the following as
+`predict_example.py` and run `python predict_example.py` from the directory
+containing the YAML file.
+
+```python
+from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.predict import run_prediction
+from aisimulate.runner import EngineReplayRunnerFactory
+
+if __name__ == "__main__":
+    result = run_prediction(
+        CorePredictionConfig.from_yaml("prediction.yaml"),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+    )
+    print(result.summary)
+```
+
+See the [prediction configuration guide](cli/user-guide.md) for timing and workload options.
 
 | Argument | Contract |
 | --- | --- |
@@ -140,11 +157,33 @@ Source: [prediction entry point](../python/aisimulate/src/aisimulate/predict.py)
 ## Python recommendation API
 
 Use `aisimulate.recommend.run_recommendation` to search a public
-`CoreRecommendationConfig` and return a `SweepResult`. Start with the
-[README Python recommendation example](../README.md#python-recommendation-api),
-which uses the same `recommendation.yaml` as the CLI. This entry point lowers the
-public configuration into the [Sweeper SDK](sweeper/overview.md); it does not
+`CoreRecommendationConfig` and return a `SweepResult`. This entry point lowers
+the public configuration into the [Sweeper SDK](sweeper/overview.md); it does not
 accept a `SmartSearchConfig` in place of `CoreRecommendationConfig`.
+
+Use `recommendation.yaml` from the [README recommendation example](../README.md#recommend-a-deployment).
+In the activated AISimulate environment, save the following as
+`recommend_example.py` and run `python recommend_example.py` from the directory
+containing the YAML file.
+
+Keep the main guard because recommendation runs in supervised subprocesses.
+
+```python
+from aisimulate.config.cli import CoreRecommendationConfig
+from aisimulate.recommend import run_recommendation
+from aisimulate.runner import EngineReplayRunnerFactory
+
+if __name__ == "__main__":
+    result = run_recommendation(
+        CoreRecommendationConfig.from_yaml("recommendation.yaml"),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+    print(result.counts)
+    for candidate in result.selected_candidates:
+        print(candidate.score, candidate.used_gpus, candidate.prediction_config)
+```
 
 | Argument | Contract |
 | --- | --- |
