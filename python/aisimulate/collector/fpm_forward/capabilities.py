@@ -349,7 +349,7 @@ def resolve_model_capability(
             # Profile collection uses the checkpoint mode, without borrowing
             # an op-table slice. This is a whole-forward identity, not a
             # claim that every attention intermediate has this dtype: vLLM
-            # v0.25.1 (752a3a504485790a2e8491cacbb35c137339ad34),
+            # v0.25.1 (752a3a504485790a),
             # vllm/v1/attention/backends/mla/flashmla_sparse.py:879-894
             # selects its FP8-cache route while that route can use BF16
             # prefill intermediates. Actual backend dispatch stays in vLLM.
