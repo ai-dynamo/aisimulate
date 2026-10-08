@@ -1112,7 +1112,8 @@ Upstream authors: SemiAnalysis. The upstream card supplies no separate
 copyright or NOTICE statement. License: Apache License 2.0, declared in the
 pinned dataset card and reproduced in `fixtures/LICENSE`.
 
-Modified by NVIDIA: selected the complete play
-`002001296e8a8c38ad9d7cc436d691afc602` and normalized JSON whitespace, without
-changing request values, dependencies, hashes, or timestamps. See the adjacent
-fixture README for the source, counts, and content checksum.
+Modified by NVIDIA: selected four complete plays and normalized JSON whitespace.
+The original play retains its rows-API representation; the three added plays
+retain their raw JSONL request values, dependencies, hashes, and timestamps.
+See the adjacent fixture README and `agentx.json` manifest for the source,
+play identities, counts, and content checksum.

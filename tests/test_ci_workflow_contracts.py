@@ -3112,6 +3112,9 @@ def test_simulation_performance_rollout_and_revision_contract():
         ("python/aisimulate/src/aisimulate/compiler.py", True),
         ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
         ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
+        ("scripts/performance/build_simulation_dynamo.py", True),
+        ("scripts/performance/simulation_dynamo_requirements.in", True),
+        ("scripts/performance/simulation_dynamo_requirements.txt", True),
         ("python/aisimulate/uv.lock", True),
         ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
         ("python/aisimulate/tools/forward_perf_gate/run.py", False),
@@ -3138,6 +3141,8 @@ def test_simulation_performance_selects_complete_pr_files(path, expected):
         ("contract.py", True),
         ("worker.py", True),
         ("fixtures/agentx.jsonl", True),
+        ("fixtures/agentx.json", True),
+        ("fixtures/another-trace.jsonl", True),
         ("README.md", False),
         ("QUALIFICATION.md", False),
         ("fixtures/README.md", False),
@@ -3176,7 +3181,9 @@ def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
     assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"
 
 
-@pytest.mark.parametrize("scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "malformed"])
+@pytest.mark.parametrize(
+    "scenario", ["normal", "self", "missing_base", "missing_head", "mixed", "older_base", "malformed"]
+)
 def test_simulation_perf_revision_preparation(tmp_path, scenario):
     steps = _workflow("simulation-performance.yml")["jobs"]["select"]["steps"]
     script = next(step["run"] for step in steps if step.get("id") == "revisions")
@@ -3195,8 +3202,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         (gate / "worker.py").write_text("fixture\n")
     elif scenario == "missing_head":
         (gate / "worker.py").unlink()
-    elif scenario in {"mixed", "malformed"}:
-        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + ("2" if scenario == "mixed" else "None") + "\n")
+    elif scenario in {"mixed", "older_base", "malformed"}:
+        version = {"mixed": "2", "older_base": "5", "malformed": "None"}[scenario]
+        (gate / "__init__.py").write_text("PROTOCOL_VERSION = " + version + "\n")
     _git(tmp_path, "add", ".")
     head = _commit_file(tmp_path, "head", "head\n")
     output, summary = tmp_path / "output", tmp_path / "summary"
@@ -3222,8 +3230,9 @@ def test_simulation_perf_revision_preparation(tmp_path, scenario):
         assert outputs["validate_head_controller"] == "false"
     else:
         assert outputs["run_comparison"] == "false"
-        assert result.returncode == (0 if scenario == "missing_base" else 1)
-        assert ("was not benchmarked" if scenario == "missing_base" else "INVALID_COMPARISON") in summary.read_text()
+        skipped = scenario in {"missing_base", "older_base"}
+        assert result.returncode == (0 if skipped else 1)
+        assert ("was not benchmarked" if skipped else "INVALID_COMPARISON") in summary.read_text()
 
 
 @pytest.mark.parametrize("self_compare,fail_first,count", [(False, False, 1), (True, False, 3), (True, True, 3)])
@@ -3274,7 +3283,91 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         )
 
 
-@pytest.mark.parametrize("fault", [None, "revision", "side", "wheel", "requirements", "extra_wheel"])
+@pytest.mark.parametrize("wrong_core", [False, True])
+def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    source, dynamo, output = (tmp_path / name for name in ("source", "dynamo", "output"))
+    core = source / "crates/core/Cargo.toml"
+    core.parent.mkdir(parents=True)
+    core.write_text('[package]\nname = "aisimulate-core"\nversion = "0.13.0"\n')
+    bindings = dynamo / "lib/bindings/python"
+    bindings.mkdir(parents=True)
+    output.mkdir()
+    for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+        manifest.write_text('[dependencies]\naisimulate-core = "0.13.0"\n')
+    lock = bindings / "Cargo.lock"
+    old_lock = b'[[package]]\nname = "parquet"\nversion = "55.2.0"\n'
+    resolved_lock = old_lock.replace(b"55.2.0", b"59.0.0")
+    lock.write_bytes(old_lock)
+    built = []
+
+    def check_output(args, **kwargs):
+        if args[:2] == ["cargo", "metadata"]:
+            assert "--locked" not in args
+            assert kwargs["cwd"] == bindings
+            assert lock.read_bytes() == old_lock
+            for manifest in (dynamo / "Cargo.toml", bindings / "Cargo.toml"):
+                assert tomllib.loads(manifest.read_text())["dependencies"]["aisimulate-core"]["path"] == str(
+                    core.parent
+                )
+            lock.write_bytes(resolved_lock)
+            return json.dumps(
+                {
+                    "packages": [
+                        {"name": "aisimulate-core", "manifest_path": str(core) + (".wrong" if wrong_core else "")}
+                    ]
+                }
+            )
+        if args[-2:] == ["rev-parse", "HEAD"]:
+            return builder.DYNAMO_REVISION if args[2] == str(dynamo) else "a" * 40
+        assert args == ["git", "-C", str(dynamo), "diff", "HEAD"]
+        return b"dependency patch\n"
+
+    def run(args, **kwargs):
+        assert kwargs["check"]
+        if args[0] == "git":
+            assert args == ["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"]
+            return
+        assert lock.read_bytes() == resolved_lock
+        if "maturin" in args:
+            assert "--locked" in args
+            assert kwargs["cwd"] == bindings
+        else:
+            assert args[:2] == ["uv", "build"]
+        built.append(args)
+
+    monkeypatch.setattr(builder.subprocess, "check_output", check_output)
+    monkeypatch.setattr(builder.subprocess, "run", run)
+    if wrong_core:
+        with pytest.raises(ValueError, match="different AISimulate core"):
+            builder.build(source, dynamo, output)
+        assert not built
+        assert not list(output.iterdir())
+    else:
+        builder.build(source, dynamo, output)
+        assert len(built) == 2
+        assert (output / "dynamo-Cargo.lock").read_bytes() == resolved_lock
+        assert json.loads((output / "dynamo-build.json").read_text())["aisimulate_sha"] == "a" * 40
+        assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "revision",
+        "side",
+        "wheel",
+        "requirements",
+        "extra_wheel",
+        "unverified_wheel",
+        "embedded_core",
+        "dynamo_wheel",
+        "missing_lock",
+        "changed_lock",
+    ],
+)
 def test_simulation_perf_artifact_verification(tmp_path, fault):
     from scripts.performance.simulation_perf_artifact import sha256, verify
 
@@ -3282,10 +3375,24 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
     wheel.write_bytes(b"built wheel")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("locked\n")
+    additional = [
+        tmp_path / name
+        for name in (
+            "ai_dynamo_runtime-test.whl",
+            "ai_dynamo-test.whl",
+            "dynamo-requirements.txt",
+            "dynamo-build.json",
+            "dynamo-build.patch",
+            "dynamo-Cargo.lock",
+        )
+    ]
+    for path in additional:
+        path.write_text("build record\n")
     manifest = {
         "side": "base",
         "source_sha": "a" * 40,
-        "files": {path.name: sha256(path) for path in (wheel, requirements)},
+        "files": {path.name: sha256(path) for path in (wheel, requirements, *additional)},
+        "dynamo": {"aisimulate_sha": "a" * 40},
     }
     if fault == "revision":
         manifest["source_sha"] = "b" * 40
@@ -3297,6 +3404,17 @@ def test_simulation_perf_artifact_verification(tmp_path, fault):
         requirements.write_text("wrong dependencies\n")
     elif fault == "extra_wheel":
         (tmp_path / "aisimulate-other.whl").write_bytes(b"another wheel")
+    elif fault == "unverified_wheel":
+        (tmp_path / "unexpected_package-1.0-py3-none-any.whl").write_bytes(b"unverified wheel")
+    elif fault == "embedded_core":
+        manifest["dynamo"]["aisimulate_sha"] = "b" * 40
+    elif fault == "dynamo_wheel":
+        additional[0].write_bytes(b"wrong Dynamo wheel")
+    elif fault == "missing_lock":
+        (tmp_path / "dynamo-Cargo.lock").unlink()
+        del manifest["files"]["dynamo-Cargo.lock"]
+    elif fault == "changed_lock":
+        (tmp_path / "dynamo-Cargo.lock").write_text("different dependency graph\n")
     (tmp_path / "provenance.json").write_text(json.dumps(manifest))
     if fault:
         with pytest.raises(ValueError):
