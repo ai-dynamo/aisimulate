@@ -50,6 +50,31 @@ def test_present_key_passes_through_unchanged():
     assert wrapped("pos", "q", "k", "off") == ("q", "k")
 
 
+def test_shim_forwards_only_the_arguments_it_received():
+    # vLLM 0.30 forward_cuda(positions, query, key=None): no offsets parameter. The first shim
+    # passed offsets=None positionally -> TypeError "takes from 3 to 4 positional arguments but
+    # 5 were given" (508 GLM-5 cases, pipelines 72387095/72387091).
+    def forward_cuda(positions, query, key=None):
+        return (query, key)
+
+    wrapped = _load()(forward_cuda)
+    assert wrapped("pos", "q", "k") == ("q", "k")
+    q, k = wrapped("pos", _Q("q"))
+    assert (q.tag, k) == ("q", None)
+
+
+def test_shim_is_idempotent():
+    # Installed per case on a possibly reused module: re-wrapping stacked closures until
+    # RecursionError (2,286 cases per run at e598d380).
+    def forward(positions, query, key=None):
+        return (query, key)
+
+    shim = _load()
+    once = shim(forward)
+    assert shim(once) is once and shim(shim(once)) is once
+    assert getattr(once, "_aisim_rope_shim", False) is True
+
+
 def test_fp8_block_guard_present_before_layer_construction():
     text = (Path(__file__).resolve().parents[4] / "collector" / "vllm" / "collect_gemm.py").read_text()
     guard = text.index("FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16")

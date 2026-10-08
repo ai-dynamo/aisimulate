@@ -275,14 +275,25 @@ def _rope_tolerating_missing_key(forward):
     """
     import functools
 
+    if getattr(forward, "_aisim_rope_shim", False):
+        # Idempotent: run_mla_module installs the shim per case on a module that may be reused,
+        # and named_modules() can visit a shared rotary twice. Re-wrapping stacked one closure
+        # per case until "maximum recursion depth exceeded" (b200/gb200 pipelines 72387095 /
+        # 72387091 at e598d380: 2,286 cases each).
+        return forward
+
     @functools.wraps(forward)
-    def wrapped(positions, query, key=None, offsets=None, *args, **kwargs):
+    def wrapped(positions, query, key=None, *args, **kwargs):
+        # Forward only what the caller passed: vLLM 0.30's forward_cuda signatures take
+        # (positions, query, key) — no `offsets` — so a positional None for offsets raised
+        # "takes from 3 to 4 positional arguments but 5 were given" (508 GLM-5 cases, same runs).
         if key is None:
-            out = forward(positions, query, query.clone(), offsets, *args, **kwargs)
+            out = forward(positions, query, query.clone(), *args, **kwargs)
             q = out[0] if isinstance(out, tuple) else out
             return q, None
-        return forward(positions, query, key, offsets, *args, **kwargs)
+        return forward(positions, query, key, *args, **kwargs)
 
+    wrapped._aisim_rope_shim = True
     return wrapped
 
 
