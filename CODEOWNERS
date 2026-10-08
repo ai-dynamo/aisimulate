@@ -77,6 +77,7 @@
 /tests/test_stack_discovery.py                           @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_host_offload_cli.py                          @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_power_diagnostics.py                         @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_kv_transfer_affine.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_state_cache_config.py                        @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_output_adapter_context.py                    @ai-dynamo/aisimulate-replay-codeowners
 /tests/fixtures/power-contract-v1.json                   @ai-dynamo/aisimulate-replay-codeowners
@@ -201,6 +202,7 @@
 /python/aisimulate/.gitattributes                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/pyproject.toml                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_fpm_query_evidence.py                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_kv_transfer_affine.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_resource_scheduler.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_state_cache_config.py                        @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/reference/local-resources.md                       @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain

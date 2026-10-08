@@ -818,7 +818,7 @@ impl EngineConfig {
                 self.kv_transfer_bytes_per_token.is_none()
                     && self.kv_transfer_bytes_per_request.is_none()
                     && self.kv_transfer_bandwidth.is_none(),
-                "state_cache does not support kv_transfer_bytes_per_token or kv_transfer_bandwidth"
+                "state_cache does not support kv_transfer_bytes_per_token, kv_transfer_bytes_per_request, or kv_transfer_bandwidth"
             );
             // Keep the default accepted, including serialized configs that emit it explicitly.
             ensure!(

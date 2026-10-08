@@ -28,6 +28,47 @@ def _engine() -> dict:
     }
 
 
+def test_affine_transfer_survives_recommendation_and_saved_candidate():
+    transfer = {"bytes_per_token": 333, "bytes_per_request": 456, "bandwidth_gb_per_second": 100.0}
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {"prefill": {}, "decode": {}},
+                "kv_transfer": transfer,
+            },
+            "optimization": {"target": "throughput"},
+        }
+    )
+    smart = recommendation_to_sweeper(config)
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    sample = unroll_sample(
+        search_space=smart.search_space,
+        selection={
+            "deployment_mode": "disagg",
+            "backend": "vllm",
+            "prefill_max_num_batched_tokens": 8192,
+            "prefill_max_num_seqs": 256,
+            "decode_max_num_batched_tokens": 8192,
+            "decode_max_num_seqs": 256,
+        },
+        parallel_config=DisaggParallelConfig(replica, replica),
+    )
+    deployment = build_backend_deployment(sample, backend_version="test")
+    for args in (deployment.prefill_engine_args, deployment.decode_engine_args):
+        assert args["kv_transfer_bytes_per_token"] == 333
+        assert args["kv_transfer_bytes_per_request"] == 456
+        assert args["kv_transfer_bandwidth"] == 100.0
+    candidate = _candidate_prediction(
+        config, sample, ReplaySpec(backend_deployment=deployment, workload={}, goal={}), adapter_sections={}
+    )
+    saved = CorePredictionConfig.model_validate(candidate)
+    assert saved.engine.kv_transfer == config.engine.kv_transfer
+
+
 @pytest.mark.parametrize(
     "load",
     [

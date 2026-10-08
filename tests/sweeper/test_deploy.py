@@ -377,9 +377,11 @@ def test_agg_auto_host_offload_geometry_selects_aggregated_profile_role(roles, e
     assert deployment.agg_engine_args["kv_cache_bytes_per_token"] == expected
 
 
-def test_serialized_search_space_transfer_geometry_enables_pd_transfer():
+@pytest.mark.parametrize("request_bytes", [None, 456])
+def test_serialized_search_space_transfer_geometry_enables_pd_transfer(request_bytes):
     legacy = _space(
         kv_transfer_bytes_per_token=333,
+        kv_transfer_bytes_per_request=request_bytes,
         kv_transfer_bandwidth=400.0,
     ).model_dump(mode="json")
     parallel = DisaggParallelConfig(
@@ -405,6 +407,8 @@ def test_serialized_search_space_transfer_geometry_enables_pd_transfer():
     assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 333
     assert deployment.prefill_engine_args["kv_transfer_bandwidth"] == 400.0
     assert deployment.decode_engine_args["kv_transfer_bandwidth"] == 400.0
+    assert deployment.prefill_engine_args.get("kv_transfer_bytes_per_request") == request_bytes
+    assert deployment.decode_engine_args.get("kv_transfer_bytes_per_request") == request_bytes
 
 
 def test_backend_deployment_contains_no_dynamo_policy_fields():
