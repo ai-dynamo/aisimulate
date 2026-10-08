@@ -1287,3 +1287,21 @@ def test_direct_profile_uses_external_pair_and_preserves_fmha_arithmetic(
     assert model.estimate_forward_pass_time_ms(
         {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 2}}
     ) == pytest.approx(1.0)
+
+
+def test_recommendation_names_profile_context_budget(profile, timing_systems, monkeypatch, caplog):
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.search import Sweeper
+
+    engine = {**_engine(profile), "mode": "aggregated", "systems_paths": [timing_systems]}
+    engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    config = CoreRecommendationConfig.model_validate(
+        {"engine": engine, "optimization": {"constraints": {"max_candidate_gpus": 2}}}
+    )
+    monkeypatch.setattr(Sweeper, "run", lambda self, smart, **kwargs: smart)
+    caplog.set_level("WARNING", logger="aisimulate.recommend")
+
+    _run_recommendation(config, stack="engine", runner_factory=None, show_progress=False)
+
+    assert "engine.context_length is 'max'; using the FPM profile context length of 4096 tokens" in caplog.text
+    assert "model maximum" not in caplog.text
