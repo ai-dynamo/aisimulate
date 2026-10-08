@@ -69,7 +69,9 @@ Details and 3D Visualization are separate tabs with independent controls.
   Small collection JSON and named-column window TSV files expose recorded
   job/benchmark IDs, concurrency, duration, and request settings. Trace-defined
   lengths and completed requests are distinguished from fixed ISL/OSL and
-  requested `num_req`; missing or unsupported metadata stays explicitly unknown.
+  requested `num_req`. Request counts are shown only when recorded; missing
+  `num_req` is omitted. Forward-pass records and window offsets are not request
+  counts. Other missing or unsupported metadata stays explicitly unknown.
   Supporting runs alongside benchmark truth are labeled separately. MAPE remains
   pooled per configuration, with phase detail in Details and run/worker points
   in 3D. Provenance loads from public HF on demand; failures do not hide metrics.
@@ -150,7 +152,7 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
-Dashboard script URLs carry a shared version (`collection-categories-1`) so returning
+Dashboard script URLs carry a shared version (`collection-counts-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
 across all five tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.

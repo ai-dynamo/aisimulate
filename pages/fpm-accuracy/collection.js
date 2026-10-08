@@ -46,11 +46,10 @@
         ['Workload', trace ? 'Agentic trace replay' : phase.name || 'Not recorded'],
         ['ISL / OSL', trace ? 'Trace-defined (variable)' : 'Not recorded'],
         ['Concurrency', numeric(phase.concurrency)],
-        ['Requested num_req', numeric(phase.request_count)],
         ['Duration (s)', numeric(phase.duration)],
       ];
-      if (trace && phase.request_count == null && Number.isFinite(phase.duration)) rows[3][1] = 'Duration-based';
-      if (data.completed_measured_requests != null) rows.push(['Completed requests', numeric(data.completed_measured_requests)]);
+      if (Number.isSafeInteger(phase.request_count) && phase.request_count >= 0) rows.push(['Requested num_req', numeric(phase.request_count)]);
+      if (Number.isSafeInteger(data.completed_measured_requests) && data.completed_measured_requests >= 0) rows.push(['Completed requests', numeric(data.completed_measured_requests)]);
       if (data.benchmark_id) rows.push(['Benchmark ID', data.benchmark_id]);
       const names = datasets.map(dataset => dataset.dataset).filter(name => typeof name === 'string');
       if (names.length) rows.push(['Dataset', names.join(', ')]);
@@ -64,7 +63,9 @@
     if (!headers.includes('concurrency')) return '<p>Workload settings are not recorded with named columns; see source.</p>';
     const names = [['isl', 'ISL'], ['osl', 'OSL'], ['concurrency', 'Concurrency'], ['num_req', 'num_req'], ['duration_s', 'Duration (s)']];
     const rows = lines.filter(Boolean).map(line => Object.fromEntries(headers.map((key, i) => [key, line.split('\t')[i]])));
-    const unique = [...new Set(rows.map(row => names.map(([key, label]) => `${label}: ${row[key] || 'Not recorded'}`).join(' · ')))];
+    const unique = [...new Set(rows.map(row => names
+      .filter(([key]) => key !== 'num_req' || /^\d+$/.test((row[key] || '').trim()))
+      .map(([key, label]) => `${label}: ${row[key] || 'Not recorded'}`).join(' · ')))];
     return unique.map(row => `<p>${escape(row)}</p>`).join('');
   }
 

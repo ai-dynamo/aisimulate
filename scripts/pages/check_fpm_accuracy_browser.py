@@ -82,13 +82,12 @@ async def check_collection_provenance(page, url, data):
     content = alpha.locator(".collection-content")
     await expect(content).to_contain_text("AgentX job 123")
     await expect(content).to_contain_text("Trace-defined (variable)")
-    await expect(content).to_contain_text("Duration-based")
+    await expect(content).not_to_contain_text("Requested num_req")
     await expect(content.locator("dd")).to_contain_text(
         [
             "Agentic trace replay",
             "Trace-defined (variable)",
             "4",
-            "Duration-based",
             "3,600",
             "635",
             "synthetic-run",
