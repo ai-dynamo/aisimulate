@@ -607,7 +607,9 @@ def test_native_epd_detail_preserves_language_capacity_and_encoder_gap(
     details = saved["details"]
     validate(
         details,
-        json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text()),
+        json.loads(
+            (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+        ),
     )
     if explicit_blocks:
         assert "memory" not in details["sections"]

@@ -1579,7 +1579,9 @@ def test_detail_rejects_unsupported_sections_before_loading_config(selector, mon
 def _detail_schema():
     from pathlib import Path
 
-    return json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    return json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
 
 
 @pytest.mark.parametrize(

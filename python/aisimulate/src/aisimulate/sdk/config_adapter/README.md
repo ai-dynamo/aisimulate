@@ -5,7 +5,7 @@ versioned AIC estimate requests. Adaptation is deterministic and does not run an
 estimate or execute commands from source recipes.
 
 For the full contract and mapping details, see the
-[config adapter guide](../../../../docs/config_adapter.md).
+[config adapter guide](../../../../../../docs/aic-backward-compatibility/configuration-import.md).
 
 ## Public API
 
