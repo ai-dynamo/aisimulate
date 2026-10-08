@@ -537,6 +537,30 @@ def _parse_nemotron_block_configs(block_configs: list[dict]) -> list[BlockConfig
 QWEN3_VL_PIXEL_BOUNDS = (65536, 16777216)
 
 
+def _qwen_pixel_bounds(processor_cfg: dict | None) -> tuple[int, int]:
+    """Pixel budget of ``Qwen2VLImageProcessor``: ``size.shortest_edge`` /
+    ``size.longest_edge``, overridden by legacy ``min_pixels`` / ``max_pixels``.
+
+    ``None`` is a bundled checkpoint on the pinned Qwen3-VL budget; a loaded
+    checkpoint without a budget falls back to it with a warning.
+    """
+    if processor_cfg is None:
+        return QWEN3_VL_PIXEL_BOUNDS
+    size = processor_cfg.get("size", {})
+    if not isinstance(size, dict):
+        raise ValueError("Qwen preprocessor size must be an object")
+    bounds = (
+        processor_cfg.get("min_pixels", size.get("shortest_edge")),
+        processor_cfg.get("max_pixels", size.get("longest_edge")),
+    )
+    if bounds == (None, None):
+        logger.warning("preprocessor_config.json has no pixel budget; assuming Qwen3-VL's %s", QWEN3_VL_PIXEL_BOUNDS)
+        return QWEN3_VL_PIXEL_BOUNDS
+    if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in bounds):
+        raise ValueError(f"Qwen preprocessor pixel budget must be positive integers, got {bounds!r}")
+    return bounds
+
+
 def _parse_qwen_vision_encoder_config(
     vision_cfg: dict | None,
     *,
@@ -1490,7 +1514,7 @@ def _parse_hf_config_json(config: dict) -> dict:
             # Preserve the existing Qwen3-VL rotary-table gate. The shared
             # builder treats any positive value as full-head vision RoPE.
             partial_rotary_factor=0.5,
-            pixel_bounds=QWEN3_VL_PIXEL_BOUNDS,
+            pixel_bounds=_qwen_pixel_bounds(processor_cfg),
         )
         if extra_params is not None:
             logger.info(
@@ -1894,22 +1918,19 @@ def get_model_config_from_model_path(model_path: str) -> dict:
         Quantization metadata retains its original root or text_config scope.
     """
     raw_config = _load_model_config_from_model_path(model_path)
-    if (
-        raw_config.get("architectures")
-        in (
-            ["KimiK25ForConditionalGeneration"],
-            ["KimiK3ForConditionalGeneration"],
-        )
-        and model_path not in DefaultHFModels
-    ):
-        # Only Kimi consumes these processor files. Bundled checkpoints use
-        # the pinned processor defaults; local/downloaded checkpoints may
-        # override them with the original media_proc_cfg or native HF layout.
+    architecture = (raw_config.get("architectures") or [None])[0]
+    kimi = architecture in ("KimiK25ForConditionalGeneration", "KimiK3ForConditionalGeneration")
+    qwen_vl = architecture in ("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration")
+    if (kimi or qwen_vl) and model_path not in DefaultHFModels:
+        # Only Kimi and Qwen3-VL consume these processor files. Bundled
+        # checkpoints use the pinned processor defaults; local/downloaded
+        # checkpoints may override them with the original media_proc_cfg or
+        # native HF layout. Qwen's per-clip video budget is not modeled.
         processor = {}
-        for filename, key in (
-            ("preprocessor_config.json", None),
-            ("video_preprocessor_config.json", "video_processor"),
-        ):
+        files = [("preprocessor_config.json", None)]
+        if kimi:
+            files.append(("video_preprocessor_config.json", "video_processor"))
+        for filename, key in files:
             if os.path.isdir(model_path):
                 path = Path(model_path) / filename
                 data = _load_json_with_infinity(path) if path.is_file() else None

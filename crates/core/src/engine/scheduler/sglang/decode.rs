@@ -59,13 +59,12 @@ fn retraction_ratio_estimate(running: &[SglangRequest]) -> f64 {
     estimate.min(1.0)
 }
 
-fn decode_page_growth_needed(
-    running: &[SglangRequest],
+fn decode_page_growth_needed<'a>(
+    running: impl Iterator<Item = &'a SglangRequest>,
     block_size: usize,
     max_burst: usize,
 ) -> usize {
     running
-        .iter()
         .map(|req| {
             let target = if req.pending_terminal {
                 // `prepare_for_decode` still allocates the finished row's slot: the
@@ -131,7 +130,8 @@ fn decode_capacity_state(
     // Full partial pages are already owned by PagePool and excluded from
     // `actual_available`; subtracting their slack again would double-charge it.
     let logical_available = actual_available;
-    let page_growth_needed = decode_page_growth_needed(running, config.block_size, max_burst);
+    let page_growth_needed =
+        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
 
     (actual_available, logical_available, page_growth_needed)
 }
@@ -251,7 +251,8 @@ fn check_decode_mem_for_burst(
     }
 
     let available = kv_manager.cache().available_tokens();
-    let page_growth_needed = decode_page_growth_needed(running, config.block_size, max_burst);
+    let page_growth_needed =
+        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
     if available < page_growth_needed {
         kv_manager.evict(page_growth_needed - available);
     }
@@ -359,8 +360,13 @@ fn prefill_first_tokens(
     newly_completed.reverse();
     completed_requests.extend(newly_completed);
 
-    // The rest need a slot for the first output token. Make room by evicting cached pages only.
-    let needed = decode_page_growth_needed(running, config.block_size, 1);
+    // The rest need a slot for the first output token; a row that finished on it takes its ghost
+    // slot in the next decode step. Make room by evicting cached pages only.
+    let needed = decode_page_growth_needed(
+        running.iter().filter(|req| !req.pending_terminal),
+        config.block_size,
+        1,
+    );
     let available = kv_manager.cache().available_tokens();
     if available < needed {
         kv_manager.evict(needed - available);
@@ -597,7 +603,8 @@ fn simulate_step(
     let modeled_ms = modeled_duration_ms(decode_time, speedup_ratio)?;
     let total_time = Duration::from_secs_f64(modeled_ms / 1_000.0);
 
-    let reserved_page_tokens = decode_page_growth_needed(running, config.block_size, max_burst);
+    let reserved_page_tokens =
+        decode_page_growth_needed(running.iter(), config.block_size, max_burst);
     let reserved_pages = reserved_page_tokens / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         tracing::warn!(

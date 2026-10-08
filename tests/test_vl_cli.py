@@ -11,6 +11,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from aisimulate.capacity import materialize_aic_num_gpu_blocks
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.epd import validate_epd_prediction_mapping
@@ -67,6 +68,17 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank():
     assert args["frontend"]["stages"][0]["workers"] == 1
     assert spec.workload["images"]["identity"] == {"pool": 2}
     assert spec.workload["isl"] == 128  # placeholders are laid out by the workload driver
+
+
+def test_capacity_requires_the_tower_layout_on_a_vision_rank():
+    rank = {
+        "aic_backend": "sglang",
+        "aic_model_path": "Qwen/Qwen3-VL-8B-Instruct",
+        "vision": True,
+        "sglang": {"vlm_cache_bytes": 100 << 20},
+    }
+    with pytest.raises(ValueError, match="timing_model.config.encoder_parallel"):
+        materialize_aic_num_gpu_blocks(rank)
 
 
 def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):

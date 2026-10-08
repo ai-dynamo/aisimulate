@@ -39,6 +39,14 @@ def _vision_cache_bytes(lowered: Mapping[str, Any]) -> int:
     return int(cache)
 
 
+def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
+    """The tower layout a rank hosting the vision encoder sizes its weights by."""
+    layout = ((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
+    if layout is None:
+        raise ValueError("rank.vision requires timing_model.config.encoder_parallel (tp or dp)")
+    return str(layout)
+
+
 def materialize_aic_num_gpu_blocks(
     raw: dict[str, Any], *, memory_diagnostics: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -258,9 +266,7 @@ def materialize_aic_num_gpu_blocks(
         **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
         colocated_encoder=bool(lowered.get("vision", False)),
         reserved_bytes=_vision_cache_bytes(lowered) if lowered.get("vision") else 0,
-        encoder_parallel=((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
-        if lowered.get("vision")
-        else None,
+        encoder_parallel=_vision_encoder_parallel(lowered) if lowered.get("vision") else None,
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)

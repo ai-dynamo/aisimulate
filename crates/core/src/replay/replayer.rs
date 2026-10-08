@@ -412,7 +412,9 @@ impl<C: ReplayComposition> Replayer<C> {
             Some(encoder) => {
                 let timing = self.factory.encoder_timing().ok_or_else(|| {
                     ReplayError::InvalidSpec(
-                        "an encoder pool requires a timing model that prices vision batches".into(),
+                        "an encoder pool requires a timing model installed through \
+                         ReplayEngineFactory::with_encoder_timing"
+                            .into(),
                     )
                 })?;
                 Some((encoder.clone(), timing.clone()))

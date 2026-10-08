@@ -625,6 +625,8 @@ def compile_engine(
         except (ValueError, TypeError, KeyError) as exc:
             raise InvalidEngineConfigurationError(str(exc)) from exc
         if forward_model == "fpm" and interpolation == "direct":
+            if encoder_parallel is not None:
+                raise InvalidEngineConfigurationError("direct FPM interpolation does not support encoder_parallel")
             spec_json = _direct_fpm_spec_json(
                 profile,
                 deployment,

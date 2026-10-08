@@ -961,6 +961,10 @@ impl EngineConfig {
             "vision is supported only for backend=sglang"
         );
         ensure!(
+            !self.vision || self.worker_type != WorkerType::Decode,
+            "vision is not modeled on a decode rank; the images are encoded on the prefill rank"
+        );
+        ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
             "max_model_len must be positive"
         );
@@ -1973,6 +1977,22 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("requires aic_nextn")
+        );
+    }
+
+    #[test]
+    fn vision_is_rejected_on_a_decode_rank() {
+        let config = EngineConfig {
+            vision: true,
+            worker_type: WorkerType::Decode,
+            ..EngineConfig::for_backend(Backend::Sglang)
+        };
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("vision is not modeled on a decode rank")
         );
     }
 

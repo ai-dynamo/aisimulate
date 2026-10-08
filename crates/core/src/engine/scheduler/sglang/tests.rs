@@ -119,6 +119,32 @@ fn submitted_requests_keep_their_image_placeholders() {
 }
 
 #[rstest::rstest]
+fn rejects_image_placeholders_outside_the_prompt(#[values((6, 3), (6, 9))] span: (usize, usize)) {
+    let mut core = SglangCore::new(test_args(16, 1, 8));
+    let mut request = direct_request(vec![1; 8], 1);
+    request.images = vec![ImageSpec {
+        identity: 7,
+        token_start: span.0,
+        token_end: span.1,
+        encoder: EncoderShape {
+            sequences: 1,
+            patch_tokens: 12,
+            transformer_tokens: 12,
+            output_tokens: 3,
+        },
+        feature_bytes: 96,
+        embedding_bytes: 128,
+    }];
+    assert!(
+        core.apply_command(SchedulerCommand::Submit(request))
+            .unwrap_err()
+            .to_string()
+            .contains("image placeholders")
+    );
+    assert!(core.waiting.is_empty());
+}
+
+#[rstest::rstest]
 fn rejects_prompt_at_or_above_max_model_len(
     #[values(8, 9)] prompt_len: u32,
     #[values(false, true)] handoff: bool,
@@ -3776,6 +3802,68 @@ mod host_loop_passes {
     }
 
     #[test]
+    fn a_row_that_finished_on_its_first_token_reserves_no_page_in_the_prefill_step() {
+        // Four pages of four tokens: two freshly prefilled rows own one each and a third
+        // page is cached. The first row finishes with its first token and stays a ghost
+        // member whose slot `prepare_for_decode` allocates next step; only the second
+        // row's first-token slot is reserved now, so the cached page is not evicted.
+        let mut args = test_args(4, 4, 8192);
+        args.sglang.as_mut().unwrap().host_loop = true;
+        let config = SglangConfig::from_args(&args);
+        let mut kv_manager = SglangKvManager::new(16, 4, KvEventPublishers::default(), 0);
+        let cached: Vec<u32> = (9..=12).collect();
+        let cached_alloc = kv_manager.allocate_for_request(&cached).unwrap();
+        kv_manager.finish(&cached, cached_alloc.lease);
+        let finishing: Vec<u32> = (1..=4).collect();
+        let finishing_alloc = kv_manager.allocate_for_request(&finishing).unwrap();
+        let continuing: Vec<u32> = (5..=8).collect();
+        let continuing_alloc = kv_manager.allocate_for_request(&continuing).unwrap();
+        let mut running = vec![
+            SglangRequest {
+                is_decode_handoff: false,
+                uuid: Uuid::from_u128(1),
+                sequence_tokens: finishing,
+                prompt_len: 4,
+                max_output_tokens: 1,
+                planned_output_ids: None,
+                kv_lease: finishing_alloc.lease,
+                materialized_tokens: 4,
+                allocated_tokens: 4,
+                images: Vec::new(),
+                pending_terminal: false,
+            },
+            SglangRequest {
+                is_decode_handoff: false,
+                uuid: Uuid::from_u128(2),
+                sequence_tokens: continuing,
+                prompt_len: 4,
+                max_output_tokens: 5,
+                planned_output_ids: None,
+                kv_lease: continuing_alloc.lease,
+                materialized_tokens: 4,
+                allocated_tokens: 4,
+                images: Vec::new(),
+                pending_terminal: false,
+            },
+        ];
+        assert_eq!(kv_manager.cache().available_tokens(), 4);
+        assert_eq!(kv_manager.cache().evictable_size, 4);
+
+        let step =
+            decode::simulate_prefill_first_tokens(&mut running, &mut kv_manager, &config, 0.0)
+                .unwrap();
+        assert_eq!(step.output_signals.len(), 2);
+        assert!(running[0].pending_terminal);
+        assert_eq!(running[0].allocated_tokens, 4);
+        assert_eq!(running[1].allocated_tokens, 8);
+        assert_eq!(
+            kv_manager.cache().evictable_size,
+            4,
+            "no eviction for the ghost row"
+        );
+    }
+
+    #[test]
     fn a_retracted_request_neither_receives_nor_keeps_the_token_of_the_forward_in_flight() {
         // Tight KV (56 tokens) as in the legacy retraction test, under the host loop:
         // two requests grow until a decode step retracts one. SGLang marks it
@@ -3931,8 +4019,10 @@ mod vision_batches {
 
     #[test]
     fn decode_ranks_prefill_again_without_pricing_the_tower() {
-        // A retracted request prefills again on its decode rank, whose timing model
-        // has no vision prices: the images were encoded on the prefill rank.
+        // A decode rank prefills only after a retraction, and its timing model has no
+        // vision prices: the images were encoded on the prefill rank. Two decode rows
+        // own the whole pool; the one without output is retracted with its placeholders
+        // and prefills again in the next pass.
         struct LatencyOnly;
         impl crate::engine::TimingModel for LatencyOnly {
             fn prefill_batch_validation_can_fail(&self) -> bool {
@@ -3951,16 +4041,55 @@ mod vision_batches {
                 Ok(1.0)
             }
         }
-        let mut args = test_args(128, 1, 8);
+        let mut args = test_args(2, 4, 16);
         args.worker_type = crate::engine::common::protocols::WorkerType::Decode;
         args.perf_model = crate::engine::common::perf_model::PerfModel::External {
             timing: Arc::new(LatencyOnly),
         }
         .into();
         let mut core = SglangCore::new(args);
-        core.receive(request(0, vec![image(1, 0)]));
-        core.try_execute_hidden_pass(0.0)
+        let retracted = Uuid::from_u128(2);
+        let images = vec![image(1, 0)];
+        for (uuid, tokens, prompt_len, row_images) in [
+            (Uuid::from_u128(1), vec![1, 2, 3, 10], 3, Vec::new()),
+            (retracted, vec![5, 6, 7, 8], 4, images.clone()),
+        ] {
+            core.receive(DirectRequest {
+                uuid: Some(uuid),
+                ..direct_request(tokens[..prompt_len].to_vec(), 2)
+            });
+            core.waiting.pop_front().unwrap();
+            let allocation = core.kv_manager.allocate_for_request(&tokens).unwrap();
+            core.running.push(SglangRequest {
+                images: row_images,
+                pending_terminal: false,
+                is_decode_handoff: false,
+                uuid,
+                sequence_tokens: tokens,
+                prompt_len,
+                max_output_tokens: 2,
+                planned_output_ids: None,
+                kv_lease: allocation.lease,
+                materialized_tokens: 4,
+                allocated_tokens: 4,
+            });
+        }
+
+        let first = core.execute_hidden_pass(0.0);
+        let requeued = core.waiting.front().unwrap();
+        assert_eq!(requeued.uuid, retracted);
+        assert_eq!(requeued.images, images, "retraction keeps the placeholders");
+
+        let second = core
+            .try_execute_hidden_pass(first.end_ms)
             .expect("a decode rank prices neither the prefill nor the tower");
+        assert!(
+            second
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == retracted && signal.token_id.is_some()),
+            "the retracted request prefills again on the decode rank"
+        );
     }
 
     #[test]

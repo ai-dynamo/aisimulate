@@ -1941,9 +1941,18 @@ impl WorkloadDriver {
                                 std::mem::take(&mut turn.hash_ids),
                                 trace_block_size,
                             )?,
-                            PromptMode::DeltaCumulative => PromptTokens::Materialized(
-                                turn.synthesize_tokens(trace_block_size)?,
-                            ),
+                            PromptMode::DeltaCumulative => {
+                                // Image spans index the turn's own prompt, not the
+                                // session history the cumulative request carries.
+                                if !turn.images.is_empty() {
+                                    bail!(
+                                        "accumulating session deltas does not support image turns"
+                                    );
+                                }
+                                PromptTokens::Materialized(
+                                    turn.synthesize_tokens(trace_block_size)?,
+                                )
+                            }
                         };
                         let output_token_ids = Some(planned_output_token_ids(
                             turn.output_token_ids,
@@ -3610,6 +3619,44 @@ mod tests {
             WorkloadDriver::new_agentic_trace(trace, 1).unwrap(),
             3,
         );
+    }
+
+    #[test]
+    fn accumulating_delta_mode_rejects_image_turns() {
+        let trace = Trace {
+            block_size: 4,
+            sessions: vec![SessionTrace {
+                session_id: "a".into(),
+                first_arrival_timestamp_ms: Some(0.0),
+                turns: vec![TurnTrace {
+                    input_length: 6,
+                    max_output_tokens: 1,
+                    output_token_ids: None,
+                    replay_key: None,
+                    hash_ids: vec![10, 11],
+                    delay_after_previous_ms: 0.0,
+                    priority: 0,
+                    strict_priority: 0,
+                    policy_class: None,
+                    synthetic_session_id: false,
+                    images: vec![ImageSpec {
+                        identity: 0,
+                        token_start: 0,
+                        token_end: 4,
+                        encoder: crate::engine::EncoderShape {
+                            sequences: 1,
+                            patch_tokens: 4,
+                            transformer_tokens: 4,
+                            output_tokens: 1,
+                        },
+                        feature_bytes: 1,
+                        embedding_bytes: 1,
+                    }],
+                }],
+            }],
+        };
+        assert!(WorkloadDriver::new_trace(trace.clone(), 4).is_ok());
+        assert!(WorkloadDriver::new_trace_accumulating_deltas(trace, 4).is_err());
     }
 
     #[test]

@@ -1301,6 +1301,8 @@ class SmartSearchConfig(BaseModel):
         if encoder is None and workload.images is not None:
             if search.agg_vision is None and search.prefill_vision is None:
                 raise ValueError("image workloads require search_space.encoder or a language worker hosting vision")
+            if set(search.deployment_mode) & {"afd", "afd+pd"}:
+                raise ValueError("image workloads are unsupported for AFD")
             return self
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
@@ -1323,6 +1325,8 @@ class SmartSearchConfig(BaseModel):
             if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
                 raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
             workload.require_fixed_epd()
+        elif workload.isl is None or workload.osl is None:
+            raise ValueError("native encoder replay requires synthetic traffic with isl and osl, not a trace")
         for role in ("agg", "prefill", "decode"):
             if encoder.mode == "analytical":
                 if getattr(self.search_space, f"{role}_forward_model") != "op_level":

@@ -36,12 +36,6 @@ pub(super) struct SglangRequest {
 impl SglangRequest {
     pub(super) fn new(req: DirectRequest, block_size: usize, output_storage_hint: usize) -> Self {
         let prompt_len = req.tokens.len();
-        debug_assert!(
-            req.images
-                .iter()
-                .all(|image| image.token_start < image.token_end && image.token_end <= prompt_len),
-            "image placeholders must lie inside the prompt"
-        );
         let max_output_tokens = req.effective_max_output_tokens();
         let output_capacity = output_storage_hint.min(max_output_tokens);
         let mut sequence_tokens = req.tokens;

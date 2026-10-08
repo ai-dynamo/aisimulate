@@ -2049,13 +2049,29 @@ fn encoder_replay() -> (ReplaySpec, Arc<FixedExternalTiming>) {
     (replay, model)
 }
 
+/// Run `replay` with `timing` installed for the language ranks and, separately,
+/// for the encoder pool.
+fn run_encoder_replay(replay: ReplaySpec, timing: Arc<FixedExternalTiming>) -> ReplayReport {
+    let factory =
+        ReplayEngineFactory::with_timing_model(timing.clone()).with_encoder_timing(timing);
+    Replayer::new(replay, factory).unwrap().run().unwrap()
+}
+
+#[test]
+fn encoder_pool_requires_its_own_timing_model() {
+    // The language ranks' model never prices the pool.
+    let (replay, timing) = encoder_replay();
+    let error = run_engine_replay_with_timing(replay, timing).unwrap_err();
+    assert!(error.to_string().contains("with_encoder_timing"), "{error}");
+}
+
 #[test]
 fn encoder_pool_gates_admission_to_the_language_worker() {
     // Two encoder instances ahead of disaggregated SGLang ranks under a
     // concurrency cap of one: a request's three images spread over both
     // instances and it reaches the prefill rank when its last part arrived.
     let (replay, timing) = encoder_replay();
-    let report = run_engine_replay_with_timing(replay, timing).unwrap();
+    let report = run_encoder_replay(replay, timing);
 
     assert_eq!(report.request_counts.completed_requests, 2);
     let mut records = report
@@ -2089,7 +2105,7 @@ fn encoder_pool_gates_admission_to_the_language_worker() {
 fn requests_parked_in_the_encoder_pool_are_reported_when_the_run_is_cut_short() {
     let (mut replay, timing) = encoder_replay();
     replay.max_sim_time_ms = Some(10.0);
-    let report = run_engine_replay_with_timing(replay, timing).unwrap();
+    let report = run_encoder_replay(replay, timing);
     // The first request arrived and sits in the pool; the cap holds the second back.
     assert_eq!(report.request_counts.num_requests, 1);
     assert_eq!(report.request_counts.completed_requests, 0);

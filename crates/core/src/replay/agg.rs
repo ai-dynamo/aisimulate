@@ -1573,6 +1573,11 @@ where
         if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with max_sim_time_ms");
         }
+        // Requests parked in the pool are not in `self.requests` yet, which the
+        // grace cancellation reads.
+        if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with an encoder pool");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1718,8 +1723,9 @@ mod agentic_warmup_tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::engine::{Backend, EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
-    use crate::replay::WorkerStage;
+    use crate::engine::{
+        Backend, EncoderShape, EngineConfig, NativeHostOffloadConfig, TimingModelConfig,
+    };
     use crate::replay::components::{NoReplayMetadata, ReplayMode};
     use crate::replay::core::NoEngineEvents;
     use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
@@ -1731,6 +1737,7 @@ mod agentic_warmup_tests {
         AgenticSourceProvenance, PreparedAgenticSnapshots, ValidatedAgenticGraph, WorkloadDriver,
     };
     use crate::replay::scaling::ReplayScalingDecision;
+    use crate::replay::{EncoderSpec, WorkerStage};
 
     type Runtime =
         AggRuntimeImpl<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
@@ -1834,6 +1841,42 @@ mod agentic_warmup_tests {
         )
         .unwrap()
         .with_per_request_records(true)
+    }
+
+    #[test]
+    fn profile_rejects_an_encoder_pool() {
+        let timing = EngineConfig::for_backend(Backend::Sglang)
+            .built_in_timing_model()
+            .unwrap();
+        let mut replay = runtime(Backend::Sglang, 1024, 3.0).with_encoder(Some((
+            EncoderSpec {
+                instances: 1,
+                max_batch: 1,
+                gpus_per_instance: 1,
+                images_per_request: 1,
+                shape: EncoderShape {
+                    sequences: 1,
+                    patch_tokens: 1,
+                    transformer_tokens: 1,
+                    output_tokens: 1,
+                },
+                preprocess_ms_per_image: 0.0,
+                transfer_bytes_per_image: 0,
+                transfer_bandwidth_gb_s: 1.0,
+                timing_model: None,
+            },
+            timing,
+        )));
+        replay
+            .admission
+            .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 0.25,
+                response_grace_seconds: 0.03,
+                ..Default::default()
+            })
+            .unwrap();
+        let error = replay.run().unwrap_err();
+        assert!(error.to_string().contains("encoder pool"), "{error:#}");
     }
 
     #[test]

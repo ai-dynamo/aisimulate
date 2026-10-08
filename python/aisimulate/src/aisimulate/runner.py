@@ -397,6 +397,7 @@ class EngineReplayRunnerFactory:
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
+            supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -495,6 +496,8 @@ class EngineReplayRunner:
             # materialized request list would silently run the workload text-only.
             raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
+            if spec.workload.get("images") is not None:
+                raise InvalidRunnerError("image workloads are unsupported for AFD")
             return _run_afd_replay(
                 spec,
                 trace_block_size=self.trace_block_size,

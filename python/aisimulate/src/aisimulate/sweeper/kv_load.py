@@ -267,7 +267,10 @@ def resolve_kv_load(
 
     isl = int(workload.isl)
     images = getattr(workload, "images", None)
-    if images is not None and any(sample.get(f"{role}_vision") is not None for role in role_configs):
+    if images is not None and sample.get("encoder") is not None:
+        # An encoder pool: the runner prompts the language workers with the pool's visual tokens.
+        isl += int(sample["encoder"]["visual_tokens"])
+    elif images is not None:
         # Visual placeholders occupy KV like text on every language role; size the
         # load on the geometry the workload driver lays out, processor pixel budget included.
         from aisimulate_core.sdk.backends.base_backend import image_geometry
@@ -280,17 +283,6 @@ def resolve_kv_load(
             max_pixels=images.max_pixels,
         )
         isl += images.count * geometry.visual_tokens
-    elif images is not None:
-        # Analytical EPD sizes its language replay on the encoder phase's effective prompt.
-        from aisimulate_core.sdk.backends.base_backend import BaseBackend
-        from aisimulate_core.sdk.config import RuntimeConfig
-
-        isl = BaseBackend.effective_prefill_isl(
-            str(sample["model_name"]),
-            RuntimeConfig(
-                isl=isl, image_height=images.height, image_width=images.width, num_images_per_request=images.count
-            ),
-        )
     expected_tokens_per_request = isl + int(workload.osl) // 2
     if expected_tokens_per_request <= 0:
         raise InfeasibleKVCapacity(

@@ -129,19 +129,33 @@ def image_geometry(
 ) -> ImageGeometry:
     """Geometry of one ``height`` x ``width`` image under the checkpoint's preprocessing.
 
-    Shares the token math of the encoder phase. A dynamic-resolution processor
-    rescales images outside its pixel budget before patchify; the checkpoint's
-    bounds apply unless ``min_pixels``/``max_pixels`` override them, and a
-    checkpoint whose bounds are unknown is rejected rather than assumed to
+    Shares the token math of the encoder phase for the processors the replay
+    lays out: Qwen's dynamic resize and Llama 4's fixed tiles. A dynamic-resolution
+    processor rescales images outside its pixel budget before patchify; the
+    checkpoint's bounds apply unless ``min_pixels``/``max_pixels`` override them,
+    and a checkpoint whose bounds are unknown is rejected rather than assumed to
     keep the raw resolution."""
     from aisimulate_core.sdk.utils import (
         get_model_config_from_model_path,
         get_vision_encoder_config_from_model_info,
     )
 
-    enc_cfg = get_vision_encoder_config_from_model_info(get_model_config_from_model_path(model_path))
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = get_vision_encoder_config_from_model_info(model_info)
     if not isinstance(enc_cfg, common.VisionEncoderConfig):
         raise ValueError(f"{model_path} has no vision encoder configuration")
+    # Gemma 4 sizes images from its soft-token budget and Kimi from its own
+    # patch limits; neither follows a Qwen pixel budget or Llama 4 tiles.
+    dynamic_qwen = (
+        enc_cfg.image_size == 0
+        and enc_cfg.resize_mode == "qwen"
+        and not isinstance(enc_cfg, common.Gemma4VisionEncoderConfig)
+    )
+    fixed_tiles = enc_cfg.image_size > 0 and enc_cfg.max_num_tiles > 0
+    if not (dynamic_qwen or fixed_tiles):
+        raise ValueError(
+            f"{model_path}: the {model_info['architecture']} vision family is not supported by native VL replay"
+        )
     overrides = {
         name: int(value)
         for name, value in (("min_pixels", min_pixels), ("max_pixels", max_pixels))
@@ -149,7 +163,6 @@ def image_geometry(
     }
     if overrides:
         enc_cfg = dataclasses.replace(enc_cfg, **overrides)
-    dynamic_qwen = enc_cfg.image_size == 0 and enc_cfg.resize_mode == "qwen"
     if dynamic_qwen and (enc_cfg.min_pixels <= 0 or enc_cfg.max_pixels <= 0):
         raise ValueError(
             f"{model_path}: the processor's min_pixels/max_pixels budget is unknown; "

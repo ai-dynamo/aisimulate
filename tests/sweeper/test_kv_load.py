@@ -359,6 +359,30 @@ def test_image_workloads_size_the_load_on_the_placeholders_the_runner_lays_out()
     assert concurrency() == 100_000 // (128 + 196 + 2)
 
 
+def test_encoder_pools_size_the_load_on_the_pools_visual_tokens():
+    """The runner prompts the language workers with the resolved pool's count, not a recomputed geometry."""
+    from aisimulate.sweeper.config import ImageWorkload
+
+    sample = {
+        "model_name": "Qwen/Qwen3-VL-8B-Instruct",
+        "backend": "sglang",
+        "agg_block_size": 16,
+        "agg_num_gpu_blocks": 6_250,
+        # Resolved under max_pixels=65536 (256x256 -> 64 tokens); the raw 448x448 geometry would say 196.
+        "encoder": {"visual_tokens": 64},
+    }
+    resolution = resolve_kv_load(
+        sample,
+        workload=Workload(
+            isl=128, osl=4, kv_load_ratio=1.0, request_count=1, images=ImageWorkload(height=448, width=448)
+        ),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ratio=1.0,
+        backend_version="0.5.14",
+    )
+    assert resolution.concurrency == 100_000 // (128 + 64 + 2)
+
+
 def test_disagg_prefill_vision_sizes_only_the_prefill_capacity_against_the_tower(monkeypatch):
     controls = []
 

@@ -3566,6 +3566,11 @@ where
         if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with max_sim_time_ms");
         }
+        // Requests parked in the pool are not in `self.requests` yet, which the
+        // grace cancellation reads.
+        if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with an encoder pool");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {

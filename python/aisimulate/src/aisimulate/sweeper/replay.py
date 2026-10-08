@@ -384,6 +384,7 @@ class RunnerCapabilities:
     supports_agentic_profile: bool = False
     supports_grouped_kv_cache: bool = False
     supports_native_epd: bool = False
+    supports_sglang_host_loop: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -516,6 +517,22 @@ class RunnerCapabilities:
                 if isinstance(rank, Mapping) and rank.get("state_cache") is not None:
                     raise ValueError(
                         "runner does not support state_cache; select a stack that advertises this capability"
+                    )
+        if not self.supports_sglang_host_loop:
+            for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if not isinstance(rank, Mapping):
+                    continue
+                sglang = rank.get("sglang")
+                if any(rank.get(name) is not None for name in ("vision", "frontend")) or (
+                    isinstance(sglang, Mapping)
+                    and any(sglang.get(name) is not None for name in ("host_loop", "vlm_cache_bytes"))
+                ):
+                    raise ValueError(
+                        "runner does not support the SGLang host loop "
+                        "(vision, frontend, sglang.host_loop, sglang.vlm_cache_bytes); use --stack engine"
                     )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")

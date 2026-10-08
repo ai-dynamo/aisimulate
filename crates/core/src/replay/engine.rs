@@ -365,12 +365,9 @@ impl ReplayEngineFactory {
         self
     }
 
-    /// The model pricing the encoder pool: its own, else the language workers'.
+    /// The model pricing the encoder pool; it never falls back to a rank's.
     pub(crate) fn encoder_timing(&self) -> Option<&Arc<dyn TimingModel>> {
-        self.encoder_timing
-            .as_ref()
-            .or(self.prefill_timing.as_ref())
-            .or(self.timing.as_ref())
+        self.encoder_timing.as_ref()
     }
 
     #[doc(hidden)]

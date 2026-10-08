@@ -165,6 +165,8 @@ pub struct EncoderSpec {
     pub max_batch: usize,
     /// GPUs one instance occupies (its tensor-parallel width).
     pub gpus_per_instance: usize,
+    /// Images every request carries; the pool splits this count over the
+    /// instances and never reads a request's own image list.
     pub images_per_request: u32,
     /// Geometry of one image as the encoder forward sees it.
     pub shape: EncoderShape,
@@ -176,7 +178,9 @@ pub struct EncoderSpec {
     /// Network bandwidth in decimal gigabytes per second.
     pub transfer_bandwidth_gb_s: f64,
     /// Timing model pricing the encoder forward, resolved by the runner like a
-    /// rank's; `None` shares the language workers' model (tests).
+    /// rank's and required there. The pool never shares the language workers'
+    /// model; `None` leaves it to `ReplayEngineFactory::with_encoder_timing`
+    /// (tests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing_model: Option<TimingModelConfig>,
 }

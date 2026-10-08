@@ -147,7 +147,8 @@ def resolve_encoder_pools(
                 if gpu_budget is None or point.total_gpus < gpu_budget:
                     catalog[f"{backend}|tp{point.tp}|bs{point.batch_size}|w{workers}"] = point
     if not catalog:
-        raise ValueError("no feasible encoder pool for the requested shape and GPU budget")
+        budget = " and GPU budget" if gpu_budget is not None else ""
+        raise ValueError(f"no feasible encoder pool for the requested shape{budget}")
     return catalog
 
 
@@ -170,6 +171,7 @@ def _native_encoder_rows(encoder, *, model_name, system, backend, version, datab
     profile = HostProfileConfig.model_validate(encoder.host_profile)
     frontend, digest = resolve_frontend(profile, model=model_name, images=images.model_dump(mode="json"), tensor=1)
     rows = []
+    rejected = []
     for tp in encoder.tp:
         try:
             (point,) = _get_encoder_worker_candidates(
@@ -181,8 +183,10 @@ def _native_encoder_rows(encoder, *, model_name, system, backend, version, datab
                 backend_name=backend,
                 latency_correction=encoder.latency_correction,
             )
-        except (ValueError, InsufficientMemoryError, NoFeasibleConfigError) as exc:
-            logger.debug("native encoder: tp=%s rejected: %s", tp, exc)
+        except (InsufficientMemoryError, NoFeasibleConfigError) as exc:
+            # Infeasible at this tensor width only; invalid perf data or workload errors propagate.
+            logger.warning("native encoder: tp=%s skipped: %s", tp, exc)
+            rejected.append(f"tp={tp}: {exc}")
             continue
         rows.append(
             {
@@ -207,6 +211,8 @@ def _native_encoder_rows(encoder, *, model_name, system, backend, version, datab
                 ),
             }
         )
+    if not rows:
+        raise NoFeasibleConfigError("native encoder: no feasible tp; " + "; ".join(rejected))
     return rows
 
 

@@ -1058,6 +1058,16 @@ def test_image_geometry_keeps_llama4_tiles_as_separate_sequences():
     assert geometry.visual_tokens == 2467
 
 
+def test_image_geometry_rejects_families_the_replay_does_not_lay_out():
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    # Gemma 4 sizes images from its soft-token budget and Kimi from its own patch
+    # limits: neither is a Qwen processor whose pixel budget could be supplied.
+    for model in ("google/gemma-4-26B-A4B", "moonshotai/Kimi-K3"):
+        with pytest.raises(ValueError, match="vision family is not supported by native VL replay"):
+            image_geometry(model, 1024, 1024)
+
+
 def test_video_frames_keep_the_stride_geometry_while_images_follow_the_pixel_budget():
     from aisimulate_core.sdk.utils import get_model_config_from_model_path, get_vision_encoder_config_from_model_info
 

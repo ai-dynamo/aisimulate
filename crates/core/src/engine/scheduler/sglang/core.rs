@@ -299,6 +299,7 @@ impl SglangCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(self.submit(request, now_ms)?),
                 ))
@@ -328,6 +329,7 @@ impl SglangCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 self.source_holds.register(uuid, handoff_id)?;
                 let submitted = self
                     .submit(request, now_ms)
@@ -371,6 +373,7 @@ impl SglangCore {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
+                validate_image_spans(&request)?;
                 self.pending_destinations.validate(uuid, handoff_id)?;
                 self.destination_holds.validate(uuid, handoff_id)?;
                 if self
@@ -1502,6 +1505,19 @@ impl SglangCore {
         }
         admissions
     }
+}
+
+/// Reject image placeholders that are empty, inverted or extend past the prompt.
+fn validate_image_spans(request: &DirectRequest) -> anyhow::Result<()> {
+    let prompt_len = request.tokens.len();
+    anyhow::ensure!(
+        request
+            .images
+            .iter()
+            .all(|image| image.token_start < image.token_end && image.token_end <= prompt_len),
+        "image placeholders must lie inside the prompt"
+    );
+    Ok(())
 }
 
 fn simulate_prefill_duration(

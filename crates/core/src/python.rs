@@ -1376,14 +1376,18 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
 
 /// Resolve the encoder pool's timing model the way a rank's is resolved: the
 /// canonical model compiled with its vision tower at the pool's tensor width.
-/// Built-in models return `None`; the Replayer then rejects the spec.
+/// The pool never shares a rank's model, so the spec must name one; built-in
+/// models return `None` and the Replayer then rejects the spec.
 fn resolve_encoder_timing(
     encoder: &EncoderSpec,
     capture_performance_diagnostics: bool,
     coverage_sources: &mut Vec<(ForwardPassWorkerType, Arc<ForwardPassPerfModel>)>,
 ) -> Result<Option<Arc<dyn TimingModel>>> {
-    let Some(TimingModelConfig::External { provider, config }) = encoder.timing_model.clone()
-    else {
+    let timing_model = encoder
+        .timing_model
+        .clone()
+        .context("encoder pool requires a timing_model")?;
+    let TimingModelConfig::External { provider, config } = timing_model else {
         return Ok(None);
     };
     ensure!(
@@ -1613,10 +1617,11 @@ fn resolve_kv_capacity_concurrency(
     );
     let isl = traffic.isl.context("KV load requires isl")?;
     let osl = traffic.osl.context("KV load requires osl")?;
-    let visual_tokens =
-        synthetic_images(traffic)?.map_or(0, |images| images.count * images.visual_tokens);
-    let expected_tokens = isl
-        .checked_add(visual_tokens)
+    let visual_tokens = synthetic_images(traffic)?.map_or(Some(0), |images| {
+        images.count.checked_mul(images.visual_tokens)
+    });
+    let expected_tokens = visual_tokens
+        .and_then(|visual_tokens| isl.checked_add(visual_tokens))
         .and_then(|tokens| tokens.checked_add(osl / 2))
         .context("KV-load expected token count overflow")?;
     ensure!(
@@ -2447,6 +2452,14 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .is_none_or(|traffic| traffic.agentic_profile.is_none()),
         "agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms"
     );
+    // The pool carries every request's images; the language ranks run no vision tower.
+    ensure!(
+        spec.encoder.is_none()
+            || traffic
+                .as_ref()
+                .is_none_or(|traffic| traffic.image_count.is_none()),
+        "image traffic cannot be combined with an encoder pool"
+    );
     let agentic_input = traffic.as_ref().and_then(|traffic| {
         traffic
             .trace_format
@@ -3094,6 +3107,30 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("agentic_profile cannot be combined with ReplaySpec.max_sim_time_ms")
+        );
+    }
+
+    #[test]
+    fn image_traffic_is_rejected_with_an_encoder_pool() {
+        let payload = serde_json::json!({
+            "spec": {
+                "version": 1,
+                "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                "encoder": {
+                    "instances": 1, "max_batch": 1, "gpus_per_instance": 1, "images_per_request": 1,
+                    "shape": {"sequences": 1, "patch_tokens": 1, "transformer_tokens": 1, "output_tokens": 1},
+                    "preprocess_ms_per_image": 0.0, "transfer_bytes_per_image": 0,
+                    "transfer_bandwidth_gb_s": 1.0
+                },
+                "requests": []
+            },
+            "traffic": {"source_type": "synthetic", "image_count": 1}
+        });
+        assert!(
+            execute_json(&payload.to_string(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("image traffic cannot be combined with an encoder pool")
         );
     }
 

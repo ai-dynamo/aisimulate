@@ -134,10 +134,11 @@ MiMo towers, and a Llama 4 configuration asking for it is rejected. Timing,
 collectives, and the per-rank weights deducted from the KV budget all follow
 that one setting, as does the embedding cache. Image geometry follows the
 architecture's processor rules: each image becomes one or more encoder
-sequences (Qwen3-VL: one, after `smart_resize` within the architecture's default
+sequences (Qwen3-VL: one, after `smart_resize` within the checkpoint processor's
 pixel budget; Llama 4: one per tile plus the global tile) with their own patch,
 transformer, and merged token counts, and a placeholder span that may add
-structural tokens. `traffic.source.images.min_pixels` and `max_pixels` override
+structural tokens; other vision families are rejected.
+`traffic.source.images.min_pixels` and `max_pixels` override
 that budget for a served processor whose limits differ. Repeated images
 (`identity: {pool: N}`) hit the cache; a cached prompt prefix skips the encoder
 entirely, as it does upstream.
