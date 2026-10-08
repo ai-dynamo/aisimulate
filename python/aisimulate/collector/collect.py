@@ -1129,6 +1129,115 @@ def _get_test_cases_for_model(get_func, model_path: str | None):
         return get_func()
 
 
+class ReplaySpec:
+    """Failure replay (``--cases-from``): run exactly the cases an earlier run's failure
+    records name, plus an optional random control sample per op.
+
+    Selection is by exact case string — the same ``str(task)`` the failure records store
+    as ``task_params`` — never by substring and never by reconstructing tuples, so the
+    requested set is unambiguous. Nothing else about the run changes: same getter, same
+    run_func, same dispatch, same measurement, so a replay observes exactly what the
+    campaign observes. The run leaves ``collector_replay.json`` in the output root;
+    packaging must keep such a result out of shipped tables (it is a diagnosis, not a
+    dataset). This is a selection mechanism like ``--case-filter``: it decides WHICH
+    planned cases run, never whether a case may be skipped once queued.
+    """
+
+    MARKER = "collector_replay.json"
+
+    def __init__(self, source: str, wanted: set[str], control: int = 0):
+        self.source = source
+        self.wanted = set(wanted)
+        self.control = int(control)
+        self.matched: dict[str, set[str]] = {}
+        self.controls: dict[str, int] = {}
+
+    @staticmethod
+    def case_key(case) -> str:
+        """The string a failure record stores for this case (see collect_module_safe)."""
+        if isinstance(case, dict) and "id" in case and "params" in case:
+            return str(case["params"])
+        return str(case)
+
+    def select(self, op: str, cases: list, rng: random.Random) -> list:
+        wanted = [case for case in cases if self.case_key(case) in self.wanted]
+        self.matched[op] = {self.case_key(case) for case in wanted}
+        controls: list = []
+        if self.control > 0:
+            rest = [case for case in cases if self.case_key(case) not in self.wanted]
+            controls = rng.sample(rest, min(self.control, len(rest)))
+        self.controls[op] = len(controls)
+        return wanted + controls
+
+    def unmatched(self) -> list[str]:
+        seen: set[str] = set().union(*self.matched.values()) if self.matched else set()
+        return sorted(self.wanted - seen)
+
+    def report(self) -> dict:
+        return {
+            "source": self.source,
+            "requested": len(self.wanted),
+            "matched": sum(len(v) for v in self.matched.values()),
+            "matched_by_op": {op: len(v) for op, v in self.matched.items()},
+            "controls_by_op": dict(self.controls),
+            "unmatched": self.unmatched(),
+        }
+
+
+def load_replay_cases(path: "str | Path") -> set[str]:
+    """Case strings for ``--cases-from``: an ``errors_*.json[.gz]`` or
+    ``collection_summary_*.json[.gz]`` written by an earlier run (``task_params`` of every
+    entry that has one), a JSON list of case strings, or a text file with one case per line."""
+    import gzip
+
+    p = Path(path)
+    if p.suffix == ".gz":
+        with gzip.open(p, "rt", encoding="utf-8") as fh:
+            raw = fh.read()
+    else:
+        raw = p.read_text(encoding="utf-8")
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        doc = [line.strip() for line in raw.splitlines() if line.strip()]
+    if isinstance(doc, dict):
+        doc = doc.get("errors", [])
+    out: set[str] = set()
+    for item in doc:
+        if isinstance(item, str):
+            out.add(item)
+        elif isinstance(item, dict) and item.get("task_params") not in (None, "None", ""):
+            out.add(str(item["task_params"]))
+    if not out:
+        raise ValueError(f"--cases-from {path}: no case strings found")
+    return out
+
+
+def _load_replay_spec(args, log) -> "ReplaySpec | None":
+    if not getattr(args, "cases_from", None):
+        return None
+    wanted = load_replay_cases(args.cases_from)
+    spec = ReplaySpec(str(args.cases_from), wanted, control=args.replay_control or 0)
+    log.info(f"Replay mode: {len(wanted)} requested cases from {args.cases_from}; control sample {spec.control} per op")
+    return spec
+
+
+def _finish_replay(spec: "ReplaySpec | None", output_root: Path, log) -> None:
+    if spec is None:
+        return
+    report = spec.report()
+    (output_root / ReplaySpec.MARKER).write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    if report["unmatched"]:
+        log.warning(
+            f"Replay: {len(report['unmatched'])}/{report['requested']} requested cases are not in this run's "
+            f"case plan (first: {report['unmatched'][:3]})"
+        )
+    log.info(
+        f"Replay: matched {report['matched']}/{report['requested']} requested cases; "
+        f"{ReplaySpec.MARKER} written — this result is a diagnosis, not a dataset"
+    )
+
+
 def _requested_ops(ops: list[str] | None, case_plan=None) -> set[str]:
     if ops is not None:
         return set(ops)
@@ -2229,6 +2338,7 @@ def collect_ops(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ) -> list[dict]:
     """Run collection for a list of resolved collection entries.
 
@@ -2317,6 +2427,13 @@ def collect_ops(
                     before_count = len(cases)
                     cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
                     logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+                if replay is not None:
+                    before_count = len(cases)
+                    cases = replay.select(op, cases, random.Random(shuffle_seed))
+                    logger.info(
+                        f"{op}: replay selected {len(replay.matched[op])} requested + "
+                        f"{replay.controls[op]} control of {before_count} cases"
+                    )
                 if shuffle:
                     rng = random.Random(shuffle_seed)
                     rng.shuffle(cases)
@@ -2364,6 +2481,7 @@ def collect_sglang(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for SGLang with enhanced error tracking"""
     os.environ["FLASHINFER_LOG_LEVEL"] = "ERROR"
@@ -2423,6 +2541,7 @@ def collect_sglang(
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=case_filters,
+            replay=replay,
         )
 
     for collection in fullnode_collections:
@@ -2439,6 +2558,7 @@ def collect_sglang(
                 case_plan=case_plan,
                 sm_version=sm_version,
                 case_filters=case_filters,
+                replay=replay,
                 get_test_cases_for_model=_get_test_cases_for_model,
                 resume_checkpoint_cls=ResumeCheckpoint,
                 logger=logger,
@@ -2466,6 +2586,7 @@ def collect_vllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for vLLM"""
     from collector.version_resolver import build_collections
@@ -2523,6 +2644,7 @@ def collect_vllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        replay=replay,
     )
 
     generate_collection_summary(all_errors, "vllm", version)
@@ -2546,6 +2668,7 @@ def collect_trtllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for TensorRT LLM with enhanced error tracking"""
     from collector.trtllm.registry import REGISTRY
@@ -2594,6 +2717,7 @@ def collect_trtllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        replay=replay,
     )
 
     generate_collection_summary(all_errors, "trtllm", version)
@@ -6073,6 +6197,24 @@ def main():
         "Ephemeral healing filter — never persisted to YAML.",
     )
     parser.add_argument(
+        "--cases-from",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Failure replay: run exactly the cases listed in FILE — an errors_*.json[.gz] or "
+        "collection_summary_*.json[.gz] from an earlier run, a JSON list of case strings, or one case per "
+        "line — matched by exact case string. Writes collector_replay.json beside the results; such a run "
+        "is a diagnosis and must never ship.",
+    )
+    parser.add_argument(
+        "--replay-control",
+        type=int,
+        default=0,
+        metavar="N",
+        help="With --cases-from: also run N random cases per op that were NOT requested (seed 42) as a "
+        "control group for before/after comparison.",
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Print the collector v2 case plan and exit without running collectors.",
@@ -6284,6 +6426,8 @@ def main():
         resolved = path.resolve()
         return resolved not in existing_perf_outputs or path.stat().st_mtime_ns != existing_perf_outputs[resolved]
 
+    replay = _load_replay_spec(args, logger)
+
     # Use profiling context manager
     with ProfilerContext(args.backend, enabled=args.profile):
         collect_backend = {"trtllm": collect_trtllm, "sglang": collect_sglang, "vllm": collect_vllm}[args.backend]
@@ -6297,7 +6441,9 @@ def main():
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=args.case_filters,
+            replay=replay,
         )
+    _finish_replay(replay, output_root, logger)
 
     converted: list[Path] = []
     if args.keep_csv:
