@@ -95,7 +95,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if [[ "$device" == "cuda" ]]; then
     GPU_COUNT=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 elif [[ "$device" == "xpu" ]]; then
-    GPU_COUNT=$(sycl-ls | grep '\[level_zero:gpu\]' | wc -l)
+    GPU_COUNT=$(xpu-smi discovery 2>/dev/null | grep -c "Device Name:")
 fi
 
 echo "Found $GPU_COUNT GPUs."
