@@ -9,6 +9,7 @@ import csv
 import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -171,6 +172,33 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert decoded["provenance"]["search_strategy"] == "exhaustive"
     assert SweepResult.from_json(payload) == result
     assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.1"
+
+
+@pytest.mark.parametrize("selection", ["scalar", "pareto", "empty"])
+def test_documented_sdk_example_prints_selected_ids(monkeypatch, capsys, selection):
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "docs/sweeper/sdk.md").read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+    payload = _complete_result().model_dump(mode="python")
+    second = _record("candidate-000006", CandidateStatus.FEASIBLE).model_dump(mode="python")
+    second["score"] = second["metrics"]["output_throughput_tok_s"] = 200.0
+    payload["candidates"].append(second)
+    payload["counts"]["feasible"] += 1
+    payload["counts"]["evaluated"] += 1
+    selected = [] if selection == "empty" else ["candidate-000006", "candidate-000001"]
+    payload["views"] = {
+        "top_n": selected if selection == "scalar" else [],
+        "pareto_front": selected if selection == "pareto" else [],
+    }
+    result = SweepResult.model_validate(payload)
+    monkeypatch.chdir(root)
+    # Exercise the documented result consumer with real, nonempty result types;
+    # the expensive search itself is outside this example-contract check.
+    monkeypatch.setattr(Sweeper, "run", lambda self, config: result)
+
+    exec(compile(script, "docs/sweeper/sdk.md", "exec"), {"__name__": "__main__"})
+
+    expected = [] if selection == "empty" else ["candidate-000006 200.0 8", "candidate-000001 100.0 8"]
+    assert capsys.readouterr().out.splitlines() == expected
 
 
 def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():

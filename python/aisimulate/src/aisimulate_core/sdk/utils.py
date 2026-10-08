@@ -1495,7 +1495,9 @@ def _parse_hf_config_json(config: dict) -> dict:
                 extra_params.spatial_merge_size,
             )
     elif architecture == "Mistral3ForConditionalGeneration":
-        if vision_cfg:
+        if vision_cfg is not None:
+            if not isinstance(vision_cfg, dict) or not vision_cfg:
+                raise ValueError("Mistral3 vision_config must be a non-empty object")
             # spatial_merge_size sizes both the patch merger and the image-token
             # counts; a silent default would mispredict, so require a positive
             # integer (reject missing/None, bool, non-int, and <= 0).

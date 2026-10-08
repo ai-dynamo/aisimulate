@@ -57,7 +57,9 @@ def test_each_legacy_cli_mode_warns_without_renaming_the_command(monkeypatch, mo
     assert "deprecated compatibility command" in str(warning.message)
     assert "aisimulate==0.12.0" not in str(warning.message)
     assert "preserves the established command name" in str(warning.message)
-    assert "https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md" in str(warning.message)
+    assert "https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md" in str(
+        warning.message
+    )
     assert warning.filename == __file__
 
 

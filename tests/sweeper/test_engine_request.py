@@ -206,7 +206,7 @@ def test_migration_example_parses_and_preserves_shared_prefix():
 
     import yaml
 
-    text = (Path(__file__).parents[2] / "docs/MIGRATION.md").read_text()
+    text = (Path(__file__).parents[2] / "docs/aic-backward-compatibility/migration.md").read_text()
     example = (
         text.split("### Preserve pinned engine and request controls", 1)[1].split("```yaml", 1)[1].split("```", 1)[0]
     )
