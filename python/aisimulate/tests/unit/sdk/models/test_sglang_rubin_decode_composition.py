@@ -22,7 +22,7 @@ from aisimulate_core.sdk.speculation import SpeculationConfig
 
 pytestmark = pytest.mark.unit
 MODEL = "nvidia/GLM-5.2-NVFP4"
-SYSTEM = "vr200_hecate"
+SYSTEM = "vr_nvl72"
 VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
 SYSTEMS = str(Path(core.__file__).parent / "systems")
 ADDED = {"generation_embedding_ar", "generation_routed_shared_add", "generation_final_add_norm"}
@@ -179,7 +179,7 @@ def test_other_model_and_backend_graphs_are_unchanged(model_path, backend):
 
 
 def test_prefill_only_profile_retains_both_original_operation_lists():
-    model = model_for(prefill_graph_profile="sglang_glm52_nvfp4_vr200_tp4_graph_v1")
+    model = model_for(prefill_graph_profile="sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1")
     spec = spec_for(model)
     for phase in ("context_ops", "generation_ops"):
         assert spec[phase] == json.loads(engine.build_ops_json(getattr(model, phase)))
@@ -262,3 +262,33 @@ def test_canonical_config_and_binary_reload_retain_inventory_and_values(profile,
         if profile is None:
             baseline = {1: 5.650986119005678, 3: 6.41587280664244}[batch]
             assert latency == pytest.approx(baseline + ar + add + norm, rel=1e-12)
+
+
+def test_canonical_default_decode_matches_pre_rename_predictions():
+    # Independent baseline from release-built d1e3cd84cb7f891046668ea5bd262009cac497d4,
+    # using the original vr200_hecate bundle and the documented 18-shape grid.
+    model = RustForwardPassPerfModel.best_available(canonical_config(None))
+    cases = [
+        (1, 1024, 5.782174726583036),
+        (1, 8192, 5.975074726583036),
+        (1, 32768, 6.132874726583036),
+        (3, 1024, 6.54750734644919),
+        (3, 8192, 6.64590734644919),
+        (3, 32768, 6.788857346449189),
+        (8, 1024, 8.267750438298876),
+        (8, 8192, 8.366750438298876),
+        (8, 32768, 8.575550438298876),
+        (29, 1024, 11.323890800847444),
+        (29, 8192, 11.619728300847443),
+        (29, 32768, 13.771569071160545),
+        (31, 1024, 11.552352622044365),
+        (31, 8192, 11.835965122044367),
+        (31, 32768, 14.189702957830354),
+        (32, 1024, 11.666583521823535),
+        (32, 8192, 11.944083521823535),
+        (32, 32768, 14.398252338994732),
+    ]
+    for batch, past_kv, expected in cases:
+        assert model.static_phase_latency(
+            batch_size=batch, input_tokens=past_kv, output_tokens=2, prefill=False
+        ) == pytest.approx(expected, rel=1e-12, abs=1e-10)

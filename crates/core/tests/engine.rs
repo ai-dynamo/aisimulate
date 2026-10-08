@@ -617,11 +617,11 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
 fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
     for (budget, cached_prefix, prompts, expected_work) in [
         (8, 0, vec![4, 8], vec![8, 4]),
-        (6, 0, vec![5], vec![4, 1]),
+        (4, 0, vec![5], vec![4, 1]),
         (8, 0, vec![6], vec![6]),
         (8, 0, vec![7, 8], vec![7, 8]),
         (8, 4, vec![4, 8], vec![8, 4]),
-        (6, 4, vec![5], vec![4, 1]),
+        (4, 4, vec![5], vec![4, 1]),
     ] {
         let mut config = sglang_interval_config(0);
         config.block_size = 4;

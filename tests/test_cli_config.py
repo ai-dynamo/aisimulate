@@ -1640,6 +1640,111 @@ def test_agentic_snapshot_is_opt_in() -> None:
     assert "agentic_snapshot" not in prediction_to_replay_spec(config).workload
     assert config.traffic.load.agentic_warmup is False
     assert "agentic_warmup" not in prediction_to_replay_spec(config).workload
+    assert config.traffic.load.agentic_profile is None
+    assert "agentic_profile" not in prediction_to_replay_spec(config).workload
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 2.0, "response_grace_seconds": 0.0}])
+def test_agentic_profile_roundtrip_and_compiler_preserve_controls(warmup: bool, profile: dict) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import AgenticProfileOptions, TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 2,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+            "agentic_profile": profile,
+        },
+    }
+    expected = AgenticProfileOptions.model_validate(profile).model_dump(mode="json")
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        config = schema.model_validate(traffic)
+        reloaded = schema.model_validate_json(config.model_dump_json())
+        assert reloaded.load.agentic_profile.model_dump(mode="json") == expected
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    assert prediction_to_replay_spec(prediction).workload["agentic_profile"] == expected
+    recommended = Workload.model_validate(_recommendation_workload(traffic))
+    assert recommended.model_dump(mode="json")["agentic_profile"] == expected
+    assert Workload.model_validate_json(recommended.model_dump_json()).agentic_profile == recommended.agentic_profile
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"duration_seconds": 0},
+        {"duration_seconds": True},
+        {"duration_seconds": "3"},
+        {"duration_seconds": float("inf")},
+        {"duration_seconds": 1e308},
+        {"response_grace_seconds": -1},
+        {"cancel_drain_seconds": float("nan")},
+        {"tree_idle_cap_seconds": 0},
+        {"global_idle_cap_seconds": -1},
+        {"unknown": 1},
+    ],
+)
+def test_agentic_profile_rejects_invalid_controls(profile: dict) -> None:
+    from aisimulate.config import AgenticProfileOptions
+
+    with pytest.raises(ValidationError):
+        AgenticProfileOptions.model_validate(profile)
+
+
+@pytest.mark.parametrize("missing", ["agentic_snapshot", "agentic_lanes"])
+def test_agentic_profile_requires_seeded_lanes(missing: str) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    load = {
+        "type": "trace_timestamps",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_profile": {},
+    }
+    del load[missing]
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match=missing):
+            schema.model_validate({"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load})
+    with pytest.raises(ValidationError, match=missing):
+        Workload.model_validate(
+            {
+                "source_type": "trace",
+                "trace_path": "corpus",
+                "trace_format": "weka",
+                "load_type": load.pop("type"),
+                **load,
+            }
+        )
+
+
+def test_agentic_profile_rejects_legacy_time_stop() -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "dynamo", "paths": ["corpus"]},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 1,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_profile": {},
+        },
+        "stop": {"max_virtual_time_seconds": 1.0},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match="agentic_profile cannot be combined"):
+            schema.model_validate(traffic)
+    with pytest.raises(ValidationError, match="agentic_profile cannot be combined"):
+        Workload.model_validate(_recommendation_workload(traffic))
 
 
 @pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
@@ -1921,3 +2026,39 @@ def test_execution_options_reject_mixed_worker_timing(custom_role):
     engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
     with pytest.raises(ValidationError, match="default timing in every role"):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("context_length", ["max", 4096])
+def test_recommendation_declares_default_context_budget(monkeypatch, caplog, context_length):
+    from aisimulate.recommend import _run_recommendation
+    from aisimulate.sweeper.search import Sweeper
+
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {
+                "model": "Qwen/Qwen3-32B",
+                "hardware": "h200_sxm",
+                "mode": "aggregated",
+                "backend": "trtllm",
+                "context_length": context_length,
+                "workers": {"aggregated": {}},
+            },
+            "traffic": {
+                "source": {"type": "synthetic"},
+                "load": {"type": "concurrency", "concurrency": 8},
+                "stop": {"requests": 16},
+            },
+            "optimization": {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 8}},
+        }
+    )
+    monkeypatch.setattr(Sweeper, "run", lambda self, smart, **kwargs: smart)
+    caplog.set_level("WARNING", logger="aisimulate.recommend")
+
+    smart = _run_recommendation(config, stack="engine", runner_factory=None, show_progress=False)
+
+    declared = "engine.context_length is 'max'; using the model maximum of"
+    if context_length == "max":
+        assert f"{declared} {smart.search_space.context_length} tokens" in caplog.text
+        assert "are excluded from the search" in caplog.text
+    else:
+        assert declared not in caplog.text

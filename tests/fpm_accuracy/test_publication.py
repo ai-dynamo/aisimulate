@@ -4,14 +4,17 @@
 import hashlib
 import io
 import json
+import subprocess
+import sys
 import urllib.error
 import zipfile
 from pathlib import Path
 
-import prepare_fpm_accuracy_pages as publish
 import pytest
 import yaml
-from fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+
+import scripts.pages.prepare_fpm_accuracy_pages as publish
+from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -236,3 +239,15 @@ def test_workflow_and_pages_contract():
         s for s in pages["jobs"]["build"]["steps"] if s.get("name") == "Build pull request preview from repository data"
     )
     assert "--fpm-artifacts" not in preview["run"]
+
+
+@pytest.mark.parametrize("module", ["run_fpm_accuracy", "prepare_fpm_measurements"])
+def test_fpm_entrypoints_do_not_shadow_standard_library_types(module):
+    result = subprocess.run(
+        [sys.executable, "-m", f"scripts.fpm_accuracy.{module}", "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout

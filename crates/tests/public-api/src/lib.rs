@@ -181,9 +181,9 @@ mod tests {
         assert!(predict_graph_prefill(&model, 1, 1024, 0).is_err());
         let mut controls = EstimatorConfig::default();
         controls.op_level.prefill_graph_profile =
-            Some("sglang_glm52_nvfp4_vr200_tp4_graph_v1".into());
+            Some("sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1".into());
         controls.op_level.prefill_graph_profile_id =
-            Some("829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce".into());
+            Some("530a1359d5d14ec5d9f39c1adede0631388c89ff2c549d66c37c62d7aaaf0b10".into());
         assert!(controls.op_level.decode_workload_distribution.is_none());
         let mut config = ForwardPassPerfModelConfig::new(
             "missing-model",
@@ -678,6 +678,14 @@ mod tests {
         .unwrap();
         assert_eq!(driver.total_turns(), 2);
         assert_eq!(driver.next_ready_time_ms(), Some(0.0));
+        driver
+            .enable_agentic_profile(aisimulate_core::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 1.0,
+                response_grace_seconds: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.agentic_profile_report().is_some());
     }
 }
 
@@ -709,6 +717,7 @@ pub fn rebuild_replay_report_literals(
             agentic_graph: report.agentic_graph,
             agentic_snapshots: report.agentic_snapshots,
             agentic_phases: None,
+            agentic_profile: report.agentic_profile,
             agentic_lifecycle: report.agentic_lifecycle,
             agentic_play_outcomes: report.agentic_play_outcomes,
             goodput: report.goodput,

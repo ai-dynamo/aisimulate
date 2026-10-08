@@ -152,5 +152,5 @@ API predicts 38/38 with MAPE **2.81290416%**. Its aggregate API predicts 26/38 w
 conditional MAPE **2.68722182%** and preserves the 12 multi-prefill guard failures.
 H200 bounded also uses actual per-request witnesses for full explicit coverage;
 explicit coverage does not expand aggregate support. The
-[coverage report](../../docs/fpm/deepseek-v41-four-gpu.md) includes measured
+[coverage report](../../../../benchmarks/evidence/accuracy/deepseek-v41.md) includes measured
 errors and limits, including B200 full's large prefill outliers.

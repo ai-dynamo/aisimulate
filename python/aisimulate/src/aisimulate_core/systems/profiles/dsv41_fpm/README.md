@@ -283,7 +283,7 @@ Set attention TP and MoE TP to the measured width; PP, attention DP, MoE EP,
 and CP are 1. Match the table's precision selectors, including
 `fpm_fmha_dtype="fp8"` for native engine/replay JSON. This selects the FPM
 attention cell without overriding the checkpoint's analytical arithmetic.
-See the [execution contract](../../../../../docs/fpm/deepseek-v41.md) for the
+See the [execution contract](../../../../../../../docs/perf-model/models/deepseek-v41.md) for the
 corresponding Python model option.
 
 Coverage is established only by published measurements and their validation.

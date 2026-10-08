@@ -25,6 +25,8 @@ The goal drives two things in `score.py`: the **objective** read from each repla
 `trace_report` (`objective_value`), and **step 3** of scoring — `rank` (scalar) or
 `pareto_front` (multi-objective).
 
+<a id="optimization-goal"></a>
+
 ## Targets
 
 Every `OptimizationTarget` and the exact report metric it reads (`score.objective_value`):
@@ -132,7 +134,7 @@ candidate-relative KV load, and searched load domains. Analytical EPD supports c
 
 In the CLI, use `optimization.target: min_gpus` and
 `optimization.constraints.min_goodput_rps`; SLA remains under `evaluation.sla`. See the
-[minimum-GPU migration mapping](../MIGRATION.md#traffic-parallelism-and-minimum-gpus).
+[minimum-GPU migration mapping](../aic-backward-compatibility/migration.md#traffic-parallelism-and-minimum-gpus).
 
 ## Pareto
 
@@ -148,7 +150,7 @@ tradeoff between the scalar targets in `pareto_objectives`.
 
 - **optimizer selection** — the historical SDK path (`sweep.max_trials: null`)
   creates round-based Vizier studies. Its default algorithm is `DEFAULT`, subject
-  to the [algorithm override](configuration.md#sampler-algorithm-override).
+  to the [algorithm override](search-space.md#sampler-algorithm-override).
   When `sweep.max_trials` is set, `sweep.algorithm` selects the seeded Bayesian
   or random sampler. The unified CLI always supplies this total-trial budget
   from `optimizer.max_trials`; `optimizer.algorithm` selects `bayesian` or
@@ -169,7 +171,7 @@ tradeoff between the scalar targets in `pareto_objectives`.
   continuous parameter. Each ratio is converted to an absolute concurrency from that
   candidate's decode/agg KV capacity, so the model compares equivalent load pressure across
   different replica and parallel configurations. If a synthetic Pareto workload omits all
-  load fields, the range defaults to `[0.0, 1.0]`; see [traffic.md](traffic.md).
+  load fields, the range defaults to `[0.0, 1.0]`; see [traffic.md](sdk.md#workload-fields).
 
 Per-objective raw values are stored on `Candidate.objectives` (keyed by
 `OptimizationTarget` value, e.g. `{"throughput_per_gpu": .., "throughput_per_user": ..}`)
@@ -185,7 +187,7 @@ controls under `optimizer`. The CLI's Pareto objectives are fixed to
 `goal.pareto_objectives` list. Do not copy a complete SDK YAML into the CLI.
 
 For a CLI recommendation that minimizes TTFT, start with the
-[bounded recommendation example](../cli/user-guide.md#recommend-under-a-gpu-budget)
+[bounded recommendation example](quickstart.md#recommend-under-a-gpu-budget)
 and replace its goal with:
 
 ```yaml
@@ -196,5 +198,5 @@ optimization:
 
 Its score is negative mean TTFT, so a larger score means lower latency. Use
 `metrics.mean_ttft_ms` when displaying the latency itself. The
-[prediction interpretation guide](../cli/understand-your-prediction.md)
+[prediction interpretation guide](../getting-started/understand-results.md)
 explains latency populations and why strict aggregate SLA is not a p99 gate.
