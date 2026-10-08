@@ -177,6 +177,32 @@ def run_attention_torch(
         # TRTLLM-backend contract flashinfer does not consume, so an fp8-labeled
         # flashinfer row would record BF16 compute under an fp8 label. Fail closed.
         raise ValueError("TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path")
+    # FIXME(kernel-limit): trtllm-gen has no FMHA for head_dim 192 on SM100/103 — context
+    # ("Missing TRTLLM-GEN kernel (context): headDimQk=192", 2,904 b200 rc29 cases) and decode
+    # ("Missing TRTLLM-GEN kernel (decode)", 1,624 b200 / 1,641 b300). Serving routes the same
+    # kernel. Classified before the layer is built; re-verify on the next TRT-LLM bump.
+    if head_dim == 192 and get_sm_version() in (100, 103):
+        raise ValueError(
+            "FIXME(kernel-limit): TRT-LLM trtllm-gen FMHA has no head_dim=192 kernel on SM100/103 "
+            f"({'context' if is_context_phase else 'decode'}; trtllm_fmha_kernel_launcher.cu:320)"
+        )
+    # FIXME(kernel-limit): SM90 decode with an FP8 KV cache at GQA ratio >= 24 (96 q-heads over
+    # 4 kv-heads) crashes inside the TRTLLM decode kernel — "CUDA error: unspecified launch
+    # failure" plus SIGABRT, 681 + 681 cases on h100/h200 rc29 (2026-10-08), every one
+    # num_heads=96, kv_heads=4, fp8 KV, head_dim 64/128/256. Same class as the rc23 campaign's
+    # "decode fails for fp8 KV at GQA ratio 24/32" (finding campaign_1002 (3)). Classified here
+    # so the worker does not die mid-sweep; re-verify on the next TRT-LLM bump.
+    if (
+        not is_context_phase
+        and use_fp8_kv_cache
+        and get_sm_version() == 90
+        and num_key_value_heads
+        and num_heads // num_key_value_heads >= 24
+    ):
+        raise ValueError(
+            "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes at GQA ratio >= 24 "
+            f"(num_heads={num_heads}, num_key_value_heads={num_key_value_heads}); launch failure + SIGABRT"
+        )
 
     # if XQA JIT is enabled, the context phase will also trigger XQA prepare which causes the error
     # with specifc q/kv head and seq setting.

@@ -136,6 +136,11 @@ STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall
 # sat 76 min at 0/58482 with no error until the pipeline watchdog cancelled the
 # whole job; a finite, diagnosable failure is worth more than an open-ended wait.
 STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
+# Seconds of zero progress after which the executor asks every live worker for a
+# stack dump (SIGUSR1 -> faulthandler) ONCE, without killing: the l40s sglang
+# moe/bf16 first case legitimately took minutes (JIT) and then the shard ran 2h23m
+# to completion — the diagnosis must not cost the run.
+STALL_DIAG_SEC = int(os.environ.get("AISIM_STALL_DIAG_SEC") or 600)
 # Failures of one (model, dtype) group within an op before the summary flags
 # it as systemic (a fix-me warning; nothing is skipped).
 SYSTEMIC_GROUP_THRESHOLD = 5
@@ -1456,6 +1461,21 @@ class ProfilerContext:
         logger.info(f"Full profile saved to: {profile_file}")
 
 
+KERNEL_LIMIT_PREFIX = "FIXME(kernel-limit)"
+
+
+def _classify_exception(error: BaseException) -> str:
+    """How the error report labels a failed case.
+
+    ``kernel_limit``: the collector itself refused the cell with a cited,
+    deterministic framework limit (message starts with FIXME(kernel-limit) —
+    divisibility guards, missing kernels, unsupported head ranges). These are
+    expected on every rerun and must be counted apart from ``unexpected``
+    failures (pipeline summaries matched message text by hand until 2026-10-08).
+    """
+    return "kernel_limit" if str(error).lstrip().startswith(KERNEL_LIMIT_PREFIX) else "unexpected"
+
+
 def _failure_group(task) -> str | None:
     """Group label for failure aggregation: one (model, dtype) family within an op.
 
@@ -1648,7 +1668,7 @@ def worker(
                 "task_params": str(task),
                 "error_type": type(e).__name__,
                 "error_message": str(e),
-                "classification": "unexpected",
+                "classification": _classify_exception(e),
                 "group": _failure_group(task),
                 "traceback": traceback.format_exc(),
                 "timestamp": datetime.now().isoformat(),
@@ -1936,6 +1956,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
         last_progress = 0
         stall_count = 0
         stall_since = None
+        stall_diag_sent = False
         last_error_count = 0
 
         if num_processes == 0:
@@ -1964,7 +1985,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                         "task_params": str(task_params),
                         "error_type": type(e).__name__,
                         "error_message": str(e),
-                        "classification": "unexpected",
+                        "classification": _classify_exception(e),
                         "group": _failure_group(task_params),
                         "traceback": traceback.format_exc(),
                         "timestamp": datetime.now().isoformat(),
@@ -1996,8 +2017,31 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                 stall_count += 1
                 stall_since = stall_since or time.time()
                 if stall_count > STALL_THRESHOLD:
-                    logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
+                    if not accounted:
+                        # the first case carries module import + JIT/autotune: slow is normal, silent is not
+                        logger.info(
+                            f"waiting for the first result ({int(time.time() - stall_since)} s, 0/{len(task_infos)}; "
+                            f"stacks dumped at {STALL_DIAG_SEC} s, op stopped at {STALL_TIMEOUT_SEC} s of no progress)"
+                        )
+                    else:
+                        logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
                     stall_count = 0
+                if (
+                    STALL_DIAG_SEC > 0
+                    and not stall_diag_sent
+                    and time.time() - stall_since > STALL_DIAG_SEC
+                ):
+                    stall_diag_sent = True
+                    live = [p for p in processes if p is not None and p.is_alive()]
+                    logger.warning(
+                        f"{module_name}: no progress for {int(time.time() - stall_since)} s; requesting thread "
+                        f"stacks from {len(live)} live worker(s) (SIGUSR1 -> faulthandler, workers keep running)"
+                    )
+                    for p in live:
+                        try:
+                            os.kill(p.pid, signal.SIGUSR1)
+                        except Exception:
+                            pass
                 if (
                     STALL_TIMEOUT_SEC > 0
                     and time.time() - stall_since > STALL_TIMEOUT_SEC
@@ -2008,6 +2052,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
             else:
                 stall_count = 0
                 stall_since = None
+                stall_diag_sent = False
                 last_progress = len(accounted)
 
             # Check process health — only restart if there is still work

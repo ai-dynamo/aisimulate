@@ -1419,13 +1419,13 @@ def run_moe_torch(
         and (hidden_size % 8 != 0 or local_inter_size % 8 != 0)
     ):
         raise ValueError(
-            "SGLang FlashInfer CUTLASS BF16 MoE requires hidden_size and local_inter_size "
+            "FIXME(kernel-limit): SGLang FlashInfer CUTLASS BF16 MoE requires hidden_size and local_inter_size "
             f"to be divisible by 8, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     activation_vector_size = 16 if sm_version >= 100 else 8
     if moe_backend == "triton" and is_gated and activation == "gelu" and local_inter_size % activation_vector_size != 0:
         raise ValueError(
-            "SGLang Triton gated BF16 GELU requires local_inter_size "
+            "FIXME(kernel-limit): SGLang Triton gated BF16 GELU requires local_inter_size "
             f"to be divisible by {activation_vector_size}, got local_inter_size={local_inter_size}"
         )
     if (
@@ -1436,7 +1436,7 @@ def run_moe_torch(
         and (hidden_size % 128 != 0 or local_inter_size % 128 != 0)
     ):
         raise ValueError(
-            "SGLang SM90 DeepSeek-V4 W4A16 FP4 experts require hidden_size and local_inter_size "
+            "FIXME(kernel-limit): SGLang SM90 DeepSeek-V4 W4A16 FP4 experts require hidden_size and local_inter_size "
             f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     if (
@@ -1459,6 +1459,7 @@ def run_moe_torch(
         # runtime series. (The separate serialized-MXFP4 Mxfp4MoEMethod does
         # pad, but is not the is_fp4_experts path guarded here.)
         raise ValueError(
+            "FIXME(kernel-limit): "
             "SGLang SM100/103 DeepSeek-V4 W4A8 FP4 experts require hidden_size and local_inter_size "
             f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
@@ -1490,7 +1491,7 @@ def run_moe_torch(
         int4_group_size = int(int4_config.get("group_size", 128))
         if hidden_size % int4_group_size != 0 or local_inter_size % int4_group_size != 0:
             raise ValueError(
-                "SGLang INT4-WO group quantization requires hidden_size and local_inter_size "
+                "FIXME(kernel-limit): SGLang INT4-WO group quantization requires hidden_size and local_inter_size "
                 f"to be divisible by group_size={int4_group_size}, got "
                 f"hidden_size={hidden_size}, local_inter_size={local_inter_size}"
             )
@@ -1498,7 +1499,7 @@ def run_moe_torch(
     elif moe_type == "fp8_block":
         if moe_backend == "triton" and (hidden_size % 128 != 0 or local_inter_size % 128 != 0):
             raise ValueError(
-                "SGLang Triton fp8_block requires hidden_size and local_inter_size "
+                "FIXME(kernel-limit): SGLang Triton fp8_block requires hidden_size and local_inter_size "
                 f"to be divisible by 128, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
             )
         block_shape = [128, 128]

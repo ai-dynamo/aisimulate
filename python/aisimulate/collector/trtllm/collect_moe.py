@@ -433,7 +433,7 @@ def run_moe_torch(
     # next framework version bump.
     if moe_type == "fp8_block" and (hidden_size % 128 != 0 or (inter_size // moe_tp_size) % 128 != 0):
         raise ValueError(
-            f"fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
+            f"FIXME(kernel-limit): fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
             f"size (128x128-blocked weight scales; deepgemm layout.hpp:78 on SM90/100/103, "
             f"Triton block-scale on SM120); got hidden_size={hidden_size}, "
             f"inter_size={inter_size} / moe_tp={moe_tp_size} = {inter_size // moe_tp_size}"
@@ -441,7 +441,7 @@ def run_moe_torch(
 
     if moe_type == "w4afp8" and (inter_size // moe_tp_size) % 128 != 0:
         raise ValueError(
-            f"w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
+            f"FIXME(kernel-limit): w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
             f"k alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"
         )
@@ -461,7 +461,7 @@ def run_moe_torch(
     }[moe_type]
     if (inter_size // moe_tp_size) % (256 // _weight_bits) != 0:
         raise ValueError(
-            f"TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
+            f"FIXME(kernel-limit): TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
             f"of 256/weight_bits = {256 // _weight_bits} for {moe_type} (TLLM_CHECK_WITH_INFO "
             f"weight-layout alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"

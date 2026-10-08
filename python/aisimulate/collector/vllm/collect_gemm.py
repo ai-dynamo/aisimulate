@@ -288,6 +288,23 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         for op in op_list:
             op.forward(x)
 
+    if gemm_type == "fp8_block":
+        # FIXME(kernel-limit): for small N vLLM's cutlass_scaled_mm declines the shape and
+        # falls back to triton_scaled_mm, whose scale-shape assert cannot take 128x128 block
+        # scales (compressed_tensors/triton_scaled_mm.py:201). Deterministic per shape and
+        # per platform: gb200 (aarch64) 1,110 cases at N in {1,4,8,12,24}, b200/b300 ~130
+        # of the same shard (job batch 2026-10-08). Serving linears with these N take the same
+        # path. Run one forward first so the assert becomes a classified failure, not an
+        # anonymous AssertionError out of the timing loop.
+        try:
+            kernel_func()
+        except AssertionError as error:
+            raise RuntimeError(
+                "FIXME(kernel-limit): vLLM fp8_block GEMM "
+                f"(m={m}, n={n}, k={k}): cutlass_scaled_mm declined the shape and the "
+                "triton_scaled_mm fallback asserts on block scales (triton_scaled_mm.py:201)"
+            ) from error
+
     with benchmark_with_power(
         device=device,
         kernel_func=kernel_func,

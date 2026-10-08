@@ -446,6 +446,28 @@ def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str 
     }.get(sm_version)
 
 
+_FLASHINFER_WORKSPACE_MIN_BYTES = 1 << 30
+
+
+def _ensure_flashinfer_workspace() -> None:
+    """Raise SGLang's FlashInfer workspace floor before a backend is built.
+
+    sglang sizes the FlashInfer plan buffers from global_config.flashinfer_workspace_size
+    (default 384 MiB, env FLASHINFER_WORKSPACE_SIZE). The decode sweep's large
+    batch x kv-heads cells need more (l40s 0.5.21: "Buffer overflow when allocating
+    batch_prefill_tmp_v with size 536870912 ... only 402653184 bytes available", 671
+    attention_generation cases). Serving would raise the env for such a deployment; the
+    collector raises the floor to 1 GiB (no-op when already larger).
+    """
+    try:
+        from sglang.global_config import global_config
+    except Exception:
+        return
+    current = getattr(global_config, "flashinfer_workspace_size", None)
+    if isinstance(current, int) and current < _FLASHINFER_WORKSPACE_MIN_BYTES:
+        global_config.flashinfer_workspace_size = _FLASHINFER_WORKSPACE_MIN_BYTES
+
+
 def run_attention_torch(
     batch_size,
     input_len,
@@ -471,6 +493,7 @@ def run_attention_torch(
     from collector.sglang.runtime_compat import ensure_offline_runtime_published
 
     ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
+    _ensure_flashinfer_workspace()
     if use_fp8_context_fmha:
         assert use_fp8_kv_cache, "If you want to use fp8 context fmha, kv cache must be fp8"
     kvtype = torch.float8_e4m3fn if use_fp8_kv_cache else torch.bfloat16

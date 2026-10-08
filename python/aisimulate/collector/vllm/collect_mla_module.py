@@ -997,6 +997,24 @@ def run_mla_module(
         device=device,
         is_context=is_context,
     )
+    if attn_type == "dsa" and use_fp8_kv_cache:
+        # vLLM 0.30 DeepseekV32 attention, sparse-MHA prefill branch with an FP8 query:
+        # `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) passes
+        # key=None. Under torch.compile (serving) the rotary CustomOp is disabled and
+        # forward_native handles None; this collector runs eagerly with custom_ops=["all"]
+        # (utils.create_vllm_config) so forward_cuda takes the FlashInfer op, which does
+        # `key.view(...)` -> "'NoneType' object has no attribute 'view'" (3,864 b200 + ~3k b300
+        # + ~3k gb200 cases, isl 512-3072, every head count). Serving never runs this op here;
+        # use the native rope for the module's rotary like serving does. FIXME(re-verify):
+        # drop once vLLM guards key=None in deepseek_scaling_rope.forward_cuda.
+        _rope_patched = 0
+        for _name, _m in attn_module.named_modules():
+            if _m.__class__.__name__.endswith("RotaryEmbedding") and getattr(_m, "use_flashinfer", False):
+                _m.use_flashinfer = False
+                _rope_patched += 1
+        if _rope_patched:
+            print(f"[vllm-mla-module] dsa fp8: {_rope_patched} rotary module(s) switched to the native rope "
+                  "(serving runs it native under compile; eager FlashInfer rope rejects key=None)")
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
