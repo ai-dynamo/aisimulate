@@ -28,7 +28,7 @@ SPDX-License-Identifier: Apache-2.0
       }
     </script>
     <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=predictor-cards-1" />
   </head>
   <body>
     <header class="top-header">
@@ -85,41 +85,63 @@ SPDX-License-Identifier: Apache-2.0
         <article class="summary-card"><div class="summary-label">FPM (KV warmup on) average MAPE</div><div class="summary-value" id="warmup-value">—</div><div class="summary-note" id="warmup-count"></div></article>
         <article class="summary-card"><div class="summary-label">FPM (KV warmup off) average MAPE</div><div class="summary-value" id="nowarmup-value">—</div><div class="summary-note" id="nowarmup-count"></div></article>
       </section>
-      <section class="matrix-panel predictor-reference" aria-labelledby="predictors-heading">
+      <section class="predictor-reference" aria-labelledby="predictors-heading">
         <h2 id="predictors-heading">How the predictors work</h2>
-        <p>Each card averages available configuration MAPEs equally. Model rows below are weighted by successful prediction count.</p>
-        <dl>
-          <dt>Regression</dt>
-          <dd>Learns from preceding observations per worker. Predict first, then tune on the observed latency.
-            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_regression", fallback_policy="deny"))</code></summary>
-            <pre><code>config = replace(base_config, estimation_mode="fpm_regression", fallback_policy="deny")
+        <p class="predictor-intro">One online learner and two measured-library predictors.</p>
+        <div class="predictor-cards">
+          <article class="predictor-card predictor-regression" aria-labelledby="regression-heading">
+            <h3 id="regression-heading">Regression</h3>
+            <p>Learns from preceding observations per worker. Predict first, then tune on the observed latency.</p>
+            <dl><dt>Input</dt><dd>Previous worker observations</dd><dt>Mode</dt><dd><code>fpm_regression</code></dd></dl>
+            <details><summary>Python example</summary>
+            <pre><code>config = replace(
+    base_config,
+    estimation_mode="fpm_regression",
+    fallback_policy="deny",
+)
 model = RustForwardPassPerfModel.best_available(config)
 latency_ms = model.estimate_forward_pass_time_ms(workload)
 model.tune_with_fpms(observations)</code></pre></details>
-          </dd>
-          <dt>FPM (KV warmup on)</dt>
-          <dd>Uses a whole-forward library collected with KV warmup, interpolation, and supported analytical scaling.
-            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny", systems_paths=(warmup_library_root,)))</code></summary>
-            <pre><code>config = replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny",
-                 systems_paths=(warmup_library_root,))
+          </article>
+          <article class="predictor-card predictor-warmup" aria-labelledby="warmup-heading">
+            <h3 id="warmup-heading">FPM (KV warmup on)</h3>
+            <p>Predicts from whole-forward measurements using interpolation and supported analytical scaling.</p>
+            <dl><dt>Input</dt><dd>Library collected with KV warmup</dd><dt>Mode</dt><dd><code>fpm_interpolation</code></dd></dl>
+            <details><summary>Python example</summary>
+            <pre><code>config = replace(
+    base_config,
+    estimation_mode="fpm_interpolation",
+    fallback_policy="deny",
+    systems_paths=(warmup_library_root,),
+)
 model = RustForwardPassPerfModel.best_available(config)
 latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details>
-          </dd>
-          <dt>FPM (KV warmup off)</dt>
-          <dd>Uses the same prediction mechanism with a library collected without KV warmup.
-            <details><summary>Python API: <code>model = RustForwardPassPerfModel.best_available(replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny", systems_paths=(no_warmup_library_root,)))</code></summary>
-            <pre><code>config = replace(base_config, estimation_mode="fpm_interpolation", fallback_policy="deny",
-                 systems_paths=(no_warmup_library_root,))
+          </article>
+          <article class="predictor-card predictor-nowarmup" aria-labelledby="nowarmup-heading">
+            <h3 id="nowarmup-heading">FPM (KV warmup off)</h3>
+            <p>Uses the same interpolation and analytical scaling with measurements collected without KV warmup.</p>
+            <dl><dt>Input</dt><dd>Library collected without KV warmup</dd><dt>Mode</dt><dd><code>fpm_interpolation</code></dd></dl>
+            <details><summary>Python example</summary>
+            <pre><code>config = replace(
+    base_config,
+    estimation_mode="fpm_interpolation",
+    fallback_policy="deny",
+    systems_paths=(no_warmup_library_root,),
+)
 model = RustForwardPassPerfModel.best_available(config)
 latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details>
-          </dd>
-        </dl>
+          </article>
+        </div>
+        <div class="predictor-reference-notes">
+        <p><strong>KV warmup describes how the input library was collected.</strong> It is not a prediction-time Boolean.</p>
         <p>Examples use <code>replace</code> from <code>dataclasses</code> and <code>RustForwardPassPerfModel</code> from <code>aisimulate_core.sdk</code>.
           Supply a <code>ForwardPassPerfModelConfig</code> as <code>base_config</code> with matching model, hardware, backend, topology, and worker role;
-          use a separate regression model per worker. KV warmup identifies the selected input library, not a prediction-time Boolean.</p>
+          use a separate regression model per worker.</p>
         <p>See the <a href="https://github.com/ai-dynamo/aisimulate/blob/main/docs/perf-model/configuration.md#choosing-a-forward-pass-api">configuration API</a> and
           <a href="https://github.com/ai-dynamo/aisimulate/blob/main/pages/fpm-accuracy/README.md#what-is-published">Gym regression settings</a>
           for the evaluated regression policy, which differs from SDK defaults.</p>
+        <p>Summary cards average configuration MAPEs equally. Model table rows are weighted by successful prediction count.</p>
+        </div>
       </section>
 
       <section class="matrix-panel" aria-labelledby="matrix-heading">

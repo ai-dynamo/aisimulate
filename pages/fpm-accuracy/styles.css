@@ -6,13 +6,34 @@
 .predictors-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .summary-note { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .evaluation-banner a, .evaluation-banner time { white-space: nowrap; }
-.predictor-reference { padding: 20px; margin-bottom: 24px; }
-.predictor-reference p, .predictor-reference dd { color: var(--muted); font-size: 13px; line-height: 1.6; }
-.predictor-reference dt { font-weight: 600; margin-top: 18px; }
-.predictor-reference dd { margin: 4px 0 0; }
-.predictor-reference summary { cursor:pointer; color:var(--text); margin-top:4px; font-size:12px; overflow-wrap:anywhere; }
-.predictor-reference pre { padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; color: var(--text); font-size: 12px; }
+.predictor-reference { padding: 20px; margin: 12px 0 24px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); text-align: left; }
+.predictor-reference > h2 { margin: 0; padding: 0; color: var(--text); font-size: 16px; font-weight: 600; }
+.predictor-reference p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.predictor-intro { margin: 6px 0 20px; }
+.predictor-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.predictor-card { min-width: 0; padding: 18px; border: 1px solid var(--border); border-top: 3px solid var(--predictor-color); border-radius: 8px; }
+.predictor-regression { --predictor-color: #818cf8; }
+.predictor-warmup { --predictor-color: #2dd4bf; }
+.predictor-nowarmup { --predictor-color: #fb923c; }
+.predictor-card h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.predictor-card > p { margin: 10px 0 16px; min-height: 4.8em; }
+.predictor-card dl { display: grid; grid-template-columns: auto 1fr; gap: 10px 12px; margin: 0 0 16px; font-size: 12px; line-height: 1.5; }
+.predictor-card dt { color: var(--muted); }
+.predictor-card dd { margin: 0; overflow-wrap: anywhere; }
+.predictor-card dd code { display: inline-block; padding: 1px 6px; border-radius: 4px; background: var(--accent-soft); }
+.predictor-reference summary { cursor: pointer; color: var(--text); padding: 10px 0; font-size: 12px; }
+.predictor-reference summary:hover { color: var(--accent); }
+.predictor-reference summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.predictor-card details { border-top: 1px solid var(--border); }
+.predictor-reference pre { margin: 0; padding: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; overflow-x: auto; color: var(--text); font-size: 12px; line-height: 1.6; }
+.predictor-reference-notes { margin-top: 20px; overflow-wrap: anywhere; }
+.predictor-reference-notes p { margin: 8px 0 0; font-size: 12px; }
+.predictor-reference-notes strong { color: var(--text); font-weight: 500; }
 .predictor-reference a { color: var(--accent); }
+@media (max-width: 1000px) {
+  .predictor-cards { grid-template-columns: 1fr; }
+  .predictor-card > p { min-height: 0; }
+}
 .overview-method-cell .predictor-name { color: var(--text); margin: 3px 0; }
 .evaluation-banner a, .overview-config-row a, .overview-method-cell a { color: var(--accent); text-decoration: none; }
 .evaluation-banner a:hover, .overview-config-row a:hover, .overview-method-cell a:hover { text-decoration: underline; }
