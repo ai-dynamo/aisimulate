@@ -790,7 +790,7 @@ The current vLLM versioned template tops out at `0.20.1`; newer vLLM versions (e
 - If `--generator-dynamo-version` is not provided, the default is the first entry in `backend_version_matrix.yaml` (currently `1.3.0`).
 - If `--generated-config-version` is provided, it overrides the generated backend version, but the default K8s image tag still follows the selected Dynamo version mapping.
 
-Use `--generator-config path/to/file.yaml` to provide ServiceConfig/K8sConfig/DynConfig/WorkerConfig/Workers.<role> sections, or add inline overrides via `--generator-set KEY=VALUE`. Examples:
+Use `--generator-config path/to/file.yaml` to provide `ServiceConfig`/`K8sConfig`/`DynConfig`/`WorkerConfig`/`Workers.<role>` sections, or add inline overrides via `--generator-set KEY=VALUE`. Examples:
 
 - `--generator-set ServiceConfig.model_path=Qwen/Qwen3-32B-FP8`
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
@@ -1164,15 +1164,16 @@ disagg_full:
   decode_max_batch_size: 512
 ```
 This is long; the basics:
-    - `serving_mode`: `agg` or `disagg` for this experiment.
-    - `total_gpus`: total GPU budget for the deployment.
-    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
-    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
-    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
-    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
-    - Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
-    - `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
-    - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](#advanced-tuning). Typically the only thing you need to touch is the quantization.
+
+- `serving_mode`: `agg` or `disagg` for this experiment.
+- `total_gpus`: total GPU budget for the deployment.
+- For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
+- For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
+- `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
+- `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
+- Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
+- `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
+- The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](#advanced-tuning). Typically the only thing you need to touch is the quantization.
 
 Quantization override order: explicit `*_quant_mode` fields take precedence; any mode left unset is filled from the model's HF quantization metadata.
 

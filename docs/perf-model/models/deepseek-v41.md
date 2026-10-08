@@ -166,8 +166,8 @@ persistent main record. The exact layout is scoped to 512-wide, 64-RoPE,
 BF16 pool alternatives are outside this contract.
 
 Only four Full layers own compressed main/index pools; Reindex and Reuse share
-them. One ratio-one owner and three ratio-two owners yield 652*(1+3/2)=1630 bytes
-per token after the windows fill. At 131072 tokens, 40*128*584 window bytes plus
+them. One ratio-one owner and three ratio-two owners yield `652*(1+3/2)=1630` bytes
+per token after the windows fill. At 131072 tokens, `40*128*584` window bytes plus
 three ratio-two FP32 pair states plus compressed pools total 216662016 bytes
 (206.625 MiB). Odd/even publication boundaries are preserved by forward and
 inverse capacity APIs. This is physical **payload**, not allocator consumption:
