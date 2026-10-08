@@ -2022,6 +2022,12 @@ impl PyForwardPassPerfModel {
         Ok(Self { inner })
     }
 
+    /// Rank-local token and fixed-request bytes for modeled KV handoff.
+    fn kv_transfer_geometry(&self) -> PyResult<String> {
+        let geometry = self.inner.kv_transfer_geometry().map_err(aic_to_py)?;
+        serde_json::to_string(&geometry).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
     /// Expand and validate the canonical schema without constructing an engine.
     #[staticmethod]
     fn normalize_config(config_json: &str) -> PyResult<String> {

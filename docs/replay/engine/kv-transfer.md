@@ -26,6 +26,7 @@ Omitting `kv_transfer` is the same as `{}`: the transfer happens with no delay.
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
 | `engine.kv_transfer.bytes_per_token` | `auto` | fixed | Positive integer or `auto`. Bytes moved per prompt token. `auto` derives it from the model and the prefill role's TP/PP/MoE shape. It can differ from either worker's `kv_cache.bytes_per_token`. |
+| `engine.kv_transfer.bytes_per_request` | Inferred with AIS `auto`; otherwise `0` | fixed | Nonnegative integer. Fixed rank-local payload charged once per request, including when no prompt tokens are missing. An explicit value overrides inference. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | fixed | Positive, in decimal GB/s. `null` means no transfer delay, not a zero-bandwidth link. |
 | `engine.kv_transfer.timing_mode` | `destination_missing` | fixed | `destination_missing` charges only the prompt KV the chosen decode worker does not already hold in its cache. `full_prompt` charges the whole prompt. |
 
@@ -35,13 +36,44 @@ All fields accept only concrete values; `recommend` does not search them.
 Transfer time in seconds is
 
 ```text
-transferred_tokens × bytes_per_token / (bandwidth_gb_per_second × 10^9)
+(transferred_tokens × bytes_per_token + bytes_per_request) / (bandwidth_gb_per_second × 10^9)
 ```
 
 where `transferred_tokens` follows `timing_mode`. With
 `destination_missing`, a decode worker that already caches a shared prefix
 receives the request sooner, so prefix reuse on the decode side can lower TTFT
 even when compute time does not change.
+
+## Automatic affine geometry
+
+With AIS timing and positive bandwidth, `bytes_per_token: auto` resolves both
+payload components through the canonical performance model, even when KV
+capacity is explicitly fixed. `RustForwardPassPerfModel.best_available(config)`
+exposes the same values and provenance through `kv_transfer_geometry()`.
+Explicit token bytes retain the legacy zero fixed term unless
+`bytes_per_request` is also supplied. Custom timing retains the legacy scalar
+auto estimator; supply both components explicitly for a nonlinear cache model.
+A native engine with positive bandwidth must resolve its payload before
+scheduling; an incomplete model no longer silently uses zero delay. Omitted
+bandwidth remains disabled; the native legacy value `0` also stays disabled.
+
+DeepSeek V4 uses an **affine upper-envelope approximation** of its resident
+cache: compressed KV/indexer growth contributes the token slope; all compressor
+state plus the full sliding window contributes the fixed request term. This
+reserves the full window for short prompts and replaces compression floors with
+fractional growth. It matches compression-aligned, window-saturated lengths and
+overestimates the other lengths; it is not an exact connector wire layout.
+For V4 Pro with FP8 KV, PP=1, DCP=1 and no speculation, the coefficients are
+4,444 bytes/token and 21,479,424 bytes/request. Auto inference rejects unsupported
+V4 PP/DCP/speculation combinations. Both components follow the model's rank-local
+geometry; no extra TP fanout multiplier or TP4-to-TP8 layout conversion is modeled.
+`destination_missing` reduces only the token term; the fixed payload remains.
+
+The AIS native replay path and public Python materializer resolve these fields.
+Downstream adapters must forward both resolved fields (native names
+`kv_transfer_bytes_per_token` and `kv_transfer_bytes_per_request`) or explicitly
+invoke the model query. A capacity-only adapter that copies only `num_gpu_blocks`
+needs follow-up plumbing; updating a dependency alone does not enable it.
 
 <a id="handoff"></a>
 

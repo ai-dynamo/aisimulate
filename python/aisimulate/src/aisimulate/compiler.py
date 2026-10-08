@@ -263,7 +263,14 @@ def _deployment(
     decode = engine.workers.decode
     _require_disaggregated_context_parallelism(engine.backend, prefill, decode)
     transfer_bytes_per_token = None
-    if engine.kv_transfer is not None:
+    if engine.kv_transfer is not None and not (
+        engine.kv_transfer.bytes_per_token == "auto"
+        and engine.kv_transfer.bandwidth_gb_per_second is not None
+        and prefill.timing.type == "default"
+        and engine.fpm_profile is None
+    ):
+        # Positive-bandwidth auto geometry is resolved by the canonical AIS
+        # model, including a fixed request term for nonlinear cache models.
         transfer_bytes_per_token = _resolve_kv_bytes_per_token(
             engine,
             prefill,
@@ -753,8 +760,12 @@ def _worker_engine_args(
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
     if cache.g3_offload is not None:
         payload["g3_offload"] = cache.g3_offload.model_dump(mode="json")
-    if engine.kv_transfer is not None:
+    if engine.kv_transfer is not None and not (role == "decode" and transfer_bytes_per_token is None):
+        # Only the prefill source needs deferred auto geometry. In particular,
+        # a custom-timed decoder must not be asked to resolve an AIS payload.
         transfer = engine.kv_transfer
+        if transfer.bytes_per_request is not None:
+            payload["kv_transfer_bytes_per_request"] = transfer.bytes_per_request
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode

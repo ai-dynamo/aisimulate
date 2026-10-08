@@ -1276,6 +1276,22 @@ fn resolve_role_timing(
     {
         coverage_sources.push((worker_type, Arc::clone(model)));
     }
+    if role
+        .rank
+        .kv_transfer_bandwidth
+        .is_some_and(|bandwidth| bandwidth > 0.0)
+        && role.rank.kv_transfer_bytes_per_token.is_none()
+    {
+        let geometry = timing
+            .diagnostic_model
+            .as_ref()
+            .context("AIS transfer auto sizing requires canonical model")?
+            .kv_transfer_geometry()?;
+        role.rank.kv_transfer_bytes_per_token = Some(geometry.bytes_per_token);
+        if role.rank.kv_transfer_bytes_per_request.is_none() {
+            role.rank.kv_transfer_bytes_per_request = Some(geometry.bytes_per_request);
+        }
+    }
     if !capture_performance_diagnostics {
         timing.diagnostic_model = None;
     }

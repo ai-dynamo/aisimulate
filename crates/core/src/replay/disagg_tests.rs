@@ -2215,6 +2215,38 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
 }
 
 #[test]
+fn affine_handoff_fixed_state_survives_a_fully_cached_destination() {
+    for engine_type in [EngineType::Vllm, EngineType::Sglang] {
+        for bandwidth in [1.0, 100.0] {
+            let mut config =
+                transfer_timing_config(engine_type, KvTransferTimingMode::DestinationMissing, 1);
+            config.prefill_args.kv_transfer_bytes_per_request = Some(10_000_000);
+            config.prefill_args.kv_transfer_bandwidth = Some(bandwidth);
+            let result = run_trace_with_details(
+                &config,
+                vec![request(1, 128, 1, 0.0), request(2, 128, 2, 1_000.0)],
+                None,
+            );
+            let second = result
+                .per_request
+                .iter()
+                .find(|r| r.arrival_time_ms > 0.0)
+                .unwrap();
+            // SGLang reserves before prefill completes; transfer requires both ends ready.
+            let transfer_ms = second.destination_activated_ms.unwrap()
+                - second
+                    .destination_reserved_ms
+                    .unwrap()
+                    .max(second.source_held_ms.unwrap());
+            assert!(
+                (transfer_ms - 10.0 / bandwidth).abs() < 1e-8,
+                "{engine_type:?}: {transfer_ms}"
+            );
+        }
+    }
+}
+
+#[test]
 fn destination_missing_timing_uses_isolated_destination_cache_state() {
     for engine_type in [EngineType::Vllm, EngineType::Sglang] {
         for (seed_tokens, measured_tokens, expected_missing_ms) in [

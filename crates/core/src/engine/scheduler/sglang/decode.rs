@@ -277,6 +277,7 @@ fn prefill_first_tokens(
                 req.prompt_len(),
                 config.kv_transfer_bandwidth,
                 config.kv_transfer_bytes_per_token,
+                config.kv_transfer_bytes_per_request,
             ),
         });
         completed_indices.push(idx);
@@ -325,6 +326,7 @@ fn prefill_first_tokens(
                 req.prompt_len(),
                 config.kv_transfer_bandwidth,
                 config.kv_transfer_bytes_per_token,
+                config.kv_transfer_bytes_per_request,
             ),
         });
     }
@@ -428,6 +430,7 @@ fn simulate_step(
                     req.prompt_len(),
                     config.kv_transfer_bandwidth,
                     config.kv_transfer_bytes_per_token,
+                    config.kv_transfer_bytes_per_request,
                 ),
             }
         })
@@ -570,6 +573,7 @@ fn simulate_step(
                     req.prompt_len(),
                     config.kv_transfer_bandwidth,
                     config.kv_transfer_bytes_per_token,
+                    config.kv_transfer_bytes_per_request,
                 ),
             });
 

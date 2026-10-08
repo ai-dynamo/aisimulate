@@ -169,6 +169,7 @@ def unroll_sample(
     if mode == "disagg":
         for key in (
             "kv_transfer_bytes_per_token",
+            "kv_transfer_bytes_per_request",
             "kv_transfer_bandwidth",
             "kv_transfer_timing_mode",
         ):

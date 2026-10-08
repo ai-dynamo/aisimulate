@@ -647,6 +647,7 @@ mod tests {
         let missing = HandoffTransferTiming {
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 10,
+            kv_bytes_per_request: 0,
             kv_bytes_per_token: None,
             bandwidth_gb_s: None,
         };
@@ -666,6 +667,7 @@ mod tests {
         let timing = HandoffTransferTiming {
             mode: TransferTimingMode::FullPrompt,
             full_prompt_tokens: 10,
+            kv_bytes_per_request: 0,
             kv_bytes_per_token: Some(1024),
             bandwidth_gb_s: Some(-1.0),
         };

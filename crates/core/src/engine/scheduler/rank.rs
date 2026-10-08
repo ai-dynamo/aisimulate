@@ -86,6 +86,14 @@ impl SchedulerRank {
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
         );
+        ensure!(
+            !config
+                .kv_transfer_bandwidth
+                .is_some_and(|bandwidth| bandwidth > 0.0)
+                || config.kv_transfer_bytes_per_token.is_some()
+                || config.kv_transfer_bytes_per_request.unwrap_or(0) > 0,
+            "positive kv_transfer_bandwidth requires materialized transfer byte geometry before scheduling"
+        );
         let mut args = core_args(config, timing);
         if config.backend == Backend::Sglang {
             normalize_sglang_attention_dp(&mut args, identity.dp_size.get())?;
@@ -437,6 +445,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_nextn_accept_rates: config.aic_nextn_accept_rates.clone(),
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
+        kv_transfer_bytes_per_request: config.kv_transfer_bytes_per_request,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         kv_cache_groups: config.kv_cache_groups.clone(),
         kv_cache_capacity_bytes: config.kv_cache_capacity_bytes,

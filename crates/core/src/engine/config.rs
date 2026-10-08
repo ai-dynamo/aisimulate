@@ -551,6 +551,9 @@ pub struct EngineConfig {
     pub emit_kv_token_ids: bool,
     /// Bytes transferred per prompt token for disaggregated handoff timing.
     pub kv_transfer_bytes_per_token: Option<usize>,
+    /// Fixed bytes transferred once per handoff, including with a cached prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_transfer_bytes_per_request: Option<usize>,
     /// Physical KV-cache bytes occupied by one token for host offload.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_bytes_per_token: Option<usize>,
@@ -637,6 +640,8 @@ struct EngineConfigWire {
     emit_kv_token_ids: bool,
     #[serde(default, alias = "kv_bytes_per_token")]
     kv_transfer_bytes_per_token: Option<usize>,
+    #[serde(default)]
+    kv_transfer_bytes_per_request: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_cache_bytes_per_token: Option<usize>,
     #[serde(default)]
@@ -703,6 +708,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             emit_kv_events: wire.emit_kv_events,
             emit_kv_token_ids: wire.emit_kv_token_ids,
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
+            kv_transfer_bytes_per_request: wire.kv_transfer_bytes_per_request,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
             kv_cache_groups: wire.kv_cache_groups,
             kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
@@ -746,6 +752,7 @@ impl Default for EngineConfig {
             emit_kv_events: false,
             emit_kv_token_ids: false,
             kv_transfer_bytes_per_token: None,
+            kv_transfer_bytes_per_request: None,
             kv_cache_bytes_per_token: None,
             kv_cache_groups: Vec::new(),
             kv_cache_capacity_bytes: None,
@@ -808,7 +815,9 @@ impl EngineConfig {
                 "state_cache does not support g3_offload in the G1-only implementation"
             );
             ensure!(
-                self.kv_transfer_bytes_per_token.is_none() && self.kv_transfer_bandwidth.is_none(),
+                self.kv_transfer_bytes_per_token.is_none()
+                    && self.kv_transfer_bytes_per_request.is_none()
+                    && self.kv_transfer_bandwidth.is_none(),
                 "state_cache does not support kv_transfer_bytes_per_token or kv_transfer_bandwidth"
             );
             // Keep the default accepted, including serialized configs that emit it explicitly.
@@ -942,6 +951,7 @@ impl EngineConfig {
             ensure!(
                 self.kv_cache_bytes_per_token.is_none()
                     && self.kv_transfer_bytes_per_token.is_none()
+                    && self.kv_transfer_bytes_per_request.is_none()
                     && self.kv_transfer_bandwidth.is_none(),
                 "kv_cache_groups cannot use linear cache or KV transfer byte geometry"
             );
@@ -1026,6 +1036,18 @@ impl EngineConfig {
                 .is_none_or(|bandwidth| bandwidth.is_finite() && bandwidth >= 0.0),
             "kv_transfer_bandwidth must be finite and non-negative"
         );
+        if self
+            .kv_transfer_bandwidth
+            .is_some_and(|bandwidth| bandwidth > 0.0)
+            && self.kv_transfer_bytes_per_token.is_none()
+            && self.kv_transfer_bytes_per_request.unwrap_or(0) == 0
+        {
+            ensure!(
+                matches!(&self.timing_model, TimingModelConfig::External { provider, .. }
+                    if matches!(provider.as_str(), "aic" | "ais")),
+                "positive kv_transfer_bandwidth requires transfer byte geometry or an AIS timing provider for automatic resolution"
+            );
+        }
         match &self.timing_model {
             TimingModelConfig::Polynomial => {}
             TimingModelConfig::Fixed {
@@ -1348,6 +1370,38 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(config.block_size, 17);
+    }
+
+    #[test]
+    fn affine_transfer_round_trips_and_incomplete_positive_bandwidth_fails() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "kv_transfer_bytes_per_token": 4444,
+            "kv_transfer_bytes_per_request": 21479424,
+            "kv_transfer_bandwidth": 100.0
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        let copy: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(copy, config);
+        let mut missing = config.clone();
+        missing.kv_transfer_bytes_per_token = None;
+        missing.kv_transfer_bytes_per_request = None;
+        assert!(
+            missing
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("transfer byte geometry")
+        );
+        missing.kv_transfer_bandwidth = None;
+        missing.validate().unwrap();
+        missing.kv_transfer_bandwidth = Some(0.0);
+        missing.validate().unwrap(); // Legacy disabled-bandwidth contract.
+        for bandwidth in [-1.0, f64::INFINITY, f64::NAN] {
+            missing.kv_transfer_bandwidth = Some(bandwidth);
+            assert!(missing.validate().is_err());
+        }
     }
 
     #[test]

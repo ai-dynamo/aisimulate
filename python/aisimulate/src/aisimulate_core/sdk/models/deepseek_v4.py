@@ -395,6 +395,29 @@ class DeepSeekV4Model(BaseModel):
                     total += 2 * ratio * 2 * deepseek_v4_cfg.index_head_dim * 4
         return total
 
+    def get_kv_transfer_affine_bytes(self) -> tuple[int, int]:
+        """Rank-local affine upper envelope of the resident KV footprint.
+
+        Reserve the full sliding window once/request; replace floor(L/ratio)
+        with L/ratio. This is an intentional payload approximation, not the
+        physical connector's wire layout. It is exact for window-saturated,
+        compression-aligned lengths (before integer byte rounding).
+        """
+        import math
+
+        cfg = self.extra_params
+        entry = cfg.head_dim * self.config.kvcache_quant_mode.value.memory
+        per_token = sum(entry / ratio for ratio in self._compress_ratios if ratio)
+        per_token += sum(
+            common.deepseek_v4_indexer_cache_entry_bytes(cfg.index_head_dim) / ratio
+            for ratio in self._compress_ratios
+            if ratio == 4
+        )
+        per_request = self.get_kvcache_bytes_per_sequence(0)
+        per_request += len(self._compress_ratios) * cfg.sliding_window * entry
+        divisor = self._cp_kv_memory_divisor()
+        return math.ceil(per_token / divisor), math.ceil(per_request / divisor)
+
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         """Capacity inverse over the window-capped + compressed KV curve (non-linear)."""
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)

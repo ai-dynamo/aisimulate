@@ -69,6 +69,9 @@ pub struct HandoffTransferTiming {
     pub full_prompt_tokens: usize,
     /// Modeled KV bytes occupied by one prompt token.
     pub kv_bytes_per_token: Option<usize>,
+    /// Fixed request-local payload, charged once even when no tokens are missing.
+    #[serde(default)]
+    pub kv_bytes_per_request: usize,
     /// Modeled transfer bandwidth in decimal gigabytes per second.
     pub bandwidth_gb_s: Option<f64>,
 }
@@ -84,16 +87,20 @@ impl HandoffTransferTiming {
             TransferTimingMode::FullPrompt => self.full_prompt_tokens,
             TransferTimingMode::DestinationMissing => destination_missing_tokens,
         };
-        let (Some(bytes_per_token), Some(bandwidth_gb_s)) =
-            (self.kv_bytes_per_token, self.bandwidth_gb_s)
-        else {
+        let bandwidth_gb_s = self.bandwidth_gb_s?;
+        if self.kv_bytes_per_token.is_none() && self.kv_bytes_per_request == 0 {
             return None;
-        };
-        if bandwidth_gb_s <= 0.0 {
+        }
+        let bytes_per_token = self.kv_bytes_per_token.unwrap_or(0);
+        if !bandwidth_gb_s.is_finite() || bandwidth_gb_s <= 0.0 {
             return None;
         }
 
-        Some(tokens as f64 * bytes_per_token as f64 / (bandwidth_gb_s * 1e9) * 1000.0)
+        Some(
+            (tokens as f64 * bytes_per_token as f64 + self.kv_bytes_per_request as f64)
+                / (bandwidth_gb_s * 1e9)
+                * 1000.0,
+        )
     }
 
     /// Calculate delay using the full prompt irrespective of `mode`.
@@ -117,6 +124,25 @@ pub fn prefill_handoff_delay_ms(
     bandwidth_gb_s: Option<f64>,
     kv_bytes_per_token: Option<usize>,
 ) -> Option<f64> {
+    prefill_handoff_delay_with_request_bytes_ms(
+        worker_type,
+        completed,
+        num_input_tokens,
+        bandwidth_gb_s,
+        kv_bytes_per_token,
+        0,
+    )
+}
+
+/// Affine counterpart of [`prefill_handoff_delay_ms`].
+pub fn prefill_handoff_delay_with_request_bytes_ms(
+    worker_type: WorkerType,
+    completed: bool,
+    num_input_tokens: usize,
+    bandwidth_gb_s: Option<f64>,
+    kv_bytes_per_token: Option<usize>,
+    kv_bytes_per_request: usize,
+) -> Option<f64> {
     if worker_type != WorkerType::Prefill || !completed {
         return None;
     }
@@ -124,6 +150,7 @@ pub fn prefill_handoff_delay_ms(
         mode: TransferTimingMode::FullPrompt,
         full_prompt_tokens: num_input_tokens,
         kv_bytes_per_token,
+        kv_bytes_per_request,
         bandwidth_gb_s,
     }
     .full_prompt_delay_ms()
@@ -132,6 +159,43 @@ pub fn prefill_handoff_delay_ms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn affine_transfer_charges_fixed_payload_once_and_scales_with_bandwidth() {
+        let timing = HandoffTransferTiming {
+            mode: TransferTimingMode::DestinationMissing,
+            full_prompt_tokens: 4096,
+            kv_bytes_per_token: Some(4444),
+            kv_bytes_per_request: 21_479_424,
+            bandwidth_gb_s: Some(100.0),
+        };
+        for tokens in [0, 64, 512, 4096] {
+            let expected = (tokens * 4444 + 21_479_424) as f64 / 100_000_000.0;
+            assert!((timing.delay_ms(tokens).unwrap() - expected).abs() < 1e-12);
+            let slower = HandoffTransferTiming {
+                bandwidth_gb_s: Some(1.0),
+                ..timing
+            };
+            assert!((slower.delay_ms(tokens).unwrap() - expected * 100.0).abs() < 1e-10);
+        }
+        let fixed_only = HandoffTransferTiming {
+            kv_bytes_per_token: None,
+            ..timing
+        };
+        assert_eq!(fixed_only.delay_ms(0), fixed_only.delay_ms(4096));
+        assert!(fixed_only.delay_ms(0).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn old_handoff_json_defaults_to_zero_fixed_payload() {
+        let timing: HandoffTransferTiming = serde_json::from_value(serde_json::json!({
+            "mode": "full_prompt", "full_prompt_tokens": 128,
+            "kv_bytes_per_token": 1000, "bandwidth_gb_s": 1.0
+        }))
+        .unwrap();
+        assert_eq!(timing.kv_bytes_per_request, 0);
+        assert_eq!(timing.full_prompt_delay_ms(), Some(0.128));
+    }
 
     #[test]
     fn handoff_id_round_trips_caller_owned_value() {
@@ -145,6 +209,7 @@ mod tests {
         let timing = HandoffTransferTiming {
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 100,
+            kv_bytes_per_request: 0,
             kv_bytes_per_token: Some(1_000),
             bandwidth_gb_s: Some(1.0),
         };
@@ -158,6 +223,7 @@ mod tests {
         let timing = HandoffTransferTiming {
             mode: TransferTimingMode::FullPrompt,
             full_prompt_tokens: 100,
+            kv_bytes_per_request: 0,
             kv_bytes_per_token: None,
             bandwidth_gb_s: Some(1.0),
         };

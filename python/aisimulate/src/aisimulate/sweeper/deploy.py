@@ -178,7 +178,13 @@ def _engine_args_payload(
             else int(configured_bytes)
         )
     transfer_geometry = sample.get("kv_transfer_bytes_per_token")
-    if role in {"prefill", "decode"} and transfer_geometry is not None:
+    deferred_transfer = (
+        transfer_geometry == "auto"
+        and sample.get("kv_transfer_bandwidth")
+        and sample.get("prefill_timing_model") is None
+        and sample.get("fpm_profile") is None
+    )
+    if role in {"prefill", "decode"} and transfer_geometry is not None and not deferred_transfer:
         payload["kv_transfer_bytes_per_token"] = (
             estimate_kv_bytes_per_token(
                 str(sample["model_name"]),
@@ -194,7 +200,9 @@ def _engine_args_payload(
         )
     if host_offload is not None:
         payload["native_host_offload"] = dict(host_offload)
-    if role in {"prefill", "decode"}:
+    if role in {"prefill", "decode"} and not (role == "decode" and deferred_transfer):
+        if sample.get("kv_transfer_bytes_per_request") is not None:
+            payload["kv_transfer_bytes_per_request"] = int(sample["kv_transfer_bytes_per_request"])
         if sample.get("kv_transfer_bandwidth") is not None:
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
         if sample.get("kv_transfer_timing_mode") is not None:

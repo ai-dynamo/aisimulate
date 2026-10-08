@@ -39,7 +39,10 @@ pub use config::{
     TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
-pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
+pub use handoff::{
+    HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms,
+    prefill_handoff_delay_with_request_bytes_ms,
+};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
     ForwardPassMetrics, KvBlock, KvEvent, KvEventData, KvEventTier, LifecycleEvent, Metrics,

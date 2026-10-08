@@ -208,6 +208,8 @@ pub(crate) struct MockEngineArgs {
     #[builder(default = "None")]
     pub kv_transfer_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
+    pub kv_transfer_bytes_per_request: Option<usize>,
+    #[builder(default = "None")]
     pub kv_cache_bytes_per_token: Option<usize>,
     #[builder(default)]
     pub kv_cache_groups: Vec<crate::perfmodel::FpmCacheGroup>,

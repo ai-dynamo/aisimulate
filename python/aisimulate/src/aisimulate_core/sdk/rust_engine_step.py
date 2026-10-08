@@ -368,6 +368,10 @@ class RustForwardPassPerfModel:
 
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
 
+    def kv_transfer_geometry(self) -> dict[str, Any]:
+        """Return rank-local affine payload bytes and approximation provenance."""
+        return json.loads(self._inner.kv_transfer_geometry())
+
     @staticmethod
     def normalize_config(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
         """Expand and validate the Rust-owned configuration without constructing a model."""

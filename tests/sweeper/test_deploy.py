@@ -236,7 +236,7 @@ def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():
     assert engine["native_host_offload"] == host_offload
 
 
-def test_disagg_auto_transfer_geometry_uses_prefill_source_shape(monkeypatch):
+def test_disagg_auto_transfer_geometry_is_deferred_to_canonical_role_models(monkeypatch):
     monkeypatch.setattr(
         deploy_module,
         "estimate_kv_bytes_per_token",
@@ -265,8 +265,8 @@ def test_disagg_auto_transfer_geometry_uses_prefill_source_shape(monkeypatch):
 
     deployment = build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
-    assert deployment.prefill_engine_args["kv_transfer_bytes_per_token"] == 20_001
-    assert deployment.decode_engine_args["kv_transfer_bytes_per_token"] == 20_001
+    assert deployment.prefill_engine_args.get("kv_transfer_bytes_per_token") is None
+    assert deployment.decode_engine_args.get("kv_transfer_bytes_per_token") is None
 
 
 def _role_geometry_profile(roles):

@@ -628,6 +628,7 @@ class SearchSpace(BaseModel):
     agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
+    kv_transfer_bytes_per_request: int | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"
     engine_float_ranges: dict[str, list[float]] = Field(default_factory=dict)

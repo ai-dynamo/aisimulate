@@ -48,6 +48,8 @@ def materialize_aic_num_gpu_blocks(
             "dp_size",
             "kv_cache_groups",
             "kv_cache_capacity_bytes",
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_bytes_per_request",
         ):
             if name in value:
                 result[name] = value[name]
@@ -62,6 +64,10 @@ def materialize_aic_num_gpu_blocks(
         return result
 
     lowered = dict(raw)
+    if "kv_bytes_per_token" in lowered:
+        if "kv_transfer_bytes_per_token" in lowered:
+            raise ValueError("duplicate field kv_transfer_bytes_per_token (legacy kv_bytes_per_token)")
+        lowered["kv_transfer_bytes_per_token"] = lowered.pop("kv_bytes_per_token")
     timing = lowered.get("timing_model")
     timing_system_roots = None
     if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
@@ -103,13 +109,22 @@ def materialize_aic_num_gpu_blocks(
             model = RustForwardPassPerfModel.best_available(request)
             try:
                 diagnostics = model.diagnostics()
+                if (lowered.get("kv_transfer_bandwidth") or 0) > 0 and lowered.get(
+                    "kv_transfer_bytes_per_token"
+                ) is None:
+                    geometry = model.kv_transfer_geometry()
+                    lowered["kv_transfer_bytes_per_token"] = geometry["bytes_per_token"]
+                    if lowered.get("kv_transfer_bytes_per_request") is None:
+                        lowered["kv_transfer_bytes_per_request"] = geometry["bytes_per_request"]
+                    if memory_diagnostics is not None:
+                        memory_diagnostics["kv_transfer_geometry"] = geometry
             finally:
                 model.close()
             if diagnostics.get("readiness") != "ready":
                 from .estimator_readiness import unready_estimator_message
 
                 raise ValueError(unready_estimator_message(diagnostics))
-            canonical_result = dict(raw)
+            canonical_result = dict(lowered)
             resolved = diagnostics["provenance"]["config"]
             if "worker_type" in lowered and lowered["worker_type"] != resolved["worker_type"]:
                 raise ValueError("worker_type conflicts with canonical timing configuration")

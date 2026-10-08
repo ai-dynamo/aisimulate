@@ -1989,6 +1989,13 @@ def test_prediction_fp8_kv_transfer_uses_cache_precision(mode):
     for role in roles:
         args = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
         assert args["timing_model"]["config"]["kvcache_quant_mode"] == "fp8"
+        if mode == "disaggregated":
+            if role == "decode":
+                assert args.get("kv_transfer_bandwidth") is None
+                continue
+            from aisimulate.capacity import materialize_aic_num_gpu_blocks
+
+            args = materialize_aic_num_gpu_blocks(args)
         key = "kv_cache_bytes_per_token" if mode == "aggregated" else "kv_transfer_bytes_per_token"
         # Qwen3-32B: 64 layers, K+V, 4 KV heads/rank at TP2, 128 dimensions, 1 byte FP8.
         assert args[key] == 65536

@@ -278,6 +278,7 @@ def recommendation_to_sweeper(
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
         search_space["kv_transfer_bytes_per_token"] = transfer.get("bytes_per_token")
+        search_space["kv_transfer_bytes_per_request"] = transfer.get("bytes_per_request")
         search_space["kv_transfer_bandwidth"] = transfer.get("bandwidth_gb_per_second")
         search_space["kv_transfer_timing_mode"] = transfer.get("timing_mode", "destination_missing")
     (

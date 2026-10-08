@@ -1457,6 +1457,7 @@ impl VllmCore {
                 request.sequence.num_input_tokens(),
                 self.args.kv_transfer_bandwidth,
                 self.args.kv_transfer_bytes_per_token,
+                self.args.kv_transfer_bytes_per_request,
                 self.args.kv_transfer_timing_mode,
             )
         });
@@ -2893,6 +2894,7 @@ impl VllmCore {
                     request.sequence.num_input_tokens(),
                     self.args.kv_transfer_bandwidth,
                     self.args.kv_transfer_bytes_per_token,
+                    self.args.kv_transfer_bytes_per_request,
                 );
                 already_complete.push((uuid, handoff_delay_ms));
                 continue;
@@ -3008,6 +3010,7 @@ impl VllmCore {
             let worker_type = self.args.worker_type;
             let kv_transfer_bandwidth = self.args.kv_transfer_bandwidth;
             let kv_transfer_bytes_per_token = self.args.kv_transfer_bytes_per_token;
+            let kv_transfer_bytes_per_request = self.args.kv_transfer_bytes_per_request;
             let (handoff_delay_ms, cached_tokens) = match self.state.requests.get_mut(&uuid) {
                 Some(request) => {
                     request.debug_assert_progress(uuid);
@@ -3017,6 +3020,7 @@ impl VllmCore {
                         request.sequence.num_input_tokens(),
                         kv_transfer_bandwidth,
                         kv_transfer_bytes_per_token,
+                        kv_transfer_bytes_per_request,
                     );
                     (handoff_delay_ms, request.take_cached_tokens_for_signal())
                 }
@@ -3268,6 +3272,7 @@ impl VllmCore {
                         prompt_tokens,
                         self.args.kv_transfer_bandwidth,
                         self.args.kv_transfer_bytes_per_token,
+                        self.args.kv_transfer_bytes_per_request,
                     ),
                 });
                 if is_complete {

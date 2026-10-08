@@ -517,6 +517,7 @@ impl SglangCore {
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
             self.config.kv_transfer_bytes_per_token,
+            self.config.kv_transfer_bytes_per_request,
             self.config.kv_transfer_timing_mode,
         );
         let payload = HeldSglangPrefill { request };

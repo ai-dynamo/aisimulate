@@ -1902,6 +1902,7 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
             "mem_fraction_static",
             "free_gpu_memory_fraction",
             "kv_transfer_bytes_per_token",
+            "kv_transfer_bytes_per_request",
             "kv_transfer_bandwidth",
         )
         if rank.get(name) is not None

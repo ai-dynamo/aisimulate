@@ -1467,3 +1467,80 @@ def estimate_num_gpu_blocks(
         diagnostics["scheduler_block_size_tokens"] = block_size
         diagnostics["num_gpu_blocks"] = tokens // block_size
     return tokens // block_size
+
+
+def _kv_transfer_geometry(config_json: str) -> dict[str, Any]:
+    """Implementation of the canonical model's startup-only resource query."""
+    import json
+
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    config = json.loads(config_json)
+    profile = config.get("fpm_profile")
+    if profile is not None:
+        deployment = load_fpm_profile(profile).select(
+            model=config["model"],
+            worker_type=config["worker_type"],
+            system=config["system"],
+            backend=config["backend"],
+            backend_version=config["backend_version"],
+            tp_size=config["tp"],
+            pp_size=config["pp"],
+            attention_dp_size=config["attention_dp"],
+            moe_tp_size=(config.get("moe_tp_size") or 1),
+            moe_ep_size=(config.get("moe_ep_size") or 1),
+        )
+        if deployment.resources.cache_layout == "grouped":
+            raise ValueError("grouped FPM cache has no affine transfer geometry; provide explicit transfer bytes")
+        deployment.validate_overrides(kvcache_quant_mode=config.get("kvcache_quant_mode"))
+        return {
+            "bytes_per_token": deployment.resources.kv_bytes_per_token,
+            "bytes_per_request": 0,
+            "source": "linear_fpm_profile",
+        }
+
+    info = get_model_config_from_model_path(config["model"])
+    if info["architecture"] == "DeepseekV4ForCausalLM":
+        if (
+            config.get("nextn", 0)
+            or config.get("speculation") is not None
+            or config["pp"] != 1
+            or config.get("dcp", 1) not in (None, 1)
+        ):
+            raise ValueError("V4 affine transfer auto sizing requires PP=1, DCP=1, and no speculation")
+        model_config = build_model_config(
+            tp_size=config["tp"],
+            pp_size=config["pp"],
+            attention_dp_size=config["attention_dp"],
+            moe_tp_size=(config.get("moe_tp_size") or 1),
+            moe_ep_size=(config.get("moe_ep_size") or 1),
+            kvcache_quant_mode=config.get("kvcache_quant_mode"),
+            cp_size=config.get("cp_size") or 1,
+            dcp_size=config.get("dcp") or 1,
+        )
+        model = get_model(config["model"], model_config, config["backend"])
+        per_token, per_request = model.get_kv_transfer_affine_bytes()
+        return {
+            "bytes_per_token": per_token,
+            "bytes_per_request": per_request,
+            "source": "deepseek_v4_affine_upper_envelope",
+        }
+
+    # Keep the established linear transfer approximation for other models.
+    # Never treat a nonlinear native M(1) diagnostic as a per-token slope.
+    estimator = NaiveKVCacheEstimator.from_model_path(
+        config["model"],
+        tp_size=config["tp"],
+        pp_size=config["pp"],
+        moe_tp_size=(config.get("moe_tp_size") or 1),
+        moe_ep_size=(config.get("moe_ep_size") or 1),
+        allow_hf_config_download=True,
+    )
+    if config.get("kvcache_quant_mode") is not None:
+        from aisimulate_core.sdk.common import KVCacheQuantMode
+
+        estimator.dtype_bytes = KVCacheQuantMode[config["kvcache_quant_mode"]].value.memory
+    value = estimator.kv_bytes_per_token()
+    if value is None or value <= 0:
+        raise ValueError("model does not provide transfer byte geometry; provide explicit transfer bytes")
+    return {"bytes_per_token": math.ceil(value), "bytes_per_request": 0, "source": "legacy_linear_approximation"}

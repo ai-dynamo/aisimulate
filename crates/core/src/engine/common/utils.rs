@@ -4,13 +4,14 @@
 use crate::engine::common::protocols::{KvTransferTimingMode, WorkerType as CoreWorkerType};
 use crate::engine::{
     HandoffTransferTiming, TransferTimingMode, WorkerType,
-    prefill_handoff_delay_ms as native_prefill_handoff_delay_ms,
+    prefill_handoff_delay_with_request_bytes_ms as native_prefill_handoff_delay_ms,
 };
 
 pub fn prefill_handoff_transfer_timing(
     num_input_tokens: usize,
     kv_transfer_bandwidth: Option<f64>,
     kv_bytes_per_token: Option<usize>,
+    kv_bytes_per_request: Option<usize>,
     mode: KvTransferTimingMode,
 ) -> HandoffTransferTiming {
     HandoffTransferTiming {
@@ -20,6 +21,7 @@ pub fn prefill_handoff_transfer_timing(
         },
         full_prompt_tokens: num_input_tokens,
         kv_bytes_per_token,
+        kv_bytes_per_request: kv_bytes_per_request.unwrap_or(0),
         bandwidth_gb_s: kv_transfer_bandwidth,
     }
 }
@@ -36,6 +38,7 @@ pub fn compute_prefill_handoff_delay_ms(
     num_input_tokens: usize,
     kv_transfer_bandwidth: Option<f64>,
     kv_bytes_per_token: Option<usize>,
+    kv_bytes_per_request: Option<usize>,
 ) -> Option<f64> {
     let delay_ms = native_prefill_handoff_delay_ms(
         match worker_type {
@@ -47,6 +50,7 @@ pub fn compute_prefill_handoff_delay_ms(
         num_input_tokens,
         kv_transfer_bandwidth,
         kv_bytes_per_token,
+        kv_bytes_per_request.unwrap_or(0),
     );
     match delay_ms {
         Some(delay_ms) => {
@@ -74,6 +78,7 @@ mod tests {
             128,
             Some(1.0),
             Some(1_000_000),
+            None,
         )
         .expect("prefill completion should produce a handoff delay");
         assert!((delay_ms - 128.0).abs() < 1e-9);
@@ -85,6 +90,7 @@ mod tests {
                 128,
                 Some(1.0),
                 Some(1_000_000),
+                None,
             )
             .is_none()
         );
@@ -95,6 +101,7 @@ mod tests {
                 128,
                 Some(1.0),
                 Some(1_000_000),
+                None,
             )
             .is_none()
         );

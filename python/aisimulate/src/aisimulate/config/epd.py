@@ -131,7 +131,9 @@ def _language_execution(spec: ReplaySpec) -> dict:
         timing.setdefault("database_mode", EstimatorPolicyConfig().database_mode)
         # HandoffTransferTiming::delay_ms uses the same fallback for either mode
         # when a complete byte-count/bandwidth transfer model is unavailable.
-        if rank.get("kv_transfer_bytes_per_token") is None or rank.get("kv_transfer_bandwidth") is None:
+        if (
+            rank.get("kv_transfer_bytes_per_token") is None and not rank.get("kv_transfer_bytes_per_request")
+        ) or rank.get("kv_transfer_bandwidth") is None:
             rank.pop("kv_transfer_timing_mode", None)
         result[role] = engine
     return result

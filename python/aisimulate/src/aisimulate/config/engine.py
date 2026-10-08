@@ -414,6 +414,7 @@ class WorkersPredictionConfig(StrictModel):
 
 class KvTransferConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
+    bytes_per_request: Annotated[int, Field(strict=True, ge=0, le=(1 << 64) - 1)] | None = None
     bandwidth_gb_per_second: PositiveFloat | None = None
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 

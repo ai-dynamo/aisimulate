@@ -279,7 +279,53 @@ enum ForwardPassPerfMode {
     },
 }
 
+/// Rank-local affine handoff payload. `source` records an approximation's scope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KvTransferGeometry {
+    pub bytes_per_token: usize,
+    pub bytes_per_request: usize,
+    pub source: String,
+}
+
 impl ForwardPassPerfModel {
+    /// Derive startup-only transfer bytes from the same resolved model identity.
+    /// This does not change forward-pass timing or model network contention.
+    #[cfg(feature = "python")]
+    pub fn kv_transfer_geometry(&self) -> Result<KvTransferGeometry, AicError> {
+        use pyo3::prelude::*;
+        let config = &self
+            .provenance
+            .as_ref()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "KV transfer geometry requires canonical model provenance".into(),
+                )
+            })?
+            .config;
+        let config_json = serde_json::to_string(config)
+            .map_err(|error| AicError::InvalidEngineConfig(error.to_string()))?;
+        let geometry = Python::with_gil(|py| -> PyResult<KvTransferGeometry> {
+            let value = py
+                .import("aisimulate_core.sdk.memory")?
+                .call_method1("_kv_transfer_geometry", (config_json,))?;
+            let bytes_per_token = value.get_item("bytes_per_token")?.extract()?;
+            let bytes_per_request = value.get_item("bytes_per_request")?.extract()?;
+            let source = value.get_item("source")?.extract()?;
+            Ok(KvTransferGeometry {
+                bytes_per_token,
+                bytes_per_request,
+                source,
+            })
+        })
+        .map_err(|error| AicError::InvalidEngineConfig(format!("KV transfer geometry: {error}")))?;
+        if geometry.bytes_per_token == 0 && geometry.bytes_per_request == 0 {
+            return Err(AicError::InvalidEngineConfig(
+                "KV transfer geometry must contain positive bytes".into(),
+            ));
+        }
+        Ok(geometry)
+    }
+
     /// Internal: build a native model directly from an already-compiled
     /// [`Engine`]. Holds the actual native-mode logic; the public
     /// [`Self::best_available`] constructor compiles the `Engine` (crossing

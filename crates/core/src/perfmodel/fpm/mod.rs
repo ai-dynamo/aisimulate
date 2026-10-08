@@ -50,7 +50,7 @@ pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, Schedul
 pub use model::{
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfProvenance,
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
+    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType, KvTransferGeometry,
 };
 pub use options::ForwardPassPerfOptions;
 pub use regression::ForwardPassSplineDiagnostics;
