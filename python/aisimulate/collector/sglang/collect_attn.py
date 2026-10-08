@@ -449,23 +449,45 @@ def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str 
 _FLASHINFER_WORKSPACE_MIN_BYTES = 1 << 30
 
 
-def _ensure_flashinfer_workspace() -> None:
-    """Raise SGLang's FlashInfer workspace floor before a backend is built.
+def _ensure_flashinfer_workspace() -> int | None:
+    """Raise SGLang's FlashInfer workspace floor BEFORE the first backend of this
+    process is built, through the knob the pinned version actually reads.
 
-    sglang sizes the FlashInfer plan buffers from global_config.flashinfer_workspace_size
-    (default 384 MiB, env FLASHINFER_WORKSPACE_SIZE). The decode sweep's large
-    batch x kv-heads cells need more (l40s 0.5.21: "Buffer overflow when allocating
-    batch_prefill_tmp_v with size 536870912 ... only 402653184 bytes available", 671
-    attention_generation cases). Serving would raise the env for such a deployment; the
-    collector raises the floor to 1 GiB (no-op when already larger).
+    0.5.21 sizes the shared decode/prefill plan buffer from
+    ``sglang.srt.environ.envs.SGLANG_FLASHINFER_WORKSPACE_SIZE`` (EnvInt, default
+    384 MiB) and allocates it ONCE per process via ``get_buffer("flashinfer_workspace")``
+    (flashinfer_backend.py:430-436); serving itself bumps the knob to 512 MiB for
+    Qwen2/Qwen3/MiMo architectures (:394-404). The decode sweep's wide cells need
+    more than the default — l40s 0.5.21: "Buffer overflow when allocating
+    batch_prefill_tmp_v with size 536870912 ... only 402653184 bytes available",
+    671 attention_generation cases (heads 128 / kv 1 / head_dim 128, batch 32 x isl
+    255..4095). ed9109ec wrote ``global_config.flashinfer_workspace_size``, an
+    attribute 0.5.21 no longer has — a no-op (pipeline 72343559 reproduced all 671).
+    Older series keep the global_config path as a fallback. Returns the floor
+    applied (bytes) or None when no knob was found.
     """
     try:
-        from sglang.global_config import global_config
+        from sglang.srt.environ import envs
+
+        knob = getattr(envs, "SGLANG_FLASHINFER_WORKSPACE_SIZE", None)
+        if knob is not None:
+            current = int(knob.get())
+            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
+                knob.set(_FLASHINFER_WORKSPACE_MIN_BYTES)
+            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
     except Exception:
-        return
-    current = getattr(global_config, "flashinfer_workspace_size", None)
-    if isinstance(current, int) and current < _FLASHINFER_WORKSPACE_MIN_BYTES:
-        global_config.flashinfer_workspace_size = _FLASHINFER_WORKSPACE_MIN_BYTES
+        pass
+    try:
+        from sglang.global_config import global_config
+
+        current = getattr(global_config, "flashinfer_workspace_size", None)
+        if isinstance(current, int):
+            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
+                global_config.flashinfer_workspace_size = _FLASHINFER_WORKSPACE_MIN_BYTES
+            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
+    except Exception:
+        pass
+    return None
 
 
 def run_attention_torch(
@@ -592,6 +614,7 @@ def run_attention_torch(
     if attn_backend_name == "flashinfer":
         from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
 
+        _ensure_flashinfer_workspace()  # the shared workspace is allocated by the first backend of the process
         attn_backend = FlashInferAttnBackend(model_runner)
     elif attn_backend_name == "trtllm_mha":
         from sglang.srt.layers.attention.trtllm_mha_backend import TRTLLMHAAttnBackend
