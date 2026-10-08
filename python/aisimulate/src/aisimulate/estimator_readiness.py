@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-FPM_SELF_SERVICE_GUIDE = "docs/fpm-self-service/README.md"
+FPM_SELF_SERVICE_GUIDE = "docs/perf-model/fpm-self-service/README.md"
 
 _UNSUPPORTED_ARCHITECTURE = re.compile(r"architecture (\S+) is not supported")
 _MODE_PREFIX = re.compile(r"^(OpLevel|FpmInterpolation|FpmRegression): ")

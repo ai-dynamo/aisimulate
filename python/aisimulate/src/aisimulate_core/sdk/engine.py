@@ -515,7 +515,7 @@ def compile_engine(
 
     ``decode_workload_distribution=None`` preserves the default model and latency
     behavior. The observed GLM-5.2 NVFP4 pilot profile selects only generation MoE
-    on the exact VR200 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
+    on the exact Vera Rubin NVL72 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
     half communication. Its measured physical nodes are 1, 8 and 32; intermediate
     logical batches are exploratory and queries outside 1..32 fail. Missing or
     mismatched approved profile data raises ``DecodeMoeProfileError``.

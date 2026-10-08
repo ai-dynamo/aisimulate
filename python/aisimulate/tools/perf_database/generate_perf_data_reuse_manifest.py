@@ -33,7 +33,7 @@ Usage:
     python3 python/aisimulate/tools/perf_database/generate_perf_data_reuse_manifest.py \\
         --data-root python/aisimulate/src/aisimulate_core/systems/data \\
         --out-json $TMPDIR/perf-data-reuse-analysis.json \\
-        --out-md   python/aisimulate/docs/perf_database/perf-data-reuse-analysis.md \\
+        --out-md   benchmarks/reports/perf-data/perf-data-reuse-analysis.md \\
         --out-manifest python/aisimulate/src/aisimulate_core/systems/perf_data_reuse_manifest.yaml
 
 The manifest lives under python/aisimulate/src/aisimulate_core/systems/

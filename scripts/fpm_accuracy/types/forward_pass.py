@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from fpm_accuracy.exceptions import DataError
+from scripts.fpm_accuracy.exceptions import DataError
 
 FPM_SCHEMA_VERSION = 1
 

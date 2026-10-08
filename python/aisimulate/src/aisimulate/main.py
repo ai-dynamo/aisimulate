@@ -10,13 +10,13 @@ import json
 import sys
 from collections.abc import Sequence
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
 from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
-from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
@@ -29,7 +29,7 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, energy_diagnostics, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics
 from .estimator_readiness import perf_data_missing_message
 from .output import (
     format_prediction_stdout,
@@ -49,6 +49,7 @@ from .output_adapter import (
     write_output_adapters,
 )
 from .power import normalize_power_summary
+from .predict import PredictionExecutionError, run_prediction
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -64,6 +65,60 @@ from .sweeper.replay import ReplayOutputRequirements
 
 class _CliExecutionError(RuntimeError):
     pass
+
+
+def _write_incomplete_fpm_coverage(root: Path, error: BaseException) -> None:
+    coverage = getattr(error, "fpm_query_coverage", None)
+    try:
+        if isinstance(coverage, str):
+            coverage = json.loads(coverage)
+        if isinstance(coverage, dict):
+            write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(error)})
+    except (ValueError, OSError) as write_error:
+        sys.stderr.write(f"could not save FPM coverage: {write_error}\n")
+
+
+class _PredictionCliRunner:
+    def __init__(self, runner, output_root: Path, mark_execution_ready, mark_shutdown) -> None:
+        self._runner = runner
+        self._output_root = output_root
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+
+    def run(self, spec, *, output_requirements=None):
+        try:
+            return self._runner.run(spec, output_requirements=output_requirements)
+        except BaseException as exc:
+            # Persist native query evidence before close() can replace the
+            # execution error.
+            _write_incomplete_fpm_coverage(self._output_root, exc)
+            raise
+
+    def close(self) -> None:
+        self._mark_shutdown()
+        try:
+            self._runner.close()
+        finally:
+            self._mark_execution_ready()
+
+
+class _PredictionCliRunnerFactory:
+    def __init__(self, factory, output_dir, overwrite, mark_execution_ready, mark_shutdown) -> None:
+        self._factory = factory
+        self._output_dir = output_dir
+        self._overwrite = overwrite
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+        self.output_root: Path | None = None
+
+    def capabilities(self):
+        return self._factory.capabilities()
+
+    def create(self, worker_id):
+        self.output_root = prepare_output_directory(self._output_dir, overwrite=self._overwrite)
+        runner = self._factory.create(worker_id)
+        self._mark_execution_ready()
+        return _PredictionCliRunner(runner, self.output_root, self._mark_execution_ready, self._mark_shutdown)
 
 
 def _resolve_section_adapters(sections: dict[str, dict[str, Any]], stack: str) -> dict[str, SimulationConfigAdapter]:
@@ -114,66 +169,35 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
         raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    adapter_specs = _compile_prediction_adapters(
-        adapter_raw,
-        adapters,
-        stack=args.stack,
-        context=_prediction_adapter_context(config),
+    factory = _PredictionCliRunnerFactory(
+        factory,
+        args.output_dir,
+        args.overwrite,
+        mark_execution_ready,
+        mark_shutdown,
     )
-    spec = prediction_to_replay_spec(
+    result = run_prediction(
         config,
-        adapter_specs=adapter_specs,
+        adapter_configs=adapter_raw,
+        stack=args.stack,
+        runner_factory=factory,
+        providers=adapters,
         execution_mode="online" if args.online else "offline",
+        output_requirements=ReplayOutputRequirements(
+            include_raw_report=not epd,
+            capture_per_request=args.capture_per_request,
+            capture_memory_diagnostics="memory" in args.detail,
+            capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
+        ),
     )
-    factory.capabilities().require_compatible(spec)
-    root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    runner = factory.create(0)
-    mark_execution_ready()
-    try:
-        try:
-            report = runner.run(
-                spec,
-                output_requirements=ReplayOutputRequirements(
-                    include_raw_report=not epd,
-                    capture_per_request=args.capture_per_request,
-                    capture_memory_diagnostics="memory" in args.detail,
-                    capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
-                ),
-            )
-        except BaseException as exc:
-            coverage = getattr(exc, "fpm_query_coverage", None)
-            if isinstance(coverage, str):
-                coverage = json.loads(coverage)
-            if isinstance(coverage, dict):
-                write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(exc)})
-            if isinstance(exc, (KeyboardInterrupt, ResourceLimitError)) or not isinstance(exc, Exception):
-                raise
-            missing_data = perf_data_missing_message(exc)
-            if missing_data is not None:
-                raise _CliExecutionError(missing_data) from exc
-            raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
-    finally:
-        mark_shutdown()
-        runner.close()
-        mark_execution_ready()
-    native = report.metadata.get("native_report")
-    if not isinstance(native, dict):
-        native = {"summary": dict(report.metrics)}
-    if epd:
-        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
-        if "memory_diagnostics" in native["metadata"]:
-            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
-        # JSON stdout, like prediction.json, must identify the approximation.
-        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
+    root = factory.output_root
+    if root is None:
+        raise RuntimeError("prediction runner was not created")
+    spec = result.replay_spec
+    summary = result.summary
+    native = result.native
     if isinstance(native.get("fpm_query_coverage"), dict):
         write_fpm_coverage(root, native["fpm_query_coverage"])
-    summary = prediction_summary(native)
-    summary.update(normalize_power_summary(report.metrics))
-    if "summary" in native:
-        native = {**native, "summary": summary}
-    else:
-        native = {**native, **summary}
     power_diagnostics = None
     if args.diagnostics == "power":
         power_diagnostics = energy_diagnostics(native)
@@ -204,7 +228,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    phases = report.metadata.get("agentic_phases")
+    phases = result.report.metadata.get("agentic_phases")
     if isinstance(phases, dict) and phases.get("phase") == "aborted":
         sys.stderr.write(
             f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
@@ -400,8 +424,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as output_error:
             sys.stderr.write(f"could not save resource plan: {output_error}\n")
         return 3
-    except _CliExecutionError as exc:
-        sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
+    except PredictionExecutionError as exc:
+        message = perf_data_missing_message(exc) or str(exc)
+        sys.stderr.write(f"aisimulate {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")

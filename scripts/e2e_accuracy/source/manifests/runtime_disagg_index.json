@@ -1,0 +1,1275 @@
+{
+  "schema_version": "runtime-artifact-cache/1",
+  "artifacts": [
+    {
+      "id": 8510532140,
+      "path": "8510532140.zip",
+      "sha256": "b168587d05960053e14aea277e552533a82f8e9e0e8c4f84bb9cbcb4a62b3980",
+      "github_run_id": "29528755773",
+      "run_attempt": 7,
+      "source_git_sha": "c1a4aa9d5b395098e64c3fefcd4b2446e40cb743",
+      "source_git_sha_evidence": "Run 29528755773 attempt 7 benchmark c308 checkout log",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29528755773/attempts/7/logs",
+        "logs_archive_sha256": "bb3370ee0b02777dc5c5b24f85da1eb7a4c90248e86db538087c4aeede672f10",
+        "job_log_member": "9_multi-node 8k1k _ (nvcr.io_nvidia_tensorrt-llm_release1.3.0rc21, nvidia_Kimi-K2.5-NVFP4, kimik2.... _ kimik2.5 fp4 b200-multinode dynamo-trt 1P (TP4_EP4_DPA) x 1D (TP8_EP8_DPA)    c308.txt",
+        "job_log_sha256": "d34367d228239c89d3d4e7f979938db79ba94343f969de3e84b7c261c542b1c4",
+        "checkout_and_upload_lines": [
+          "2026-07-21T20:45:37.2180614Z Uses: SemiAnalysisAI/InferenceX/.github/workflows/benchmark-multinode-tmpl.yml@refs/pull/2249/merge (c1a4aa9d5b395098e64c3fefcd4b2446e40cb743)",
+          "2026-07-21T20:45:37.4924849Z   ref: c1a4aa9d5b395098e64c3fefcd4b2446e40cb743",
+          "2026-07-21T20:45:51.3811725Z [command]/usr/bin/git rev-parse --verify --quiet c1a4aa9d5b395098e64c3fefcd4b2446e40cb743^{object}",
+          "2026-07-21T20:45:51.5541926Z c1a4aa9d5b395098e64c3fefcd4b2446e40cb743",
+          "2026-07-21T20:45:51.6251155Z [command]/usr/bin/git checkout --progress --force c1a4aa9d5b395098e64c3fefcd4b2446e40cb743",
+          "2026-07-21T20:45:53.8259825Z c1a4aa9d5b395098e64c3fefcd4b2446e40cb743",
+          "2026-07-21T21:19:18.1795649Z Artifact multinode_server_logs_kimik2.5_8k1k_fp4_dynamo-trt_prefill-tp4-pp1-dcp1-pcp1-ep4-dptrue-nw1_decode-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw1_disagg-true_spec-none_conc308_b200-dgxc_07 has been successfully uploaded! Final size is 10613528 bytes. Artifact ID is 8510532140"
+        ]
+      }
+    },
+    {
+      "id": 8319431108,
+      "path": "dynamo-8319431108.zip",
+      "sha256": "9e777ad29f1d7818813eedc3aa0847f661946024f5f0ecea991a4ab8a5a17fbc",
+      "github_run_id": "29287890247",
+      "run_attempt": 3,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "15_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c105.txt",
+        "content_sha256": "5d558710a8afa5fab3c28c97e357819434090f9a36b44c284d3cdb0c7724ba53",
+        "line": "2026-07-14T17:02:43.0537000Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt3-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/3/logs",
+        "logs_archive_sha256": "e19ee011dcdf8b36648730b76699e212c688a0ecce6d16c50f5ed3f2aafb6c92",
+        "job_log_member": "15_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c105.txt",
+        "job_log_sha256": "5d558710a8afa5fab3c28c97e357819434090f9a36b44c284d3cdb0c7724ba53"
+      }
+    },
+    {
+      "id": 8319362841,
+      "path": "dynamo-8319362841.zip",
+      "sha256": "9a980ec63f8ec6e6e3c7a2548b14bdb8ca61b8ad4563b7b25e94c7e26b125e62",
+      "github_run_id": "29287890247",
+      "run_attempt": 3,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "14_multi-node 1k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c25.txt",
+        "content_sha256": "a155e63142e063d3033a185d9b063df9e473ec6fc4e36b05e66b1595bed4aaee",
+        "line": "2026-07-14T17:06:38.7183489Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt3-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/3/logs",
+        "logs_archive_sha256": "e19ee011dcdf8b36648730b76699e212c688a0ecce6d16c50f5ed3f2aafb6c92",
+        "job_log_member": "14_multi-node 1k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c25.txt",
+        "job_log_sha256": "a155e63142e063d3033a185d9b063df9e473ec6fc4e36b05e66b1595bed4aaee"
+      }
+    },
+    {
+      "id": 8296752750,
+      "path": "dynamo-8296752750.zip",
+      "sha256": "d31d3f77780f8d888d53508c78c68606655452599e6d49630e3fa5cae98524de",
+      "github_run_id": "29287890247",
+      "run_attempt": 1,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "26_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c50.txt",
+        "content_sha256": "f962805cd00f7dd8c29b18fb5c2baa08ce527ac115ea728a6d0927f7e17e395f",
+        "line": "2026-07-13T23:59:06.2988830Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt1-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/1/logs",
+        "logs_archive_sha256": "5327f1028e46653569de4d954123d41561ba7f62c7e137f125f033bdc9f9f147",
+        "job_log_member": "26_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c50.txt",
+        "job_log_sha256": "f962805cd00f7dd8c29b18fb5c2baa08ce527ac115ea728a6d0927f7e17e395f"
+      }
+    },
+    {
+      "id": 8300783158,
+      "path": "dynamo-8300783158.zip",
+      "sha256": "216e3fa56be6d3148e56a9dd16009c0a4524b3523650624a4600a6e189fb2ce7",
+      "github_run_id": "29287890247",
+      "run_attempt": 2,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "28_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c5.txt",
+        "content_sha256": "90d4711ea086e047df09a2db32b7298217e7bae9395437a423c0b750eda203c0",
+        "line": "2026-07-14T04:39:59.1328057Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt2-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/2/logs",
+        "logs_archive_sha256": "e1aa12a92cc43268f2b6cc4888cac58c21b4ed32211e65472b61bbcafa7fa6b0",
+        "job_log_member": "28_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c5.txt",
+        "job_log_sha256": "90d4711ea086e047df09a2db32b7298217e7bae9395437a423c0b750eda203c0"
+      }
+    },
+    {
+      "id": 8299734557,
+      "path": "dynamo-8299734557.zip",
+      "sha256": "30d7f05c6f0dc5d1eed49c53d1a170b8a12b60b5dfb1963df508a896c9c54dc7",
+      "github_run_id": "29287890247",
+      "run_attempt": 2,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "32_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c25.txt",
+        "content_sha256": "46999af9c3ee152bb52d6ada3fd7088d14ef9e6698bab2a55a1cac9083a955b7",
+        "line": "2026-07-14T03:17:29.1242653Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt2-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/2/logs",
+        "logs_archive_sha256": "e1aa12a92cc43268f2b6cc4888cac58c21b4ed32211e65472b61bbcafa7fa6b0",
+        "job_log_member": "32_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c25.txt",
+        "job_log_sha256": "46999af9c3ee152bb52d6ada3fd7088d14ef9e6698bab2a55a1cac9083a955b7"
+      }
+    },
+    {
+      "id": 8298447886,
+      "path": "dynamo-8298447886.zip",
+      "sha256": "6f705f816f240fb9c979b22d84b27bf3d93a795b8935781c39f97b94f4642842",
+      "github_run_id": "29287890247",
+      "run_attempt": 1,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "16_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c10.txt",
+        "content_sha256": "4fec0445b8ea9015fe5c3a7ba3b3a0d15f6228046b6e50e6711c38ff6cc42e73",
+        "line": "2026-07-14T01:57:54.1328227Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt1-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/1/logs",
+        "logs_archive_sha256": "5327f1028e46653569de4d954123d41561ba7f62c7e137f125f033bdc9f9f147",
+        "job_log_member": "16_multi-node 8k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c10.txt",
+        "job_log_sha256": "4fec0445b8ea9015fe5c3a7ba3b3a0d15f6228046b6e50e6711c38ff6cc42e73"
+      }
+    },
+    {
+      "id": 8296416101,
+      "path": "dynamo-8296416101.zip",
+      "sha256": "15cbaa1650194bb63c378b1c0cf0942551c4e01b2906f8a1f9d7a1d004e9dbd2",
+      "github_run_id": "29287890247",
+      "run_attempt": 1,
+      "recorded_run_attempt": 4,
+      "source_git_sha": "b1b4ee0ab0f2f6d7577c2a4c9d224c43476af55e",
+      "source_model_path": "nvidia/GLM-5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "34_multi-node 1k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c5.txt",
+        "content_sha256": "d6c5dcc4a55beb8bebeca3fc12a5c2c9fbe50112db37ea76732efe72e76b15b4",
+        "line": "2026-07-13T23:23:55.5154737Z + export SRT_SLURM_MODEL_PREFIX=nvidia/GLM-5-NVFP4"
+      },
+      "run_log_path": "attempt1-logs.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29287890247/attempts/1/logs",
+        "logs_archive_sha256": "5327f1028e46653569de4d954123d41561ba7f62c7e137f125f033bdc9f9f147",
+        "job_log_member": "34_multi-node 1k1k _ (nvcr.io_nvidia_ai-dynamo_tensorrtllm-runtime1.3.0-dev.1-cuda13, nvidia_GLM-5-... _ glm5 fp4 gb200 dynamo-trt 1P (TP4_EP4_DPA) x 5D (TP4_EP4)    c5.txt",
+        "job_log_sha256": "d6c5dcc4a55beb8bebeca3fc12a5c2c9fbe50112db37ea76732efe72e76b15b4"
+      }
+    },
+    {
+      "id": 9783078344,
+      "path": "9783078344.zip",
+      "sha256": "906945303c8121d87d85b9cc22f8db0b3069f41a0d6f7ef1b70100b391b9ee88",
+      "github_run_id": "33447526958",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ec8498db57a03a427a6e284369bbe60c62f2cf20",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "17_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260821-f825d729, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 clusterb200-nscale dyn-sgl 1P (TP8) x 1D (TP8)    c1.txt",
+        "content_sha256": "0962cf2b5bf4b7b50d5d15cebfa9f03af29246466fb2e8ee6875b9d7b80812e7",
+        "line": "2026-09-01T01:40:03.6102914Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-33447526958-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/33447526958/attempts/1/logs",
+        "logs_archive_sha256": "29fa8b2d9765950b85f29aee923270a4c167361e4bcc1d6e897f578314cc1326",
+        "job_log_member": "17_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260821-f825d729, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 clusterb200-nscale dyn-sgl 1P (TP8) x 1D (TP8)    c1.txt",
+        "job_log_sha256": "0962cf2b5bf4b7b50d5d15cebfa9f03af29246466fb2e8ee6875b9d7b80812e7",
+        "checkout_and_upload_lines": [
+          "2026-09-01T01:59:04.9781413Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-nscale-slurm_06_recipe-c45e113b8fb6b1e0 successfully finalized. Artifact ID 9783078344",
+          "2026-09-01T01:59:04.9783100Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-nscale-slurm_06_recipe-c45e113b8fb6b1e0 has been successfully uploaded! Final size is 264747 bytes. Artifact ID is 9783078344"
+        ]
+      }
+    },
+    {
+      "id": 8718174139,
+      "path": "8718174139.zip",
+      "sha256": "2e36e59ee2c4a06101e607953f5d7e0f0dd6fc7386123b81c3e97d4ee55381c3",
+      "github_run_id": "30431262611",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "6db641a069b8ca9c06b8181061fa7a98b2fdfd1d",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "16_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260721-8905cbd4, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 b300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x8x16x32.txt",
+        "content_sha256": "188ae3c7b80b52bf0dbf734ffad731a1d592e6505dbe7ae6f6e739b0dd7b88c1",
+        "line": "2026-07-29T07:21:39.7610624Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-30431262611-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30431262611/attempts/1/logs",
+        "logs_archive_sha256": "6c13d26bb99eecdc9180badf64906864ae553b90d4168d3c69ea127be0612173",
+        "job_log_member": "16_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260721-8905cbd4, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 b300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x8x16x32.txt",
+        "job_log_sha256": "188ae3c7b80b52bf0dbf734ffad731a1d592e6505dbe7ae6f6e739b0dd7b88c1",
+        "checkout_and_upload_lines": [
+          "2026-07-29T09:02:03.6760512Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x8x16x32_b300-nv_15 successfully finalized. Artifact ID 8718174139",
+          "2026-07-29T09:02:03.6762276Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x8x16x32_b300-nv_15 has been successfully uploaded! Final size is 3966011 bytes. Artifact ID is 8718174139"
+        ]
+      }
+    },
+    {
+      "id": 8264909623,
+      "path": "8264909623.zip",
+      "sha256": "085e9f2e732b73d9eafe6121f58ab87ce1035dc059a5904ac5dc4c1e042e6333",
+      "github_run_id": "29207681289",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "10422efdc9fe0914e0bde70f4ab582fa77db730d",
+      "source_model_path": "Qwen/Qwen3.5-397B-A17B-FP8",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "12_multi-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260709-074bb928, Qwen_Qwen3.5-397B-A17B-FP8... _ qwen3.5 fp8 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64.txt",
+        "content_sha256": "64dd887c74b255a60db06e992dda1b1e4c0e4defd2852c0945e31153da88153a",
+        "line": "2026-07-12T21:00:28.6298930Z   MODEL: Qwen/Qwen3.5-397B-A17B-FP8"
+      },
+      "run_log_path": "logs-29207681289-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29207681289/attempts/1/logs",
+        "logs_archive_sha256": "8eb09beb8d2f479d6a811492d7397b5a74cee89fa38e882ae6a562b9ce60e147",
+        "job_log_member": "12_multi-node 1k1k _ (lmsysorg_sglangnightly-dev-cu13-20260709-074bb928, Qwen_Qwen3.5-397B-A17B-FP8... _ qwen3.5 fp8 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64.txt",
+        "job_log_sha256": "64dd887c74b255a60db06e992dda1b1e4c0e4defd2852c0945e31153da88153a",
+        "checkout_and_upload_lines": [
+          "2026-07-12T21:43:08.7304239Z Artifact multinode_server_logs_qwen3.5_1k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16x32x64_gb300-nv_0 successfully finalized. Artifact ID 8264909623",
+          "2026-07-12T21:43:08.7306360Z Artifact multinode_server_logs_qwen3.5_1k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16x32x64_gb300-nv_0 has been successfully uploaded! Final size is 2831212 bytes. Artifact ID is 8264909623"
+        ]
+      }
+    },
+    {
+      "id": 8264937285,
+      "path": "8264937285.zip",
+      "sha256": "813384b456860124794a6d03e552a9aa5a8f56dcd5021354c6f65c206fb95013",
+      "github_run_id": "29207681289",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "10422efdc9fe0914e0bde70f4ab582fa77db730d",
+      "source_model_path": "Qwen/Qwen3.5-397B-A17B-FP8",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "14_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260709-074bb928, Qwen_Qwen3.5-397B-A17B-FP8... _ qwen3.5 fp8 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64x128.txt",
+        "content_sha256": "e301f906bf6d93dfee4f63ed3ee5d66caee66671fe5280e0221ee7c50b555912",
+        "line": "2026-07-12T21:04:58.9374607Z   MODEL: Qwen/Qwen3.5-397B-A17B-FP8"
+      },
+      "run_log_path": "logs-29207681289-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/29207681289/attempts/1/logs",
+        "logs_archive_sha256": "8eb09beb8d2f479d6a811492d7397b5a74cee89fa38e882ae6a562b9ce60e147",
+        "job_log_member": "14_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260709-074bb928, Qwen_Qwen3.5-397B-A17B-FP8... _ qwen3.5 fp8 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64x128.txt",
+        "job_log_sha256": "e301f906bf6d93dfee4f63ed3ee5d66caee66671fe5280e0221ee7c50b555912",
+        "checkout_and_upload_lines": [
+          "2026-07-12T21:46:15.9442452Z Artifact multinode_server_logs_qwen3.5_8k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16x32x64x128_gb300-nv_1 successfully finalized. Artifact ID 8264937285",
+          "2026-07-12T21:46:15.9447880Z Artifact multinode_server_logs_qwen3.5_8k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16x32x64x128_gb300-nv_1 has been successfully uploaded! Final size is 5795655 bytes. Artifact ID is 8264937285"
+        ]
+      }
+    },
+    {
+      "id": 8955023231,
+      "path": "8955023231.zip",
+      "sha256": "10ba05e8ed6aa5e7715bf8b2f18f71ccc73a1327521fd7cc20be61e4c506e18b",
+      "github_run_id": "31024844958",
+      "run_attempt": 2,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "dfbdef4961b75b8325dd85df75a4e8ef6c3cbea9",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "13_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260707-b4155233, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1.txt",
+        "content_sha256": "ee3622868a70ccbee09f2dc27b5d843acfb9f09db9e8c294a7358001fa123f8a",
+        "line": "2026-08-06T02:31:09.6919685Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-31024844958-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/31024844958/attempts/2/logs",
+        "logs_archive_sha256": "5c2ae6e22d2791b11d71754d88bebc755940c48248bd2be5c13e38955cd4f6f8",
+        "job_log_member": "13_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260707-b4155233, deepseek-ai_DeepSeek-V4-Pr... _ p0.000  dsv4 fp4 gb300 dyn-sgl 1P (TP4) x 1D (TP4)    c1.txt",
+        "job_log_sha256": "ee3622868a70ccbee09f2dc27b5d843acfb9f09db9e8c294a7358001fa123f8a",
+        "checkout_and_upload_lines": [
+          "2026-08-06T03:45:36.4134439Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_gb300-nv_0 successfully finalized. Artifact ID 8955023231",
+          "2026-08-06T03:45:36.4153415Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_gb300-nv_0 has been successfully uploaded! Final size is 138654 bytes. Artifact ID is 8955023231"
+        ]
+      }
+    },
+    {
+      "id": 10305802956,
+      "path": "10305802956.zip",
+      "sha256": "be4149bdc9679069af9153cbe4d9f06b8d94b6d0314251c426759c0fe9f10448",
+      "github_run_id": "34716669498",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "acb98c1b32dbbeda34d74f342d90732d02f8bb81",
+      "source_model_path": "Qwen/Qwen3.5-397B-A17B-FP8",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "48_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260608-303757cc, Qwen_Qwen3.5-397B-A17B-FP8... _ p0.000  qwen3.5 fp8 gb200 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64x128.txt",
+        "content_sha256": "ed80df93a973389d272bb8d71dd0ec8d3ecd1eb3b58492d8c808e867bceb1bb6",
+        "line": "2026-09-12T20:19:14.4838469Z   MODEL: Qwen/Qwen3.5-397B-A17B-FP8"
+      },
+      "run_log_path": "logs-34716669498-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/34716669498/attempts/1/logs",
+        "logs_archive_sha256": "ceb403ec4475ba523ae3cd78a99cabde8aa07a156bb8b787dbe12fb30b710a0f",
+        "job_log_member": "48_multi-node 8k1k _ (lmsysorg_sglangnightly-dev-cu13-20260608-303757cc, Qwen_Qwen3.5-397B-A17B-FP8... _ p0.000  qwen3.5 fp8 gb200 dyn-sgl 1P (TP4) x 1D (TP4)    c1x2x4x8x16x32x64x128.txt",
+        "job_log_sha256": "ed80df93a973389d272bb8d71dd0ec8d3ecd1eb3b58492d8c808e867bceb1bb6",
+        "checkout_and_upload_lines": [
+          "2026-09-12T21:07:28.5376741Z Artifact multinode_server_logs_qwen3.5_8k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-e-5b35252b29d80b104d11 successfully finalized. Artifact ID 10305802956",
+          "2026-09-12T21:07:28.5379231Z Artifact multinode_server_logs_qwen3.5_8k1k_fp8_dynamo-sglang_prefill-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-e-5b35252b29d80b104d11 has been successfully uploaded! Final size is 5936813 bytes. Artifact ID is 10305802956"
+        ]
+      }
+    },
+    {
+      "id": 7776521231,
+      "path": "7776521231.zip",
+      "sha256": "7035f01c679eba4df36e89898a63fd8cce7f0b7d3bea6eaf2c27b06d7809dfaf",
+      "github_run_id": "27885061956",
+      "run_attempt": 3,
+      "recorded_run_attempt": 3,
+      "source_git_sha": "f75a82b5df5825973e122d8a357e85ee31c2bf0a",
+      "source_model_path": "nvidia/Kimi-K2.5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "9_multi-node 8k1k _ (vllm_vllm-openaiv0.21.0, nvidia_Kimi-K2.5-NVFP4, kimik2.5, fp4, dynamo-vllm, ... _ kimik2.5_8k1k fp4 gb200 dynamo-vllm  P(tp1_ep4_dptrue_nw1) D(tp4_ep4_dpfalse_nw4)  disagg-true spec-none conc-128.txt",
+        "content_sha256": "3b44e643cba072b1548b01f695465b277970572c52868ef95cb7a431bad2e8a5",
+        "line": "2026-06-21T14:42:03.7780715Z   MODEL: nvidia/Kimi-K2.5-NVFP4"
+      },
+      "run_log_path": "logs-27885061956-3.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/27885061956/attempts/3/logs",
+        "logs_archive_sha256": "acbf0288bdbb5205fcf6df29189836b3cae56f439b041eab9fdf99ffe3e8cb3e",
+        "job_log_member": "9_multi-node 8k1k _ (vllm_vllm-openaiv0.21.0, nvidia_Kimi-K2.5-NVFP4, kimik2.5, fp4, dynamo-vllm, ... _ kimik2.5_8k1k fp4 gb200 dynamo-vllm  P(tp1_ep4_dptrue_nw1) D(tp4_ep4_dpfalse_nw4)  disagg-true spec-none conc-128.txt",
+        "job_log_sha256": "3b44e643cba072b1548b01f695465b277970572c52868ef95cb7a431bad2e8a5",
+        "checkout_and_upload_lines": [
+          "2026-06-21T14:42:11.0916669Z [command]/usr/bin/git checkout --progress --force f75a82b5df5825973e122d8a357e85ee31c2bf0a",
+          "2026-06-21T15:05:03.8009876Z Artifact multinode_server_logs_kimik2.5_8k1k_fp4_dynamo-vllm_prefill-tp1-ep4-dptrue-nw1_decode-tp4-ep4-dpfalse-nw4_disagg-true_spec-none_conc128_gb200-nv_0 successfully finalized. Artifact ID 7776521231",
+          "2026-06-21T15:05:03.8012034Z Artifact multinode_server_logs_kimik2.5_8k1k_fp4_dynamo-vllm_prefill-tp1-ep4-dptrue-nw1_decode-tp4-ep4-dpfalse-nw4_disagg-true_spec-none_conc128_gb200-nv_0 has been successfully uploaded! Final size is 11735339 bytes. Artifact ID is 7776521231"
+        ]
+      }
+    },
+    {
+      "id": 7776740445,
+      "path": "7776740445.zip",
+      "sha256": "34651857662b237b4db8c2a8d5e9c3aa776aaca7adb51a5efc24da9000073a91",
+      "github_run_id": "27885061956",
+      "run_attempt": 3,
+      "recorded_run_attempt": 3,
+      "source_git_sha": "f75a82b5df5825973e122d8a357e85ee31c2bf0a",
+      "source_model_path": "nvidia/Kimi-K2.5-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "10_multi-node 8k1k _ (vllm_vllm-openaiv0.21.0, nvidia_Kimi-K2.5-NVFP4, kimik2.5, fp4, dynamo-vllm, ... _ kimik2.5_8k1k fp4 gb200 dynamo-vllm  P(tp1_ep4_dptrue_nw3) D(tp1_ep16_dptrue_nw1)  disagg-true spec-none conc-1024.txt",
+        "content_sha256": "240a15ac1377cb3d40f88c3020a99af82d17d791cf81c0714b53623d42fee053",
+        "line": "2026-06-21T14:42:04.7331501Z   MODEL: nvidia/Kimi-K2.5-NVFP4"
+      },
+      "run_log_path": "logs-27885061956-3.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/27885061956/attempts/3/logs",
+        "logs_archive_sha256": "acbf0288bdbb5205fcf6df29189836b3cae56f439b041eab9fdf99ffe3e8cb3e",
+        "job_log_member": "10_multi-node 8k1k _ (vllm_vllm-openaiv0.21.0, nvidia_Kimi-K2.5-NVFP4, kimik2.5, fp4, dynamo-vllm, ... _ kimik2.5_8k1k fp4 gb200 dynamo-vllm  P(tp1_ep4_dptrue_nw3) D(tp1_ep16_dptrue_nw1)  disagg-true spec-none conc-1024.txt",
+        "job_log_sha256": "240a15ac1377cb3d40f88c3020a99af82d17d791cf81c0714b53623d42fee053",
+        "checkout_and_upload_lines": [
+          "2026-06-21T14:42:11.4298536Z [command]/usr/bin/git checkout --progress --force f75a82b5df5825973e122d8a357e85ee31c2bf0a",
+          "2026-06-21T15:33:35.1989127Z Artifact multinode_server_logs_kimik2.5_8k1k_fp4_dynamo-vllm_prefill-tp1-ep4-dptrue-nw3_decode-tp1-ep16-dptrue-nw1_disagg-true_spec-none_conc1024_gb200-nv_2 successfully finalized. Artifact ID 7776740445",
+          "2026-06-21T15:33:35.1992167Z Artifact multinode_server_logs_kimik2.5_8k1k_fp4_dynamo-vllm_prefill-tp1-ep4-dptrue-nw3_decode-tp1-ep16-dptrue-nw1_disagg-true_spec-none_conc1024_gb200-nv_2 has been successfully uploaded! Final size is 90083817 bytes. Artifact ID is 7776740445"
+        ]
+      }
+    },
+    {
+      "id": 7997051534,
+      "path": "7997051534.zip",
+      "sha256": "27c6303708089a1dbfa0ee92202e6023c91e9d4042d6e934ed4bd495c9563d14",
+      "github_run_id": "28481566954",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "8083634c6e6036038ee14df102e5e438100a0602",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "10_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep1_dpfalse_nw1)  disagg-true spec-none conc-32x128.txt",
+        "content_sha256": "41561803d554c15258d20170b46d989e5477dd0638a2b1b92d916645418d2aa6",
+        "line": "2026-06-30T23:13:43.8877594Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28481566954-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28481566954/attempts/1/logs",
+        "logs_archive_sha256": "a131ff36a7d63dc4f48f86ef305c7feb4fdf777b79be2ed5c126d56ff7ae475f",
+        "job_log_member": "10_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep1_dpfalse_nw1)  disagg-true spec-none conc-32x128.txt",
+        "job_log_sha256": "41561803d554c15258d20170b46d989e5477dd0638a2b1b92d916645418d2aa6",
+        "checkout_and_upload_lines": [
+          "2026-06-30T23:13:48.5602950Z [command]/usr/bin/git checkout --progress --force 8083634c6e6036038ee14df102e5e438100a0602",
+          "2026-07-01T00:31:23.6747324Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep1-dpfalse-nw1_disagg-true_spec-none_conc32x128_b200-dgxc_06 successfully finalized. Artifact ID 7997051534",
+          "2026-07-01T00:31:23.6749392Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep1-dpfalse-nw1_disagg-true_spec-none_conc32x128_b200-dgxc_06 has been successfully uploaded! Final size is 14870125 bytes. Artifact ID is 7997051534"
+        ]
+      }
+    },
+    {
+      "id": 7999310424,
+      "path": "7999310424.zip",
+      "sha256": "76beb1d46fef41102e7a0d1a58f0c84ece7ac101d0a250a6932ea8ddba52d39b",
+      "github_run_id": "28481566954",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "8083634c6e6036038ee14df102e5e438100a0602",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "13_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-256.txt",
+        "content_sha256": "0b81160ce17592254f6e6185d21bd3b4d0bc37a5d53601119738663679848063",
+        "line": "2026-07-01T02:59:38.6829147Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28481566954-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28481566954/attempts/1/logs",
+        "logs_archive_sha256": "a131ff36a7d63dc4f48f86ef305c7feb4fdf777b79be2ed5c126d56ff7ae475f",
+        "job_log_member": "13_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-256.txt",
+        "job_log_sha256": "0b81160ce17592254f6e6185d21bd3b4d0bc37a5d53601119738663679848063",
+        "checkout_and_upload_lines": [
+          "2026-07-01T02:59:52.7745315Z [command]/usr/bin/git checkout --progress --force 8083634c6e6036038ee14df102e5e438100a0602",
+          "2026-07-01T03:22:28.0473585Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep8-dptrue-nw1_disagg-true_spec-none_conc256_b200-dgxc_08 successfully finalized. Artifact ID 7999310424",
+          "2026-07-01T03:22:28.0475124Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep8-dptrue-nw1_disagg-true_spec-none_conc256_b200-dgxc_08 has been successfully uploaded! Final size is 23105563 bytes. Artifact ID is 7999310424"
+        ]
+      }
+    },
+    {
+      "id": 7998389601,
+      "path": "7998389601.zip",
+      "sha256": "eca06413adfb4b20afc818198e026fd991c08271d1f7e97ef486cec3339ef5a8",
+      "github_run_id": "28481566954",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "8083634c6e6036038ee14df102e5e438100a0602",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "14_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep1_dpfalse_nw1)  disagg-true spec-none conc-1.txt",
+        "content_sha256": "470c5bf33967397372f6cf8dcb0d2ec479050f8675a58c6fa32827e697e8f24e",
+        "line": "2026-07-01T01:42:44.3626762Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28481566954-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28481566954/attempts/1/logs",
+        "logs_archive_sha256": "a131ff36a7d63dc4f48f86ef305c7feb4fdf777b79be2ed5c126d56ff7ae475f",
+        "job_log_member": "14_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep1_dpfalse_nw1)  disagg-true spec-none conc-1.txt",
+        "job_log_sha256": "470c5bf33967397372f6cf8dcb0d2ec479050f8675a58c6fa32827e697e8f24e",
+        "checkout_and_upload_lines": [
+          "2026-07-01T01:42:44.6193447Z [command]/usr/bin/git checkout --detach",
+          "2026-07-01T01:42:49.4519259Z [command]/usr/bin/git checkout --progress --force 8083634c6e6036038ee14df102e5e438100a0602",
+          "2026-07-01T02:08:32.0344707Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-dgxc_08 successfully finalized. Artifact ID 7998389601",
+          "2026-07-01T02:08:32.0345924Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-dgxc_08 has been successfully uploaded! Final size is 168857 bytes. Artifact ID is 7998389601"
+        ]
+      }
+    },
+    {
+      "id": 7997477619,
+      "path": "7997477619.zip",
+      "sha256": "2e0ed3112baf8571a0e6f03a26660f5cc0b3b8fce6ee651d96ecf7745de84a4b",
+      "github_run_id": "28481566954",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "8083634c6e6036038ee14df102e5e438100a0602",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "15_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-512.txt",
+        "content_sha256": "00a4e7e366f3810acfe089450ece268f2396bd23cdad21890d2000b9a054b10b",
+        "line": "2026-07-01T00:32:28.8260712Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28481566954-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28481566954/attempts/1/logs",
+        "logs_archive_sha256": "a131ff36a7d63dc4f48f86ef305c7feb4fdf777b79be2ed5c126d56ff7ae475f",
+        "job_log_member": "15_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ dsv4_8k1k fp4 b200-multinode dynamo-vllm  P(tp8_ep8_dptrue_nw1) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-512.txt",
+        "job_log_sha256": "00a4e7e366f3810acfe089450ece268f2396bd23cdad21890d2000b9a054b10b",
+        "checkout_and_upload_lines": [
+          "2026-07-01T00:32:31.8186681Z [command]/usr/bin/git checkout --progress --force 8083634c6e6036038ee14df102e5e438100a0602",
+          "2026-07-01T01:02:07.8609539Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep8-dptrue-nw1_disagg-true_spec-none_conc512_b200-dgxc_06 successfully finalized. Artifact ID 7997477619",
+          "2026-07-01T01:02:07.8621283Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-ep8-dptrue-nw1_decode-tp8-ep8-dptrue-nw1_disagg-true_spec-none_conc512_b200-dgxc_06 has been successfully uploaded! Final size is 46389747 bytes. Artifact ID is 7997477619"
+        ]
+      }
+    },
+    {
+      "id": 8089041333,
+      "path": "8089041333.zip",
+      "sha256": "013a7ccde3aef5c3f97d8f64fe7987a567a393e4f68ca2670ce93e8793adb8bc",
+      "github_run_id": "28728578034",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "5450e174efe47acd57dcd74fc32dd2c136a2238b",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "12_multi-node 8k1k _ (vllm_vllm-openaidsv4-megamoe-mxfp4-arm64-cu130-4ba0a72, deepseek-ai_DeepSeek-... _ dsv4 fp4 gb300-nv dynamo-vllm 1P (TP4_EP4_DPA) x 6D (TP4)    c192.txt",
+        "content_sha256": "6644eea2f1c3d547eab10567f8a46e3825ff26bd2f1589b1f9360321a4e6f0f5",
+        "line": "2026-07-05T05:44:25.4765888Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28728578034-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28728578034/attempts/1/logs",
+        "logs_archive_sha256": "617e1c23009c9896ad5e3f171a0c9b95e35b3dfa3abe2092d56ccef42f7a8407",
+        "job_log_member": "12_multi-node 8k1k _ (vllm_vllm-openaidsv4-megamoe-mxfp4-arm64-cu130-4ba0a72, deepseek-ai_DeepSeek-... _ dsv4 fp4 gb300-nv dynamo-vllm 1P (TP4_EP4_DPA) x 6D (TP4)    c192.txt",
+        "job_log_sha256": "6644eea2f1c3d547eab10567f8a46e3825ff26bd2f1589b1f9360321a4e6f0f5",
+        "checkout_and_upload_lines": [
+          "2026-07-05T05:44:58.1912020Z [command]/usr/bin/git checkout --progress --force 5450e174efe47acd57dcd74fc32dd2c136a2238b",
+          "2026-07-05T06:27:54.6876177Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp4-ep4-dptrue-nw1_decode-tp4-ep1-dpfalse-nw6_disagg-true_spec-none_conc192_gb300-nv_1 successfully finalized. Artifact ID 8089041333",
+          "2026-07-05T06:27:54.6894990Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp4-ep4-dptrue-nw1_decode-tp4-ep1-dpfalse-nw6_disagg-true_spec-none_conc192_gb300-nv_1 has been successfully uploaded! Final size is 17500798 bytes. Artifact ID is 8089041333"
+        ]
+      }
+    },
+    {
+      "id": 8088730259,
+      "path": "8088730259.zip",
+      "sha256": "3b93a932d0072f38e4e5a68bae00b96436aa1ccaa21adb92d0f202200cea754c",
+      "github_run_id": "28728578034",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "5450e174efe47acd57dcd74fc32dd2c136a2238b",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "15_multi-node 8k1k _ (vllm_vllm-openaidsv4-megamoe-mxfp4-arm64-cu130-4ba0a72, deepseek-ai_DeepSeek-... _ dsv4 fp4 gb300-nv dynamo-vllm 1P (TP4_EP4) x 9D (TP4)    c18.txt",
+        "content_sha256": "fb9825bdc43a1829210a999d913853ac22c82390097a2f19598fa85b57a5cb82",
+        "line": "2026-07-05T04:56:26.7004380Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-28728578034-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28728578034/attempts/1/logs",
+        "logs_archive_sha256": "617e1c23009c9896ad5e3f171a0c9b95e35b3dfa3abe2092d56ccef42f7a8407",
+        "job_log_member": "15_multi-node 8k1k _ (vllm_vllm-openaidsv4-megamoe-mxfp4-arm64-cu130-4ba0a72, deepseek-ai_DeepSeek-... _ dsv4 fp4 gb300-nv dynamo-vllm 1P (TP4_EP4) x 9D (TP4)    c18.txt",
+        "job_log_sha256": "fb9825bdc43a1829210a999d913853ac22c82390097a2f19598fa85b57a5cb82",
+        "checkout_and_upload_lines": [
+          "2026-07-05T04:56:57.3027243Z [command]/usr/bin/git checkout --progress --force 5450e174efe47acd57dcd74fc32dd2c136a2238b",
+          "2026-07-05T05:43:59.6478384Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp4-ep4-dpfalse-nw1_decode-tp4-ep1-dpfalse-nw9_disagg-true_spec-none_conc18_gb300-nv_1 successfully finalized. Artifact ID 8088730259",
+          "2026-07-05T05:43:59.6502785Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp4-ep4-dpfalse-nw1_decode-tp4-ep1-dpfalse-nw9_disagg-true_spec-none_conc18_gb300-nv_1 has been successfully uploaded! Final size is 1783124 bytes. Artifact ID is 8088730259"
+        ]
+      }
+    },
+    {
+      "id": 8809505914,
+      "path": "8809505914.zip",
+      "sha256": "be66c10e7444315735055df664f6d16051d5003e26be6a1d3fda74b828bb9e3d",
+      "github_run_id": "30669586535",
+      "run_attempt": 2,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "ded03c15ea776ee4847ee075f1cf028c0e9356b0",
+      "source_model_path": "nvidia/Kimi-K2.6-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "17_multi-node 8k1k _ (vllm_vllm-openaiv0.25.1, nvidia_Kimi-K2.6-NVFP4, kimik2.6, fp4, dynamo-vllm, ... _ p0.000  kimik2.6 fp4 b200-new dynamo-vllm 1P (TP1_EP8_DPA) x 1D (TP8)    c1.txt",
+        "content_sha256": "db7c2cf09fc6484e98ffcf207cc52a50d5de11bac3ac068228ad3d189fa02d4e",
+        "line": "2026-07-31T23:13:33.3454599Z   MODEL: nvidia/Kimi-K2.6-NVFP4"
+      },
+      "run_log_path": "logs-30669586535-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30669586535/attempts/2/logs",
+        "logs_archive_sha256": "8f4d7e64c6f47b5135c0983ee7bd6ba8ccd60974fc22e3583bddad9600337864",
+        "job_log_member": "17_multi-node 8k1k _ (vllm_vllm-openaiv0.25.1, nvidia_Kimi-K2.6-NVFP4, kimik2.6, fp4, dynamo-vllm, ... _ p0.000  kimik2.6 fp4 b200-new dynamo-vllm 1P (TP1_EP8_DPA) x 1D (TP8)    c1.txt",
+        "job_log_sha256": "db7c2cf09fc6484e98ffcf207cc52a50d5de11bac3ac068228ad3d189fa02d4e",
+        "checkout_and_upload_lines": [
+          "2026-07-31T23:14:21.2832885Z [command]/usr/bin/git checkout --progress --force ded03c15ea776ee4847ee075f1cf028c0e9356b0",
+          "2026-07-31T23:33:13.1078513Z Artifact multinode_server_logs_kimik2.6_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep8-dptrue-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-nscale-slurm_7 successfully finalized. Artifact ID 8809505914",
+          "2026-07-31T23:33:13.1079874Z Artifact multinode_server_logs_kimik2.6_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep8-dptrue-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1_b200-nscale-slurm_7 has been successfully uploaded! Final size is 86658 bytes. Artifact ID is 8809505914"
+        ]
+      }
+    },
+    {
+      "id": 8865548163,
+      "path": "8865548163.zip",
+      "sha256": "37910e341cc608f3bad4048e3979adb12079d9de23dabe6ec0391a76dc3656d9",
+      "github_run_id": "30828238642",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 1P (TP2_EP2_DPA) x 1D (TP4)    c1x4x8x16.txt",
+        "content_sha256": "16b83014e7558fe5f08fa492017f5e4534bded2315c1edd0c6131efee4761602",
+        "line": "2026-08-03T16:58:02.1859095Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828238642-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828238642/attempts/1/logs",
+        "logs_archive_sha256": "52ee1ed798cb32b42be88d903695d816d23b4bd11321ae80b8769f4627b47a23",
+        "job_log_member": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 1P (TP2_EP2_DPA) x 1D (TP4)    c1x4x8x16.txt",
+        "job_log_sha256": "16b83014e7558fe5f08fa492017f5e4534bded2315c1edd0c6131efee4761602",
+        "checkout_and_upload_lines": [
+          "2026-08-03T16:58:12.5072911Z [command]/usr/bin/git checkout --progress --force ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+          "2026-08-03T17:41:16.2739951Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x4x8x16_b200-dgxc_07 successfully finalized. Artifact ID 8865548163",
+          "2026-08-03T17:41:16.2742014Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x4x8x16_b200-dgxc_07 has been successfully uploaded! Final size is 549340 bytes. Artifact ID is 8865548163"
+        ]
+      }
+    },
+    {
+      "id": 8864858144,
+      "path": "8864858144.zip",
+      "sha256": "dcc111a267473e1245e358b58b9487a2a6a9d3bd1fbcf9b01f3ab4e2ecf26a2a",
+      "github_run_id": "30828238642",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "13_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 2P (TP2_EP2_DPA) x 2D (TP4)    c128.txt",
+        "content_sha256": "fe36a0f820d16431966d173a318f48cc526054e7d7493fc84998dab049053882",
+        "line": "2026-08-03T16:32:50.2293781Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828238642-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828238642/attempts/1/logs",
+        "logs_archive_sha256": "52ee1ed798cb32b42be88d903695d816d23b4bd11321ae80b8769f4627b47a23",
+        "job_log_member": "13_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 2P (TP2_EP2_DPA) x 2D (TP4)    c128.txt",
+        "job_log_sha256": "fe36a0f820d16431966d173a318f48cc526054e7d7493fc84998dab049053882",
+        "checkout_and_upload_lines": [
+          "2026-08-03T16:33:02.2215960Z [command]/usr/bin/git checkout --progress --force ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+          "2026-08-03T17:17:26.0518371Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw2_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc128_b200-dgxc_08 successfully finalized. Artifact ID 8864858144",
+          "2026-08-03T17:17:26.0520221Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw2_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc128_b200-dgxc_08 has been successfully uploaded! Final size is 1975186 bytes. Artifact ID is 8864858144"
+        ]
+      }
+    },
+    {
+      "id": 8865509215,
+      "path": "8865509215.zip",
+      "sha256": "10e44ed2d1f8221a266565dee2b724d7bdaec8f17ba8d7de9b86d92c4724d292",
+      "github_run_id": "30828238642",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "16_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 3P (TP2_EP2_DPA) x 2D (TP4)    c256.txt",
+        "content_sha256": "549b1e6079bc06cedf3e29b5770756b841956b56767c327ca127b3cde8aeccb1",
+        "line": "2026-08-03T17:05:28.2831400Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828238642-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828238642/attempts/1/logs",
+        "logs_archive_sha256": "52ee1ed798cb32b42be88d903695d816d23b4bd11321ae80b8769f4627b47a23",
+        "job_log_member": "16_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 3P (TP2_EP2_DPA) x 2D (TP4)    c256.txt",
+        "job_log_sha256": "549b1e6079bc06cedf3e29b5770756b841956b56767c327ca127b3cde8aeccb1",
+        "checkout_and_upload_lines": [
+          "2026-08-03T17:05:37.5468207Z [command]/usr/bin/git checkout --progress --force ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+          "2026-08-03T17:39:39.0152312Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc256_b200-dgxc_06 successfully finalized. Artifact ID 8865509215",
+          "2026-08-03T17:39:39.0154215Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc256_b200-dgxc_06 has been successfully uploaded! Final size is 3756063 bytes. Artifact ID is 8865509215"
+        ]
+      }
+    },
+    {
+      "id": 8864270569,
+      "path": "8864270569.zip",
+      "sha256": "39e1c3de7be31d074e6305691980ea75f070893f35c269453b650d5f91a3ff85",
+      "github_run_id": "30828238642",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "18_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 3P (TP2_EP2_DPA) x 2D (TP4)    c512.txt",
+        "content_sha256": "f38211f2b55fc3993e91948ee719338a9d14e4cd4fd6fc7d6f2b011b524bdfb7",
+        "line": "2026-08-03T16:20:37.8242228Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828238642-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828238642/attempts/1/logs",
+        "logs_archive_sha256": "52ee1ed798cb32b42be88d903695d816d23b4bd11321ae80b8769f4627b47a23",
+        "job_log_member": "18_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 3P (TP2_EP2_DPA) x 2D (TP4)    c512.txt",
+        "job_log_sha256": "f38211f2b55fc3993e91948ee719338a9d14e4cd4fd6fc7d6f2b011b524bdfb7",
+        "checkout_and_upload_lines": [
+          "2026-08-03T16:20:49.0350686Z [command]/usr/bin/git checkout --progress --force ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+          "2026-08-03T16:57:42.3935483Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc512_b200-dgxc_07 successfully finalized. Artifact ID 8864270569",
+          "2026-08-03T16:57:42.3937471Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc512_b200-dgxc_07 has been successfully uploaded! Final size is 7490172 bytes. Artifact ID is 8864270569"
+        ]
+      }
+    },
+    {
+      "id": 8864468646,
+      "path": "8864468646.zip",
+      "sha256": "e6908819fb4f306c1f89b172088bce5c76ad6e3df38f8483f7e2edc4b878d3a7",
+      "github_run_id": "30828238642",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 1P (TP2_EP2_DPA) x 2D (TP4)    c64.txt",
+        "content_sha256": "37a8fb2e00660cf11b988ba822381a78ed1f026b1d83b5e7c4aafccc10150cad",
+        "line": "2026-08-03T16:19:59.3952680Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828238642-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828238642/attempts/1/logs",
+        "logs_archive_sha256": "52ee1ed798cb32b42be88d903695d816d23b4bd11321ae80b8769f4627b47a23",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b200-multinode dynamo-vllm 1P (TP2_EP2_DPA) x 2D (TP4)    c64.txt",
+        "job_log_sha256": "37a8fb2e00660cf11b988ba822381a78ed1f026b1d83b5e7c4aafccc10150cad",
+        "checkout_and_upload_lines": [
+          "2026-08-03T16:20:10.1849814Z [command]/usr/bin/git checkout --progress --force ac951d9339835af06cf8bebf3efd2c4da4f6e60a",
+          "2026-08-03T17:04:23.1383405Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc64_b200-dgxc_06 successfully finalized. Artifact ID 8864468646",
+          "2026-08-03T17:04:23.1385219Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-pp1-dcp1-pcp1-ep2-dptrue-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw2_disagg-true_spec-none_conc64_b200-dgxc_06 has been successfully uploaded! Final size is 1003669 bytes. Artifact ID is 8864468646"
+        ]
+      }
+    },
+    {
+      "id": 9623768609,
+      "path": "9623768609.zip",
+      "sha256": "0a4241c6bb6ccffed08ce7dab2692c165ffa486d474a1dc33df5e67074703165",
+      "github_run_id": "33012183714",
+      "run_attempt": 1,
+      "recorded_run_attempt": 1,
+      "source_git_sha": "9e62605e82fdc5c1e66ad24a7eb74bec5eceb13d",
+      "source_model_path": "deepseek-ai/DeepSeek-V4-Pro",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "73_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ p0.000  dsv4 fp4 clusterb200-dgxc dynamo-vllm 1P (TP8_EP8_DPA) x 1D (TP8)    c64.txt",
+        "content_sha256": "4dee028433fb771ef57b270dbb65b68110856e414cb1a836ebf5b78b1e36c748",
+        "line": "2026-08-26T20:49:49.8096626Z   MODEL: deepseek-ai/DeepSeek-V4-Pro"
+      },
+      "run_log_path": "logs-33012183714-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/33012183714/attempts/1/logs",
+        "logs_archive_sha256": "84bbd83715978036138d3b32f35dbe97967efaed2022fc6b65fc2287a1d125c3",
+        "job_log_member": "73_multi-node 8k1k _ (vllm_vllm-openaiv0.23.0, deepseek-ai_DeepSeek-V4-Pro, dsv4, fp4, dynamo-vllm,... _ p0.000  dsv4 fp4 clusterb200-dgxc dynamo-vllm 1P (TP8_EP8_DPA) x 1D (TP8)    c64.txt",
+        "job_log_sha256": "4dee028433fb771ef57b270dbb65b68110856e414cb1a836ebf5b78b1e36c748",
+        "checkout_and_upload_lines": [
+          "2026-08-26T20:49:56.6934846Z [command]/usr/bin/git checkout --progress --force 9e62605e82fdc5c1e66ad24a7eb74bec5eceb13d",
+          "2026-08-26T21:11:30.2343649Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc64_b200-dgxc_00_recipe-a2c1c747b45aa31a successfully finalized. Artifact ID 9623768609",
+          "2026-08-26T21:11:30.2345853Z Artifact multinode_server_logs_dsv4_8k1k_fp4_dynamo-vllm_prefill-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc64_b200-dgxc_00_recipe-a2c1c747b45aa31a has been successfully uploaded! Final size is 6248101 bytes. Artifact ID is 9623768609"
+        ]
+      }
+    },
+    {
+      "id": 7896823399,
+      "path": "7896823399.zip",
+      "sha256": "3a7b79efbf6a55ec1f114e1d254472b11c0e08cbfce3574708929378f04d8aa3",
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "16_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dptrue_nw2)  disagg-true spec-none conc-2048.txt",
+        "content_sha256": "2378f038274d6468433b3ae2b179d1cb3b8b5170c85d3d74d20c3956ffe25166",
+        "line": "2026-06-26T03:10:20.5772998Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "16_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dptrue_nw2)  disagg-true spec-none conc-2048.txt",
+        "job_log_sha256": "2378f038274d6468433b3ae2b179d1cb3b8b5170c85d3d74d20c3956ffe25166",
+        "checkout_and_upload_lines": [
+          "2026-06-26T03:10:32.3843582Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T04:05:13.2428555Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp4-ep4-dptrue-nw2_disagg-true_spec-none_conc2048_b300-nv_07 successfully finalized. Artifact ID 7896823399",
+          "2026-06-26T04:05:13.2430073Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp4-ep4-dptrue-nw2_disagg-true_spec-none_conc2048_b300-nv_07 has been successfully uploaded! Final size is 40200879 bytes. Artifact ID is 7896823399"
+        ]
+      }
+    },
+    {
+      "id": 7896290994,
+      "path": "7896290994.zip",
+      "sha256": "21cac40b9f3bdfc0b5803bda07141f3284e2e66e4f89195335e6c3f5f2ef5892",
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "19_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw3) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-4.txt",
+        "content_sha256": "a9cca73a913ea16204eaf54bd56a9af9c3649c39b66e93a0e9fbc978e86a93cb",
+        "line": "2026-06-26T02:53:10.9474761Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "19_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw3) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-4.txt",
+        "job_log_sha256": "a9cca73a913ea16204eaf54bd56a9af9c3649c39b66e93a0e9fbc978e86a93cb",
+        "checkout_and_upload_lines": [
+          "2026-06-26T02:53:20.6130943Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T03:17:39.3439010Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw3_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc4_b300-nv_15 successfully finalized. Artifact ID 7896290994",
+          "2026-06-26T03:17:39.3440222Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw3_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc4_b300-nv_15 has been successfully uploaded! Final size is 179770 bytes. Artifact ID is 7896290994"
+        ]
+      }
+    },
+    {
+      "id": 7896386168,
+      "path": "7896386168.zip",
+      "sha256": "8efd070a125ce18c7327b04d55271505b4295c22f914c26e2c7c9ba1a8499836",
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "23_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "content_sha256": "3f3f58114abc57cf26ada5fbefab87297f70fd59bc8a4c0d8106c7d67cc2d24e",
+        "line": "2026-06-26T02:53:10.9259580Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "23_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "job_log_sha256": "3f3f58114abc57cf26ada5fbefab87297f70fd59bc8a4c0d8106c7d67cc2d24e",
+        "checkout_and_upload_lines": [
+          "2026-06-26T02:53:19.7137429Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T03:25:11.7861029Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_12 successfully finalized. Artifact ID 7896386168",
+          "2026-06-26T03:25:11.7862245Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_12 has been successfully uploaded! Final size is 373955 bytes. Artifact ID is 7896386168"
+        ]
+      }
+    },
+    {
+      "id": 7896551836,
+      "path": "7896551836.zip",
+      "sha256": "6938134c3fde5cf5bb506445575bb6f35291b6f39ff05a64dd619bd5be5ca55d",
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "26_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "content_sha256": "f5f1c48a149c915f0328449fe1174ae7f355c3204cc217463d09bec2b327bc67",
+        "line": "2026-06-26T02:53:11.1050546Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "26_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "job_log_sha256": "f5f1c48a149c915f0328449fe1174ae7f355c3204cc217463d09bec2b327bc67",
+        "checkout_and_upload_lines": [
+          "2026-06-26T02:53:28.3524967Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T03:39:42.7428309Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp4-ep4-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_10 successfully finalized. Artifact ID 7896551836",
+          "2026-06-26T03:39:42.7429551Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp4-ep4-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_10 has been successfully uploaded! Final size is 334850 bytes. Artifact ID is 7896551836"
+        ]
+      }
+    },
+    {
+      "id": 7896196799,
+      "path": "7896196799.zip",
+      "sha256": "802a74318e578917626c288a451537f11f0d07a7ea830be995cb51b0a58c2ee3",
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "27_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp8_ep8_dpfalse_nw4)  disagg-true spec-none conc-4.txt",
+        "content_sha256": "4d6e25e54d9a4e4ef255daddbaa5d9a281da4ee536973f197fcebf1ea6f2e74e",
+        "line": "2026-06-26T02:53:10.9828445Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "27_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp8_ep8_dpfalse_nw4)  disagg-true spec-none conc-4.txt",
+        "job_log_sha256": "4d6e25e54d9a4e4ef255daddbaa5d9a281da4ee536973f197fcebf1ea6f2e74e",
+        "checkout_and_upload_lines": [
+          "2026-06-26T02:53:20.7043763Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T03:10:09.3547966Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp8-ep8-dpfalse-nw4_disagg-true_spec-none_conc4_b300-nv_07 successfully finalized. Artifact ID 7896196799",
+          "2026-06-26T03:10:09.3549637Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw1_decode-tp8-ep8-dpfalse-nw4_disagg-true_spec-none_conc4_b300-nv_07 has been successfully uploaded! Final size is 171603 bytes. Artifact ID is 7896196799"
+        ]
+      }
+    },
+    {
+      "id": 7905728763,
+      "path": "7905728763.zip",
+      "sha256": "9071183f9048ed24b926cbba6cb45ec5046758c6284d1c4b68be43d304552e96",
+      "github_run_id": "28214046079",
+      "run_attempt": 2,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "12_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw1)  disagg-true spec-none conc-32.txt",
+        "content_sha256": "893bf2451773c4fc9b0384b7755c6d0d1ff35988b5e3ea88e129278c46ed1f2f",
+        "line": "2026-06-26T12:23:01.2491340Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/2/logs",
+        "logs_archive_sha256": "53c7850036760c9471f91c545ac0efa3f7441e366f69354d487d6e2cd2860f1b",
+        "job_log_member": "12_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw1)  disagg-true spec-none conc-32.txt",
+        "job_log_sha256": "893bf2451773c4fc9b0384b7755c6d0d1ff35988b5e3ea88e129278c46ed1f2f",
+        "checkout_and_upload_lines": [
+          "2026-06-26T12:23:11.1448034Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T12:47:21.0512127Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw1_disagg-true_spec-none_conc32_b300-nv_16 successfully finalized. Artifact ID 7905728763",
+          "2026-06-26T12:47:21.0513346Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw1_disagg-true_spec-none_conc32_b300-nv_16 has been successfully uploaded! Final size is 647034 bytes. Artifact ID is 7905728763"
+        ]
+      }
+    },
+    {
+      "id": 7906159683,
+      "path": "7906159683.zip",
+      "sha256": "29d580c608d7c3453dc0a5779d7e11f55cbefa7ef2097f7964c163af3b869266",
+      "github_run_id": "28214046079",
+      "run_attempt": 2,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "14_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "content_sha256": "76e2d862a8f93c8253cc7595bb2078c0ce9dee252083e82f5d401a55d58f4901",
+        "line": "2026-06-26T12:23:01.4696927Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/2/logs",
+        "logs_archive_sha256": "53c7850036760c9471f91c545ac0efa3f7441e366f69354d487d6e2cd2860f1b",
+        "job_log_member": "14_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dpfalse_nw2)  disagg-true spec-none conc-16.txt",
+        "job_log_sha256": "76e2d862a8f93c8253cc7595bb2078c0ce9dee252083e82f5d401a55d58f4901",
+        "checkout_and_upload_lines": [
+          "2026-06-26T12:23:08.9891407Z [command]/usr/bin/git checkout --progress --force c8260da27db5de8354ab926f93c89518947a5878",
+          "2026-06-26T13:06:51.8272101Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_03 successfully finalized. Artifact ID 7906159683",
+          "2026-06-26T13:06:51.8273990Z Artifact multinode_server_logs_minimaxm3_1k1k_fp4_dynamo-vllm_prefill-tp2-ep2-dptrue-nw2_decode-tp8-ep8-dpfalse-nw2_disagg-true_spec-none_conc16_b300-nv_03 has been successfully uploaded! Final size is 367992 bytes. Artifact ID is 7906159683"
+        ]
+      }
+    },
+    {
+      "id": 8862586979,
+      "path": "8862586979.zip",
+      "sha256": "925f124ffe0a3d5d1850b6fd1c5581f7c59000852d11b77bc3c84bc86449881a",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "8_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 5P (TP1) x 2D (TP8_EP8_DPA)    c512.txt",
+        "content_sha256": "ba6edba1e4344d2ef02b1e8eb8e73a6960ff09130d9c08baf271375b870622e8",
+        "line": "2026-08-03T15:39:27.3213488Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "8_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 5P (TP1) x 2D (TP8_EP8_DPA)    c512.txt",
+        "job_log_sha256": "ba6edba1e4344d2ef02b1e8eb8e73a6960ff09130d9c08baf271375b870622e8",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:39:58.8461075Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T16:01:28.9711111Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw5_decode-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw2_disagg-true_spec-none_conc512_b300-nv_04 successfully finalized. Artifact ID 8862586979",
+          "2026-08-03T16:01:28.9713236Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw5_decode-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw2_disagg-true_spec-none_conc512_b300-nv_04 has been successfully uploaded! Final size is 8479076 bytes. Artifact ID is 8862586979"
+        ]
+      }
+    },
+    {
+      "id": 8866318926,
+      "path": "8866318926.zip",
+      "sha256": "ece5813d855504f9b3914003391388f0e1150f60f88ce159440224131576fa9c",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 8P (TP1) x 2D (TP8_EP8_DPA)    c768x1024.txt",
+        "content_sha256": "76eab8b18249275a359c75b4fb06a9194e61e5bb47e33241570558ad1afcca05",
+        "line": "2026-08-03T15:39:30.0615894Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 8P (TP1) x 2D (TP8_EP8_DPA)    c768x1024.txt",
+        "job_log_sha256": "76eab8b18249275a359c75b4fb06a9194e61e5bb47e33241570558ad1afcca05",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:40:01.9736498Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T18:08:03.0213603Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw8_decode-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw2_disagg-true_spec-none_conc768x1024_b300-nv_07 successfully finalized. Artifact ID 8866318926",
+          "2026-08-03T18:08:03.0215308Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw8_decode-tp8-pp1-dcp1-pcp1-ep8-dptrue-nw2_disagg-true_spec-none_conc768x1024_b300-nv_07 has been successfully uploaded! Final size is 28089828 bytes. Artifact ID is 8866318926"
+        ]
+      }
+    },
+    {
+      "id": 8862400203,
+      "path": "8862400203.zip",
+      "sha256": "f2404b8158f99a3b3af3dfd1b7a630e938c092631c4dd017132434e9d68672da",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "11_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 2P (TP1) x 1D (TP4)    c128.txt",
+        "content_sha256": "d9e074579063e5ef621d1b3a1b8f303c98b2aedc87a23f9df143e9c1242dd755",
+        "line": "2026-08-03T15:39:28.4469390Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "11_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 2P (TP1) x 1D (TP4)    c128.txt",
+        "job_log_sha256": "d9e074579063e5ef621d1b3a1b8f303c98b2aedc87a23f9df143e9c1242dd755",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:39:54.3833870Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:55:34.3540922Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw2_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc128_b300-nv_05 successfully finalized. Artifact ID 8862400203",
+          "2026-08-03T15:55:34.3542337Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw2_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc128_b300-nv_05 has been successfully uploaded! Final size is 2142861 bytes. Artifact ID is 8862400203"
+        ]
+      }
+    },
+    {
+      "id": 8862471554,
+      "path": "8862471554.zip",
+      "sha256": "c0f7be484b8873e86d268d4c895767d566890ad9c4f7e4cc7f0b7204c7d1c24c",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "12_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 3P (TP1) x 1D (TP4)    c256.txt",
+        "content_sha256": "652343d7fa88f9da142ea6c967188c1f446e0ab1895686cc80c1ed4d99bd697c",
+        "line": "2026-08-03T15:39:34.4208407Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "12_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 3P (TP1) x 1D (TP4)    c256.txt",
+        "job_log_sha256": "652343d7fa88f9da142ea6c967188c1f446e0ab1895686cc80c1ed4d99bd697c",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:39:57.1170415Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:57:47.0299702Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc256_b300-nv_03 successfully finalized. Artifact ID 8862471554",
+          "2026-08-03T15:57:47.0301227Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw3_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc256_b300-nv_03 has been successfully uploaded! Final size is 4128472 bytes. Artifact ID is 8862471554"
+        ]
+      }
+    },
+    {
+      "id": 8862483311,
+      "path": "8862483311.zip",
+      "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "content_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "line": "2026-08-03T15:39:29.1790515Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:58:08.7226712Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16_b300-nv_06 successfully finalized. Artifact ID 8862483311",
+          "2026-08-03T15:58:08.7228601Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp8-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc1x2x4x8x16_b300-nv_06 has been successfully uploaded! Final size is 540470 bytes. Artifact ID is 8862483311"
+        ]
+      }
+    },
+    {
+      "id": 8862785579,
+      "path": "8862785579.zip",
+      "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+      "github_run_id": "30828231519",
+      "run_attempt": 1,
+      "recorded_run_attempt": 2,
+      "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "content_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "line": "2026-08-03T15:39:34.9545821Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-30828231519-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "checkout_and_upload_lines": [
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T16:07:55.7476011Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc8x16x24x32x48x64_b300-nv_10 successfully finalized. Artifact ID 8862785579",
+          "2026-08-03T16:07:55.7477523Z Artifact multinode_server_logs_minimaxm3_8k1k_fp4_dynamo-vllm_prefill-tp1-pp1-dcp1-pcp1-ep1-dpfalse-nw1_decode-tp4-pp1-dcp1-pcp1-ep1-dpfalse-nw1_disagg-true_spec-none_conc8x16x24x32x48x64_b300-nv_10 has been successfully uploaded! Final size is 3180724 bytes. Artifact ID is 8862785579"
+        ]
+      }
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 2,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "18_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp8_ep8_dpfalse_nw1)  disagg-true spec-none conc-4x16x64x128x4096.txt",
+        "content_sha256": "1888d119f2a5e6d436afd0ba007455eb603ff7d0d259f8164a87375e891bb8bf",
+        "line": "2026-06-26T12:23:01.4357934Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/2/logs",
+        "logs_archive_sha256": "53c7850036760c9471f91c545ac0efa3f7441e366f69354d487d6e2cd2860f1b",
+        "job_log_member": "18_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp8_ep8_dpfalse_nw1)  disagg-true spec-none conc-4x16x64x128x4096.txt",
+        "job_log_sha256": "1888d119f2a5e6d436afd0ba007455eb603ff7d0d259f8164a87375e891bb8bf"
+      },
+      "id": 7908068469,
+      "path": "7908068469.zip",
+      "sha256": "dc4eec3ec9212b5ded2d4b1b19ae0dbc3eb5bcedbdd230be7d5688a8d27ff160"
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 2,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "16_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-512x4096.txt",
+        "content_sha256": "658366890a12556543c600fc986b618aee7f64e9c9979c1b5aff6740850c4d2f",
+        "line": "2026-06-26T12:23:01.6357858Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/2/logs",
+        "logs_archive_sha256": "53c7850036760c9471f91c545ac0efa3f7441e366f69354d487d6e2cd2860f1b",
+        "job_log_member": "16_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dptrue_nw1)  disagg-true spec-none conc-512x4096.txt",
+        "job_log_sha256": "658366890a12556543c600fc986b618aee7f64e9c9979c1b5aff6740850c4d2f"
+      },
+      "id": 7906239386,
+      "path": "7906239386.zip",
+      "sha256": "96a8bfa30c4698c7466d87850cb558169ff707ab20ed42ce2d56405467f0f4c9"
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 2,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "19_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dptrue_nw2)  disagg-true spec-none conc-256x512.txt",
+        "content_sha256": "19f4f0b84f2abc139ff7504340993a49ce44872b48f65a37177dce2ab0915153",
+        "line": "2026-06-26T12:23:06.7707705Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-2.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/2/logs",
+        "logs_archive_sha256": "53c7850036760c9471f91c545ac0efa3f7441e366f69354d487d6e2cd2860f1b",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw2) D(tp8_ep8_dptrue_nw2)  disagg-true spec-none conc-256x512.txt",
+        "job_log_sha256": "19f4f0b84f2abc139ff7504340993a49ce44872b48f65a37177dce2ab0915153"
+      },
+      "id": 7906112171,
+      "path": "7906112171.zip",
+      "sha256": "1afe25d62d1c252cb8539a9b56dc256c56b8780bb00962cdab6daba8e195035c"
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "25_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep1_dpfalse_nw1)  disagg-true spec-none conc-1x4x8x16.txt",
+        "content_sha256": "d2c9cef489c309c94d6a2080d3d9b1449bd7c727e53b4f588d483d3dc947e9b8",
+        "line": "2026-06-26T02:53:10.6903908Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "25_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep1_dpfalse_nw1)  disagg-true spec-none conc-1x4x8x16.txt",
+        "job_log_sha256": "d2c9cef489c309c94d6a2080d3d9b1449bd7c727e53b4f588d483d3dc947e9b8"
+      },
+      "id": 7896494822,
+      "path": "7896494822.zip",
+      "sha256": "24567d1385b63cdc0e16bc0f5272ad1f0094a9e6ac7ac2f00088ed3e277f3e4e"
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "22_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dpfalse_nw4)  disagg-true spec-none conc-16x32x64x128.txt",
+        "content_sha256": "45626564dc327caf498081857648b5986bf4ca0f5bbed510533e5309156dc43d",
+        "line": "2026-06-26T02:53:12.3630616Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "22_multi-node 8k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_8k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep4_dpfalse_nw4)  disagg-true spec-none conc-16x32x64x128.txt",
+        "job_log_sha256": "45626564dc327caf498081857648b5986bf4ca0f5bbed510533e5309156dc43d"
+      },
+      "id": 7896331232,
+      "path": "7896331232.zip",
+      "sha256": "58887037756a80df47f6d42f1833f3be11158024e5d8990c564217912080f4e4"
+    },
+    {
+      "github_run_id": "28214046079",
+      "run_attempt": 1,
+      "recorded_run_attempt": 6,
+      "source_git_sha": "c8260da27db5de8354ab926f93c89518947a5878",
+      "source_model_path": "nvidia/MiniMax-M3-NVFP4",
+      "source_model_evidence": {
+        "source": "github_job_log",
+        "path": "21_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep1_dpfalse_nw1)  disagg-true spec-none conc-1x4x8x16.txt",
+        "content_sha256": "96a7e7b85fa6780b8ff8a9fedd12ad8d6d46bfc2e8ffbd233057ff817d83260f",
+        "line": "2026-06-26T02:53:12.7696630Z   MODEL: nvidia/MiniMax-M3-NVFP4"
+      },
+      "run_log_path": "logs-28214046079-1.zip",
+      "run_attempt_evidence": {
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/28214046079/attempts/1/logs",
+        "logs_archive_sha256": "ea734380015d077a0ec4a2d865f4624a29e260c6c3695f8b58ea103e50eb698c",
+        "job_log_member": "21_multi-node 1k1k _ (vllm_vllm-openaivllm-minimax-m3-perf-x86_64-13.0.1-8b00f41, nvidia_MiniMax-M3... _ minimaxm3_1k1k fp4 b300 dynamo-vllm  P(tp2_ep2_dptrue_nw1) D(tp4_ep1_dpfalse_nw1)  disagg-true spec-none conc-1x4x8x16.txt",
+        "job_log_sha256": "96a7e7b85fa6780b8ff8a9fedd12ad8d6d46bfc2e8ffbd233057ff817d83260f"
+      },
+      "id": 7896221700,
+      "path": "7896221700.zip",
+      "sha256": "fce266623f9e2af8f3aa2865178bf813cc48641cecc9af9020c8ab89d3df6440"
+    }
+  ]
+}

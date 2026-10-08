@@ -85,13 +85,12 @@ def test_untrained_regression_preserves_source_but_cannot_run_offline(tmp_path, 
         "agg_block_size": 1,
     }
     # Explicit regression has no other cause to report; the other modes name the missing data.
-    with pytest.raises(
-        ForwardPassEstimatorResolutionError,
-        match=(
-            r"^estimator for agg is not ready: (regression estimator is not ready; replay requires training "
-            r"observations|no timing data for sglang on gb300)"
-        ),
-    ):
+    reason = (
+        "regression estimator is not ready; replay requires training observations"
+        if mode == "fpm_regression"
+        else "no timing data for sglang on gb300; backends with data on gb300: none"
+    )
+    with pytest.raises(ForwardPassEstimatorResolutionError, match=f"^estimator for agg is not ready: {reason}$"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
 
 
