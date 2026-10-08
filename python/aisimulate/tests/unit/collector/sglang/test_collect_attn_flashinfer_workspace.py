@@ -48,18 +48,18 @@ def test_0521_envs_knob_is_raised_to_the_floor(monkeypatch):
     environ = types.ModuleType("sglang.srt.environ")
     environ.envs = types.SimpleNamespace(SGLANG_FLASHINFER_WORKSPACE_SIZE=knob)
     monkeypatch.setitem(sys.modules, "sglang.srt.environ", environ)
-    assert fn() == floor and knob.get() == floor == 1 << 30
+    assert fn() == floor and knob.get() == floor == 4 << 30
 
 
 def test_larger_setting_is_kept(monkeypatch):
     fn, floor = _load()
-    knob = _EnvInt(2 << 30)
+    knob = _EnvInt(8 << 30)
     monkeypatch.setitem(sys.modules, "sglang", types.ModuleType("sglang"))
     monkeypatch.setitem(sys.modules, "sglang.srt", types.ModuleType("sglang.srt"))
     environ = types.ModuleType("sglang.srt.environ")
     environ.envs = types.SimpleNamespace(SGLANG_FLASHINFER_WORKSPACE_SIZE=knob)
     monkeypatch.setitem(sys.modules, "sglang.srt.environ", environ)
-    assert fn() == 2 << 30 and knob.get() == 2 << 30
+    assert fn() == 8 << 30 and knob.get() == 8 << 30
 
 
 def test_no_knob_is_a_reported_noop(monkeypatch):

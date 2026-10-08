@@ -446,7 +446,7 @@ def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str 
     }.get(sm_version)
 
 
-_FLASHINFER_WORKSPACE_MIN_BYTES = 1 << 30
+_FLASHINFER_WORKSPACE_MIN_BYTES = 4 << 30
 
 
 def _ensure_flashinfer_workspace() -> int | None:
@@ -465,6 +465,16 @@ def _ensure_flashinfer_workspace() -> int | None:
     attribute 0.5.21 no longer has — a no-op (pipeline 72343559 reproduced all 671).
     Older series keep the global_config path as a fallback. Returns the floor
     applied (bytes) or None when no knob was found.
+
+    Floor history: 1 GiB (5c0f54a5) cleared 447 of the 671 l40s failures (pipeline
+    72369799, job 475655072); the remaining 224 — all heads 128 / kv 1 / head_dim 128,
+    bf16 and fp8 KV alike, batch x isl from 32x255 up to 4x16383 — asked the tensor-core
+    decode planner for batch_prefill_tmp_v of 1.5-2.22 GiB ("only 1073741824 bytes
+    available"). 4 GiB covers the largest observed request with margin; the buffer is one
+    torch.empty per worker process, never touched beyond what the plan uses, and the
+    planner's split decision does not depend on the buffer size, so the measured kernels
+    are unchanged (flashinfer prefill planner sizes tmp_v from the split count, not the
+    workspace).
     """
     try:
         from sglang.srt.environ import envs
