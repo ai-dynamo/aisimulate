@@ -92,9 +92,19 @@ Field tables on these pages use the following columns:
 | `engine.model` | Required | fixed | Hugging Face ID or local model directory. |
 | `engine.hardware` | Required | `auto` allowed | System identifier, such as `h200_sxm`. `auto` is recommendation-only and resolves from `optimization.hardware`. |
 | `engine.backend` | `vllm` | `{choices: [vllm, sglang]}` | `vllm`, `sglang`, or `trtllm`. Selects both the scheduler semantics and the performance data. |
-| `engine.backend_version` | Latest data for the backend | fixed | Selects performance data only. It does not change scheduler behavior. |
+| `engine.backend_version` | Latest data for the backend | fixed | Selects performance data only. It does not change scheduler behavior. Must be a queryable version for the hardware and backend: `current`, `previous` when configured, `next` when newer data is available, or a version one of those available aliases resolves to. See [backend versions](#backend-versions). |
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
+
+## Backend versions
+
+The accepted versions are the populated slots defined by
+[`query_versions.yaml`](../../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml)
+and the derived `next` slot when newer data is available. Versions outside these
+slots, including some
+support-matrix `PASS` rows, are rejected with an error listing the accepted
+versions. Set `engine.backend_version: current` or use a version in that list.
+See [the support-matrix version boundary](../../perf-model/support-matrix.md#versions-the-cli-accepts).
 
 <a id="worker-roles"></a>
 

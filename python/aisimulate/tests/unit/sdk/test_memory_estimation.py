@@ -982,6 +982,33 @@ def test_estimate_kv_cache_propagates_when_fallback_disabled(monkeypatch):
         )
 
 
+def test_estimate_kv_cache_keeps_version_slot_rejection_unwrapped(monkeypatch):
+    # A backend version outside the queryable slots is a configuration error
+    # with its own fix; it must not be re-labelled as an unsupported model.
+    from aisimulate_core.sdk import perf_database
+
+    slot_error = perf_database.UnlistedQueryVersionError("sglang version '0.5.10' is not a queryable version")
+
+    def _reject(*args, **kwargs):
+        raise slot_error
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_reject))
+    with pytest.raises(perf_database.UnlistedQueryVersionError) as excinfo:
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "b300_sxm",
+            "sglang",
+            backend_version="0.5.10",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=False,
+        )
+    assert excinfo.value is slot_error
+    assert "unsupported model/backend/GPU" not in str(excinfo.value)
+
+
 def test_estimate_kv_cache_nextn_reaches_breakdown(monkeypatch):
     # Acceptance is not part of the aic-core memory API.
     reached = {"n": 0}

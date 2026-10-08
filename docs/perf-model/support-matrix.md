@@ -43,6 +43,20 @@ Check its source and qualification evidence instead of treating the page's
 publication time as a new test run. Generation, nightly qualification, and
 Pages publication belong to [CI accuracy](../ci/accuracy.md).
 
+## Versions the CLI accepts
+
+The matrix probes every backend version that has bundled performance data.
+`aisimulate predict` and `aisimulate recommend` accept only the queryable
+versions of each GPU and backend: `current`, plus `previous` when configured in
+[`query_versions.yaml`](../../python/aisimulate/src/aisimulate_core/systems/query_versions.yaml),
+and `next` when a newer data-backed version is available. A `PASS` row at
+any other version is SDK coverage only; the CLI rejects it with an error that
+names the accepted versions. To run the same model, GPU and backend from the
+CLI, set `engine.backend_version: current` or a version the error names.
+`AIC_ALLOW_UNLISTED_VERSIONS=1` lifts the version check for raw data access,
+but it does not qualify that version for the CLI and later stages can still
+fail.
+
 ## Accuracy and replay
 
 The [accuracy dashboards](https://ai-dynamo.org/aisimulate/) publish separate
