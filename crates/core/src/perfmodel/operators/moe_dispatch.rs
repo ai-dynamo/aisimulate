@@ -59,8 +59,8 @@ pub struct MoEDispatchOp {
     pub attention_dp_size: u32,
     pub pre_dispatch: bool,
     /// True when the model composes its attention-output all-reduce
-    /// explicitly; the vLLM pre-dispatch proxy AR is then not charged
-    /// (mirrors Python `MoEDispatch._attn_ar_modeled`).
+    /// explicitly; the vLLM and plain-TP SGLang pre-dispatch proxy AR is
+    /// then not charged (mirrors Python `MoEDispatch._attn_ar_modeled`).
     #[serde(default)]
     pub attn_ar_modeled: bool,
     pub backend: BackendKind,
@@ -162,6 +162,8 @@ impl MoEDispatchOp {
                 //      if combined_tp_dp: nccl(attn_tp, "reduce_scatter", volume)
                 //                       + nccl(num_gpus, "all_gather", volume*dp)
                 //      elif tp > 1:       custom_allreduce(num_gpus, volume)
+                //                         (0 when attn_ar_modeled, as for vllm;
+                //                          the combine is not gated)
                 //      elif dp > 1:       nccl(num_gpus, "all_gather", volume*dp)
                 //      else:              0
                 //  * sglang non-deepep combine (:1072-1098): mirrors pre but swaps
@@ -266,6 +268,9 @@ impl MoEDispatchOp {
                                 );
                                 ar.query(db, num_tokens)?.latency_ms
                             }
+                        } else if attn_tp > 1 && pre && self.attn_ar_modeled {
+                            // Plain TP: the pre AR only stands in for the attention AR.
+                            0.0
                         } else if attn_tp > 1 {
                             let ar =
                                 CustomAllReduceOp::new(&self.name, 1.0, self.hidden_size, num_gpus);
@@ -784,6 +789,44 @@ mod tests {
             .query(&db, num_tokens)
             .expect("decode pre query");
         assert_eq!(pre.latency_ms, 0.0, "decode pre-dispatch under CP is local");
+    }
+
+    /// sglang plain TP: `attn_ar_modeled` zeroes the pre-dispatch AR only;
+    /// the combine and the unflagged pre AR keep the all-reduce price.
+    #[test]
+    fn sglang_tp_pre_dispatch_honors_attn_ar_modeled() {
+        let db = b200_sglang_db();
+        let num_tokens = 64;
+        let latency = |pre_dispatch: bool, attn_ar_modeled: bool| {
+            let mut op = MoEDispatchOp::new(
+                "moe_dispatch",
+                7168,
+                8,
+                256,
+                8, // moe_tp
+                1, // moe_expert_compute
+                1, // attention_dp
+                pre_dispatch,
+                BackendKind::Sglang,
+                DispatchFlavor::CustomAllReduce,
+            );
+            op.attn_ar_modeled = attn_ar_modeled;
+            op.query(&db, num_tokens).expect("query").latency_ms
+        };
+        let reference = CustomAllReduceOp::new("moe_dispatch", 1.0, 7168, 8)
+            .query(&db, num_tokens)
+            .expect("allreduce reference query")
+            .latency_ms;
+        assert!(reference > 0.0, "reference all-reduce must be priced");
+
+        assert_eq!(latency(true, true), 0.0, "attention AR re-charged");
+        for (pre_dispatch, attn_ar_modeled) in [(true, false), (false, true), (false, false)] {
+            let got = latency(pre_dispatch, attn_ar_modeled);
+            assert!(
+                (got - reference).abs() < 1e-12,
+                "pre={pre_dispatch} modeled={attn_ar_modeled}: {got} != all-reduce {reference}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------
