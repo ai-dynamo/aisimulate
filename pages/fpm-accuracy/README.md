@@ -54,6 +54,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   evaluation artifacts still retain all configurations.
 - Table headings, model/configuration labels, metrics, and evidence links are
   left-aligned across Overview, Predictors, Trends phase summaries, and Details.
+- Configuration evidence links use the Hugging Face emoji followed by Configuration.
 - Overview/Predictors configuration rows show the evaluated phases rather than
   the evaluator's inferred `aggregated` worker role. That role combines phase
   populations and does not establish an aggregated serving deployment.
