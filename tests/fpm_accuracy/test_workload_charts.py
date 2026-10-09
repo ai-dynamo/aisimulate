@@ -1,9 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import csv
+import io
+import json
+from dataclasses import replace
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+from test_hf_dataset import _benchmark_point, _fpm_payload
 
 from scripts.fpm_accuracy.dashboard.workloads import (
     charts,
@@ -12,6 +19,8 @@ from scripts.fpm_accuracy.dashboard.workloads import (
     workload_summary,
 )
 from scripts.fpm_accuracy.exceptions import DataError
+from scripts.fpm_accuracy.hf import HfDataset, adapter_for
+from scripts.fpm_accuracy.hf.models import MeasurementFile
 from scripts.fpm_accuracy.hf.parquet import validate_collection_manifest
 
 
@@ -187,3 +196,160 @@ def test_corrupt_collection_references_fail_closed(mutation):
         manifest["collection_runs"][0]["workload"]["concurrency"] = -1
     with pytest.raises(DataError):
         validate_collection_manifest(manifest)
+
+
+RECORD_SCHEMA = pa.schema(
+    [
+        ("source_row", pa.int64()),
+        ("measurement_id", pa.string()),
+        ("phase", pa.string()),
+        ("batch_size", pa.int64()),
+        ("total_prefill_tokens", pa.int64()),
+        ("total_kv_read_tokens", pa.int64()),
+        ("truth_latency_ms", pa.float64()),
+        ("source_file", pa.string()),
+        ("original_source_row", pa.int64()),
+    ]
+)
+
+
+def reduced_record(source_row=7, **changes):
+    return dict(
+        dict(
+            source_row=source_row,
+            measurement_id=f"point-{source_row}",
+            phase="decode",
+            batch_size=2,
+            total_prefill_tokens=0,
+            total_kv_read_tokens=128,
+            truth_latency_ms=13.0,
+            source_file=None,
+            original_source_row=None,
+        ),
+        **changes,
+    )
+
+
+def write_measurements(tmp_path, records, schema_id, *, schema=None, row_group_size=1, **metadata):
+    path = tmp_path / "truth.parquet"
+    table = pa.Table.from_pylist(records, schema=schema).replace_schema_metadata(
+        {b"schema_id": schema_id.encode(), b"schema_version": b"1", b"file_metadata": json.dumps(metadata).encode()}
+    )
+    pq.write_table(table, path, row_group_size=row_group_size)
+    return MeasurementFile(
+        "truth",
+        "truth.parquet",
+        "0" * 64,
+        "truth",
+        path,
+        "https://example.com/truth.parquet",
+        storage_format="parquet",
+        storage_schema=schema_id,
+        logical_row_count=len(records),
+    )
+
+
+@pytest.mark.parametrize("layout", ["pre_grouped_rank_lists", "benchmark", "reduced"])
+def test_parquet_logical_ids_reach_collection_bindings(tmp_path, layout):
+    records = []
+    for source_row in (7, 23):
+        if layout == "reduced":
+            records.append(reduced_record(source_row, source_file="original.csv", original_source_row=99))
+            continue
+        ranks = [
+            dict(
+                _fpm_payload(rank=rank, counter=source_row, wall_time=latency),
+                received_at_ns=1789002372297086123 + source_row,
+                queued_requests={"num_decode_requests": 0},
+                extensions_json="{}",
+            )
+            for rank, latency in enumerate((0.01, 0.013))
+        ]
+        metadata = dict(
+            benchmark_id=source_row,
+            point=_benchmark_point(source_row),
+            complete=True,
+            expected_dp_ranks=[0, 1],
+            wall_time=0.013,
+            _rank_result_metadata=[{"dp_rank": 0}, {"dp_rank": 1}],
+        )
+        records.append(
+            dict(source_row=source_row, layout=layout, rank_measurements=ranks, metadata_json=json.dumps(metadata))
+        )
+    baseline = None
+    for size in (1, 2):
+        file = write_measurements(
+            tmp_path,
+            records,
+            "forward-pass-records-parquet-v1" if layout == "reduced" else "fpm-iterations-parquet-v1",
+            schema=RECORD_SCHEMA if layout == "reduced" else None,
+            row_group_size=size,
+            has_iteration_groups=True,
+        )
+        file = replace(
+            file,
+            source_layout="benchmark",
+            representation="pre_grouped_rank_lists" if layout == "pre_grouped_rank_lists" else None,
+            iteration_count=2,
+            rank_record_count=4,
+        )
+        protocol = "forward-pass-record-v1" if layout == "reduced" else "forward-pass-measurement-v1"
+        parsed = adapter_for(protocol).parse("config", [file], 2)
+        observations = HfDataset._materialize_observations("config", parsed.observations)
+        assert [o.source_row for o in observations] == [7, 23]
+        assert [o.actual_ms for o in observations] == [13.0, 13.0]
+        assert [[r.dp_rank for r in o.iteration.ranks] for o in observations] == (
+            [[0], [0]] if layout == "reduced" else [[0, 1], [0, 1]]
+        )
+        if layout == "reduced":
+            assert [o.iteration.ranks[0].counter_id for o in observations] == [0, 1]
+        identity = [(o.observation_id, o.prediction_input()) for o in observations]
+        if baseline is not None:
+            assert identity == baseline
+        baseline = identity
+        case = SimpleNamespace(
+            observations=observations[:1],
+            helper_files=[],
+            collection_runs=[run("first", [[7, 8]]), run("second", [[23, 24]])],
+        )
+        details = workload_details(case)
+        assert [(r["id"], r["measurement_count"]) for r in details["runs"]] == [("first", 1)]
+        assert details["unattributed_measurements"] == 0
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [{}, {"source_file": "original.csv"}, {"source_row": 99}, {"source_file": "original.csv", "source_row": 99}],
+)
+def test_reduced_parquet_preserves_optional_csv_provenance(tmp_path, provenance):
+    record = reduced_record(2)
+    legacy = {k: v for k, v in record.items() if k not in ("source_row", "source_file", "original_source_row")}
+    legacy.update(provenance)
+    stream = io.StringIO()
+    writer = csv.DictWriter(stream, fieldnames=list(legacy))
+    writer.writeheader()
+    writer.writerow(legacy)
+    path = tmp_path / "truth.csv"
+    path.write_text(stream.getvalue())
+    original = MeasurementFile("truth", "truth.csv", "0" * 64, "derived_truth", path, "https://example.com")
+    parser = adapter_for("forward-pass-record-v1")
+    expected = parser.parse("config", [original], 1)
+    record.update(source_file=provenance.get("source_file"), original_source_row=provenance.get("source_row"))
+    columnar = write_measurements(tmp_path, [record], "forward-pass-records-parquet-v1", schema=RECORD_SCHEMA)
+    actual = parser.parse("config", [columnar], 1)
+    assert actual.issues == expected.issues == ()
+    assert actual.observations[0].source_row == expected.observations[0].source_row == 2
+    assert [r.to_aic_dict(include_observation=True) for r in actual.observations[0].iteration.ranks] == [
+        r.to_aic_dict(include_observation=True) for r in expected.observations[0].iteration.ranks
+    ]
+
+
+@pytest.mark.parametrize(
+    "changes, error", [({"source_file": ""}, "empty source_file"), ({"original_source_row": 0}, "source_row")]
+)
+def test_reduced_parquet_rejects_invalid_supplied_provenance(tmp_path, changes, error):
+    file = write_measurements(
+        tmp_path, [reduced_record(**changes)], "forward-pass-records-parquet-v1", schema=RECORD_SCHEMA
+    )
+    with pytest.raises(DataError, match=error):
+        adapter_for("forward-pass-record-v1").parse("config", [file], 1)

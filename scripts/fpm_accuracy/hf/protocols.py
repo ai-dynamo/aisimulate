@@ -159,7 +159,8 @@ def _parse_pre_grouped_files(
         iteration_count = 0
         rank_record_count = 0
         seen: set[tuple[str, int, int]] = set()
-        for source_row, group in enumerate(_iter_json_array(file), start=1):
+        groups = _stream_records(file) if file.storage_format == "parquet" else enumerate(_iter_json_array(file), 1)
+        for source_row, group in groups:
             if not isinstance(group, list) or not group:
                 raise DataError(f"measurement file {file.path} iteration {source_row} must be a non-empty rank array")
             if not all(isinstance(value, Mapping) for value in group):
@@ -233,10 +234,6 @@ def _validate_pre_grouped_selection(
 
 
 def _iter_json_array(file: MeasurementFile) -> Iterator[Any]:
-    if file.storage_format == "parquet":
-        for row in parquet.rows(file):
-            yield parquet.iteration(row)
-        return
     decoder = json.JSONDecoder()
     try:
         with _open_text(file.local_path) as handle:
@@ -724,7 +721,7 @@ def _parse_benchmark_files(
         if file.storage_format == "parquet":
             payload = parquet.file_metadata(file)
             if payload.get("has_iteration_groups"):
-                payload["iteration_groups"] = (parquet.iteration(row) for row in parquet.rows(file))
+                payload["iteration_groups"] = _stream_records(file)
         else:
             payload = _read_json(file)
         if not isinstance(payload, Mapping):
@@ -740,11 +737,13 @@ def _parse_benchmark_files(
                 )
             )
             continue
-        if file.storage_format != "parquet" and not isinstance(groups, list):
-            raise DataError(f"measurement file {file.path} field iteration_groups must be an array")
+        if file.storage_format != "parquet":
+            if not isinstance(groups, list):
+                raise DataError(f"measurement file {file.path} field iteration_groups must be an array")
+            groups = enumerate(groups, 1)
 
         unavailable = 0
-        for source_row, row in enumerate(groups, start=1):
+        for source_row, row in groups:
             if not isinstance(row, Mapping):
                 raise DataError(f"measurement file {file.path} record {source_row} must be an object")
             _validate_group_record(row, file, source_row)
@@ -823,18 +822,21 @@ def _parse_benchmark_files(
 def _record_reader(file):
     if file.storage_format != "parquet":
         with _open_text(file.local_path) as stream:
-            yield csv.DictReader(stream)
+            reader = csv.DictReader(stream)
+            yield reader.fieldnames or (), enumerate(reader, 2)
         return
 
-    class Records:
-        fieldnames = (*sorted(_FORWARD_PASS_RECORD_FIELDS), "source_file", "source_row")
+    def records():
+        for row in parquet.rows(file):
+            source_row = row.pop("source_row")
+            original_source_row = row.pop("original_source_row")
+            if original_source_row is not None:
+                row["source_row"] = original_source_row
+            if row.get("source_file") is None:
+                row.pop("source_file", None)
+            yield source_row, {k: "" if v is None else str(v) for k, v in row.items()}
 
-        def __iter__(self):
-            for row in parquet.rows(file):
-                row["source_row"] = row.pop("original_source_row")
-                yield {k: "" if v is None else str(v) for k, v in row.items()}
-
-    yield Records()
+    yield _FORWARD_PASS_RECORD_FIELDS, records()
 
 
 def _parse_evaluation_records(
@@ -846,14 +848,13 @@ def _parse_evaluation_records(
     for file in files:
         if file.storage_format != "parquet" and not file.local_path.name.endswith(_FORWARD_PASS_RECORD_SUFFIXES):
             raise DataError(f"measurement protocol forward-pass-record-v1 does not support file {file.path!r}")
-        with _record_reader(file) as reader:
-            fieldnames = reader.fieldnames or ()
+        with _record_reader(file) as (fieldnames, records):
             if len(fieldnames) != len(set(fieldnames)):
                 raise DataError(f"derived truth {file.path} contains duplicate columns")
             if not _FORWARD_PASS_RECORD_FIELDS.issubset(fieldnames):
                 missing = sorted(_FORWARD_PASS_RECORD_FIELDS - set(fieldnames))
                 raise DataError(f"derived truth {file.path} is missing columns: {missing}")
-            for source_row, row in enumerate(reader, start=2):
+            for counter_id, (source_row, row) in enumerate(records):
                 measurement_id = row["measurement_id"]
                 if not isinstance(measurement_id, str) or not measurement_id:
                     raise DataError(f"derived truth {file.path} row {source_row} has an empty measurement_id")
@@ -883,7 +884,7 @@ def _parse_evaluation_records(
                             f"derived truth {file.path} row {source_row} must use zero total_prefill_tokens for decode"
                         )
                     scheduled = RequestMetrics(num_decode_requests=batch, sum_decode_kv_tokens=kv_tokens)
-                _validate_optional_csv_provenance(row, fieldnames, file, source_row)
+                _validate_optional_csv_provenance(row, file, source_row)
                 truth_latency_ms = _csv_finite_number(row.get("truth_latency_ms"), file, source_row, "truth_latency_ms")
                 if truth_latency_ms <= 0:
                     raise DataError(f"derived truth {file.path} row {source_row} has non-positive truth_latency_ms")
@@ -891,7 +892,7 @@ def _parse_evaluation_records(
                     version=1,
                     worker_id="derived-truth",
                     dp_rank=0,
-                    counter_id=source_row - 2,
+                    counter_id=counter_id,
                     wall_time_s=truth_latency_ms / 1000.0,
                     observed_at_unix_ms=None,
                     scheduled=scheduled,
@@ -1259,15 +1260,14 @@ def _csv_finite_number(value: Any, file: MeasurementFile, source_row: int, field
 
 def _validate_optional_csv_provenance(
     row: Mapping[str, Any],
-    fieldnames: Sequence[str],
     file: MeasurementFile,
     source_row: int,
 ) -> None:
-    if "source_file" in fieldnames:
+    if "source_file" in row:
         source_file = row.get("source_file")
         if not isinstance(source_file, str) or not source_file:
             raise DataError(f"derived truth {file.path} row {source_row} has an empty source_file")
-    if "source_row" in fieldnames:
+    if "source_row" in row:
         _positive_csv_int(row.get("source_row"), file, source_row, "source_row")
 
 

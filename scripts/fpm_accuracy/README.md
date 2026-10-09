@@ -133,6 +133,12 @@ Versioned Parquet representations decode into the same rank/grouping validators
 as legacy JSON/CSV. Integer nanoseconds, nulls, rank order, and logical source
 record IDs survive conversion. `ordering_index` preserves the previous file
 ordering for equal timestamps; Parquet row groups do not define observations.
+Grouped, benchmark, and reduced-record readers use the stored `source_row`,
+including noncontiguous IDs, when binding observations to collection runs.
+Reduced records keep optional source provenance nullable; a missing source file
+or original row is not an empty supplied value. Supplied empty filenames and
+nonpositive original row numbers still fail validation. Synthetic reduced-record
+counters retain their evaluation order independently of logical record IDs.
 Visualization-only diagnostic grouping uses the same format dispatch and logical
 record references, including duplicate-rank exclusions for unsynchronized streams.
 
