@@ -267,12 +267,10 @@ def test_canonical_config_and_binary_reload_retain_inventory_and_values(profile,
 def test_canonical_default_decode_retains_grid_and_skip_aware_extrapolation():
     # Independent baseline from release-built d1e3cd84cb7f891046668ea5bd262009cac497d4,
     # using the original vr200_hecate bundle and the documented 18-shape grid.
-    # AIC-2004 deliberately updates only B29/B31/B32 at K32768: these lie
-    # outside the collected reuse grid, whose last B16/B32 observations are
-    # 0.0426/0.0463 ms. Reuse extrapolation no longer charges an unexecuted
-    # indexer's growth. The independent constant-reuse oracle is Rust's
-    # reuse_decode_extrapolation_does_not_charge_full_indexer_growth. Every
-    # non-attention operation and the other 15 historical totals are unchanged.
+    # B29/B31/B32 at K32768 lie outside the collected reuse grid, whose last
+    # B16/B32 observations are 0.0426/0.0463 ms. Reuse extrapolation excludes
+    # the unexecuted indexer's growth; the independent constant-reuse oracle
+    # is Rust's reuse_decode_extrapolation_does_not_charge_full_indexer_growth.
     model = RustForwardPassPerfModel.best_available(canonical_config(None))
     cases = [
         (1, 1024, 5.782174726583036),
