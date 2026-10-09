@@ -104,8 +104,8 @@ def test_public_model_preserves_equivalent_regex_projection_exclusions(tmp_path)
     assert latencies[0] == pytest.approx(latencies[1])
 
 
-@pytest.mark.parametrize("skip_kv", [None, "bfloat16", "fp8"])
-def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_kv):
+@pytest.mark.parametrize("skip_kv,skip_heads", [(None, 8), ("bfloat16", 8), ("fp8", 8), ("bfloat16", 16)])
+def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_kv, skip_heads):
     """Independent ledger: 21 * 10 + 57 * 2 = 324 ms; all-full = 780 ms.
 
     Synthetic tables deliberately use large latencies to keep the exact
@@ -138,7 +138,15 @@ def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_
         }
         rows = [base]
         if skip_kv is not None:
-            rows.append(dict(base, op_name=f"dsa_{phase}_module_skip_indexer", kv_cache_dtype=skip_kv, latency=2.0))
+            rows.append(
+                dict(
+                    base,
+                    op_name=f"dsa_{phase}_module_skip_indexer",
+                    kv_cache_dtype=skip_kv,
+                    num_heads=skip_heads,
+                    latency=2.0,
+                )
+            )
         pd.DataFrame(rows).to_parquet(table_dir / f"dsa_{phase}_module_perf.parquet", index=False)
     model = RustForwardPassPerfModel.best_available(
         ForwardPassPerfModelConfig(
@@ -164,5 +172,5 @@ def test_public_model_uses_only_matching_vllm_reuse_measurements(tmp_path, skip_
             batch_size=1, context_length=8192 if phase == "context" else 8191, prefill=phase == "context"
         )
         attention = next(op for op in ops if op["name"] == f"{phase}_attention")
-        expected = 324.0 if skip_kv == "bfloat16" else 780.0
+        expected = 324.0 if skip_kv == "bfloat16" and skip_heads == 8 else 780.0
         assert attention["latency_ms"] == pytest.approx(expected)

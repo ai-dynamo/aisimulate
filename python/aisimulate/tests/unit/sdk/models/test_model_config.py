@@ -1943,6 +1943,17 @@ class TestAttentionProjectionExclusions:
     def test_regex_exclusions_match_projection_module_paths(self, pattern, expected, anchor):
         assert self._excl([f"re:{pattern}{anchor}"]) == frozenset(expected)
 
+    def test_malformed_regex_is_an_actionable_configuration_error(self):
+        import re
+
+        from aisimulate.sdk.errors import is_expected_cli_error
+
+        with pytest.raises(ValueError) as caught:
+            self._excl(["re:["])
+        assert "re:[" in str(caught.value)
+        assert isinstance(caught.value.__cause__, re.error)
+        assert is_expected_cli_error(caught.value)
+
     @pytest.mark.parametrize("suffix", ["", "*", ".*", r"\..*"])
     def test_whole_block_suffixes(self, suffix):
         assert self._excl([f"model.layers.0.self_attn{suffix}"]) == frozenset({"q", "kv", "o", "indexer"})

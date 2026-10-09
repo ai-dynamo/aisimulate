@@ -115,7 +115,10 @@ def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: b
             # Compressed-tensors regexes match native module paths, including
             # anchors and escaped dots; projection-name substrings are not
             # sufficient (e.g. a norm-only regex must not exclude a GEMM).
-            regex = re.compile(p[3:])
+            try:
+                regex = re.compile(p[3:])
+            except re.error as error:
+                raise ValueError(f"Invalid attention quantization exclusion {p!r}: {error}") from error
             for group, modules in _PROJECTION_MODULE_PATHS.items():
                 if any(
                     regex.match(f"model.layers.{layer}.self_attn.{module}")
