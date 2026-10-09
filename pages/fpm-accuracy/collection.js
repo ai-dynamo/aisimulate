@@ -9,9 +9,19 @@
   const number = value => value == null ? 'Unknown' : Number(value).toLocaleString('en-US', {maximumFractionDigits:2});
   const titles = {input:'Input sequence length distribution', output:'Output sequence length distribution', interactivity:'Interactivity over time', ttft:'TTFT over time'};
   const banner = (title, reason) => `<div class="workload-banner" role="status"><strong>${escape(title)}</strong><span>${escape(reason)}</span></div>`;
+  function concurrencySummary(settings) {
+    const units = new Map();
+    for (const {value, unit} of settings || []) {
+      if (!Number.isFinite(value) || value < 0 || !unit || ['unknown','not_applicable'].includes(unit)) continue;
+      if (!units.has(unit)) units.set(unit, new Set());
+      units.get(unit).add(value);
+    }
+    const count = [...units.values()].reduce((total, values)=>total+values.size,0);
+    return count ? [`${count} concurrency setting${count === 1 ? '' : 's'}`, ...[...units].sort(([a],[b])=>a.localeCompare(b)).map(([unit,values])=>`${[...values].sort((a,b)=>a-b).map(number).join(' / ')} ${label(unit)}`)].join(' · ') : '';
+  }
   function attach(element, row, snapshot) {
     const value = row.collection;
-    const parts = value?.run_count ? [...value.types.filter(type => type && type !== 'unknown').map(label), ...value.datasets, `${value.run_count} collection runs`] : [];
+    const parts = value?.run_count ? [...value.types.filter(type => type && type !== 'unknown').map(label), ...value.datasets, concurrencySummary(value.concurrency_settings) || `${value.run_count} collection runs`] : [];
     const query = new URLSearchParams({branch:snapshot.branch, configuration:row.configuration_id, snapshot:row.snapshot_id, run:`${snapshot.run_id}-${snapshot.run_attempt}`});
     element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">${escape(parts.join(' · ') || 'Dataset and workload')}</a>`;
   }
@@ -34,8 +44,9 @@
     if (!runs.length) { target.innerHTML = '<h3>Dataset and workload</h3>'+banner('Workload information unavailable', 'Unknown · Normalized collection metadata is unavailable for this evaluation.'); return; }
     const url = new URL(location.href);
     const current = runs.find(r=>r.id === url.searchParams.get('collection_run')) || runs.find(r=>r.availability === 'available') || runs[0];
-    const runLabel = run => `${label(run.collection_type)} · ${number(run.workload.concurrency)} ${label(run.workload.concurrency_unit)}${run.started_at ? ' · '+run.started_at.slice(0,16).replace('T',' ')+' UTC' : ''}`;
-    target.innerHTML = `<h3>Dataset and workload</h3><p>${runs.length} contributing collection runs${collection.unattributed_measurements ? ` · ${number(collection.unattributed_measurements)} observations with unknown collection` : ''}</p><label class="fpm-wide-control">Collection run<select id="collection-run">${runs.map(r=>`<option value="${escape(r.id)}" ${r===current?'selected':''}>${escape(runLabel(r))}</option>`).join('')}</select></label><div id="collection-settings"></div><div id="request-charts" class="request-charts"></div>`;
+    const concurrency = concurrencySummary(runs.map(r=>({value:r.workload.concurrency,unit:r.workload.concurrency_unit})));
+    const runLabel = run => `${Number.isFinite(run.workload.concurrency) ? number(run.workload.concurrency)+' '+label(run.workload.concurrency_unit) : 'Concurrency not recorded'} · ${label(run.collection_type)}${run.started_at ? ' · '+run.started_at.slice(0,16).replace('T',' ')+' UTC' : ''}`;
+    target.innerHTML = `<h3>Dataset and workload</h3><p>${escape(concurrency || `${runs.length} contributing collection runs`)}${collection.unattributed_measurements ? ` · ${number(collection.unattributed_measurements)} observations with unknown collection` : ''}</p><label class="fpm-wide-control"><span id="collection-run-label">${concurrency ? 'Concurrency setting' : 'Collection run'}</span><select id="collection-run" aria-labelledby="collection-run-label">${runs.map(r=>`<option value="${escape(r.id)}" ${r===current?'selected':''}>${escape(runLabel(r))}</option>`).join('')}</select></label><div id="collection-settings"></div><div id="request-charts" class="request-charts"></div>`;
     function draw(run) {
       const w = run.workload;
       const length = value => value?.mode === 'fixed' ? number(value.value) : label(value?.mode);

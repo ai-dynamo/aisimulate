@@ -150,9 +150,16 @@ def workload_details(case):
 
 def workload_summary(details):
     runs = details["runs"]
+    settings = {
+        (r["workload"].get("concurrency_unit"), r["workload"].get("concurrency"))
+        for r in runs
+        if number(r["workload"].get("concurrency"))
+        and r["workload"].get("concurrency_unit") not in (None, "unknown", "not_applicable")
+    }
     return {
         "types": sorted({r["collection_type"] for r in runs}),
         "datasets": sorted({r["dataset"]["name"] for r in runs if r["dataset"]["name"]}),
         "run_count": len(runs),
+        "concurrency_settings": [{"unit": unit, "value": value} for unit, value in sorted(settings)],
         "unattributed_measurements": details["unattributed_measurements"],
     }

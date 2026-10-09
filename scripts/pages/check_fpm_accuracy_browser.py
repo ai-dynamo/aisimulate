@@ -55,6 +55,13 @@ async def check_collection_provenance(page, url, data):
     await expect(page.locator(".collection-note").first).to_have_text(
         "Trace replay · Recorded dataset · 2 collection runs"
     )
+    normalized["rows"][0]["collection"]["concurrency_settings"] = [
+        {"value": value, "unit": "session_trees"} for value in (32, 4, 64, 16, 4)
+    ]
+    await page.reload()
+    await expect(page.locator(".collection-note").first).to_have_text(
+        "Trace replay · Recorded dataset · 4 concurrency settings · 4 / 16 / 32 / 64 session trees"
+    )
     await page.unroute(pattern)
     await page.goto(url + "evaluation-detail.html?branch=main")
     await expect(page.locator("#dataset-workload")).to_contain_text("Unknown")
@@ -112,6 +119,11 @@ async def check_collection_provenance(page, url, data):
     await page.route("**/data/synthetic-details.json", lambda route: route.fulfill(json=details))
     await page.reload()
     await expect(page.locator("#request-charts svg")).to_have_count(4)
+    await expect(page.get_by_label("Concurrency setting", exact=True)).to_have_value("run-a")
+    await expect(page.locator("#dataset-workload > p")).to_have_text("1 concurrency setting · 4 session trees")
+    await expect(page.locator("#collection-run option").first).to_have_text(
+        "4 session trees · Trace replay · 2026-09-17 12:00 UTC"
+    )
     await expect(page.locator("#collection-settings")).to_contain_text("1P1D")
     await expect(page.locator("#collection-settings")).to_contain_text("ramp s: 3")
     await expect(page.locator("#collection-settings")).to_contain_text("random seed: 42")

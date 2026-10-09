@@ -138,6 +138,29 @@ def test_missing_selected_request_asset_disables_charts():
     assert selected["charts"] is None
 
 
+def test_summary_counts_distinct_recorded_concurrency_with_units():
+    runs = []
+    for value, unit in [
+        (32, "session_trees"),
+        (4, "session_trees"),
+        (4, "session_trees"),
+        (4, "requests"),
+        (None, "session_trees"),
+        (16, "unknown"),
+    ]:
+        item = run(str(len(runs)), None)
+        item["workload"] = {"concurrency": value, "concurrency_unit": unit}
+        runs.append(item)
+    summary = workload_summary({"runs": runs, "unattributed_measurements": 0})
+    assert summary["run_count"] == 6
+    assert summary["concurrency_settings"] == [
+        {"unit": "requests", "value": 4},
+        {"unit": "session_trees", "value": 4},
+        {"unit": "session_trees", "value": 32},
+    ]
+    assert workload_summary({"runs": [], "unattributed_measurements": 0})["concurrency_settings"] == []
+
+
 @pytest.mark.parametrize("mutation", ["overlap", "helper", "request", "duplicate", "negative"])
 def test_corrupt_collection_references_fail_closed(mutation):
     manifest = {

@@ -57,7 +57,9 @@ Details and 3D Visualization are separate tabs with independent controls.
 - Overview/Predictors configuration rows show the evaluated phases rather than
   the evaluator's inferred `aggregated` worker role. That role combines phase
   populations and does not establish an aggregated serving deployment.
-  Each row shows a compact collection type, dataset, and contributing run count,
+  Each row shows a compact collection type, dataset, and distinct recorded concurrency
+  settings (for example, `4 concurrency settings · 4 / 16 / 32 / 64 session trees`),
+  falling back to the contributing run count when concurrency metadata is absent,
   linked to **Dataset and workload** in Details. Collection types are
   `self_benchmark`, `static_serving`, `trace_replay`, and `unknown`.
   Benchmark preset (including `inferencex-agentx-mvp`), replay mode, dataset,
@@ -67,6 +69,10 @@ Details and 3D Visualization are separate tabs with independent controls.
   Predictors summaries omit Unknown labels and the Test set prefix. When no summary
   is available, the link reads Dataset and workload. Details retains the missing-data context.
 - Details selects a contributing collection with `collection_run` in the URL.
+  The selector is labeled Concurrency setting when recorded values are available;
+  options lead with concurrency and retain the collection type and capture date.
+  Repeated runs at the same concurrency count as one setting; different concurrency
+  units stay separate. Runs with missing concurrency remain selectable.
   The default is the earliest run with request metrics, then the earliest known
   run; unknown dates use stable ID order. Supporting-only runs are not shown.
   Recorded dataset transformations, worker topology, warmup settings, seed, and
