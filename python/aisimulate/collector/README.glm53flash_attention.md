@@ -220,6 +220,21 @@ carry disjoint `only_sets`; `finalize` admits split attempts only if they
 cover the planned keys exactly once. Each attempt's knobs are frozen in its
 manifest and listed in `collection_meta.yaml`.
 
+## Published tables (2026-10-09)
+
+| Backend | Rows | Not measured |
+| --- | --- | --- |
+| vLLM `0.31.0` | 2315 = 5 deployments x 463 | none |
+| SGLang `0.5.20` | 2292 = 4 x 463 + 440 (nvfp4-tp1) | nvfp4-tp1: 19 memory-feasibility drops (KV pool 3396928 tokens, 10.5 GiB transient at `--mem-fraction-static 0.74`) and 4 classified failures (B32 x256 at prefix 16384/32768, B16 x512 at prefix 65536, B1 x8192 at prefix 1032192: reproducible OOMs in fresh processes), listed in `collection_meta.yaml` |
+
+Every GPU was a GB300. Long collections fragment device memory: many
+attempts were split across fresh processes (capacity only), and failed
+attempts contribute their completely measured targets through
+`finalize --partial` (a complete attempt's copy of a key wins). Each table
+directory carries `glm53_attention_module_perf.evidence.json.gz` (per-row
+rank-max medians of the timing diagnostics); the full per-repetition evidence
+is kept with the collection audit.
+
 ## Allocator policy
 
 At batch 32 and 98K–131K context the ragged IndexPool MQA-logits buffer of a
