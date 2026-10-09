@@ -648,6 +648,7 @@ mod tests {
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 10,
             kv_bytes_per_token: None,
+            state_bytes: 0,
             bandwidth_gb_s: None,
         };
         assert_eq!(start_transfer_delay(missing, 7.5), 7.5);
@@ -667,6 +668,7 @@ mod tests {
             mode: TransferTimingMode::FullPrompt,
             full_prompt_tokens: 10,
             kv_bytes_per_token: Some(1024),
+            state_bytes: 0,
             bandwidth_gb_s: Some(-1.0),
         };
         assert!(validate_transfer_timing(timing).is_err());

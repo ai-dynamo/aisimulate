@@ -240,7 +240,7 @@ the request recomputes the missing part instead. Each time this happens
 Models with recurrent layers (such as Kimi K3's KDA layers) keep a fixed-size
 state per request in addition to per-token KV. `state_cache` reserves that state
 in the same G1 pool. The fragment below goes under
-`engine.workers.aggregated`:
+`engine.workers.aggregated`, or under both `prefill` and `decode` for P/D:
 
 ```yaml
 kv_cache:
@@ -275,8 +275,20 @@ matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
 24,300-token prompt keeps snapshots at 23,040 and 24,192 tokens. A later request
 sharing 23,700 tokens resumes at 23,040. This follows vLLM v0.29.0 align mode.
 
-Supported: aggregated vLLM, fixed `capacity`, `predict --stack engine`.
-Rejected: `recommend`, P/D, G2/G3 offload, and speculative decoding with
+In `mode: disaggregated`, set `state_cache` on both `prefill` and `decode`;
+each role sizes its own state. The decode worker reserves the prompt blocks
+plus one state when it accepts a request, then continues from the transferred
+state. With [`engine.kv_transfer`](kv-transfer.md), the transfer also moves
+one state: the prefill role's `bytes_per_request`, charged once per request in
+either `timing_mode`. A decode-side prefix hit skips resident token KV; the
+state still travels with the rest of the prompt. These are modeling
+assumptions: vLLM sends the raw convolution and recurrent state (about 8% less
+than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
+but the last prompt token and recomputes that token on the decode worker. Replay
+transfers the state for the whole prompt and does not model the recompute.
+
+Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`.
+Rejected: `recommend`, G2/G3 offload, and speculative decoding with
 `prefix_match_unit`.
 
 ## Other cache modes
