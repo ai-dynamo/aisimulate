@@ -455,7 +455,6 @@ impl FpmForwardOp {
             ));
         }
         let query = coords[1] / coords[0];
-        let prefix = coords[2] / coords[0];
         // Exact parity with collector/glm53flash_runtime_identity.py: only the
         // new tail repair has reviewed four-cell native, 128K and cache-oracle
         // evidence (qualification summary SHA256
@@ -464,7 +463,12 @@ impl FpmForwardOp {
         // version prefix or an unreviewed local suffix.
         const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &["0.30.0+glm53tail.eb4704514fdf"];
         let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
-        if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
+        // Iteration totals carry no per-request split. Stock-runtime tables are
+        // collected with every prefix on the 4-token grid (splits in 4-token
+        // units, so the per-request average need not be a multiple of 4); a
+        // total admits such a split exactly when it is a multiple of 4.
+        let grid_prefix_total = coords[2] % 4.0 == 0.0;
+        if !repaired && !grid_prefix_total && query >= 2.0 {
             return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
         }
         Ok(())
@@ -1300,6 +1304,19 @@ mod tests {
         assert!(
             prefill
                 .validate_glm53flash_native_start("vllm", "0.31.0", &[1.0, 4.0, 4098.0])
+                .unwrap_err()
+                .to_string()
+                .contains("cached-prefill start is unqualified")
+        );
+        // Grid splits in 4-token units: B=4, prefix total 488 = [124, 124, 120, 120].
+        assert!(
+            prefill
+                .validate_glm53flash_native_start("vllm", "0.31.0", &[4.0, 128.0, 488.0])
+                .is_ok()
+        );
+        assert!(
+            prefill
+                .validate_glm53flash_native_start("vllm", "0.31.0", &[2.0, 128.0, 490.0])
                 .unwrap_err()
                 .to_string()
                 .contains("cached-prefill start is unqualified")
