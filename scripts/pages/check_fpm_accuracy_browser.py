@@ -37,14 +37,14 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 async def check_collection_provenance(page, url, data):
     await page.goto(url + "?branch=main")
-    await expect(page.locator(".collection-note").first).to_contain_text("Test set · Unknown")
+    await expect(page.locator(".collection-note").first).to_have_text("Test set")
     await expect(page.locator(".collection-note details")).to_have_count(0)
     await expect(page.locator(".collection-note a").first).to_have_attribute("href", re.compile("#dataset-workload$"))
     # Versioned metadata arrives with the evaluation; no HF request is needed.
     normalized = copy.deepcopy(data)
     normalized["schema_version"] = 2
     normalized["rows"][0]["collection"] = {
-        "types": ["trace_replay"],
+        "types": ["trace_replay", "unknown"],
         "datasets": ["Recorded dataset"],
         "run_count": 2,
         "unattributed_measurements": 0,
@@ -52,8 +52,8 @@ async def check_collection_provenance(page, url, data):
     pattern = "**/" + artifact_key("main") + "/summary.json"
     await page.route(pattern, lambda route: route.fulfill(json=normalized))
     await page.reload()
-    await expect(page.locator(".collection-note").first).to_contain_text(
-        "Trace replay · Recorded dataset · 2 collection runs"
+    await expect(page.locator(".collection-note").first).to_have_text(
+        "Test set · Trace replay · Recorded dataset · 2 collection runs"
     )
     await page.unroute(pattern)
     await page.goto(url + "evaluation-detail.html?branch=main")

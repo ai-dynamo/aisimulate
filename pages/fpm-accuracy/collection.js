@@ -11,9 +11,9 @@
   const banner = (title, reason) => `<div class="workload-banner" role="status"><strong>${escape(title)}</strong><span>${escape(reason)}</span></div>`;
   function attach(element, row, snapshot) {
     const value = row.collection;
-    const text = value?.run_count ? [...value.types.map(label), ...value.datasets, `${value.run_count} collection runs`].join(' · ') : 'Unknown';
+    const parts = value?.run_count ? [...value.types.filter(type => type && type !== 'unknown').map(label), ...value.datasets, `${value.run_count} collection runs`] : [];
     const query = new URLSearchParams({branch:snapshot.branch, configuration:row.configuration_id, snapshot:row.snapshot_id, run:`${snapshot.run_id}-${snapshot.run_attempt}`});
-    element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">Test set · ${escape(text)}</a>`;
+    element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">${escape(['Test set', ...parts].join(' · '))}</a>`;
   }
   function histogram(data, title, population) {
     if (!data?.count) return '<p class="workload-empty">Unavailable · No observed token counts.</p>';

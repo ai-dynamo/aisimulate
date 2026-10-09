@@ -63,7 +63,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   Benchmark preset (including `inferencex-agentx-mvp`), replay mode, dataset,
   and serving layout are independent recorded fields. Filenames never classify
   a workload. Metadata is bundled with its pinned evaluation; legacy evaluations
-  display Unknown without fetching newer HF manifests.
+  keep missing metadata without fetching newer HF manifests. Overview and
+  Predictors summaries omit Unknown labels; Details retains the missing-data context.
 - Details selects a contributing collection with `collection_run` in the URL.
   The default is the earliest run with request metrics, then the earliest known
   run; unknown dates use stable ID order. Supporting-only runs are not shown.
