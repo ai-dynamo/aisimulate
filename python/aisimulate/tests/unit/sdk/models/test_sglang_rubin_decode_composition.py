@@ -264,9 +264,13 @@ def test_canonical_config_and_binary_reload_retain_inventory_and_values(profile,
             assert latency == pytest.approx(baseline + ar + add + norm, rel=1e-12)
 
 
-def test_canonical_default_decode_matches_pre_rename_predictions():
+def test_canonical_default_decode_retains_grid_and_skip_aware_extrapolation():
     # Independent baseline from release-built d1e3cd84cb7f891046668ea5bd262009cac497d4,
     # using the original vr200_hecate bundle and the documented 18-shape grid.
+    # B29/B31/B32 at K32768 lie outside the collected reuse grid, whose last
+    # B16/B32 observations are 0.0426/0.0463 ms. Reuse extrapolation excludes
+    # the unexecuted indexer's growth; the independent constant-reuse oracle
+    # is Rust's reuse_decode_extrapolation_does_not_charge_full_indexer_growth.
     model = RustForwardPassPerfModel.best_available(canonical_config(None))
     cases = [
         (1, 1024, 5.782174726583036),
@@ -280,13 +284,13 @@ def test_canonical_default_decode_matches_pre_rename_predictions():
         (8, 32768, 8.575550438298876),
         (29, 1024, 11.323890800847444),
         (29, 8192, 11.619728300847443),
-        (29, 32768, 13.771569071160545),
+        (29, 32768, 12.591045766944921),
         (31, 1024, 11.552352622044365),
         (31, 8192, 11.835965122044367),
-        (31, 32768, 14.189702957830354),
+        (31, 32768, 12.898760432326226),
         (32, 1024, 11.666583521823535),
         (32, 8192, 11.944083521823535),
-        (32, 32768, 14.398252338994732),
+        (32, 32768, 13.051838429311465),
     ]
     for batch, past_kv, expected in cases:
         assert model.static_phase_latency(

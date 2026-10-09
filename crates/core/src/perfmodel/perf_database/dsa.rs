@@ -132,11 +132,51 @@ pub(crate) fn select_dsa_backend<'a, T>(
     by_backend: &'a BTreeMap<String, T>,
     dsa_backend: &str,
 ) -> Option<&'a T> {
-    by_backend
-        .get(dsa_backend)
-        .or_else(|| by_backend.get("flashmla_kv"))
-        .or_else(|| by_backend.get("trtllm"))
-        .or_else(|| by_backend.values().next())
+    select_dsa_backend_name(by_backend, dsa_backend).and_then(|name| by_backend.get(name))
+}
+
+fn select_dsa_backend_name<'a, T>(
+    by_backend: &'a BTreeMap<String, T>,
+    requested: &str,
+) -> Option<&'a str> {
+    [requested, "flashmla_kv", "trtllm"]
+        .into_iter()
+        .find_map(|name| by_backend.get_key_value(name).map(|(key, _)| key.as_str()))
+        .or_else(|| by_backend.keys().next().map(String::as_str))
+}
+
+/// Reuse observations must describe the same precision, architecture, executed
+/// backend bucket and local head count as the full observation. A skip row for
+/// a different model/precision/head cannot authorize a cross-head estimate.
+fn has_paired_skip_slice(
+    full: &DsaGrids,
+    skip: &DsaGrids,
+    key: &DsaKey,
+    requested_backend: &str,
+    num_heads: u32,
+) -> bool {
+    let Some(full_backends) = full.by_keys.get(key) else {
+        return false;
+    };
+    let Some(backend) = select_dsa_backend_name(full_backends, requested_backend) else {
+        return false;
+    };
+    let Some(skip_backends) = skip.by_keys.get(key) else {
+        return false;
+    };
+    // Each query applies the same fallback order independently. Even if the
+    // skip map contains the full bucket, it may select a different, preferred
+    // bucket; that pair does not establish matching execution measurements.
+    if select_dsa_backend_name(skip_backends, requested_backend) != Some(backend) {
+        return false;
+    }
+    full_backends[backend]
+        .get(&num_heads)
+        .is_some_and(|grid| !grid.is_empty())
+        && skip_backends
+            .get(backend)
+            .and_then(|heads| heads.get(&num_heads))
+            .is_some_and(|grid| !grid.is_empty())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -434,8 +474,8 @@ impl DsaTable {
         skip_indexer: bool,
     ) -> Result<LeafValue, AicError> {
         // `skip_indexer=true` reads the GLM-5.2 reuse-layer generation table.
-        // The generation SOL is skip-independent (Python's generation get_sol
-        // has no skip branch) — only the table slice differs.
+        // The extrapolation roofline must describe the same executed variant
+        // as the measured row; reuse layers do not read the indexer cache.
         // Resolve flops BEFORE any perf-data lookup: a missing dtype entry
         // must classify as MissingSystemFlops on both engines, in every mode
         // (mirrors Python's query-entry resolution and GemmTable::query).
@@ -474,6 +514,7 @@ impl DsaTable {
                 c[2] as i64, // s
                 c[0] as i64, // num_heads
                 1,           // tables are measured at the full top-k
+                skip_indexer,
                 flops,
             )
         };
@@ -556,6 +597,48 @@ impl DsaTable {
     pub fn has_context_skip_rows(&self) -> Result<bool, AicError> {
         match self.load_context_skip() {
             Ok(grids) => Ok(!grids.by_keys.is_empty()),
+            Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Reuse capability for the actual query identity. Source resolution
+    /// happens before this check, so a new version label alone never enables
+    /// reuse of an older full-only fallback table. Corrupt tables still error.
+    pub fn has_context_skip_slice(
+        &self,
+        key: &DsaKey,
+        backend: &str,
+        num_heads: u32,
+    ) -> Result<bool, AicError> {
+        match self.load_context_skip() {
+            Ok(skip) => Ok(has_paired_skip_slice(
+                self.load_context()?,
+                skip,
+                key,
+                backend,
+                num_heads,
+            )),
+            Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Generation twin of [`Self::has_context_skip_slice`].
+    pub fn has_generation_skip_slice(
+        &self,
+        key: &DsaKey,
+        backend: &str,
+        num_heads: u32,
+    ) -> Result<bool, AicError> {
+        match self.load_generation_skip() {
+            Ok(skip) => Ok(has_paired_skip_slice(
+                self.load_generation()?,
+                skip,
+                key,
+                backend,
+                num_heads,
+            )),
             Err(AicError::PerfDatabase(msg)) if msg.contains(NO_DSA_ROWS_PREFIX) => Ok(false),
             Err(err) => Err(err),
         }
@@ -759,10 +842,7 @@ fn indexer_cache_entry_bytes(index_head_dim: i64) -> i64 {
     index_head_dim + ((index_head_dim + 127) / 128) * 4
 }
 
-/// Context DSA analytic roofline. Verbatim port of Python
-/// `ContextDSAModule._query_context_dsa_module_table::get_sol` with
-/// `skip_indexer=False` (the Rust table has no GLM-5.2 skip-indexer split;
-/// collected files carry only full rows).
+/// Context DSA analytic roofline for full-indexer and reuse layers.
 ///
 /// Ops split into a GEMM group (gemm_quant), the always-FP8 indexer-logits
 /// group (active only when `full_s > index_topk`), and the sparse-MLA
@@ -800,11 +880,18 @@ pub(crate) fn dsa_context_sol(
     let tokens = b * s;
 
     // ── Compute (FLOPs) ─────────────────────────────────────────
-    let proj_out = q_lora + kv_lora + qk_rope + ihd;
+    // SGLang 0.5.14 native contract (no upstream code copied):
+    // https://github.com/sgl-project/sglang/blob/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mla.py#L261-L295
+    // skips
+    // the entire indexer call on reuse layers. Its K, Q and weight projections
+    // belong to that call; the attention QKV projections still execute.
+    let indexer_heads = if skip_indexer { 0 } else { inh };
+    let indexer_dim = if skip_indexer { 0 } else { ihd };
+    let proj_out = q_lora + kv_lora + qk_rope + indexer_dim;
     let gemm_group_ops = 2 * tokens * hidden * proj_out
         + 2 * tokens * q_lora * (num_heads * qk_head_dim)
-        + 2 * tokens * q_lora * (inh * ihd)
-        + 2 * tokens * hidden * inh
+        + 2 * tokens * q_lora * (indexer_heads * ihd)
+        + 2 * tokens * hidden * indexer_heads
         + 2 * tokens * (num_heads * v_dim) * hidden
         + 2 * num_heads * tokens * qk_nope * kv_lora
         + 2 * num_heads * tokens * kv_lora * v_dim;
@@ -836,8 +923,8 @@ pub(crate) fn dsa_context_sol(
     // ── Memory (bytes) ──────────────────────────────────────────
     let gemm_weight_elems = hidden * proj_out
         + q_lora * num_heads * qk_head_dim
-        + q_lora * inh * ihd
-        + hidden * inh
+        + q_lora * indexer_heads * ihd
+        + hidden * indexer_heads
         + num_heads * v_dim * hidden;
     let gemm_weight_bytes = gemm_weight_elems as f64 * gemm_quant.mapping().memory;
 
@@ -900,10 +987,8 @@ pub(crate) fn dsa_context_sol_ms(
     .time_ms()
 }
 
-/// Generation DSA analytic roofline. Verbatim port of Python
-/// `GenerationDSAModule._query_generation_dsa_module_table::get_sol`
-/// (1 token per request; the attention group is hardcoded bfloat16 in
-/// Python — `fmha_mode = FMHAQuantMode.bfloat16` — so no fmha arg here).
+/// Generation DSA analytic roofline for full-indexer and reuse layers.
+/// One token per request; the attention group remains BF16.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn dsa_generation_sol(
     spec: &SystemSpec,
@@ -914,6 +999,7 @@ pub(crate) fn dsa_generation_sol(
     s: i64,
     num_heads: i64,
     topk_divisor: i64,
+    skip_indexer: bool,
     flops: DsaSolFlops,
 ) -> SolComponents {
     let (b, s, num_heads) = (b as i128, s as i128, num_heads as i128);
@@ -940,28 +1026,35 @@ pub(crate) fn dsa_generation_sol(
     let attn_head_dim = kv_lora + qk_rope;
 
     let tokens = b;
-    let proj_out = q_lora + kv_lora + qk_rope + ihd;
+    // Reuse layers bypass the whole indexer, including its projections and
+    // cache access (same native contract as dsa_context_sol above).
+    let indexer_heads = if skip_indexer { 0 } else { inh };
+    let indexer_dim = if skip_indexer { 0 } else { ihd };
+    let proj_out = q_lora + kv_lora + qk_rope + indexer_dim;
     let effective_kv = s.min((topk + topk_divisor - 1) / topk_divisor);
 
     let gemm_group_ops = 2 * tokens * hidden * proj_out
         + 2 * tokens * q_lora * num_heads * qk_head_dim
-        + 2 * tokens * q_lora * inh * ihd
-        + 2 * tokens * hidden * inh
+        + 2 * tokens * q_lora * indexer_heads * ihd
+        + 2 * tokens * hidden * indexer_heads
         + 2 * tokens * num_heads * v_dim * hidden
         + 2 * num_heads * tokens * qk_nope * kv_lora
         + 2 * num_heads * tokens * kv_lora * v_dim;
 
-    let indexer_logits_ops = 2 * tokens * inh * ihd * s;
+    let indexer_logits_ops = 2 * tokens * indexer_heads * ihd * s;
     let sparse_attn_ops = 2 * tokens * num_heads * (attn_head_dim + kv_lora) * effective_kv;
 
     let gemm_weight_elems = hidden * proj_out
         + q_lora * num_heads * qk_head_dim
-        + q_lora * inh * ihd
-        + hidden * inh
+        + q_lora * indexer_heads * ihd
+        + hidden * indexer_heads
         + num_heads * v_dim * hidden;
     let gemm_weight_bytes = gemm_weight_elems as f64 * gemm_quant.mapping().memory;
-    let indexer_cache_bytes =
-        (b * s * indexer_cache_entry_bytes(dims.index_head_dim) as i128) as f64;
+    let indexer_cache_bytes = if skip_indexer {
+        0.0
+    } else {
+        (b * s * indexer_cache_entry_bytes(dims.index_head_dim) as i128) as f64
+    };
     let kv_cache_bytes = (b * effective_kv * attn_head_dim) as f64 * kv_quant.mapping().memory;
     let total_mem = gemm_weight_bytes + indexer_cache_bytes + kv_cache_bytes;
 
@@ -989,6 +1082,7 @@ pub(crate) fn dsa_generation_sol_ms(
     s: i64,
     num_heads: i64,
     topk_divisor: i64,
+    skip_indexer: bool,
     flops: DsaSolFlops,
 ) -> f64 {
     dsa_generation_sol(
@@ -1000,6 +1094,7 @@ pub(crate) fn dsa_generation_sol_ms(
         s,
         num_heads,
         topk_divisor,
+        skip_indexer,
         flops,
     )
     .time_ms()
@@ -1364,6 +1459,115 @@ mod tests {
             ((got - want) / want).abs() < 1e-9,
             "rust {got} vs python {want}"
         );
+    }
+
+    /// Independent GLM ledger, b=1, local heads=8, BF16 and one decode token:
+    /// Q_a 12,582,912 + KV_a 3,538,944 + Q_b 4,194,304 + O 12,582,912
+    /// = 32,899,072 weight elements. Projection + absorbed BMM work totals
+    /// 69,468,160 FLOPs; top-2048 attention adds 35,651,584 FLOPs. Reuse
+    /// reads 65,798,144 weight bytes + 2,359,296 latent-KV bytes, regardless
+    /// of history beyond top-k. Normalize all rates to 1e12 for exact pins.
+    #[test]
+    fn reuse_decode_roofline_matches_executed_projection_ledger() {
+        let mut spec = b200_sxm_spec();
+        spec.gpu.mem_bw = 1e12;
+        let flops = DsaSolFlops {
+            gemm: 1e12,
+            indexer_fp8: 1e12,
+            attn: 1e12,
+        };
+        for sequence in [8193, 131073, 1048576] {
+            let got = dsa_generation_sol(
+                &spec,
+                dsa_dims("GlmMoeDsaForCausalLM"),
+                KvCacheQuantMode::Bfloat16,
+                GemmQuantMode::Bfloat16,
+                1,
+                sequence,
+                8,
+                1,
+                true,
+                flops,
+            );
+            approx_rel(got.math_ms, 0.105119744);
+            approx_rel(got.mem_ms, 0.068157440);
+        }
+        // Full indexer adds 9,371,648 weight elements, their projection
+        // FLOPs, 67,117,056 logit FLOPs and 1,081,476 history-cache bytes.
+        let full = dsa_generation_sol(
+            &spec,
+            dsa_dims("GlmMoeDsaForCausalLM"),
+            KvCacheQuantMode::Bfloat16,
+            GemmQuantMode::Bfloat16,
+            1,
+            8193,
+            8,
+            1,
+            false,
+            flops,
+        );
+        approx_rel(full.math_ms, 0.190980096);
+        approx_rel(full.mem_ms, 0.087982212);
+        // Context's one-new-token reuse path executes the same projections.
+        let context = dsa_context_sol(
+            &spec,
+            dsa_dims("GlmMoeDsaForCausalLM"),
+            2048,
+            KvCacheQuantMode::Bfloat16,
+            FmhaQuantMode::Bfloat16,
+            GemmQuantMode::Bfloat16,
+            1,
+            1,
+            8192,
+            8,
+            true,
+            flops,
+        );
+        approx_rel(context.math_ms, 0.105119744);
+    }
+
+    /// A synthetic 2 ms measured reuse anchor beyond top-k must stay 2 ms
+    /// when only sequence length is extrapolated: the executed operations
+    /// and bytes no longer grow with history. Full anchors still do grow.
+    #[test]
+    fn reuse_decode_extrapolation_does_not_charge_full_indexer_growth() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_dsa_module_parquet_rows(
+            &tmp.path().join("dsa_generation_module_perf.parquet"),
+            &[
+                ("dsa_generation_module", "default", "bfloat16", 8193, 3.0),
+                (
+                    "dsa_generation_module_skip_indexer",
+                    "default",
+                    "bfloat16",
+                    8193,
+                    2.0,
+                ),
+            ],
+        );
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let spec = b200_sxm_spec();
+        let query = |s, skip| {
+            table
+                .query_generation(
+                    &spec,
+                    1,
+                    s,
+                    128,
+                    KvCacheQuantMode::Bfloat16,
+                    FmhaQuantMode::Bfloat16,
+                    GemmQuantMode::Bfloat16,
+                    "DeepseekV32ForCausalLM",
+                    "trtllm",
+                    skip,
+                )
+                .unwrap()
+                .latency
+        };
+        approx_rel(query(8193, false), 3.0);
+        approx_rel(query(8193, true), 2.0);
+        approx_rel(query(131073, true), 2.0);
+        assert!(query(131073, false) > 3.0);
     }
 
     /// Within-file duplicate policy: LAST row wins (Python two-phase loader,
@@ -1850,6 +2054,13 @@ mod tests {
             !err.to_string().contains(NO_DSA_ROWS_PREFIX),
             "the propagated error must not be the absence outcome: {err}"
         );
+        let key = DsaKey {
+            architecture: "DeepseekV32ForCausalLM".into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "bfloat16".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        assert!(table.has_context_skip_slice(&key, "trtllm", 128).is_err());
         // The FULL variant of the same file still loads and answers.
         let spec = b200_sxm_spec();
         table
@@ -1868,6 +2079,90 @@ mod tests {
                 false,
             )
             .expect("full-variant query must survive a malformed skip row");
+    }
+
+    /// A reuse table is a capability of one measured identity, not of every
+    /// operation sharing its parquet. The fallback backend must also match
+    /// the full table's selected backend rather than independently switching.
+    #[test]
+    fn paired_skip_probe_requires_matching_precision_backend_and_heads() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let rows = [
+            ("dsa_context_module", "trtllm_gen", "fp8", 1024, 10.0),
+            ("dsa_context_module", "default", "fp8", 1024, 12.0),
+            (
+                "dsa_context_module_skip_indexer",
+                "default",
+                "fp8",
+                1024,
+                2.0,
+            ),
+        ];
+        for name in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows(&tmp.path().join(name), &rows);
+        }
+        let table = DsaTable::new(tmp.path().to_path_buf());
+        let key = DsaKey {
+            architecture: "DeepseekV32ForCausalLM".into(),
+            fmha_quant: "bfloat16".into(),
+            kv_quant: "fp8".into(),
+            gemm_quant: "bfloat16".into(),
+        };
+        let probes = [
+            DsaTable::has_context_skip_slice,
+            DsaTable::has_generation_skip_slice,
+        ];
+        for probe in probes {
+            assert!(probe(&table, &key, "flashmla_kv", 128).expect("matching slice"));
+            assert!(probe(&table, &key, "unknown", 128).expect("same full/skip fallback"));
+            assert!(!probe(&table, &key, "trtllm", 128).expect("full uses a different backend"));
+            assert!(!probe(&table, &key, "flashmla_kv", 64).expect("unmeasured local heads"));
+            for field in ["architecture", "fmha", "kv", "gemm"] {
+                let mut other = key.clone();
+                match field {
+                    "architecture" => other.architecture = "GlmMoeDsaForCausalLM".into(),
+                    "fmha" => other.fmha_quant = "fp8".into(),
+                    "kv" => other.kv_quant = "bfloat16".into(),
+                    _ => other.gemm_quant = "fp8_block".into(),
+                }
+                assert!(!probe(&table, &other, "flashmla_kv", 128).expect("unmatched key"));
+            }
+        }
+        // Reverse asymmetry: the skip map contains both buckets, but full
+        // has only FlashMLA. A TRT request independently selects different
+        // full and skip backends, despite their common FlashMLA bucket.
+        let reverse = tempfile::tempdir().expect("tmpdir");
+        let rows = [
+            ("dsa_context_module", "default", "fp8", 1024, 12.0),
+            (
+                "dsa_context_module_skip_indexer",
+                "default",
+                "fp8",
+                1024,
+                2.0,
+            ),
+            (
+                "dsa_context_module_skip_indexer",
+                "trtllm_gen",
+                "fp8",
+                1024,
+                3.0,
+            ),
+        ];
+        for name in [
+            "dsa_context_module_perf.parquet",
+            "dsa_generation_module_perf.parquet",
+        ] {
+            write_dsa_module_parquet_rows(&reverse.path().join(name), &rows);
+        }
+        let table = DsaTable::new(reverse.path().to_path_buf());
+        for probe in probes {
+            assert!(!probe(&table, &key, "trtllm", 128).expect("skip prefers another bucket"));
+            assert!(probe(&table, &key, "flashmla_kv", 128).expect("both select FlashMLA"));
+        }
     }
 
     /// FP8-KV rows bucket by executed-kernel name (the serving FP8-KV

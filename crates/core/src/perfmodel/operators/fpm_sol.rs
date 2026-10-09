@@ -436,9 +436,8 @@ fn dsa_context_module_sol(
 }
 
 /// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
-/// op-level decode roofline (`dsa_generation_sol_ms`; the attention group is bf16 and
-/// the skip-indexer variant never enters the decode SOL, as in
-/// `operators::dsa::query_generation_table`), then `scale_factor`.
+/// op-level decode roofline (`dsa_generation_sol_ms`; the attention group is bf16),
+/// blended over the full and reuse layers, then `scale_factor`.
 fn dsa_generation_module_sol(
     op: &DsaModuleOp,
     spec: &SystemSpec,
@@ -452,17 +451,32 @@ fn dsa_generation_module_sol(
     // `ceil(topk / dcp)` owned slots.
     let dcp = op.dcp_size.max(1) as f64;
     let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
-    let ms = dsa_generation_sol_ms(
-        spec,
-        dims,
-        op.kv_cache_dtype,
-        op.gemm_quant_mode,
-        b.round().max(1.0) as i64,
-        s_local.round().max(1.0) as i64,
-        (op.num_heads as f64 * dcp) as i64,
-        dcp as i64,
-        flops,
-    );
+    let w = op.full_frac;
+    if !(0.0..=1.0).contains(&w) {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "DSA generation op {} has dsa_full_layer_fraction={w}, which is not a fraction in [0, 1]",
+            op.name
+        )));
+    }
+    let sol = |skip_indexer| {
+        dsa_generation_sol_ms(
+            spec,
+            dims,
+            op.kv_cache_dtype,
+            op.gemm_quant_mode,
+            b.round().max(1.0) as i64,
+            s_local.round().max(1.0) as i64,
+            (op.num_heads as f64 * dcp) as i64,
+            dcp as i64,
+            skip_indexer,
+            flops,
+        )
+    };
+    let ms = if w >= 1.0 {
+        sol(false)
+    } else {
+        w * sol(false) + (1.0 - w) * sol(true)
+    };
     Ok(ms.max(0.0) * op.scale_factor)
 }
 
@@ -1297,6 +1311,7 @@ mod tests {
             100000,
             64,
             1,
+            false,
             flops,
         );
         assert!(got.is_finite() && got > 0.0, "{got}");
@@ -1362,6 +1377,34 @@ mod tests {
         let op = glm_dsa_op("generation_attention");
         let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
         approx(got, 0.019327371428571428);
+    }
+
+    /// Same independent ledger as the full-only frozen case above, omitting
+    /// 9,371,648 indexer weight elements and all indexer-cache bytes on each
+    /// reuse layer: (150,339,584 * 9/16 + 7,077,888) / 7.7e12 * 1000
+    /// = 0.011901805714285714 ms, memory-bound. GLM-5.2 has 21 full and
+    /// 57 reuse layers, so its attention SOL is 1.0842777257142857 ms.
+    #[test]
+    fn dsa_generation_fpm_sol_reuse_layers_have_no_indexer_cost() {
+        let d = db();
+        let mut op = glm_dsa_op("generation_attention");
+        op.full_frac = 21.0 / 78.0;
+        op.scale_factor = 78.0;
+        let got = op_sol_latency_ms(&Op::DsaGeneration(op), &d, 6.0, 6.0, 65536.5, 0.0).unwrap();
+        approx(got, 1.0842777257142857);
+    }
+
+    #[test]
+    fn dsa_generation_fpm_sol_rejects_invalid_layer_fractions() {
+        let d = db();
+        for fraction in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut op = glm_dsa_op("generation_attention");
+            op.full_frac = fraction;
+            assert!(matches!(
+                op_sol_latency_ms(&Op::DsaGeneration(op), &d, 1.0, 1.0, 8193.0, 0.0),
+                Err(AicError::InvalidEngineConfig(_))
+            ));
+        }
     }
 
     /// `full_frac` domain. The two valid boundaries select the pure legs, and every

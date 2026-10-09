@@ -376,6 +376,7 @@ impl MsaModuleOp {
             s as i64,
             self.num_heads as i64,
             1,
+            false,
             flops,
         );
         let probe = self.dsa_probe(dims.index_topk);

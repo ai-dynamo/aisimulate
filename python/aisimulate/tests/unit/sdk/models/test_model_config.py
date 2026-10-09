@@ -1916,6 +1916,47 @@ class TestAttentionProjectionExclusions:
     def test_empty(self):
         assert self._excl([]) == frozenset()
 
+    @pytest.mark.parametrize("suffix", ["", "*", ".*", r"\..*"])
+    def test_whole_block_suffixes(self, suffix):
+        assert self._excl([f"model.layers.0.self_attn{suffix}"]) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl([f"model.layers.0.self_attn.indexer{suffix}"]) == frozenset({"indexer"})
+
+    def test_norm_and_auxiliary_exclusions_do_not_reclassify_projection_groups(self):
+        assert (
+            self._excl(
+                [
+                    "model.layers.0.self_attn.q_a_layernorm",
+                    "model.layers.0.self_attn.kv_a_layernorm",
+                    "model.layers.0.self_attn.indexer.k_norm",
+                    "model.layers.0.self_attn.indexer.k_norm.bias",
+                    "model.layers.0.self_attn.indexers_proj",
+                ]
+            )
+            == frozenset()
+        )
+
+    @pytest.mark.parametrize("projection", ["wq_b", "wk", "weights_proj", "wk_weights_proj"])
+    def test_named_indexer_projection_exclusion(self, projection):
+        assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    def test_native_glm52_fp8_keeps_fp8_projection_table_key(self, backend, phase):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs. NVFP4 mixed exclusions have separate tests
+        # in TestDSV32NVFP4AttentionExclusion above.
+        from aisimulate.sdk import engine
+
+        model = models.get_model(
+            "zai-org/GLM-5.2-FP8",
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode.fp8_block),
+            backend_name=backend,
+        )
+        assert model.extra_params["dsa_attn_quant_exclusions"] == frozenset()
+        specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
+        attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
+        assert attention["gemm_quant_mode"] == "fp8_block"
+
 
 class TestBundledModelConfigsOffline:
     """Bundled configs must load without network (P2: DefaultHFModels registration)."""
