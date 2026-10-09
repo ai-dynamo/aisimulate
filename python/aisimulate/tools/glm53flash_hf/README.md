@@ -125,8 +125,13 @@ helper pins its fifteen sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. Current `MAINTENANCE_IDENTITY` names
-`fpm_cleanup_slurm_source_review_v6`, based on revision
-`69cdb67ed6659a0a8b9aadbd71ccd8820e16cc42`. It differs from v5 only in that the
+`fpm_cleanup_slurm_source_review_v7`, based on revision
+`4af852456017be76ef92b16a9372720ab3e1a797`. It differs from v6 only in that the
+cleanup-only executor also accepts the collector `slurm.py` from the merge of
+main `d088d2ef`, whose only change is a new `prepare_attempt` provenance
+argument; the cleanup subclass disables `prepare_attempt` (maintainer review,
+2026-10-08). The v6 profile, based on revision
+`69cdb67ed6659a0a8b9aadbd71ccd8820e16cc42`, differs from v5 only in that the
 cleanup-only executor also accepts the reviewed post-main collector `slurm.py`
 (`cleanup_reconciliation.CLEANUP_SLURM_SOURCES`); the original-host
 `slurm_sha256` check is unchanged. The maintainer review

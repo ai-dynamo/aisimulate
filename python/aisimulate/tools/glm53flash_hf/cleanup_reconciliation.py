@@ -42,10 +42,16 @@ SLURM_SOURCE = "432dc0b578a8d738bf0b691de5009f2df2bb274b75ecb74363f7fc92c2d9e01b
 # and cleanup() through EOF are byte-identical to 432dc0b5. Only __init__,
 # apply, wait_ready, _exec and prepare_attempt changed, plus new
 # _require_cpu_policy/_qualify_cpu_allocation; none is on the cleanup path.
+# cfef54a9 review (2026-10-08, merge 4af85245 of main d088d2ef): relative to
+# e187717a only prepare_attempt changed (new runtime_backend_version
+# argument passed through to the provenance command). The cleanup-only
+# subclass disables prepare_attempt, so cleanup() and every member it
+# inherits stay byte-identical to 432dc0b5.
 CLEANUP_SLURM_SOURCES = frozenset(
     {
         SLURM_SOURCE,
         "e187717ac6948de9cf4d6891cdc20ef78c890859eac053ade6b7721fd3ff2543",
+        "cfef54a9c440366c1cd980963c2673d516aab3288cf16dc8fa8df96d014447ab",
     }
 )
 HOST_SOURCES = {
