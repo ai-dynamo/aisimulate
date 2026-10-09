@@ -29,6 +29,7 @@ CORE_SDK_LEAF_MODULES = [
     "backends.vllm_backend",
     "common",
     "deepseek_v41",
+    "deepseek_v4_state",
     "config",
     "config_builders",
     "engine",

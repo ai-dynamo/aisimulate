@@ -21,7 +21,7 @@
 # vllm/platforms/interface.py, vllm/v1/kv_cache_interface.py,
 # vllm/v1/attention/backends/mla/triton_mla.py.
 
-"""Resolve Kimi K3 token/state cache geometry without loading GPU weights."""
+"""Resolve Kimi K3 and DeepSeek V4 token/state cache geometry without loading GPU weights."""
 
 from __future__ import annotations
 
@@ -37,19 +37,26 @@ def estimate_state_cache(
     backend: str = "vllm",
     tp_size: int = 1,
     pp_size: int = 1,
-    block_size: int = 64,
+    block_size: int | None = None,
     kv_bytes_per_token: int | None = None,
     kvcache_quant_mode: str | None = None,
     mamba_cache_dtype: str = "auto",
+    indexer_cache_dtype: str = "auto",
     num_speculative_tokens: int = 0,
 ) -> dict[str, Any]:
-    """Resolve the physical block size and ONE K3 state copy per rank.
+    """Resolve the physical block size and ONE state copy per rank.
+
+    DeepSeek V4: see ``deepseek_v4_state``. Block size and token bytes follow
+    vLLM's allocation; ``indexer_cache_dtype`` selects its FP8 (``auto``) or
+    MXFP4 indexer, and draft tokens widen each sliding window.
+
+    Kimi K3:
 
     Uses the existing Kimi model for target-only token KV geometry. Draft KV and
     extra state copies belong to their runtime pools, not this one-copy size.
     Model configuration loading follows the SDK's normal model loader.
 
-    ``block_size`` is the requested page granularity (AISimulate defaults to 64).
+    ``block_size`` is the requested page granularity (default 64).
     It must satisfy the attention kernel's alignment. Automatic sizing follows
     the pinned vLLM KDA none/align layout and Triton MLA's 16-token minimum;
     supply a larger granularity for kernels requiring it (e.g. 128 for CUTLASS).
@@ -60,17 +67,39 @@ def estimate_state_cache(
     ``num_speculative_tokens`` is metadata: it does not change a KDA copy's shape.
     """
     from .config_builders import build_model_config
-    from .models import _get_model_info, get_model
+    from .deepseek_v4_state import BLOCK_SIZE, deepseek_v4_state_cache
+    from .models import _architecture_to_model_family, _get_model_info, get_model
 
+    info = _get_model_info(model_path)
+    family = _architecture_to_model_family(info["architecture"])
+    if family not in ("KIMIK3", "DEEPSEEKV4"):
+        raise ValueError("automatic state sizing supports Kimi K3 and DeepSeek V4; supply manual state geometry")
     if backend != "vllm" or pp_size != 1:
-        raise ValueError("automatic K3 state sizing requires vllm and PP=1")
+        raise ValueError("automatic state sizing requires vllm and PP=1")
     for name, value, minimum in (
         ("tp_size", tp_size, 1),
         ("pp_size", pp_size, 1),
-        ("block_size", block_size, 2),
         ("num_speculative_tokens", num_speculative_tokens, 0),
     ):
         _integer(name, value, minimum)
+    if family == "DEEPSEEKV4":
+        if block_size not in (None, BLOCK_SIZE):
+            raise ValueError(f"vLLM's DeepSeek V4 kernels and compressor states use {BLOCK_SIZE}-token blocks")
+        if kv_bytes_per_token is not None:
+            raise ValueError("DeepSeek V4 token bytes follow vLLM's cache groups; leave bytes_per_token as auto")
+        if kvcache_quant_mode not in (None, "fp8"):
+            raise ValueError("vLLM's DeepSeek V4 FlashMLA backend stores fp8_ds_mla KV; use kvcache_quant_mode fp8")
+        if mamba_cache_dtype != "auto":
+            raise ValueError("mamba_cache_dtype applies to Kimi K3 only")
+        # KV is replicated on every TP rank, so per-rank geometry does not depend on TP.
+        return deepseek_v4_state_cache(
+            info["extra_params"], indexer_cache_dtype=indexer_cache_dtype, num_speculative_tokens=num_speculative_tokens
+        )
+    if indexer_cache_dtype != "auto":
+        raise ValueError("indexer_cache_dtype applies to DeepSeek V4 only")
+    if block_size is None:
+        block_size = 64
+    _integer("block_size", block_size, 2)
     if block_size % 16:
         raise ValueError("K3 automatic block_size requires a multiple of 16 tokens")
     if mamba_cache_dtype not in ("auto", "float16", "float32"):
@@ -88,8 +117,6 @@ def estimate_state_cache(
         raise ValueError(f"unsupported kvcache_quant_mode: {kvcache_quant_mode!r}") from error
     config.language_only = True
     model = get_model(model_path, config, backend)
-    if model.model_family != "KIMIK3":
-        raise ValueError("automatic state sizing supports Kimi K3 only; supply manual state geometry")
     geometry = model.extra_params
     attention_layers = geometry.layer_types.count("full_attention")
     state_layers = geometry.layer_types.count("linear_attention")
@@ -103,7 +130,7 @@ def estimate_state_cache(
 
     conv_dtype = mamba_cache_dtype
     if conv_dtype == "auto":
-        raw = _get_model_info(model_path)["raw_config"]
+        raw = info["raw_config"]
         text = raw.get("text_config", raw)
         conv_dtype = text.get("dtype", text.get("torch_dtype"))
         if conv_dtype not in ("float16", "bfloat16"):

@@ -2215,6 +2215,22 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
 }
 
 #[test]
+fn prefill_bandwidth_without_transfer_bytes_is_rejected() {
+    let mut config = disagg_config_with_handoff_delay();
+    config.prefill_args.kv_transfer_bytes_per_token = None;
+    let error = config
+        .runtime_config(false)
+        .err()
+        .expect("missing transfer bytes");
+    assert!(
+        error
+            .to_string()
+            .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+        "{error}"
+    );
+}
+
+#[test]
 fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
     let handoff_ms = |state: bool| {
         let mut config = disagg_config_with_handoff_delay();
