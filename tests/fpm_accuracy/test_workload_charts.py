@@ -79,10 +79,7 @@ def test_missing_and_cancelled_timings_never_become_zero():
 
 
 def test_rolling_percentile_uses_latest_fifty_valid_requests():
-    records = [
-        request(request_id=str(i), start_offset_ms=i * 1000, ttft_ms=i * 1000)
-        for i in range(60)
-    ]
+    records = [request(request_id=str(i), start_offset_ms=i * 1000, ttft_ms=i * 1000) for i in range(60)]
     result = charts(list(reversed(records)))
     assert result["ttft"]["rolling_p90"][-1] == [59, 54.1]
     assert result["ttft"]["points"][0] == [0, 0]
@@ -116,9 +113,7 @@ def test_selected_truth_controls_metadata_and_supporting_only_runs_are_hidden():
         run("run-c", [[6, 8]]),
     ]
     case = SimpleNamespace(
-        observations=[
-            SimpleNamespace(source_file_id="truth", source_row=i) for i in (1, 4, 5)
-        ],
+        observations=[SimpleNamespace(source_file_id="truth", source_row=i) for i in (1, 4, 5)],
         helper_files=[],
         collection_runs=runs,
     )
@@ -143,9 +138,7 @@ def test_missing_selected_request_asset_disables_charts():
     assert selected["charts"] is None
 
 
-@pytest.mark.parametrize(
-    "mutation", ["overlap", "helper", "request", "duplicate", "negative"]
-)
+@pytest.mark.parametrize("mutation", ["overlap", "helper", "request", "duplicate", "negative"])
 def test_corrupt_collection_references_fail_closed(mutation):
     manifest = {
         "files": [
@@ -164,9 +157,7 @@ def test_corrupt_collection_references_fail_closed(mutation):
     elif mutation == "helper":
         manifest["files"][0]["role"] = "supporting_evidence"
     elif mutation == "request":
-        manifest["collection_runs"][0]["request_metrics"].update(
-            status="available", file_ids=["absent"]
-        )
+        manifest["collection_runs"][0]["request_metrics"].update(status="available", file_ids=["absent"])
     elif mutation == "duplicate":
         manifest["collection_runs"].append(run("run-a", [[3, 4]]))
     else:
