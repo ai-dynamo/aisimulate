@@ -22,6 +22,7 @@ use crate::common::system_spec::{SystemSpec, quant_tc_flops};
 use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
+use crate::perf_database::dsv41::MeasuredGeometry;
 
 fn leaf(spec: &SystemSpec, flops: f64, bytes: f64, rate: f64) -> PerformanceResult {
     PerformanceResult::sol(SolComponents::new(
@@ -36,7 +37,7 @@ fn zero() -> PerformanceResult {
 
 /// Measured V41 modules use an exact physical identity. HYBRID falls back
 /// only on absent coverage; a malformed table remains a hard error.
-fn query_leaf<T: Serialize>(
+fn query_leaf<T: MeasuredGeometry>(
     db: &PerfDatabase,
     component: &str,
     op: &T,
@@ -56,11 +57,9 @@ fn query_leaf<T: Serialize>(
             "DeepSeek-V4.1 {component} has no empirical calibration"
         )));
     }
-    match db
-        .dsv41
-        .query(component, op, batch_size, prefix, x, &|point| {
-            sol(point).map(|result| result.latency_ms)
-        })? {
+    match db.dsv41.query_typed(op, batch_size, prefix, x, &|point| {
+        sol(point).map(|result| result.latency_ms)
+    })? {
         Some(measured) => Ok(PerformanceResult::with_energy(
             measured.latency,
             measured.energy,

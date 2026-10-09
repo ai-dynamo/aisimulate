@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
+use rustc_hash::FxHashMap;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -18,6 +19,7 @@ use super::SourceResolver;
 use super::axis_curve::LeafAxisCurve;
 use super::parquet_loader::PerfReader;
 use super::perf_interp::LeafValue;
+use crate::common::enums::{FmhaQuantMode, GemmQuantMode};
 use crate::common::error::AicError;
 use crate::operators::dsv41::{Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp};
 
@@ -30,15 +32,136 @@ pub struct Dsv41Table {
 
 #[derive(Default)]
 struct Grids {
-    curves: BTreeMap<Key, LeafAxisCurve>,
+    curves: FxHashMap<Key, LeafAxisCurve>,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct Key {
-    component: String,
-    geometry: String,
+    geometry: GeometryKey,
     batch_size: u32,
     prefix: u32,
+}
+
+/// Exact measured dimensions, independent of display names and analytical KV layout.
+/// Constructed from current operator fields; no cached operator state is required.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum GeometryKey {
+    Attention {
+        is_context: bool,
+        role: AttentionRole,
+        compress_ratio: u32,
+        hidden_size: u32,
+        num_heads: u32,
+        head_dim: u32,
+        q_lora_rank: u32,
+        o_lora_rank: u32,
+        o_groups: u32,
+        index_n_heads: u32,
+        index_head_dim: u32,
+        index_topk: u32,
+        window_size: u32,
+        candidate_limit: u32,
+        is_candidate_source: bool,
+        bounded_prefill: bool,
+        gemm_quant_mode: GemmQuantMode,
+        fmha_quant_mode: FmhaQuantMode,
+    },
+    Mhc {
+        hidden_size: u32,
+        hc_mult: u32,
+        sinkhorn_iters: u32,
+    },
+    Engram {
+        num_embeddings: u64,
+        head_dim: u32,
+        hash_columns: u32,
+        hidden_size: u32,
+        hc_mult: u32,
+        tp_size: u32,
+    },
+    Linear {
+        n: u32,
+        k: u32,
+        quant_mode: GemmQuantMode,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum AttentionRole {
+    Swa,
+    Full,
+    Reindex,
+    Reuse,
+}
+
+pub(crate) trait MeasuredGeometry {
+    // An unknown attention role cannot occur in a valid measured table.
+    fn geometry_key(&self) -> Option<GeometryKey>;
+}
+
+impl MeasuredGeometry for Dsv41AttentionOp {
+    fn geometry_key(&self) -> Option<GeometryKey> {
+        let role = match self.role.as_str() {
+            "swa" => AttentionRole::Swa,
+            "full" => AttentionRole::Full,
+            "reindex" => AttentionRole::Reindex,
+            "reuse" => AttentionRole::Reuse,
+            _ => return None,
+        };
+        Some(GeometryKey::Attention {
+            is_context: self.is_context,
+            role,
+            compress_ratio: self.compress_ratio,
+            hidden_size: self.hidden_size,
+            num_heads: self.num_heads,
+            head_dim: self.head_dim,
+            q_lora_rank: self.q_lora_rank,
+            o_lora_rank: self.o_lora_rank,
+            o_groups: self.o_groups,
+            index_n_heads: self.index_n_heads,
+            index_head_dim: self.index_head_dim,
+            index_topk: self.index_topk,
+            window_size: self.window_size,
+            candidate_limit: self.candidate_limit,
+            is_candidate_source: self.is_candidate_source,
+            bounded_prefill: self.bounded_prefill,
+            gemm_quant_mode: self.gemm_quant_mode,
+            fmha_quant_mode: self.fmha_quant_mode,
+        })
+    }
+}
+
+impl MeasuredGeometry for Dsv41MhcOp {
+    fn geometry_key(&self) -> Option<GeometryKey> {
+        Some(GeometryKey::Mhc {
+            hidden_size: self.hidden_size,
+            hc_mult: self.hc_mult,
+            sinkhorn_iters: self.sinkhorn_iters,
+        })
+    }
+}
+
+impl MeasuredGeometry for Dsv41EngramOp {
+    fn geometry_key(&self) -> Option<GeometryKey> {
+        Some(GeometryKey::Engram {
+            num_embeddings: self.num_embeddings,
+            head_dim: self.head_dim,
+            hash_columns: self.hash_columns,
+            hidden_size: self.hidden_size,
+            hc_mult: self.hc_mult,
+            tp_size: self.tp_size,
+        })
+    }
+}
+
+impl MeasuredGeometry for Dsv41LinearOp {
+    fn geometry_key(&self) -> Option<GeometryKey> {
+        Some(GeometryKey::Linear {
+            n: self.n,
+            k: self.k,
+            quant_mode: self.quant_mode,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,7 +194,9 @@ pub fn geometry<T: Serialize>(op: &T) -> Result<String, AicError> {
     serde_json::to_string(&sorted).map_err(|e| invalid(e.to_string()))
 }
 
-fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<(), AicError> {
+fn validate_body<T: DeserializeOwned + Serialize + MeasuredGeometry>(
+    value: &Value,
+) -> Result<Option<GeometryKey>, AicError> {
     let mut named = value.clone();
     named
         .as_object_mut()
@@ -83,18 +208,18 @@ fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<(), A
     if &round_trip != value {
         return Err(invalid("V41 geometry has unknown or noncanonical fields"));
     }
-    Ok(())
+    Ok(op.geometry_key())
 }
 
-fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> {
+fn validate_geometry(component: &str, encoded: &str) -> Result<(Value, GeometryKey), AicError> {
     let value: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
-    match component {
+    let key = match component {
         "attention" => validate_body::<Dsv41AttentionOp>(&value)?,
         "mhc" => validate_body::<Dsv41MhcOp>(&value)?,
         "engram" => validate_body::<Dsv41EngramOp>(&value)?,
         "linear" => validate_body::<Dsv41LinearOp>(&value)?,
         _ => return Err(invalid(format!("unknown V41 component {component:?}"))),
-    }
+    };
     let object = value.as_object().expect("validated object");
     let sorted: BTreeMap<_, _> = object.iter().collect();
     if serde_json::to_string(&sorted).map_err(|e| invalid(e.to_string()))? != encoded {
@@ -118,7 +243,7 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> 
             return Err(invalid("invalid V41 CSA2 compression ratio"));
         }
     }
-    Ok(value)
+    Ok((value, key.expect("validated attention role")))
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -215,14 +340,50 @@ impl Dsv41Table {
         x: u32,
         sol: &dyn Fn(f64) -> Result<f64, AicError>,
     ) -> Result<Option<LeafValue>, AicError> {
+        // Keep the generic JSON interface for callers outside the repeated
+        // operator path. Load first to preserve malformed-table error precedence.
+        let grids = self.loaded_grids()?;
+        let encoded = geometry(op)?;
+        let Ok((_, geometry)) = validate_geometry(component, &encoded) else {
+            // A noncanonical query could never match a validated table row.
+            return Ok(None);
+        };
+        Self::query_curve(grids, geometry, batch_size, prefix, x, sol)
+    }
+
+    fn loaded_grids(&self) -> Result<&Grids, AicError> {
         let grids = self.grids.get_or_init(|| match &self.path {
             Some(path) => load(path).map_err(|e| format!("{}: {e}", path.display())),
             None => Ok(Grids::default()),
         });
-        let grids = grids.as_ref().map_err(|e| invalid(e.clone()))?;
+        grids.as_ref().map_err(|e| invalid(e.clone()))
+    }
+
+    pub(crate) fn query_typed<T: MeasuredGeometry>(
+        &self,
+        op: &T,
+        batch_size: u32,
+        prefix: u32,
+        x: u32,
+        sol: &dyn Fn(f64) -> Result<f64, AicError>,
+    ) -> Result<Option<LeafValue>, AicError> {
+        let grids = self.loaded_grids()?;
+        let Some(geometry) = op.geometry_key() else {
+            return Ok(None);
+        };
+        Self::query_curve(grids, geometry, batch_size, prefix, x, sol)
+    }
+
+    fn query_curve(
+        grids: &Grids,
+        geometry: GeometryKey,
+        batch_size: u32,
+        prefix: u32,
+        x: u32,
+        sol: &dyn Fn(f64) -> Result<f64, AicError>,
+    ) -> Result<Option<LeafValue>, AicError> {
         let key = Key {
-            component: component.into(),
-            geometry: geometry(op)?,
+            geometry,
             batch_size,
             prefix,
         };
@@ -271,12 +432,12 @@ fn load(path: &Path) -> Result<Grids, AicError> {
     let kv_seed_regime = reader.col("kv_seed_regime")?;
     let execution_profile = reader.col("execution_profile")?;
     let mut identity = None;
-    let mut points: BTreeMap<Key, BTreeMap<u32, LeafValue>> = BTreeMap::new();
+    let mut points: FxHashMap<Key, BTreeMap<u32, LeafValue>> = FxHashMap::default();
     for row in reader.rows()? {
         let row = row?;
         let component = row.str(component)?;
         let encoded = row.str(geometry)?;
-        let shape = validate_geometry(component, encoded)?;
+        let (shape, geometry) = validate_geometry(component, encoded)?;
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix)?, row.u32(x)?);
         let latency = row.f64(latency)?;
         if batch == 0
@@ -355,8 +516,7 @@ fn load(path: &Path) -> Result<Grids, AicError> {
             _ => {}
         }
         let key = Key {
-            component: component.into(),
-            geometry: encoded.into(),
+            geometry,
             batch_size: batch,
             prefix,
         };
@@ -457,7 +617,7 @@ mod tests {
     }
 
     fn lookup(table: &Dsv41Table, x: u32) -> Result<Option<LeafValue>, AicError> {
-        table.query("linear", &linear(), 1, 0, x, &|x| Ok(x * x))
+        table.query_typed(&linear(), 1, 0, x, &|x| Ok(x * x))
     }
 
     #[test]
@@ -465,7 +625,105 @@ mod tests {
         let (_root, table) = table(&fixture());
         for (x, expected) in [(10, 1.0), (15, 2.0), (20, 3.0), (40, 12.0), (5, 0.25)] {
             assert_eq!(lookup(&table, x).unwrap().unwrap().latency, expected);
+            assert_eq!(
+                table
+                    .query("linear", &linear(), 1, 0, x, &|x| Ok(x * x))
+                    .unwrap()
+                    .unwrap()
+                    .latency,
+                expected,
+            );
         }
+    }
+
+    #[test]
+    fn typed_geometry_matches_canonical_json_field_sensitivity() {
+        fn check<T: Serialize + DeserializeOwned + MeasuredGeometry>(op: T) {
+            let original = serde_json::to_value(&op).unwrap();
+            let reference = geometry(&op).unwrap();
+            let key = op.geometry_key().unwrap();
+            for (field, value) in original.as_object().unwrap() {
+                let mut changed = original.clone();
+                changed[field] = match value {
+                    Value::Bool(v) => Value::Bool(!v),
+                    Value::Number(v) => serde_json::json!(v.as_u64().unwrap() + 1),
+                    Value::String(_) => serde_json::json!(match field.as_str() {
+                        "name" => "another-layer",
+                        "role" => "reindex",
+                        "kv_cache_layout" => "sglang_fp8_bf16",
+                        "quant_mode" | "gemm_quant_mode" | "fmha_quant_mode" => "bfloat16",
+                        _ => panic!("uncovered string field {field}"),
+                    }),
+                    _ => panic!("uncovered field {field}"),
+                };
+                let altered: T = serde_json::from_value(changed).unwrap();
+                let excluded = matches!(field.as_str(), "name" | "kv_cache_layout");
+                assert_eq!(
+                    geometry(&altered).unwrap() == reference,
+                    excluded,
+                    "{field}"
+                );
+                assert_eq!(altered.geometry_key().unwrap() == key, excluded, "{field}");
+            }
+        }
+        check(attention());
+        check(Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 5120,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        });
+        check(Dsv41EngramOp {
+            name: "engram".into(),
+            num_embeddings: u64::from(u32::MAX) + 1,
+            head_dim: 128,
+            hash_columns: 8,
+            hidden_size: 5120,
+            hc_mult: 4,
+            tp_size: 4,
+        });
+        check(linear());
+    }
+
+    #[test]
+    fn generic_query_preserves_misses_and_table_error_precedence() {
+        let (_root, table) = table(&fixture());
+        for (component, op) in [
+            ("unknown", serde_json::to_value(linear()).unwrap()),
+            (
+                "linear",
+                serde_json::json!({"k": 32, "n": 64, "quant_mode": "fp8_block", "extra": true}),
+            ),
+            (
+                "linear",
+                serde_json::json!({"k": 0, "n": 64, "quant_mode": "fp8_block"}),
+            ),
+            ("attention", serde_json::json!({"role": "unknown"})),
+        ] {
+            assert!(
+                table
+                    .query(component, &op, 1, 0, 10, &|x| Ok(x))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            table
+                .query("linear", &0, 1, 0, 10, &|x| Ok(x))
+                .unwrap_err()
+                .to_string()
+                .contains("must be an object")
+        );
+        std::fs::write(_root.path().join(BASENAME), b"corrupt").unwrap();
+        let corrupt = Dsv41Table::new(_root.path().to_owned());
+        let typed_error = lookup(&corrupt, 10).unwrap_err().to_string();
+        assert_eq!(
+            corrupt
+                .query("linear", &0, 1, 0, 10, &|x| Ok(x))
+                .unwrap_err()
+                .to_string(),
+            typed_error
+        );
     }
 
     #[test]
@@ -476,14 +734,14 @@ mod tests {
         op.name = "another-layer".into();
         assert!(
             table
-                .query("linear", &op, 1, 0, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_some()
         );
         op.k = 64;
         assert!(
             table
-                .query("linear", &op, 1, 0, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
@@ -491,19 +749,19 @@ mod tests {
         op.quant_mode = GemmQuantMode::Bfloat16;
         assert!(
             table
-                .query("linear", &op, 1, 0, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
         assert!(
             table
-                .query("linear", &linear(), 2, 0, 10, &|x| Ok(x))
+                .query_typed(&linear(), 2, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
         assert!(
             table
-                .query("linear", &linear(), 1, 1, 10, &|x| Ok(x))
+                .query_typed(&linear(), 1, 1, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
@@ -535,7 +793,7 @@ mod tests {
         op.kv_cache_layout = Dsv41KvCacheLayout::SglangFp8Bf16;
         assert_eq!(geometry(&op).unwrap(), LEGACY);
         let estimate = table
-            .query("attention", &op, 1, 0, 10, &|_| {
+            .query_typed(&op, 1, 0, 10, &|_| {
                 Err(AicError::ModelConfig(
                     "unexpected analytical fallback".into(),
                 ))
@@ -546,7 +804,7 @@ mod tests {
         op.fmha_quant_mode = FmhaQuantMode::Bfloat16;
         assert!(
             table
-                .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
@@ -554,7 +812,7 @@ mod tests {
         op.head_dim = 256;
         assert!(
             table
-                .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
@@ -878,13 +1136,13 @@ mod tests {
             let (_root, table) = self::table(&attention_fixture(&op, prefix, "real_kv"));
             assert!(
                 table
-                    .query("attention", &op, 1, prefix as u32, 10, &|x| Ok(x))
+                    .query_typed(&op, 1, prefix as u32, 10, &|x| Ok(x))
                     .unwrap()
                     .is_some()
             );
             assert!(
                 table
-                    .query("attention", &op, 1, prefix as u32 + 1, 10, &|x| Ok(x))
+                    .query_typed(&op, 1, prefix as u32 + 1, 10, &|x| Ok(x))
                     .unwrap()
                     .is_none()
             );
@@ -899,7 +1157,7 @@ mod tests {
         op.bounded_prefill = true;
         assert!(
             table
-                .query("attention", &op, 1, 2048, 10, &|x| Ok(x))
+                .query_typed(&op, 1, 2048, 10, &|x| Ok(x))
                 .unwrap()
                 .is_none()
         );
@@ -924,7 +1182,7 @@ mod tests {
             let (_root, table) = table(&attention_fixture(&op, 0, "real_kv"));
             assert!(
                 table
-                    .query("attention", &op, 1, 0, 10, &|x| Ok(x))
+                    .query_typed(&op, 1, 0, 10, &|x| Ok(x))
                     .unwrap()
                     .is_some()
             );
@@ -935,7 +1193,7 @@ mod tests {
     fn sol_errors_survive_the_curve_callback() {
         let (_root, table) = table(&fixture());
         let err = table
-            .query("linear", &linear(), 1, 0, 40, &|_| {
+            .query_typed(&linear(), 1, 0, 40, &|_| {
                 Err(AicError::MissingSystemFlops("fixture".into()))
             })
             .unwrap_err();
