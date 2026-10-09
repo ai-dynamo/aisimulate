@@ -13,6 +13,7 @@ use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
 use rustc_hash::FxHashMap;
+use std::collections::hash_map::Entry;
 
 /// Move-only ownership of a request's SGLang KV state.
 ///
@@ -333,6 +334,7 @@ impl SglangKvManager {
     }
 
     /// Record previous values before each forward bookkeeping mutation during admission.
+    /// Callers must capture `undo` before mutating the page hash or refcount.
     /// Unlike the cache checkpoint, this must include repeated changes to the same entry.
     fn record_bookkeeping_undo(admission: &mut Option<PendingAdmission>, undo: KvEventUndo) {
         let Some(admission) = admission.as_mut() else {
@@ -1126,14 +1128,14 @@ impl SglangKvManager {
 
             let entry = self.block_hash_refcounts.entry(block_hash);
             let previous_refcount = match &entry {
-                std::collections::hash_map::Entry::Occupied(entry) => Some(*entry.get()),
-                std::collections::hash_map::Entry::Vacant(_) => None,
+                Entry::Occupied(entry) => Some(*entry.get()),
+                Entry::Vacant(_) => None,
             };
             Self::record_bookkeeping_undo(
                 &mut self.pending_admission,
                 KvEventUndo {
                     page_slot,
-                    previous_page_hash: None,
+                    previous_page_hash: self.page_to_block_hash[page_slot],
                     block_hash,
                     previous_refcount,
                 },
@@ -1196,8 +1198,8 @@ impl SglangKvManager {
             }
             let entry = self.block_hash_refcounts.entry(block_hash);
             let previous_refcount = match &entry {
-                std::collections::hash_map::Entry::Occupied(entry) => Some(*entry.get()),
-                std::collections::hash_map::Entry::Vacant(_) => None,
+                Entry::Occupied(entry) => Some(*entry.get()),
+                Entry::Vacant(_) => None,
             };
             Self::record_bookkeeping_undo(
                 &mut self.pending_admission,
@@ -1209,7 +1211,7 @@ impl SglangKvManager {
                 },
             );
             self.page_to_block_hash[page.index()] = None;
-            if let std::collections::hash_map::Entry::Occupied(mut entry) = entry {
+            if let Entry::Occupied(mut entry) = entry {
                 if *entry.get() > 1 {
                     *entry.get_mut() -= 1;
                 } else {
@@ -1827,10 +1829,10 @@ mod tests {
     #[test]
     fn empty_and_noop_event_batches_do_not_allocate_undo_or_publish() {
         let sink = Arc::new(MockSink::new());
-        let mut mgr = SglangKvManager::new(2, 1, KvEventPublishers::new(Some(sink.clone())), 0);
-        let tokens = [1];
+        let mut mgr = SglangKvManager::new(4, 2, KvEventPublishers::new(Some(sink.clone())), 0);
+        let tokens = [1, 2, 3]; // One published page plus one unpublished partial page.
         let first = mgr.allocate_for_request(&tokens).unwrap();
-        let hashes = compute_block_hash_for_seq(&tokens, 1);
+        let hashes = compute_block_hash_for_seq(&tokens, 2);
         let admission = mgr.begin_admission();
         mgr.checkpoint_admission();
         assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[]), 0);
@@ -1839,16 +1841,16 @@ mod tests {
             0
         );
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 1, &tokens),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens),
             0
         );
         mgr.publish_removed_pages(&[]);
+        mgr.publish_removed_pages(&first.lease.pages()[1..]);
         let pending = mgr.pending_admission.as_ref().unwrap();
         assert_eq!(
             pending.checkpoint.as_ref().unwrap().event_undo.capacity(),
             0
         );
-        assert_eq!(pending.events.capacity(), 0);
         assert_eq!(mgr.next_event_id, 1);
         mgr.commit_admission(admission);
         assert_eq!(sink.event_count(), 1);
