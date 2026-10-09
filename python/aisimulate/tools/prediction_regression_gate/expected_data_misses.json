@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "issue": "https://linear.app/nvidia/issue/AIC-2004",
+  "reason": "Correct vLLM DSA projection precision now requests per-tensor FP8. These five GPUs lack matching measured DSA module tables; previous successful estimates used BF16 mislabeled for the requested precision.",
+  "case_count": 540,
+  "csv_sha256": "95f2d1294cec9fa2961dbe4572b4b554c5edb5e8fbd082b667500e249e317c79",
+  "source_ci_run": "https://github.com/ai-dynamo/aisimulate/actions/runs/37555798068",
+  "source_head": "3e9fddd487cf163a58ec2d2bd58927c7c3ac4527",
+  "by_combo": {
+    "b300_sxm/vllm/0.24.0.csv": 108,
+    "gb200/vllm/0.24.0.csv": 108,
+    "gb300/vllm/0.24.0.csv": 108,
+    "h100_sxm/vllm/0.24.0.csv": 108,
+    "h200_sxm/vllm/0.24.0.csv": 108
+  },
+  "expected_native_key": {
+    "architecture": "GlmMoeDsaForCausalLM",
+    "fmha_quant": "bfloat16",
+    "kv_quant": "fp8",
+    "gemm_quant": "fp8"
+  },
+  "expected_failure_enabled": true,
+  "followup": "https://github.com/ai-dynamo/aisimulate/pull/409"
+}
