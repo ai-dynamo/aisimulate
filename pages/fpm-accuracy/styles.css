@@ -119,12 +119,12 @@
 .workload-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 1rem; margin: 1.2rem 0; }
 .workload-settings dt { font-size: .8rem; color: var(--muted); }
 .workload-settings dd { margin: .3rem 0 0; overflow-wrap: anywhere; }
-.request-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; }
-.request-chart { min-width: 0; }
-.request-chart h4 { margin: 0; text-align: left; }
-.request-chart p { color: var(--muted); font-size: .8rem; }
+.request-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; max-width: 1000px; }
+[data-view] .request-chart { min-width: 0; margin-top: 0; padding: 12px; }
+.request-chart h4 { margin: 0; text-align: left; font-size: 14px; }
+.request-chart p { margin: 6px 0; color: var(--muted); font-size: 12px; }
 .request-chart svg { width: 100%; display: block; overflow: visible; }
-.request-chart svg text { fill: currentColor; font-size: 12px; }
+.request-chart svg text { fill: currentColor; font-size: 16px; }
 .request-chart rect:focus { outline: 2px solid var(--text); }
 .workload-empty { padding: 1.5rem 0; }
 .workload-banner { grid-column: 1 / -1; display: grid; gap: .35rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
