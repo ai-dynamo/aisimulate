@@ -7,13 +7,6 @@
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-# B200 0.25.0 module qualification after inference-mode correction passed
-# 30 representative MLA/DSA context/generation cases, including
-# cached-prefix cases and positive supported head-count controls. Known kernel
-# failures at smaller head counts remain observations, not removed cases.
-# B200 0.25.1 API qualification: 23 DSA prefill coordinates,
-# repeated long/small graph lifetimes, MLA context/generation, and block-FP8
-# DSA context passed. This does not qualify every precision and shape.
 __compat__ = "vllm>=0.24.0,<=0.25.1"
 
 """
@@ -1130,7 +1123,7 @@ def run_mla_module(
     hf_text_config = vllm_config.model_config.hf_text_config
     reuse_pattern = getattr(hf_text_config, "index_topk_pattern", None)
     has_reuse = attn_type == "dsa" and (
-        "S" in reuse_pattern if reuse_pattern is not None else getattr(hf_text_config, "index_topk_freq", 1) > 1
+        "S" in reuse_pattern if reuse_pattern is not None else (getattr(hf_text_config, "index_topk_freq", 1) or 1) > 1
     )
     if has_reuse:
         if not hasattr(attn_module.mla_attn, "skip_topk"):
