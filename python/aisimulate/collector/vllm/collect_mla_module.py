@@ -7,11 +7,14 @@
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-# B200 0.25.0 module qualification after inference-mode correction: job
-# 1968407 passed 30 representative MLA/DSA context/generation cases, including
+# B200 0.25.0 module qualification after inference-mode correction passed
+# 30 representative MLA/DSA context/generation cases, including
 # cached-prefix cases and positive supported head-count controls. Known kernel
 # failures at smaller head counts remain observations, not removed cases.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# B200 0.25.1 API qualification: 23 DSA prefill coordinates,
+# repeated long/small graph lifetimes, MLA context/generation, and block-FP8
+# DSA context passed. This does not qualify every precision and shape.
+__compat__ = "vllm>=0.24.0,<=0.25.1"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.
@@ -32,16 +35,17 @@ just the attention module.
 
 Usage:
     # MLA context phase (DeepSeek-V3 style)
-    python collect_mla_module.py --mode context --model mla
+    python collect_mla_module.py --mode context --model deepseek-ai/DeepSeek-V3
 
     # DSA generation phase (DeepSeek-V3.2 style)
-    python collect_mla_module.py --mode generation --model dsa
+    python collect_mla_module.py --mode generation --model deepseek-ai/DeepSeek-V3.2
 
-    # All models, context phase
+    # Default canonical references: DeepSeek-V3, DeepSeek-V3.2, and GLM-5.2
+    # (one model per consumer identity), context phase
     python collect_mla_module.py --mode context
 
     # Quick single-point test
-    python collect_mla_module.py --mode context --model mla --quick --batch-size 4 --seq-len 2048
+    python collect_mla_module.py --mode context --model deepseek-ai/DeepSeek-V3 --quick --batch-size 4 --seq-len 2048
 """
 
 import argparse
@@ -51,6 +55,7 @@ import math
 import os
 import tempfile
 import traceback
+from functools import partial
 from pathlib import Path
 
 import torch
@@ -59,7 +64,8 @@ from collector.case_generator import (
     get_mla_module_precision_specs,
     get_mla_module_sweep_spec,
 )
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power as _benchmark_with_power
+from collector.helper import get_sm_version, log_perf
 from collector.registry_types import PerfFile
 from collector.vllm.utils import (
     BatchSpec,
@@ -83,6 +89,10 @@ from vllm.forward_context import set_forward_context
 from vllm.transformers_utils.config import _CONFIG_REGISTRY
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.version import __version__ as vllm_version
+
+# Keep graph lifetime handling local to the MLA/DSA module collector. Other
+# collectors retain benchmark_with_power's default cleanup and synchronization.
+benchmark_with_power = partial(_benchmark_with_power, explicit_graph_cleanup=True)
 
 if "glm_moe_dsa" not in _CONFIG_REGISTRY:
     _CONFIG_REGISTRY["glm_moe_dsa"] = "DeepseekV3Config"
@@ -313,15 +323,24 @@ def _create_gemm_quant_config(gemm_type: str):
     """Create the vLLM QuantizationConfig for a given gemm_type.
 
     Returns None for bfloat16 (unquantised GEMMs).
-    For fp8_block / nvfp4, returns an online-quantisation config so that
-    dummy BF16 weights are dynamically quantised during
-    ``process_weights_after_loading``.
+    Quantized modes use their serialized native weight format; synthetic
+    parameters are populated before native ``process_weights_after_loading``.
     """
     if gemm_type == "bfloat16":
         return None
-    if gemm_type == "fp8_block":
+    if gemm_type in ("fp8", "fp8_block"):
         from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 
+        # Match the existing GEMM collector's fp8 contract: tensor-scaled
+        # weights with dynamic activations, not fp8_static. Native Fp8LinearMethod
+        # selects the activation granularity/kernel (fp8.py:298-322 at
+        # vLLM v0.25.1, commit 752a3a504485790a).
+        if gemm_type == "fp8":
+            return Fp8Config(
+                is_checkpoint_fp8_serialized=True,
+                activation_scheme="dynamic",
+                weight_block_size=None,
+            )
         # vLLM requires is_checkpoint_fp8_serialized=True for block-scaled
         # FP8 (fp8.py raises ValueError otherwise).  This routes through
         # Fp8LinearMethod (block_quant=True) → W8A8BlockFp8LinearOp →
@@ -344,6 +363,111 @@ def _create_gemm_quant_config(gemm_type: str):
     raise ValueError(f"Unknown gemm_type: {gemm_type!r}")
 
 
+def _move_module_preserving_buffers(module, device):
+    """Materialize meta weights without discarding initialized runtime buffers."""
+    if not any(parameter.is_meta for parameter in module.parameters()):
+        return module.to(device)
+    buffers = dict(module.named_buffers())
+    if any(buffer.is_meta for buffer in buffers.values()):
+        raise RuntimeError("Cannot preserve an uninitialized meta buffer in the attention module")
+    module = module.to_empty(device=torch.device(device))
+    for name, buffer in buffers.items():
+        parent_name, _, local_name = name.rpartition(".")
+        parent = module.get_submodule(parent_name) if parent_name else module
+        setattr(parent, local_name, buffer.to(device))
+    return module
+
+
+def _initialize_synthetic_parameters(module):
+    """Keep synthetic FP8 projections nonzero without using CUDA RNG."""
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    with torch.no_grad():
+        for name, tensor in module.named_parameters():
+            if tensor.is_meta:
+                continue
+            if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+                if name.rsplit(".", 1)[-1] != "weight":
+                    # NVFP4's weight_scale also uses FP8 storage (modelopt.py:
+                    # 1117,1188-1199 at the revision below). It is a scale,
+                    # not a projection weight; retain its previous policy.
+                    tensor.zero_()
+                    continue
+                # Serialized FP8 weights feed the real indexer query projection
+                # (Indexer.wq_b in deepseek_v2.py:666-672 @ vLLM v0.25.1,
+                # commit 752a3a504485790a). Zero weights
+                # make every query/logit zero even with valid historical keys;
+                # top-k latency depends on that distribution. Generate on CPU
+                # because CUDA RNG can be unavailable after module construction.
+                flat = tensor.view(-1)
+                for start in range(0, flat.numel(), 1048576):
+                    end = min(start + 1048576, flat.numel())
+                    values = torch.randn(end - start, generator=generator, dtype=torch.float32, device="cpu") * 0.02
+                    flat[start:end].copy_(values.to(device=tensor.device, dtype=tensor.dtype))
+            elif tensor.dtype == torch.uint8:
+                tensor.zero_()
+            elif tensor.dtype == torch.float32 and "scale" in name:
+                tensor.fill_(0.5)
+            else:
+                tensor.fill_(0.01)
+
+
+def _initialize_nvfp4_parameters(module):
+    """Populate ModelOpt NVFP4 linears through the native quantizer.
+
+    This is synthetic format qualification, not checkpoint calibration. The
+    CPU RNG is local, temporary tensors are bounded, and framework buffers are
+    untouched. vLLM subsequently performs its own layout conversion/dispatch.
+    """
+    from vllm import _custom_ops as ops
+    from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+
+    # Native API contracts at vLLM v0.25.1, commit 752a3a504485790a:
+    # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
+    # per 16 inputs, and dequantizing FP32 global scales. _custom_ops.py:1492-
+    # 1571 accepts the inverse global scale and can return unswizzled scales;
+    # modelopt.py:1203-1238 performs native conversion only after loading.
+    generator = torch.Generator(device="cpu").manual_seed(0)
+    initialized = 0
+    with torch.no_grad():
+        for name, layer in module.named_modules():
+            if not isinstance(getattr(layer, "quant_method", None), ModelOptNvFp4LinearMethod):
+                continue
+            weight, scales = layer.weight, layer.weight_scale
+            if weight.dtype != torch.uint8 or scales.dtype != torch.float8_e4m3fn:
+                raise ValueError(f"Unexpected native NVFP4 storage for {name}")
+            if weight.ndim != 2 or tuple(scales.shape) != (weight.shape[0], weight.shape[1] // 8):
+                raise ValueError(f"Unexpected native NVFP4 block layout for {name}")
+            if layer.quant_method.quant_config.group_size != 16 or weight.shape[1] % 8:
+                raise ValueError(f"Native NVFP4 quantization requires 16-input blocks for {name}")
+            input_size = weight.shape[1] * 2
+            rows_per_chunk = max(1, 1048576 // input_size)
+            # Bounded N(0,.02) weights, clipped to +/- .08, and a unit-range
+            # synthetic activation calibration. E2M1 max=6, E4M3 max=448.
+            # These fixed source ranges are unrelated to timing/accuracy targets.
+            weight_global_scale = 0.08 / (6.0 * 448.0)
+            layer.weight_scale_2.fill_(weight_global_scale)
+            layer.input_scale.fill_(1.0 / (6.0 * 448.0))
+            inverse_scale = torch.tensor(1.0 / weight_global_scale, dtype=torch.float32, device=weight.device)
+            for start in range(0, weight.shape[0], rows_per_chunk):
+                end = min(start + rows_per_chunk, weight.shape[0])
+                values = torch.randn((end - start, input_size), generator=generator, dtype=torch.float32, device="cpu")
+                values.clamp_(-4.0, 4.0).mul_(0.02)
+                packed, block_scales = ops.scaled_fp4_quant(
+                    values.to(device=weight.device, dtype=torch.bfloat16),
+                    inverse_scale,
+                    is_sf_swizzled_layout=False,
+                )
+                if packed.shape != weight[start:end].shape or block_scales.shape != scales[start:end].shape:
+                    raise ValueError(f"Native NVFP4 quantizer returned an incompatible shape for {name}")
+                if not bool(torch.isfinite(block_scales.float()).all()) or not bool((block_scales.float() > 0).all()):
+                    raise ValueError(f"Native NVFP4 quantizer returned invalid block scales for {name}")
+                weight[start:end].copy_(packed)
+                scales[start:end].copy_(block_scales)
+            initialized += 1
+    if not initialized:
+        raise RuntimeError("NVFP4 was requested but no native ModelOpt NVFP4 linear was constructed")
+
+
 def _create_attention_module(
     model_path: str,
     attn_type: str,
@@ -351,6 +475,7 @@ def _create_attention_module(
     use_fp8_kv_cache: bool,
     max_seq_len: int,
     max_batch_size: int,
+    max_query_len: int,
     use_prefill_fp8: bool = False,
     gemm_type: str = "bfloat16",
     device: str = "cuda:0",
@@ -367,6 +492,8 @@ def _create_attention_module(
     Args:
         model_path: HuggingFace model path (e.g. "deepseek-ai/DeepSeek-V3.2").
         attn_type: Attention type ("mla" or "dsa").
+        max_seq_len: Total context length, including the cached prefix.
+        max_query_len: New tokens per request for a context forward pass.
         use_prefill_fp8: When True, opt in to FP8 prefill query compute via
             ``attention_config.use_prefill_query_quantization`` plus an
             explicit ``attention_config.mla_prefill_backend`` pin. vLLM honors
@@ -380,7 +507,7 @@ def _create_attention_module(
             _create_kv_cache_and_metadata fails closed if the decision
             does not match the case label.
         gemm_type: Precision for linear-layer GEMMs — "bfloat16",
-            "fp8_block", or "nvfp4".
+            "fp8", "fp8_block", or "nvfp4".
     """
     from vllm.model_executor.models.deepseek_v2 import DeepseekV2MLAAttention
 
@@ -407,7 +534,13 @@ def _create_attention_module(
         block_size=block_size,
         num_gpu_blocks=num_kv_cache_blocks,
         max_num_seqs=max_batch_size,
-        max_num_batched_tokens=max(max_batch_size * max_seq_len, 131072) if is_context else max_batch_size,
+        # The serving scheduler budgets NEW tokens, excluding computed prefix
+        # tokens (v1/core/sched/scheduler.py:472-480 @v0.25.1). DeepseekV2Model
+        # sizes its indexer output as [max_num_batched_tokens, index_topk]
+        # (model_executor/models/deepseek_v2.py:1355-1361 @v0.25.1). Keep the
+        # existing sweep floor, but do not allocate one output row per cached
+        # token. max_model_len and KV capacity still include the entire prefix.
+        max_num_batched_tokens=max(max_batch_size * max_query_len, 131072) if is_context else max_batch_size,
         use_fp8_kv_cache=use_fp8_kv_cache,
         trust_remote_code=True,
         # Forward the test sweep's per-case head counts so that
@@ -426,7 +559,7 @@ def _create_attention_module(
     # Override quant_config to control linear-layer GEMM precision.
     # DeepSeek-V3.2 ships with FP8 quantisation by default, so we
     # must always set quant_config explicitly: None for bf16,
-    # Fp8Config (blockwise) for fp8_block, ModelOptNvFp4Config for nvfp4.
+    # Fp8Config for fp8/fp8_block, ModelOptNvFp4Config for nvfp4.
     vllm_config.quant_config = _create_gemm_quant_config(gemm_type)
 
     # Opt in to FP8 prefill query compute before the module (and later the
@@ -518,37 +651,21 @@ def _create_attention_module(
         )
 
     # Serialized block-scaled FP8 creates weight params on meta device;
-    # to() cannot copy meta tensors, so use to_empty() when needed.
-    if any(p.is_meta for p in attn_module.parameters()):
-        attn_module = attn_module.to_empty(device=torch.device(device))
-    else:
-        attn_module = attn_module.to(device)
+    # to_empty() also discards already-initialized buffers. Preserve their
+    # constructor values, including nonpersistent RoPE tables, across it.
+    attn_module = _move_module_preserving_buffers(attn_module, device)
     attn_module.eval()
     attn_module.requires_grad_(False)
 
-    # Initialize with random weights.
-    # FP8 weights → zero (safe dummy value).
-    # Scale params → 1.0 (avoid NaN during process_weights_after_loading).
-    # Everything else → small constant.
-    #
-    # Deterministic init — vLLM 0.24.0 DSA modules leave CUDA graph RNG
-    # offset tracking active after construction (likely from FlashInfer
-    # sparse MLA backend, vllm-project/vllm#33451 / vllm-project/vllm#34457).
-    # Any RNG call (normal_, uniform_, randn) crashes with "Offset increment
-    # outside graph capture".  Using fill_() is safe because kernel latency
-    # depends on shapes/dtypes, not values, and dummy weights are overwritten
-    # by process_weights_after_loading() anyway.
-    # See: https://github.com/vllm-project/vllm/issues/39371
-    with torch.no_grad():
-        for name, tensor in list(attn_module.named_parameters()) + list(attn_module.named_buffers()):
-            if tensor.is_meta:
-                continue
-            if tensor.dtype in (torch.float8_e4m3fn, torch.float8_e5m2, torch.uint8):
-                tensor.data.zero_()
-            elif tensor.dtype == torch.float32 and "scale" in name:
-                tensor.data.fill_(0.5)
-            else:
-                tensor.data.fill_(0.01)
+    # FP8 weights use finite, diverse values; other dtypes initially retain the
+    # previous policy. NVFP4 below then populates its packed weights and scales
+    # through the native quantizer. Buffers (including RoPE) are untouched.
+    # These remain synthetic inputs, not a claim of
+    # checkpoint-activation timing parity; CUDA RNG is deliberately avoided
+    # (vllm-project/vllm#39371).
+    _initialize_synthetic_parameters(attn_module)
+    if gemm_type == "nvfp4":
+        _initialize_nvfp4_parameters(attn_module)
 
     return attn_module, vllm_config
 
@@ -600,25 +717,42 @@ def _populate_indexer_kv_cache(
     indexer_kv_cache: torch.Tensor,
     common_attn_metadata,
     context_lens: list[int],
+    indexer,
 ) -> None:
-    """
-    Populate the DSA indexer cache so generation benchmarks see a realistic
-    historical K cache instead of an all-zero buffer.
-    """
+    """Populate historical keys through the serving indexer's cache producer."""
+    from vllm import _custom_ops as ops
+
     block_table = common_attn_metadata.block_table_tensor
     block_size = indexer_kv_cache.shape[1]
-    entry_dim = indexer_kv_cache.shape[2]
     device = indexer_kv_cache.device
+    head_dim = indexer.head_dim
+    quant_block_size = indexer.quant_block_size
+    scale_fmt = indexer.scale_fmt
+    expected_entry_dim = head_dim + head_dim // quant_block_size * 4
+    if indexer_kv_cache.dtype != torch.uint8 or indexer_kv_cache.shape[2] != expected_entry_dim:
+        raise ValueError("Indexer cache does not match the native FP8 values and FP32 scales layout")
+
+    # Generate on CPU: CUDA RNG can be unavailable after module construction.
+    # Bound temporary storage independently of the length of a cached prefix.
+    generator = torch.Generator(device="cpu").manual_seed(1234)
+    chunk_tokens = 8192
 
     for i, context_len in enumerate(context_lens):
-        if context_len <= 0:
-            continue
-        token_offsets = torch.arange(context_len, dtype=torch.long, device=device)
-        block_indices = token_offsets // block_size
-        intra_block_offsets = token_offsets % block_size
-        block_ids = block_table[i, block_indices]
-        dummy_cache = torch.full((context_len, entry_dim), 42, dtype=torch.uint8, device=device)
-        indexer_kv_cache[block_ids, intra_block_offsets, :] = dummy_cache
+        for start in range(0, context_len, chunk_tokens):
+            end = min(start + chunk_tokens, context_len)
+            keys = torch.randn((end - start, head_dim), generator=generator, device="cpu", dtype=torch.float32).to(
+                device=device, dtype=torch.bfloat16
+            )
+            token_offsets = torch.arange(start, end, dtype=torch.long, device=device)
+            block_ids = block_table[i, token_offsets // block_size]
+            slots = block_ids.to(torch.long) * block_size + token_offsets % block_size
+            # This writes both FP8 values and their valid per-group scales;
+            # values/scales are block-planar, not token-interleaved. Serving
+            # uses this producer in sparse_attn_indexer.py:380-390; its layout
+            # and ue8m0 rounding are in csrc/libtorch_stable/cache_kernels.cu:
+            # 550-609 (vLLM v0.25.1, commit 752a3a504485790a).
+            # The physical slot is the page-table block ID plus token offset.
+            ops.indexer_k_quant_and_cache(keys, indexer_kv_cache, slots, quant_block_size, scale_fmt)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -635,6 +769,7 @@ def _create_kv_cache_and_metadata(
     prefix_len: int = 0,
     compute_dtype: str = "bfloat16",
     device: str = "cuda:0",
+    indexer=None,
 ):
     """Create KV cache and attention metadata for benchmarking."""
     hf_config = vllm_config.model_config.hf_text_config
@@ -642,6 +777,9 @@ def _create_kv_cache_and_metadata(
     qk_rope_head_dim = hf_config.qk_rope_head_dim
     block_size = vllm_config.cache_config.block_size
     is_dsa = attn_type == "dsa"
+
+    if is_dsa and indexer is None:
+        raise ValueError("DSA cache population requires the constructed Indexer and its quantization contract")
 
     prefix_len = int(prefix_len) if is_context else 0
 
@@ -767,6 +905,7 @@ def _create_kv_cache_and_metadata(
             indexer_kv_cache=indexer_kv_cache,
             common_attn_metadata=common_attn_metadata,
             context_lens=[tensor.shape[0] for tensor in kv_c_contexts],
+            indexer=indexer,
         )
 
     return kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata
@@ -813,6 +952,12 @@ def run_mla_module(
     torch.cuda.set_device(device)
     enable_engine_fused_ops()
 
+    # Registered before the vLLM contexts below, so they restore their globals
+    # before workspace tensors are released, on success and every failure path.
+    # On success this also runs after the function's local module/KV references
+    # have gone out of scope instead of emptying the cache while they are live.
+    exit_stack.callback(_cleanup)
+
     # DSA's sparse_attn_indexer requires a WorkspaceManager.
     init_workspace_manager(torch.device(device))
 
@@ -837,6 +982,7 @@ def run_mla_module(
         use_prefill_fp8=use_prefill_fp8,
         max_seq_len=prefix_len + seq_len,
         max_batch_size=batch_size,
+        max_query_len=seq_len,
         gemm_type=gemm_type,
         device=device,
         is_context=is_context,
@@ -847,15 +993,18 @@ def run_mla_module(
 
     # 2. Create KV cache + metadata
     with set_current_vllm_config(vllm_config):
-        kv_cache, attn_metadata, _, indexer_kv_cache, indexer_metadata = _create_kv_cache_and_metadata(
-            vllm_config=vllm_config,
-            attn_type=attn_type,
-            batch_size=batch_size,
-            seq_len=seq_len,
-            is_context=is_context,
-            prefix_len=prefix_len,
-            compute_dtype=compute_dtype,
-            device=device,
+        kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata = (
+            _create_kv_cache_and_metadata(
+                vllm_config=vllm_config,
+                attn_type=attn_type,
+                batch_size=batch_size,
+                seq_len=seq_len,
+                is_context=is_context,
+                prefix_len=prefix_len,
+                compute_dtype=compute_dtype,
+                device=device,
+                indexer=getattr(attn_module, "indexer", None),
+            )
         )
 
     # 2b. Bind KV cache to the 0.24.0 attention layer.
@@ -948,106 +1097,131 @@ def run_mla_module(
     attn_metadata_dict = {attn_layer_name: attn_metadata}
     if indexer_metadata is not None:
         attn_metadata_dict[indexer_layer_name] = indexer_metadata
-    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config))
+    # Native MLA cache insertion reads the per-layer forward-context mapping,
+    # separately from the attention metadata. Omitting it silently suppresses
+    # current-token writes (vLLM mla_attention.py:1037-1058 and
+    # attention.py:726-766 @ vLLM v0.25.1, commit 752a3a504485790a).
+    slot_mapping_dict = {attn_layer_name: common_attn_metadata.slot_mapping}
+    if indexer_metadata is not None:
+        slot_mapping_dict[indexer_layer_name] = common_attn_metadata.slot_mapping
+    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config, slot_mapping=slot_mapping_dict))
     try:
         with torch.inference_mode():
             attn_module.forward(positions, hidden_states, None)
     except torch.cuda.OutOfMemoryError as e:
         print(f"  Dry run OOM: {e}")
-        _cleanup()
         # Let collect.py record the capacity failure. Returning normally would
         # mark a task done even though it emitted no performance row.
         raise
     except Exception as e:
         print(f"  Dry run failed: {e}")
         traceback.print_exc()
-        _cleanup()
         # Propagate to collect.py's worker so the failure is recorded in the
         # error queue. Swallowing here lets a whole op complete with zero
         # rows while the pipeline reports success.
         raise
 
-    # 5. Benchmark
-    def kernel_func():
-        attn_module.forward(positions, hidden_states, None)
-
-    # DSA context captures a ~18 GiB flashmla-sparse scratch into the CUDA
-    # graph's private pool on big shapes. PyTorch doesn't reclaim that pool
-    # aggressively enough between tasks, so after a handful of big captures
-    # the per-worker private-pool retention saturates at ~146 GiB and every
-    # subsequent task — regardless of size — OOMs at
-    # ``WorkspaceManager._ensure_workspace_size``. Running eagerly avoids the
-    # private-pool retention entirely; the bias is <0.5% for DSA context
-    # because per-forward latency is tens of ms while graph launch overhead
-    # is tens of μs. Other ops (MLA context, both generation phases) keep
-    # graph capture because they don't hit this retention pattern and the
-    # overhead matters more for their faster kernels.
-    use_cuda_graph = not (attn_type == "dsa" and is_context)
-
-    with benchmark_with_power(
-        device=torch.device(device),
-        kernel_func=kernel_func,
-        num_warmups=warming_up,
-        num_runs=test_ite,
-        repeat_n=1,
-        use_cuda_graph=use_cuda_graph,
-    ) as results:
-        pass
-
-    latency = results["latency_ms"]
-
-    # 6. Log results — schema aligned with TRT-LLM
-    if is_context:
-        isl = seq_len
-        step = prefix_len
-    else:
-        isl = 1
-        step = seq_len
-
-    op_name = f"{attn_type}_{phase}_module"
-
-    # Record architecture to distinguish different DSA models in the perf CSV.
-    # perf_database uses this as a dict key when loading data.
-    # Aligns with sdk/models.py which uses architectures[0] throughout.
-    hf_cfg = vllm_config.model_config.hf_config
-    architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
-    mla_layer = attn_module.mla_attn.mla_attn
-    backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
-    actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
-
-    log_perf(
-        item_list=[
-            {
-                "model": model_path,
-                "architecture": architecture,
-                "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
-                "kv_cache_dtype": actual_kv_cache_dtype,
-                "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
-                "num_heads": num_heads,
-                "batch_size": batch_size,
-                "isl": isl,
-                "tp_size": 1,
-                "step": step,
-                "latency": f"{latency:.4f}",
-            }
-        ],
-        framework="VLLM",
-        version=vllm_version,
-        device_name=torch.cuda.get_device_name(device),
-        op_name=op_name,
-        kernel_source=backend_name,
-        perf_filename=perf_filename,
-        power_stats=results["power_stats"],
+    # The full dry run above populates the shared top-k indices. Native vLLM
+    # uses skip_topk to reuse that buffer while retaining MLA projections and
+    # sparse attention (deepseek_v2.py:1080-1104,1150-1162 and layers/mla.py
+    # MultiHeadLatentAttentionWrapper @ vLLM v0.25.1, commit 752a3a504485790a).
+    # Emit both existing op_name variants for checkpoints declaring reuse;
+    # no model-averaged latency is written into a full-indexer row.
+    hf_text_config = vllm_config.model_config.hf_text_config
+    reuse_pattern = getattr(hf_text_config, "index_topk_pattern", None)
+    has_reuse = attn_type == "dsa" and (
+        "S" in reuse_pattern if reuse_pattern is not None else getattr(hf_text_config, "index_topk_freq", 1) > 1
     )
+    if has_reuse:
+        if not hasattr(attn_module.mla_attn, "skip_topk"):
+            raise RuntimeError("vLLM DSA reuse requires the native skip_topk execution path")
+        exit_stack.callback(setattr, attn_module.mla_attn, "skip_topk", attn_module.mla_attn.skip_topk)
 
-    print(
-        f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
-        f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
-        f"kv={kv_cache_dtype}, backend={backend_name}: {latency:.4f} ms"
-    )
+    def measure_and_log(skip_indexer):
+        if has_reuse:
+            attn_module.mla_attn.skip_topk = skip_indexer
 
-    _cleanup()
-    return latency
+        # 5. Benchmark
+        def kernel_func():
+            attn_module.forward(positions, hidden_states, None)
+
+        # DSA context previously bypassed graphs to avoid retained scratch pools.
+        # Keep graph timing for small as well as large cases: eager launch gaps can
+        # dominate small module latency. The helper resets each graph, and the
+        # ExitStack releases vLLM's workspace after its forward contexts unwind.
+        with benchmark_with_power(
+            device=torch.device(device),
+            kernel_func=kernel_func,
+            num_warmups=warming_up,
+            num_runs=test_ite,
+            repeat_n=1,
+            use_cuda_graph=True,
+            allow_graph_fail=False,
+        ) as results:
+            pass
+
+        if results.get("used_cuda_graph") is not True:
+            raise RuntimeError("vLLM MLA/DSA module requires CUDA graph timing; refusing to publish eager timing")
+        latency = results["latency_ms"]
+
+        # 6. Log results — schema aligned with TRT-LLM
+        if is_context:
+            isl = seq_len
+            step = prefix_len
+        else:
+            isl = 1
+            # BatchSpec.seq_lens includes this forward's one new token.
+            # Both module loaders reconstruct total KV length as isl + step.
+            step = seq_len - 1
+
+        op_name = f"{attn_type}_{phase}_module" + ("_skip_indexer" if skip_indexer else "")
+
+        # Record architecture to distinguish different DSA models in the perf CSV.
+        # perf_database uses this as a dict key when loading data.
+        # Aligns with sdk/models.py which uses architectures[0] throughout.
+        hf_cfg = vllm_config.model_config.hf_config
+        architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
+        mla_layer = attn_module.mla_attn.mla_attn
+        backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
+        actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
+
+        log_perf(
+            item_list=[
+                {
+                    "model": model_path,
+                    "architecture": architecture,
+                    "mla_dtype": "bfloat16" if compute_dtype == "bfloat16" else compute_dtype,
+                    "kv_cache_dtype": actual_kv_cache_dtype,
+                    "gemm_type": "bfloat16" if gemm_type == "bfloat16" else gemm_type,
+                    "num_heads": num_heads,
+                    "batch_size": batch_size,
+                    "isl": isl,
+                    "tp_size": 1,
+                    "step": step,
+                    "latency": f"{latency:.4f}",
+                }
+            ],
+            framework="VLLM",
+            version=vllm_version,
+            device_name=torch.cuda.get_device_name(device),
+            op_name=op_name,
+            kernel_source=backend_name,
+            perf_filename=perf_filename,
+            power_stats=results["power_stats"],
+        )
+
+        print(
+            f"  [{phase}] b={batch_size}, s={seq_len}, heads={num_heads}, "
+            f"prefix={prefix_len}, gemm={gemm_type}, compute={compute_dtype}, "
+            f"kv={kv_cache_dtype}, backend={backend_name}: {latency:.4f} ms"
+        )
+
+        return latency
+
+    full_latency = measure_and_log(False)
+    if has_reuse:
+        measure_and_log(True)
+    return full_latency
 
 
 def run_mla_module_worker(
@@ -1111,15 +1285,16 @@ def _cleanup():
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _supported_model_map() -> dict[str, str]:
+def _supported_model_map(*, apply_model_filter: bool = True) -> dict[str, str]:
     return {
         spec.model_path: spec.attention_type
-        for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=False)
+        for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=apply_model_filter)
+        if spec.attention_type in {"mla", "dsa"}
     }
 
 
 def main():
-    supported_models = _supported_model_map()
+    supported_models = _supported_model_map(apply_model_filter=False)
     model_names = list(supported_models.keys())
 
     parser = argparse.ArgumentParser(
@@ -1131,7 +1306,7 @@ def main():
         type=str,
         default=None,
         choices=model_names,
-        help=f"Model to benchmark. If not specified, runs all: {model_names}",
+        help="Model to benchmark. If omitted, run one declared canonical reference per consumer identity.",
     )
     parser.add_argument("--num-heads", type=int, default=None, help="Filter by number of heads")
     parser.add_argument("--batch-size", type=int, default=None, help="Single batch size (for --quick)")
@@ -1153,7 +1328,7 @@ def main():
     parser.add_argument(
         "--gemm-type",
         type=str,
-        choices=["bfloat16", "fp8_block", "nvfp4"],
+        choices=["bfloat16", "fp8", "fp8_block", "nvfp4"],
         default=None,
         help="GEMM quantisation type for linear layers (default: run all supported by GPU)",
     )
@@ -1165,7 +1340,7 @@ def main():
     if args.model:
         models_to_run = {args.model: supported_models[args.model]}
     else:
-        models_to_run = supported_models
+        models_to_run = _supported_model_map()
 
     for model_path, attn_type in models_to_run.items():
         print(f"\n{'=' * 60}")
@@ -1184,7 +1359,7 @@ def main():
             kv_dtype = args.kv_cache_dtype or "bfloat16"
             compute = args.compute_dtype or "bfloat16"
             gemm = args.gemm_type or "bfloat16"
-            run_mla_module(
+            run_mla_module_worker(
                 seq_len=s,
                 batch_size=b,
                 num_heads=h,
@@ -1216,16 +1391,17 @@ def main():
             test_cases = [tc for tc in test_cases if tc[5] == args.gemm_type]
 
         print(f"Running {len(test_cases)} {args.mode} {attn_type.upper()} module test cases...")
-        for i, (s, b, h, kv_dtype, compute, gemm) in enumerate(test_cases):
+        for i, (s, b, h, kv_dtype, compute, gemm, *prefix) in enumerate(test_cases):
             print(f"[{i + 1}/{len(test_cases)}]", end="")
             try:
-                run_mla_module(
+                run_mla_module_worker(
                     seq_len=s,
                     batch_size=b,
                     num_heads=h,
                     kv_cache_dtype=kv_dtype,
                     compute_dtype=compute,
                     gemm_type=gemm,
+                    prefix_len=prefix[0] if prefix else 0,
                     perf_filename=perf_filename,
                     model_path=model_path,
                     attn_type=attn_type,
