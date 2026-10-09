@@ -7,13 +7,6 @@
 # _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
 # backend_supports_prefill_query_quantization (mla_attention.py) and the
 # prefill selector surface are all unchanged vs the 0.24.0 citations below.
-# B200 0.25.0 module qualification after inference-mode correction passed
-# 30 representative MLA/DSA context/generation cases, including
-# cached-prefix cases and positive supported head-count controls. Known kernel
-# failures at smaller head counts remain observations, not removed cases.
-# B200 0.25.1 API qualification: 23 DSA prefill coordinates,
-# repeated long/small graph lifetimes, MLA context/generation, and block-FP8
-# DSA context passed. This does not qualify every precision and shape.
 __compat__ = "vllm>=0.24.0,<=0.25.1"
 
 """
