@@ -10,7 +10,7 @@ collectors, so grid/config changes show up as added/removed rows.
 Diff categories:
 
   REGRESSION   OK -> DATA_MISS / INVALID (a working combo stopped working).
-               The only blocking category.
+               Blocking unless an exact reviewed missing-data expectation applies.
   GAIN         DATA_MISS / INVALID -> OK (coverage gained)
   DRIFT        OK -> OK but |rel change| > rtol
   STATUS_CHANGE  non-OK status or error type changed
@@ -26,10 +26,9 @@ from pathlib import Path
 KEY_FIELDS = ("model", "tp", "pp", "adp", "moe_tp", "moe_ep", "quant", "phase", "bs", "isl")
 DEFAULT_RTOL = 1e-4
 
-# Only "was working, stopped working" blocks the gate; everything else is
-# reported for review. Intentional modeling changes therefore need no
-# acknowledgment ritual — the report itself is the review artifact.
-BLOCKING_CATEGORIES = {"REGRESSION"}
+# Regressions block except for individually reviewed, cause-checked data gaps.
+# Their restoration or changed cause blocks too, forcing explicit cleanup.
+BLOCKING_CATEGORIES = {"REGRESSION", "XPASS", "EXPECTATION_MISMATCH", "REOPENED_FAILURE"}
 
 
 @dataclass
@@ -38,6 +37,12 @@ class Diff:
     key: tuple
     category: str
     detail: str
+    old_status: str = ""
+    new_status: str = ""
+    old_err: str = ""
+    new_err: str = ""
+    old_data_miss_detail: str = ""
+    new_data_miss_detail: str = ""
 
     def render(self) -> str:
         key_text = "/".join(str(part) for part in self.key)
@@ -60,7 +65,13 @@ class ComboResult:
 
 def load_rows(path: Path) -> dict[tuple, dict]:
     with path.open(newline="") as f:
-        return {tuple(row[k] for k in KEY_FIELDS): row for row in csv.DictReader(f)}
+        rows = {}
+        for row in csv.DictReader(f):
+            key = tuple(row[k] for k in KEY_FIELDS)
+            if key in rows:
+                raise ValueError(f"{path}: duplicate snapshot identity {key}")
+            rows[key] = row
+        return rows
 
 
 def compare_combo(combo: str, old_path: Path, new_path: Path, rtol: float = DEFAULT_RTOL) -> ComboResult:
@@ -140,6 +151,11 @@ def _diff_statuses(
         diffs.append(
             Diff(combo, key, "STATUS_CHANGE", f"{old_status} {old_err} -> {new_status} {new_err}".replace("  ", " "))
         )
+    for diff in diffs:
+        diff.old_status, diff.new_status = old_status, new_status
+        diff.old_err, diff.new_err = old_err, new_err
+        diff.old_data_miss_detail = old.get("data_miss_detail", "")
+        diff.new_data_miss_detail = new.get("data_miss_detail", "")
     return diffs
 
 
@@ -168,7 +184,23 @@ def write_report(results: list[ComboResult], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
         writer = csv.writer(f, lineterminator="\n")
-        writer.writerow(["combo", "key", "category", "detail"])
+        transition_fields = (
+            "old_status",
+            "new_status",
+            "old_err",
+            "new_err",
+            "old_data_miss_detail",
+            "new_data_miss_detail",
+        )
+        writer.writerow(["combo", "key", "category", "detail", *transition_fields])
         for result in results:
             for diff in result.diffs:
-                writer.writerow([diff.combo, "/".join(str(p) for p in diff.key), diff.category, diff.detail])
+                writer.writerow(
+                    [
+                        diff.combo,
+                        "/".join(str(p) for p in diff.key),
+                        diff.category,
+                        diff.detail,
+                        *(getattr(diff, field) for field in transition_fields),
+                    ]
+                )

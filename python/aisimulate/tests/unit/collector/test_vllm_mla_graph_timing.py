@@ -166,8 +166,9 @@ def _module_runner(*, graph_flag=True, failure=None, reuse_frequency=1, reuse_pa
 
 @pytest.mark.parametrize("attn_type", ["mla", "dsa"])
 @pytest.mark.parametrize("phase", ["context", "generation"])
-def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, phase):
-    execute, events, published, calls, _ = _module_runner()
+@pytest.mark.parametrize("reuse_frequency", [1, None])
+def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, phase, reuse_frequency):
+    execute, events, published, calls, _ = _module_runner(reuse_frequency=reuse_frequency)
     assert execute(attn_type, phase) == 0.015
     assert len(calls) == len(published) == 1
     assert events[-4:] == ["graph teardown", "exit forward", "exit config", "cleanup"]
@@ -181,7 +182,7 @@ def test_graph_publication_and_workspace_teardown_after_context_exit(attn_type, 
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])
-@pytest.mark.parametrize("reuse", [{"reuse_frequency": 4}, {"reuse_pattern": "FFSS"}])
+@pytest.mark.parametrize("reuse", [{"reuse_frequency": 4}, {"reuse_frequency": None, "reuse_pattern": "FFSS"}])
 def test_reuse_checkpoint_publishes_native_full_and_skip_measurements(phase, reuse):
     execute, events, published, calls, _ = _module_runner(**reuse)
     assert execute(phase=phase) == 0.015

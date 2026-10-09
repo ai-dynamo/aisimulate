@@ -190,14 +190,12 @@ impl DsaModuleOp {
         bytes * self.scale_factor
     }
 
-    /// Amortization weight after the missing-skip-table degradation. Verbatim
-    /// mirror of Python `operations/dsa.py::_effective_full_frac`: the
-    /// `*_skip_indexer` rows are produced only by the sglang collector and only
-    /// from 0.5.14 on, so a (system, backend, version) whose parquet omits them
-    /// degrades to all-full (`w = 1.0`) instead of failing the query — the same
-    /// policy `models/deepseek_v32.py` already applies to backends with no skip
-    /// producer ("we just cannot model their saving without data, so we count
-    /// them as full"). PESSIMISTIC: the indexer is charged on every layer.
+    /// Amortization weight after the missing-skip-table degradation. A
+    /// (system, backend, version) without suitable reuse measurements degrades
+    /// to all-full (`w = 1.0`) instead of omitting the unmeasured layers.
+    /// vLLM callers check the exact precision/architecture/backend/head slice;
+    /// other backends retain the historical table-wide skip-row check.
+    /// PESSIMISTIC: the indexer is charged on every layer.
     ///
     /// KNOWN GAP (accepted, AIC-1747 review): the degradation is SILENT.
     /// The crate has no logging facility (the "Rust has no logging"
@@ -213,6 +211,23 @@ impl DsaModuleOp {
             self.full_frac
         } else {
             1.0
+        }
+    }
+
+    fn table_key(&self) -> DsaKey {
+        DsaKey {
+            architecture: self.architecture.clone(),
+            fmha_quant: self.fmha_quant_mode.name().to_string(),
+            kv_quant: self.kv_cache_dtype.name().to_string(),
+            gemm_quant: self.gemm_quant_mode.name().to_string(),
+        }
+    }
+
+    fn context_table_backend(&self) -> &'static str {
+        if self.cp_size > 1 {
+            "flashmla_kv"
+        } else {
+            "trtllm"
         }
     }
 
@@ -246,6 +261,12 @@ impl DsaModuleOp {
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
+        } else if db.backend == "vllm" {
+            self.effective_full_frac(db.dsa.has_context_skip_slice(
+                &self.table_key(),
+                self.context_table_backend(),
+                self.num_heads,
+            )?)
         } else {
             self.effective_full_frac(db.dsa.has_context_skip_rows()?)
         };
@@ -284,7 +305,15 @@ impl DsaModuleOp {
         // latency ~75%). `dsa_backend="trtllm"` mirrors Python's non-CP
         // default (`_query_context_dsa_module_table(dsa_backend="trtllm")`).
         let q = |skip_indexer: bool| {
-            query_context_table(db, self, batch_size, isl, prefix, "trtllm", skip_indexer)
+            query_context_table(
+                db,
+                self,
+                batch_size,
+                isl,
+                prefix,
+                self.context_table_backend(),
+                skip_indexer,
+            )
         };
         let full = q(false)?;
         let result = if w >= 1.0 {
@@ -365,7 +394,7 @@ impl DsaModuleOp {
                 batch_size,
                 per_card,
                 prefix,
-                "flashmla_kv",
+                self.context_table_backend(),
                 skip_indexer,
             )
             .map(|r| r.latency_ms)
@@ -508,10 +537,19 @@ impl DsaModuleOp {
     ) -> Result<PerformanceResult, AicError> {
         // Same short-circuit as query_context: no probe for full_frac >= 1.0
         // or the analytic SOL modes.
+        let backend = "trtllm";
         let w = if self.full_frac >= 1.0
             || matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull)
         {
             self.full_frac
+        } else if db.backend == "vllm" {
+            let (heads, _) =
+                crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
+            self.effective_full_frac(db.dsa.has_generation_skip_slice(
+                &self.table_key(),
+                backend,
+                heads,
+            )?)
         } else {
             self.effective_full_frac(db.dsa.has_generation_skip_rows()?)
         };
@@ -530,7 +568,7 @@ impl DsaModuleOp {
         // `dsa_backend="trtllm"` mirrors Python's generation default
         // (`_query_generation_dsa_module_table(dsa_backend="trtllm")`).
         let q = |skip_indexer: bool| {
-            query_generation_table(db, &geometry, batch_size, s, "trtllm", skip_indexer)
+            query_generation_table(db, &geometry, batch_size, s, backend, skip_indexer)
         };
         let full = q(false)?;
         let result = if w >= 1.0 {
@@ -614,6 +652,7 @@ fn query_context_table(
                 prefix as i64,
                 op.num_heads as i64,
                 skip_indexer,
+                db.dsa.reuse_sol_policy,
                 flops,
             )))
         }
@@ -665,6 +704,8 @@ fn query_generation_table(
             s as i64,
             op.num_heads as i64,
             topk_divisor,
+            skip_indexer,
+            db.dsa.reuse_sol_policy,
             flops,
         )
     };
@@ -704,7 +745,9 @@ fn query_generation_table_raw(
     match db.database_mode {
         // Python `_query_generation_dsa_module_table`: `get_sol(b, s,
         // num_heads, kv_cache_dtype)[0]` — the attention group is hardcoded
-        // bfloat16 inside; skip_indexer never enters the decode SOL.
+        // bfloat16 inside. The vLLM reuse policy omits indexer work in the
+        // analytic result and extrapolation; other backends retain the legacy
+        // full-indexer approximation for generation.
         DatabaseMode::Sol | DatabaseMode::SolFull => {
             let spec = &db.system_spec;
             let dims = dsa_dims(&op.architecture);
@@ -718,6 +761,8 @@ fn query_generation_table_raw(
                 s as i64,
                 op.num_heads as i64,
                 op.dcp_size.max(1) as i64,
+                skip_indexer,
+                db.dsa.reuse_sol_policy,
                 flops,
             )))
         }
@@ -813,6 +858,7 @@ fn context_empirical(
             prefix as i64,
             num_heads as i64,
             skip_indexer,
+            db.dsa.reuse_sol_policy,
             flops,
         )
     };
@@ -1051,6 +1097,8 @@ fn generation_empirical(
             s as i64,
             num_heads as i64,
             op.dcp_size.max(1) as i64,
+            skip_indexer,
+            db.dsa.reuse_sol_policy,
             flops,
         )
     };
@@ -1625,9 +1673,7 @@ mod tests {
     /// a full-only table must NOT degrade the configured blend there. Without
     /// the mode gate the degraded op (w -> 1.0) collapses to the all-full SOL;
     /// with it the blend keeps the cheaper skip layers and stays strictly
-    /// below. Generation SOL is not skip-aware (the indexer term is charged
-    /// unconditionally, matching Python), so its value is blend-neutral —
-    /// asserted only to not fail on the skip-less table.
+    /// below. Generation follows the same executed full/reuse distinction.
     #[test]
     fn sol_mode_keeps_configured_amortization_on_full_only_table() {
         let db = b200_db_on("h200_sxm", "vllm", "0.24.0", DatabaseMode::Sol);
@@ -1663,8 +1709,7 @@ mod tests {
             GLM52_FULL_FRAC * full_sol + (1.0 - GLM52_FULL_FRAC) * skip_sol,
         );
 
-        // Generation SOL is not skip-aware, so the blend is value-neutral:
-        // the mixed op must equal the all-full op exactly (and not fail).
+        // Analytic generation must retain reuse savings even without tables.
         let mixed_gen_sol = glm52
             .query_generation(&db, 2, 4096)
             .expect("SOL generation query must not fail on a full-only table")
@@ -1673,7 +1718,15 @@ mod tests {
             .query_generation(&db, 2, 4096)
             .expect("all-full SOL generation")
             .latency_ms;
-        approx_rel_1e9(mixed_gen_sol, full_gen_sol);
+        let skip_gen_sol = glm52_op(KvCacheQuantMode::Bfloat16, 0.0)
+            .query_generation(&db, 2, 4096)
+            .expect("pure-skip SOL generation")
+            .latency_ms;
+        assert!(skip_gen_sol < full_gen_sol);
+        approx_rel_1e9(
+            mixed_gen_sol,
+            GLM52_FULL_FRAC * full_gen_sol + (1.0 - GLM52_FULL_FRAC) * skip_gen_sol,
+        );
     }
 
     /// Context EMPIRICAL wiring on the sglang GLM tables: the cross-head
@@ -1790,6 +1843,7 @@ mod tests {
             512,
             op.num_heads as i64,
             false,
+            db.dsa.reuse_sol_policy,
             flops,
         );
         assert_eq!(result.latency_ms, expected);
@@ -1807,6 +1861,8 @@ mod tests {
             4096,
             op.num_heads as i64,
             1,
+            false,
+            db.dsa.reuse_sol_policy,
             flops,
         );
         assert_eq!(result.latency_ms, expected);

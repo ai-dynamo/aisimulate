@@ -8,7 +8,7 @@ import csv
 from pathlib import Path
 
 import pytest
-from tools.prediction_regression_gate import compare, grid, report
+from tools.prediction_regression_gate import compare, expectations, grid, report
 
 pytestmark = pytest.mark.unit
 
@@ -59,11 +59,27 @@ def test_tier1_and_tier2_both_compared(tmp_path: Path) -> None:
     assert categories == ["REGRESSION", "REGRESSION"]  # one tier-1, one tier-2
 
 
-def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_exit_codes_without_expectation_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # These synthetic TRT snapshots exercise ordinary report behavior; scoped
+    # expectation policies have their own tests with explicit fixtures.
+    expectation_path = tmp_path / "empty-expectations.csv"
+    with expectation_path.open("w", newline="") as f:
+        csv.writer(f).writerow(expectations.HEADER)
+
     def run(old: Path, new: Path) -> int:
         monkeypatch.setattr(
             "sys.argv",
-            ["report.py", "--old", str(old), "--new", str(new), "--report-dir", str(tmp_path / "rep")],
+            [
+                "report.py",
+                "--old",
+                str(old),
+                "--new",
+                str(new),
+                "--report-dir",
+                str(tmp_path / "rep"),
+                "--expected-data-misses",
+                str(expectation_path),
+            ],
         )
         return report.main()
 
