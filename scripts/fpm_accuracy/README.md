@@ -142,15 +142,3 @@ Overrides and accepted observation membership restrict which runs enter public
 summary/detail v2 assets. Missing metadata in historical evaluations remains
 Unknown. Request metrics are separate Parquet evidence; only compact chart JSON
 is served publicly. No source request IDs or prompt text enter chart assets.
-
-Compare both readers without publishing an evaluation:
-
-```bash
-python -m scripts.fpm_accuracy.verify_storage_migration LEGACY_ROOT MIGRATED_ROOT \
-  --output comparison.json
-```
-
-The check includes all historical snapshots and compares ordered rank payloads,
-latencies, record membership, ordering policy, and exclusions. Renamed paths may
-change identity hashes while preserving predictor inputs. Each reader runs in a
-fresh process for comparable elapsed-time and peak-memory measurements.
