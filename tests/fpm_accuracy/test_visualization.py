@@ -6,6 +6,8 @@ import gzip
 import json
 from dataclasses import replace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from test_hf_dataset import CONFIGURATION_PATH, _build_dataset, _fpm_payload
 
 from scripts.fpm_accuracy.dashboard.visualization import VisualizationWriter, point
@@ -157,3 +159,35 @@ def test_samples_chunks_and_diagnostics(tmp_path):
             observations, issues = diagnostic_observations(bad)
             assert len(observations) == 39
             assert issues == {"incomplete_duplicate_or_unexpected_rank_group": 1}
+
+
+def test_parquet_diagnostics_preserve_logical_records_and_duplicate_exclusions(tmp_path):
+    case = dataset(tmp_path / "hf", dp=2, duplicate=True).measurement_case(CONFIGURATION_PATH)
+    expected, expected_issues = diagnostic_observations(case)
+    source = case.truth_files[0]
+    with gzip.open(source.local_path, "rt") as handle:
+        payloads = [json.loads(line) for line in handle]
+    records = []
+    for source_row, payload in enumerate(payloads, 1):
+        payload["received_at_ns"] = 1700000000000000000 + source_row
+        payload["extensions_json"] = "{}"
+        payload["queued_requests"] = {"num_decode_requests": 0}
+        records.append(dict(source_row=source_row, layout="rank_observation", rank_measurements=[payload]))
+    table = pa.Table.from_pylist(records).replace_schema_metadata(
+        {b"schema_id": b"fpm-iterations-parquet-v1", b"schema_version": b"1"}
+    )
+    for row_group_size in (1, 17):
+        path = tmp_path / f"ranks-{row_group_size}.parquet"
+        pq.write_table(table, path, row_group_size=row_group_size)
+        file = replace(
+            source,
+            local_path=path,
+            storage_format="parquet",
+            storage_schema="fpm-iterations-parquet-v1",
+            logical_row_count=len(records),
+        )
+        actual, issues = diagnostic_observations(replace(case, truth_files=(file,)))
+        assert issues == expected_issues
+        assert [(o.observation_id, o.source_row, point(o)) for o in actual] == [
+            (o.observation_id, o.source_row, point(o)) for o in expected
+        ]

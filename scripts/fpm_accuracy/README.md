@@ -133,6 +133,8 @@ Versioned Parquet representations decode into the same rank/grouping validators
 as legacy JSON/CSV. Integer nanoseconds, nulls, rank order, and logical source
 record IDs survive conversion. `ordering_index` preserves the previous file
 ordering for equal timestamps; Parquet row groups do not define observations.
+Visualization-only diagnostic grouping uses the same format dispatch and logical
+record references, including duplicate-rank exclusions for unsynchronized streams.
 
 Measurement v5 `collection_runs` binds metadata to truth file IDs and disjoint
 half-open logical record ranges (one-based; `null` selects the whole file).
