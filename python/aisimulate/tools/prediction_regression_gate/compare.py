@@ -60,7 +60,13 @@ class ComboResult:
 
 def load_rows(path: Path) -> dict[tuple, dict]:
     with path.open(newline="") as f:
-        return {tuple(row[k] for k in KEY_FIELDS): row for row in csv.DictReader(f)}
+        rows = {}
+        for row in csv.DictReader(f):
+            key = tuple(row[k] for k in KEY_FIELDS)
+            if key in rows:
+                raise ValueError(f"{path}: duplicate snapshot identity {key}")
+            rows[key] = row
+        return rows
 
 
 def compare_combo(combo: str, old_path: Path, new_path: Path, rtol: float = DEFAULT_RTOL) -> ComboResult:
