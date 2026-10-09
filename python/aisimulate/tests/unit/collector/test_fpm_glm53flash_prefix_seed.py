@@ -281,8 +281,8 @@ def test_prefill_prefix_seed_lifecycle(monkeypatch, tmp_path):
     assert s.saved[1][1][0]["wall_time"] == pytest.approx(sorted(measured)[4:6][0] / 2 + sorted(measured)[4:6][1] / 2)
 
 
-@pytest.mark.parametrize(("context", "prompt", "step"), [(201, 200, 2), (200, 196, 5), (198, 196, 3)])
-def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, prompt, step):
+@pytest.mark.parametrize(("context", "seed"), [(201, 196), (200, 196), (198, 196), (197, 192)])
+def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, seed):
     module = load_producer(monkeypatch)
     points = [Point("decode", 1, 3, 0, 3 * context)]
     s = make_scheduler(module, tmp_path, points)
@@ -290,15 +290,16 @@ def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, prompt, st
     ((point, fpms),) = s.saved
     assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 3 * context
     record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
-    # Prompts and seeds stay on the 4-token grid; the measured step index moves instead.
-    assert record["rows"]["prompt"] == [prompt] * 3 and record["rows"]["measured_decode_step"] == step
-    assert record["seed"]["lengths"] == [prompt - 4] * 3
-    assert all(len(rep["fpms"]) == step for rep in record["repetitions"])
+    # True context: prompt context - 1; the cached seed (measured chunk start) stays on the 4-token grid.
+    assert record["rows"]["prompt"] == [context - 1] * 3 and record["rows"]["measured_decode_step"] == 2
+    assert record["seed"]["lengths"] == [seed] * 3
+    assert all(len(rep["fpms"]) == 2 for rep in record["repetitions"])
     assert all(
-        rep["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 3 * prompt for rep in record["repetitions"]
+        rep["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 3 * (context - 1)
+        for rep in record["repetitions"]
     )
-    assert all(rep["prefill_chunks"] == [[[prompt - 4, 4]] * 3] for rep in record["repetitions"])
-    assert record["seed"]["prefill_chunks"] == [[[0, prompt - 4]] * 3]
+    assert all(rep["prefill_chunks"] == [[[seed, context - 1 - seed]] * 3] for rep in record["repetitions"])
+    assert record["seed"]["prefill_chunks"] == [[[0, seed]] * 3]
     assert not record["rejected_repetitions"]
 
 
@@ -327,7 +328,7 @@ def test_mismatched_geometry_is_never_published(monkeypatch, tmp_path):
 def test_explicit_align4_decode_contexts_override_the_even_split(monkeypatch, tmp_path):
     module = load_producer(monkeypatch)
     contexts = tmp_path / "decode-contexts.json"
-    contexts.write_text(json.dumps([[2, 246, [125, 121]]]))
+    contexts.write_text(json.dumps([[2, 246, [125, 121]]]))  # TEST ONLY uneven split
     monkeypatch.setenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", str(contexts))
     monkeypatch.setattr(module, "_DECODE_CONTEXTS", None)
     s = make_scheduler(module, tmp_path, [Point("decode", 1, 2, 0, 246)])

@@ -29,13 +29,13 @@ State construction (prefix caching on):
   ``prefix_i`` real tokens (cached by the native prefix cache); each repetition
   then submits ``prefix_i`` + a repetition-unique suffix, which must hit exactly
   ``prefix_i`` (validated from the native measured FPM, never assumed).
-* decode ``context_i``: the prompt is ``P_i = 4 * floor((context_i - 1) / 4)``
-  tokens (a multiple of 4) and a seed request computes its first ``P_i - 4``
-  tokens; each repetition submits that prompt with ``max_tokens = k + 1`` where
-  pure decode step ``k = context_i - P_i + 1`` (2..5, equal for all B requests)
-  reads KV ``context_i``; that steady step (consecutive output arrivals, KV read
-  ``sum(context_i)``) is the measured sample. ``k = 2`` when ``context_i - 1``
-  is a multiple of 4, which is the earlier fixed protocol.
+* decode ``context_i`` (the true context, not moved): the prompt is
+  ``context_i - 1`` tokens and a seed request computes its first
+  ``4 * floor((context_i - 2) / 4)`` tokens, so the measured shot's prefill chunk
+  starts on the 4-token grid (only its final chunk may end off the grid); each
+  repetition submits the prompt with ``max_tokens = 3`` and the second pure
+  decode step (all B requests, KV read ``sum(context_i)``) is the measured
+  steady sample.
 
 No host work is added between steps of a repetition: the only per-step work is
 the native Dynamo FPM bookkeeping plus a reference to the native
@@ -45,8 +45,8 @@ finished, and the compact evidence record of a point (prompt specifications,
 not token arrays) is written after all of its repetitions.
 
 Stock vLLM v0.31.0 does not complete IndexPool entries at a cached/chunked
-prefill start that is not a multiple of the pool width (4). Every prompt,
-prefix and new-token length is therefore a multiple of 4, and every scheduled
+prefill start that is not a multiple of the pool width (4). Every prefill
+prefix and new-token length and every decode seed is therefore a multiple of 4, and every scheduled
 prefill chunk start (seed, warmup and measured shots) is recorded from the
 native ``SchedulerOutput`` and checked after its stage; an unaligned start
 fails the run instead of being measured.
@@ -424,17 +424,13 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
                     )
             else:
                 contexts = self._bench_decode_context_lengths(point.total_kv_read_tokens, point.batch_size)
-                if min(contexts) <= CHUNK_ALIGN or len({self._glm_decode_step(c) for c in contexts}) != 1:
-                    # Lockstep decode measures one step index for all B requests.
-                    raise ValueError(
-                        f"benchmark_id={point.benchmark_id}: aligned-prompt decode requires contexts > "
-                        f"{CHUNK_ALIGN} with one common steady step index; no clamping"
-                    )
+                if min(contexts) < 3:
+                    raise ValueError("GLM real decode requires per-request context >= 3; no clamping")
 
     @staticmethod
     def _glm_decode_prompt(context):
-        """Largest multiple of 4 below the measured context (kpool_align4)."""
-        return (context - 1) // CHUNK_ALIGN * CHUNK_ALIGN
+        """The prompt precedes one sampled token and the measured second decode step."""
+        return context - 1
 
     def _glm_decode_step(self, context):
         """1-based pure decode step whose per-request KV read equals ``context``."""

@@ -65,7 +65,8 @@ CUDA graph policy is native; eager-only campaigns require a separate identity.
 ## Native IndexPool qualification restriction
 
 Stock v0.31.0 still has this defect. The prefix-seed producer therefore keeps
-every prompt, prefix and new-token length on the 4-token grid. It records the
+every prefill prefix and new-token length, and every decode seed prefix, on the
+4-token grid (decode prompts keep their true context minus one). It records the
 start of every scheduled prefill chunk (seed, warmup and measured shots) from
 the native `SchedulerOutput` and fails on an unaligned start.
 
