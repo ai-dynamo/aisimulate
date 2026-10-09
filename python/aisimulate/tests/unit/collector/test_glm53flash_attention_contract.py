@@ -592,7 +592,8 @@ def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
     manifest, rows, _ = load_attempt(broken, partial=True)
     assert manifest["failed_sets"] == [failed_set] and failed_set not in manifest["admitted_sets"]
     assert len(rows) == len(target_keys(plan)) - len(lost)
-    rerun, _ = _attempt(tmp_path, only_sets=[failed_set], name="rerun")
+    # The rerun covers the failed set; the partial copy of its other targets is superseded.
+    rerun, _ = _attempt(tmp_path, only_sets=[failed_set, sets[0]], name="rerun")
     out = tmp_path / "p" / BASENAME
     argv = [
         "x",
@@ -609,7 +610,8 @@ def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
     contract.main()
     assert pq.read_table(out).num_rows == len(target_keys(plan))
     meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
-    assert meta["tables"]["glm53_attention_module_perf"]["attempts"][1]["partial"]["failed_sets"] == [failed_set]
+    partial = meta["tables"]["glm53_attention_module_perf"]["attempts"][1]["partial"]
+    assert partial["failed_sets"] == [failed_set] and partial["superseded_by_complete_attempts"] >= 1
 
 
 def test_classified_failures_are_explicit_gaps(tmp_path, monkeypatch):

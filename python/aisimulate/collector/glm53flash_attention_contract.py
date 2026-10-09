@@ -762,9 +762,10 @@ def load_attempt(attempt: Path, partial: bool = False) -> tuple[dict, list[dict]
     ``attempt`` holds the frozen ``manifest.json``; the runner's per-rank
     streams and completion receipt live in ``attempt/raw``. A ``partial``
     attempt (no receipt; its progress log records a failed set) contributes
-    only the request sets it measured completely on every rank; the returned
-    manifest then lists ``admitted_sets`` and ``failed_sets``, and the other
-    sets' keys must come from other attempts (finalize closure).
+    only the targets it measured completely on every rank; the returned
+    manifest then lists ``admitted_sets`` (``set:n/m`` when partly measured)
+    and ``failed_sets``, and the remaining keys must come from other attempts
+    or be classified failures (finalize closure).
     """
     attempt = Path(attempt)
     raw = attempt / "raw"
@@ -811,20 +812,28 @@ def load_attempt(attempt: Path, partial: bool = False) -> tuple[dict, list[dict]
             for t, ranks in reps_by_rank.items()
             if set(ranks) == set(range(tp_size)) and len({frozenset(v) for v in ranks.values()}) == 1
         }
-        admitted = []
+        # Every target measured completely on every rank is admitted; the
+        # rest of a failed set must come from other attempts or be classified.
+        admitted, sets = [], []
         for request_set in queued["sets"]:
-            ids = set()
+            keep = []
             for value in request_set["targets"]:
                 phase, batch, prefix, x = _target_context(request_set, value)[0]
-                ids.add(f"{phase}-b{batch}-p{prefix}-x{x}")
-            if request_set["set_id"] not in failed and ids <= full:
-                admitted.append(request_set)
-        queued = {**queued, "sets": admitted}
-        keep = {f"{k[0]}-b{k[1]}-p{k[2]}-x{k[3]}" for k in target_keys(queued)}
-        records = [r for r in records if r["target_id"] in keep]
+                if f"{phase}-b{batch}-p{prefix}-x{x}" in full:
+                    keep.append(value)
+            if keep:
+                sets.append({**request_set, "targets": keep})
+                admitted.append(
+                    request_set["set_id"]
+                    if len(keep) == len(request_set["targets"])
+                    else f"{request_set['set_id']}:{len(keep)}/{len(request_set['targets'])}"
+                )
+        queued = {**queued, "sets": sets}
+        keep_ids = {f"{k[0]}-b{k[1]}-p{k[2]}-x{k[3]}" for k in target_keys(queued)}
+        records = [r for r in records if r["target_id"] in keep_ids]
         manifest = {
             **manifest,
-            "admitted_sets": [s["set_id"] for s in admitted],
+            "admitted_sets": admitted,
             "failed_sets": sorted(failed),
         }
     rows, evidence = aggregate_rank_samples(records, tp_size)
@@ -873,8 +882,22 @@ def main() -> None:
         print(json.dumps({"plan_sha256": plan["plan_sha256"], "targets": len(target_keys(plan))}))
         return
     rows, evidence, manifests, loaded = [], [], [], []
+    complete_keys: set[tuple] = set()
     for attempt, partial in [(a, False) for a in args.attempts] + [(a, True) for a in args.partial]:
         manifest, attempt_rows, attempt_evidence = load_attempt(attempt, partial=partial)
+        superseded = 0
+        if partial:
+            # A key also measured by a complete (fresh-process) attempt is
+            # taken from that attempt; the failed attempt's copy is dropped.
+            kept = [r for r in attempt_rows if physical_key(r) not in complete_keys]
+            superseded = len(attempt_rows) - len(kept)
+            keys = {physical_key(r) for r in kept}
+            attempt_rows = kept
+            attempt_evidence = [
+                e for e in attempt_evidence if (e["geometry"], e["batch_size"], e["prefix"], e["x"]) in keys
+            ]
+        else:
+            complete_keys |= {physical_key(r) for r in attempt_rows}
         loaded.append((manifest, attempt_rows))
         rows += attempt_rows
         evidence += [{**e, "attempt": Path(attempt).name} for e in attempt_evidence]
@@ -889,7 +912,13 @@ def main() -> None:
                 **{k: manifest[k] for k in CAPACITY_KNOBS if manifest.get(k) is not None},
                 **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
                 **(
-                    {"partial": {"admitted_sets": manifest["admitted_sets"], "failed_sets": manifest["failed_sets"]}}
+                    {
+                        "partial": {
+                            "admitted_sets": manifest["admitted_sets"],
+                            "failed_sets": manifest["failed_sets"],
+                            "superseded_by_complete_attempts": superseded,
+                        }
+                    }
                     if partial
                     else {}
                 ),
