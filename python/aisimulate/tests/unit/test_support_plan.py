@@ -114,6 +114,7 @@ def _request(**updates) -> SupportRequest:
             "model_revision": "checkpoint-2026-09-14",
             "model_kind": "moe",
             "framework_version": "0.25.1",
+            "runtime_framework_version": "0.25.1",  # Synthetic observed runtime for execution/resume fixtures.
             "gpu": "h200_sxm",
             "interconnect": "NVLink",
         },

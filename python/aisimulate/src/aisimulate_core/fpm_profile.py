@@ -166,7 +166,9 @@ class FpmDeploymentProfile(_ProfileModel):
 
     system: _Nonempty
     backend: Literal["vllm"]
-    backend_version: _Nonempty
+    # Registration may precede target-container version detection. Such a
+    # profile is a draft; simulation still requires a literal selected version.
+    backend_version: _Nonempty | None = None
     tp: _PositiveInt
     pp: Literal[1] = 1
     dp: _PositiveInt
@@ -209,9 +211,14 @@ class FpmDeploymentProfile(_ProfileModel):
 
     @field_validator("backend_version")
     @classmethod
-    def _literal_version(cls, value: str) -> str:
-        if value.lower() in _MUTABLE_REFERENCES | {"previous", "next"} or any(c.isspace() for c in value):
-            raise ValueError("FPM profile backend_version must be a literal runtime version")
+    def _literal_version(cls, value: str | None) -> str | None:
+        if value is not None and (
+            value.lower() in _MUTABLE_REFERENCES | {"previous", "next"}
+            or any(c.isspace() for c in value)
+            or any(c in value for c in ("/", "\\", "\x00"))
+            or value in {".", ".."}
+        ):
+            raise ValueError("FPM profile backend_version must be a literal, path-safe version label")
         return value
 
     @model_validator(mode="after")
@@ -337,7 +344,7 @@ class FpmModelProfile(_ProfileModel):
         model: str,
         system: str,
         backend: str,
-        backend_version: str,
+        backend_version: str | None,
         tp_size: int = 1,
         pp_size: int = 1,
         attention_dp_size: int = 1,

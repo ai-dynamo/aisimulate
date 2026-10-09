@@ -102,7 +102,11 @@ Details: [model inspection](implementation.md#1-inspect-the-model-and-target),
 ### 2. Choose the worker and collection limits
 
 Choose aggregated or independent prefill/decode roles, exact parallelism,
-supported precision, runtime version and image. Review context, scheduled-token
+supported precision, runtime build and image. An explicit backend version string
+is a dataset identity label and may differ from the observed package version;
+retain the actual runtime evidence separately. Omit `--framework-version` to
+resolve it from the collection image when execution starts. The optional Dynamo
+version is provenance only. Review context, scheduled-token
 and sequence limits, memory fraction and CUDA Graph policy. Treat these as
 collection inputs; fixed request lengths, latency targets and validation traces
 do not determine the sampling grid. Selected topology establishes minimum GPU
@@ -132,6 +136,13 @@ inputs. Preview `onboard collect-fpm` and inspect the generated collector plan,
 executor requirements and node placement. AISimulate supplies the reviewed
 limits; Dynamo self-benchmark derives the exact feasible grid from the initialized
 engine. A plan does not establish target readiness or measured coverage.
+
+With no backend version supplied, init/plan/preview leave the label pending.
+For both explicit and omitted labels, first execution requires an explicit image
+and observes its package version without GPUs before creating a
+`runtime-resolved/` child plan. An explicit label is preserved; an omitted label
+takes the observed version. Continue with the resolved paths printed by the
+command; the original registration stays intact.
 
 For existing data, compare its identity, provenance and coverage with the intended
 deployment before following the import path. The [Kimi example](examples.md#example-a-onboard-the-collected-kimi-k3-tp8dcp8-profile)

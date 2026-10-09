@@ -2981,3 +2981,91 @@ def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, c
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="native"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_custom_profile_label_is_published_with_observed_runtime_provenance(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.fpm_profile = True
+    plan.deployment_profile = lambda _cell: SimpleNamespace(backend_version="my-vllm-patch-3")
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "my-vllm-patch-3"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_explicit_label_without_profile_uses_native_precision_not_database_version(monkeypatch):
+    from collector.fpm_forward import capabilities
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an explicit FPM data label must not resolve op-level database versions")
+
+    monkeypatch.setattr(capabilities, "get_latest_database_version", forbidden)
+    monkeypatch.setattr(capabilities, "get_database", forbidden)
+    args = _args()
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system="b200_sxm",
+        selected_ops={"dsa_context_module", "dsa_generation_module"},
+        options=FPMCollectionOptions.from_args(args),
+        collector_config={"aic_database_version": "private-vllm-build", "runtime_backend_version": "0.28.0"},
+    )
+    assert plan.fpm_profile is None
+    assert plan.backend_version == "private-vllm-build"
+    assert plan.capability.aic_database_version == "private-vllm-build"
+    assert plan.runtime_backend_version == "0.28.0"
+
+
+def test_explicit_label_without_profile_survives_native_publication(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "private-vllm-build"
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "private-vllm-build"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+
+
+def test_dynamo_versions_remain_per_pod_provenance_without_registration_gate(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    for index, path in enumerate(sorted((cell_dir / "raw").glob("*/collector-provenance.json"))):
+        provenance = json.loads(path.read_text())
+        provenance["dynamo_version"] = f"declared-build-{index}"
+        provenance["runtime"]["dynamo_version"] = f"observed-build-{index}"
+        path.write_text(json.dumps(provenance))
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_aggregation_rejects_observed_backend_drift_even_with_custom_label(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "my-vllm-patch-3"
+    plan.runtime_backend_version = "0.28.0"
+    with pytest.raises(ValueError, match="observed backend version differs"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_preserves_runtime_provenance_when_legacy_row_sorts_first(tmp_path):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    row = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]
+    old = {**row, "cell_id": "a-legacy"}
+    root = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, [old], systems_root=root)
+    # Model a sealed schema-v7 publication predating the additive runtime field.
+    table = pq.read_table(parquet).drop(["runtime_backend_version"])
+    pq.write_table(table, parquet)
+    committed = json.loads(metadata.read_text())
+    committed["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    metadata.write_text(json.dumps(committed))
+    incoming = {**row, "cell_id": "z-new", "runtime_backend_version": "0.28.0+observed"}
+
+    _, _, skipped = write_formal_database(plan, [incoming], systems_root=root)
+
+    assert skipped == ()
+    published = pq.read_table(parquet).to_pylist()
+    assert [(item["cell_id"], item["runtime_backend_version"]) for item in published] == [
+        ("a-legacy", None),
+        ("z-new", "0.28.0+observed"),
+    ]
+    write_formal_database(plan, [incoming], systems_root=root)
+    assert pq.read_table(parquet).to_pylist() == published

@@ -28,7 +28,7 @@ from .config import (
     PARALLEL_AXES,
     VLLM_AUTO_FIT_MAX_MODEL_LEN,
     FPMCollectionOptions,
-    with_kv_warmup_defaults,
+    semantic_generator_overrides,
 )
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def _runtime_memory_policy(
-    profile: FpmModelProfile | None, backend_version: str, runtime_observation: dict[str, Any] | None = None
+    profile: FpmModelProfile | None, backend_version: str | None, runtime_observation: dict[str, Any] | None = None
 ) -> dict[str, object] | None:
     if runtime_observation is not None:
         return {
@@ -529,6 +529,9 @@ class FPMCollectionPlan:
     sha256: str
     _fpm_profile_json: str | None = field(default=None, repr=False)
     _runtime_observation_json: str | None = field(default=None, repr=False)
+    runtime_backend_version: str | None = None
+    backend_version: str | None = None
+    _legacy_runtime_memory_policy_json: str | None = field(default=None, repr=False)
 
     @property
     def runtime_instrumentation(self):
@@ -537,7 +540,7 @@ class FPMCollectionPlan:
         from .runtime_instrumentation import load_instrumentation
 
         reference = json.loads(self._runtime_observation_json)
-        bundle = load_instrumentation(reference["manifest"], expected_version=self.capability.aic_database_version)
+        bundle = load_instrumentation(reference["manifest"], expected_version=self.runtime_backend_version)
         if bundle.sha256 != reference["bundle_sha256"]:
             raise ValueError("formal collection instrumentation changed after planning")
         return bundle
@@ -639,13 +642,17 @@ class FPMCollectionPlan:
         if self._fpm_profile_json is not None:
             payload["fpm_profile"] = json.loads(self._fpm_profile_json)
         runtime_observation = json.loads(self._runtime_observation_json) if self._runtime_observation_json else None
-        memory_policy = _runtime_memory_policy(
-            self.fpm_profile, self.capability.aic_database_version, runtime_observation
-        )
+        memory_policy = _runtime_memory_policy(self.fpm_profile, self.runtime_backend_version, runtime_observation)
+        if self._legacy_runtime_memory_policy_json is not None:
+            memory_policy = json.loads(self._legacy_runtime_memory_policy_json)
         if memory_policy is not None:
             payload["runtime_memory_policy"] = memory_policy
         if runtime_observation is not None:
             payload["runtime_observation"] = runtime_observation
+        if self.runtime_backend_version is not None:
+            payload["runtime_backend_version"] = self.runtime_backend_version
+        if self.backend_version is not None:
+            payload["backend_version"] = self.backend_version
         return payload
 
 
@@ -698,6 +705,15 @@ def build_collection_plan(
     if backend != "vllm":
         raise ValueError("FPM Generator V1 currently supports only backend=vllm")
     collector_config = dict(collector_config or {})
+    runtime_backend_version = collector_config.get("runtime_backend_version")
+    if runtime_backend_version is None and runtime_launch is not None:
+        runtime_backend_version = runtime_launch.get("identity", {}).get("runtime_framework_version")
+    if runtime_backend_version is not None and (
+        not isinstance(runtime_backend_version, str)
+        or not runtime_backend_version.strip()
+        or runtime_backend_version != runtime_backend_version.strip()
+    ):
+        raise ValueError("runtime_backend_version must be a nonempty observed package version")
     profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
     if profile is not None:
         if profile.model != model_path:
@@ -716,9 +732,20 @@ def build_collection_plan(
                     f"{system}/{backend}; found {sorted(versions)}"
                 )
             collector_config["aic_database_version"] = next(iter(versions))
+    backend_version = collector_config.get("aic_database_version")
+    if "aic_database_version" in collector_config and (
+        not isinstance(backend_version, str)
+        or not backend_version
+        or backend_version in {".", ".."}
+        or any(c.isspace() for c in backend_version)
+        or any(c in backend_version for c in ("/", "\\", "\x00"))
+    ):
+        raise ValueError(
+            "FPM collection requires a resolved, path-safe backend_version; detect the target runtime first"
+        )
     # Freeze resolved warm-up defaults as well as explicit deployment inputs;
     # changing the default must not resume a campaign under its old plan hash.
-    generator_config_sha256 = _canonical_hash(with_kv_warmup_defaults(generator_overrides or {}))
+    generator_config_sha256 = _canonical_hash(semantic_generator_overrides(generator_overrides or {}))
     capability = resolve_model_capability(
         backend=backend,
         model_path=model_path,
@@ -732,7 +759,7 @@ def build_collection_plan(
         database_version=(
             str(collector_config["aic_database_version"]) if "aic_database_version" in collector_config else None
         ),
-        checkpoint_native_dtypes=profile is not None,
+        checkpoint_native_dtypes=profile is not None or backend_version is not None,
     )
     execution = execution_identity(
         capability.model_config.payload,
@@ -913,11 +940,15 @@ def build_collection_plan(
         if runtime_launch is None:
             raise ValueError("formal runtime instrumentation requires the accepted probe launch facts")
         bundle = (
-            load_instrumentation(runtime_instrumentation, expected_version=capability.aic_database_version)
+            load_instrumentation(runtime_instrumentation, expected_version=runtime_backend_version)
             if isinstance(runtime_instrumentation, (str, Path))
             else runtime_instrumentation
         )
+        if runtime_backend_version is not None and bundle.manifest["runtime"]["version"] != runtime_backend_version:
+            raise ValueError("instrumentation runtime version differs from the observed backend version")
         launch = normalize_probe_launch(runtime_launch)
+        if runtime_backend_version is None:
+            runtime_backend_version = bundle.manifest["runtime"]["version"]
         validate_collection_probe_launch(
             launch,
             bundle,
@@ -939,11 +970,13 @@ def build_collection_plan(
         runtime_observation_json = json.dumps(canonical["runtime_observation"], sort_keys=True)
     elif runtime_launch is not None:
         raise ValueError("accepted probe launch facts require runtime instrumentation for formal collection")
-    memory_policy = _runtime_memory_policy(
-        profile, capability.aic_database_version, canonical.get("runtime_observation")
-    )
+    memory_policy = _runtime_memory_policy(profile, runtime_backend_version, canonical.get("runtime_observation"))
     if memory_policy is not None:
         canonical["runtime_memory_policy"] = memory_policy
+    if runtime_backend_version is not None:
+        canonical["runtime_backend_version"] = runtime_backend_version
+    if backend_version is not None:
+        canonical["backend_version"] = backend_version
     return FPMCollectionPlan(
         backend=backend,
         model_path=model_path,
@@ -960,6 +993,8 @@ def build_collection_plan(
         sha256=_canonical_hash(canonical),
         _fpm_profile_json=profile_json,
         _runtime_observation_json=runtime_observation_json,
+        runtime_backend_version=runtime_backend_version,
+        backend_version=backend_version,
     )
 
 

@@ -1830,3 +1830,38 @@ def test_fpm_pod_renders_guaranteed_qos_by_default():
     assert limits["memory"] == "256Gi"  # 64Gi x 4 GPUs
     assert requests["cpu"] == limits["cpu"]
     assert requests["memory"] == limits["memory"]
+
+
+def test_fpm_dynamo_version_is_metadata_only(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.generator import api
+    from aisimulate.generator.request import from_legacy_params
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("FPM collection consulted the Dynamo release matrix")
+
+    monkeypatch.setattr(api, "resolve_backend_version_for_dynamo", forbidden)
+    plain = from_legacy_params(_params(), "vllm")
+    plain = replace(plain, emit=replace(plain.emit, deployment_target="fpm"))
+    custom = replace(plain, backend=replace(plain.backend, dynamo_version="unpublished-dynamo-build"))
+    assert api.generate_from_request(custom) == api.generate_from_request(plain)
+
+
+def test_serving_generation_still_resolves_dynamo_version(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.generator import api
+    from aisimulate.generator.request import from_legacy_params
+
+    resolved = []
+    monkeypatch.setattr(
+        api,
+        "resolve_backend_version_for_dynamo",
+        lambda version, backend: resolved.append((version, backend)) or "0.27.0",
+    )
+    monkeypatch.setattr(api, "generate_backend_artifacts", lambda *_args, **_kwargs: {})
+    request = from_legacy_params(_params(), "vllm")
+    request = replace(request, backend=replace(request.backend, dynamo_version="1.3.0"))
+    api.generate_from_request(request)
+    assert resolved == [("1.3.0", "vllm")]
