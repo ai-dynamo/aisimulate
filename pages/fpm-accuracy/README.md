@@ -75,6 +75,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   TTFT in seconds. Time is relative to the selected run's start. Histograms use
   at most 32 log bins, a separate zero bin, and one bin for constant values.
   Time charts include request points and rolling P90 over 50 valid requests.
+  Charts stack on mobile with larger axis labels for the scaled SVG viewport.
   Only profiling requests enter charts; warmup/drain counts and boundaries remain
   visible. Missing values stay missing. TPOT derivation requires recorded timing
   compatibility and at least two output tokens. Self-benchmark runs show Not

@@ -127,4 +127,7 @@
 .request-chart svg text { fill: currentColor; font-size: 12px; }
 .request-chart rect:focus { outline: 2px solid var(--text); }
 .workload-empty { padding: 1.5rem 0; }
-@media (max-width: 700px) { .request-charts { grid-template-columns: 1fr; } }
+@media (max-width: 700px) {
+  .request-charts { grid-template-columns: 1fr; }
+  .request-chart svg text { font-size: 22px; }
+}
