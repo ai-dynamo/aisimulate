@@ -17,6 +17,10 @@ on:
         required: true
         default: main
         type: string
+      hf_revision:
+        description: Optional full HF dataset revision for a migration preview (defaults to main)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -45,6 +49,7 @@ jobs:
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           EVALUATED_BRANCH: ${{ inputs.branch }}
+          HF_REVISION: ${{ inputs.hf_revision }}
         with:
           script: |
             const {createHash} = require('node:crypto');
@@ -55,10 +60,13 @@ jobs:
               const [major, minor] = match.slice(1).map(Number);
               return major > 0 || minor >= 12;
             }
-            const hf = await fetch('https://huggingface.co/api/datasets/nvidia/aisimulate-fpm-dataset/revision/main');
+            const requestedHf = process.env.HF_REVISION || 'main';
+            if (requestedHf !== 'main' && !/^[0-9a-f]{40}$/.test(requestedHf)) throw new Error('HF revision must be a full commit SHA');
+            const hf = await fetch(`https://huggingface.co/api/datasets/nvidia/aisimulate-fpm-dataset/revision/${requestedHf}`);
             if (!hf.ok) throw new Error('Cannot resolve HF dataset revision');
             const hfRevision = (await hf.json()).sha;
             if (!/^[0-9a-f]{40}$/.test(hfRevision || '')) throw new Error('Invalid HF revision');
+            if (requestedHf !== 'main' && hfRevision !== requestedHf) throw new Error('Resolved HF revision differs from requested commit');
             core.setOutput('hf_revision', hfRevision);
             let sha = process.env.EXPECTED_SHA;
             let branch = process.env.EVALUATED_BRANCH;

@@ -2,127 +2,55 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 (() => {
-  "use strict";
-  const cache = new Map();
+  'use strict';
   const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'})[c]);
-  const validPath = path => typeof path === 'string' && path.startsWith('data/') && !path.split('/').some(part => !part || part === '.' || part === '..');
-  const url = (revision, path, action = 'blob') => `https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/${action}/${revision}/${path.split('/').map(encodeURIComponent).join('/')}`;
-  const link = (revision, path, label) => `<a href="${escape(url(revision, path))}" target="_blank" rel="noopener">${escape(label)} ↗</a>`;
-  const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('en-US') : 'Not recorded';
-  const fields = entries => `<dl>${entries.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join('')}</dl>`;
-
-  function read(revision, path) {
-    const key = url(revision, path, 'resolve');
-    if (!cache.has(key)) cache.set(key, (async () => {
-      const response = await fetch(key, {cache:'force-cache', signal:AbortSignal.timeout(15000)});
-      if (!response.ok) throw new Error('Collection evidence unavailable');
-      return response.text();
-    })().catch(error => { cache.delete(key); throw error; }));
-    return cache.get(key);
+  const names = {self_benchmark:'Self-benchmark', static_serving:'Static serving', trace_replay:'Trace replay', unknown:'Unknown', not_applicable:'Not applicable', agentic_replay:'Agentic replay', pd_disaggregated:'PD disaggregated', aggregated:'Aggregated', session_trees:'session trees', sessions:'sessions', requests:'requests'};
+  const label = value => value == null ? 'Unknown' : names[value] || String(value).replaceAll('_',' ');
+  const number = value => value == null ? 'Unknown' : Number(value).toLocaleString('en-US', {maximumFractionDigits:2});
+  const titles = {input:'Input sequence length distribution', output:'Output sequence length distribution', interactivity:'Interactivity over time', ttft:'TTFT over time'};
+  function attach(element, row, snapshot) {
+    const value = row.collection;
+    const text = value?.run_count ? [...value.types.map(label), ...value.datasets, `${value.run_count} collection runs`].join(' · ') : 'Unknown';
+    const query = new URLSearchParams({branch:snapshot.branch, configuration:row.configuration_id, snapshot:row.snapshot_id, run:`${snapshot.run_id}-${snapshot.run_attempt}`});
+    element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">Test set · ${escape(text)}</a>`;
   }
-
-  const collectionJSON = file => /\/(?:collection_evidence|aiperf_[^/]+)\.json$/.test(file.path);
-
-  async function hasAgentXEvidence(files, revision) {
-    if (files.some(file => /\/agentx-job-\d+\/collection_evidence\.json$/.test(file.path)
-      || /\/agx_windows[^/]*\.tsv$/.test(file.path))) return true;
-    const evidence = files.filter(file => collectionJSON(file) && Number.isFinite(file.bytes) && file.bytes <= 2 * 1024 * 1024);
-    const results = await Promise.allSettled(evidence.map(async file => {
-      const data = JSON.parse(await read(revision, file.path));
-      // Agentic timing or the dataset name alone does not identify the replay harness.
-      return data?.input_config?.scenario === 'inferencex-agentx-mvp'
-        || data?.metadata?.scenario === 'inferencex-agentx-mvp';
-    }));
-    return results.some(result => result.status === 'fulfilled' && result.value);
+  function histogram(data, title) {
+    if (!data?.count) return '<p class="workload-empty">Unavailable · No observed token counts.</p>';
+    const max = Math.max(...data.bins.map(b=>b.count),1), width = 540/data.bins.length;
+    const bars = data.bins.map((b,i)=>`<rect x="${50+i*width}" y="${210-160*b.count/max}" width="${Math.max(1,width-2)}" height="${160*b.count/max}" fill="var(--accent)" tabindex="0" aria-label="${escape(`${number(b.lower)}–${number(b.upper)} tokens: ${number(b.count)} requests`)}"><title>${escape(`${number(b.lower)}–${number(b.upper)} tokens · ${number(b.count)} requests`)}</title></rect>`).join('');
+    return `<p>${number(data.count)} requests · P50 ${number(data.p50)} · P90 ${number(data.p90)}</p><svg viewBox="0 0 640 260" role="group" aria-label="${escape(title)}"><path d="M50 40V210H590" fill="none" stroke="currentColor"/>${bars}<text x="50" y="235">${number(data.bins[0].lower)}</text><text x="590" y="235" text-anchor="end">${number(data.bins.at(-1).upper)}</text><text x="320" y="255" text-anchor="middle">Tokens (logarithmic bins)</text><text x="45" y="40" text-anchor="end">${number(max)}</text></svg>`;
   }
-
-  async function kind(files, revision) {
-    const truth = files.filter(file => ['truth', 'derived_truth'].includes(file.role));
-    const benchmark = truth.some(file => /\/benchmark[^/]*\.json(?:\.gz)?$/.test(file.path));
-    const stream = truth.some(file => /(?:fpm_stream|fpm_iterations|\.csv\.gz$)/.test(file.path));
-    const replay = stream && await hasAgentXEvidence(files, revision) ? 'AgentX trace replay' : 'General trace replay';
-    if (benchmark && stream) return `Self-benchmark + ${replay}`;
-    if (benchmark) return 'Self-benchmark';
-    return stream ? replay : 'Collection method not recorded';
+  function series(data, title, unit) {
+    if (!data?.count) return '<p class="workload-empty">Unavailable · No matching request timing measurements.</p>';
+    const maxX = data.points.reduce((v,p)=>Math.max(v,p[0]),1), maxY = data.points.reduce((v,p)=>Math.max(v,p[1]),1);
+    const x = t=>50+540*t/maxX, y=v=>210-160*v/maxY;
+    const points = data.points.map(p=>`<circle cx="${x(p[0])}" cy="${y(p[1])}" r="3" fill="var(--accent)" opacity=".55"><title>${number(p[0])} s · ${number(p[1])} ${unit}</title></circle>`).join('');
+    const line = data.rolling_p90.map((p,i)=>`${i?'L':'M'}${x(p[0])} ${y(p[1])}`).join(' ');
+    return `<p>${number(data.count)} requests · ${number(data.excluded)} unavailable · Rolling P90 (50 requests)</p><svg viewBox="0 0 640 260" role="img" aria-label="${escape(title)}: ${number(data.count)} requests, ${escape(unit)}"><path d="M50 40V210H590" fill="none" stroke="currentColor"/>${points}<path d="${line}" fill="none" stroke="var(--text)" stroke-width="2"/><text x="45" y="40" text-anchor="end">${number(maxY)}</text><text x="50" y="235">0</text><text x="590" y="235" text-anchor="end">${number(maxX)} s</text><text x="320" y="255" text-anchor="middle">Time since collection run start · ${unit}</text></svg>`;
   }
-
-  function jsonWorkloads(data) {
-    const config = data.input_config;
-    if (!config || !Array.isArray(config.phases)) return '';
-    const datasets = Array.isArray(config.datasets) ? config.datasets : [];
-    return config.phases.map(phase => {
-      const trace = phase.timing_mode === 'agentic_replay';
-      const rows = [
-        ['Workload', trace ? 'Agentic trace replay' : phase.name || 'Not recorded'],
-        ['ISL / OSL', trace ? 'Trace-defined (variable)' : 'Not recorded'],
-        ['Concurrency', numeric(phase.concurrency)],
-        ['Duration (s)', numeric(phase.duration)],
-      ];
-      if (Number.isSafeInteger(phase.request_count) && phase.request_count >= 0) rows.push(['Requested num_req', numeric(phase.request_count)]);
-      if (Number.isSafeInteger(data.completed_measured_requests) && data.completed_measured_requests >= 0) rows.push(['Completed requests', numeric(data.completed_measured_requests)]);
-      if (data.benchmark_id) rows.push(['Benchmark ID', data.benchmark_id]);
-      const names = datasets.map(dataset => dataset.dataset).filter(name => typeof name === 'string');
-      if (names.length) rows.push(['Dataset', names.join(', ')]);
-      return fields(rows);
-    }).join('');
-  }
-
-  function windowWorkloads(text) {
-    const lines = text.trim().split(/\r?\n/), headers = lines.shift().split('\t');
-    // Headerless legacy window files have incompatible layouts; do not guess columns.
-    if (!headers.includes('concurrency')) return '<p>Workload settings are not recorded with named columns; see source.</p>';
-    const names = [['isl', 'ISL'], ['osl', 'OSL'], ['concurrency', 'Concurrency'], ['num_req', 'num_req'], ['duration_s', 'Duration (s)']];
-    const rows = lines.filter(Boolean).map(line => Object.fromEntries(headers.map((key, i) => [key, line.split('\t')[i]])));
-    const unique = [...new Set(rows.map(row => names
-      .filter(([key]) => key !== 'num_req' || /^\d+$/.test((row[key] || '').trim()))
-      .map(([key, label]) => `${label}: ${row[key] || 'Not recorded'}`).join(' · ')))];
-    return unique.map(row => `<p>${escape(row)}</p>`).join('');
-  }
-
-  async function expand(content, manifest, files, revision, method) {
-    const evidence = files.filter(file => collectionJSON(file) || (file.role === 'window' && file.path.endsWith('.tsv')));
-    content.innerHTML = '<p>Loading collection evidence…</p>';
-    const results = await Promise.allSettled(evidence.map(async file => {
-      // Only small, declared metadata files are read, never raw measurement streams.
-      if (!Number.isFinite(file.bytes) || file.bytes > 2 * 1024 * 1024) return '';
-      const raw = await read(revision, file.path);
-      const details = file.path.endsWith('.tsv') ? windowWorkloads(raw) : jsonWorkloads(JSON.parse(raw));
-      const job = file.path.match(/\/agentx-job-(\d+)\//)?.[1];
-      const label = job ? `AgentX job ${job}` : file.path.split('/provenance/').pop();
-      return `<section class="collection-run">${link(revision, file.path, label)}${details || '<p>Workload settings not recorded.</p>'}</section>`;
-    }));
-    const benchmark = method === 'Self-benchmark';
-    // A manifest may contain helper runs alongside benchmark truth; label those explicitly.
-    const heading = benchmark ? 'Supporting collection evidence' : 'Collection evidence';
-    const runs = results.filter(result => result.status === 'fulfilled').map(result => result.value).join('');
-    const failed = results.some(result => result.status === 'rejected');
-    content.innerHTML = (runs ? `<strong>${heading}</strong>${runs}` : '<p>Collection evidence unavailable.</p>')
-      + `<p>${link(revision, manifest.path, 'Measurement manifest')}</p>`
-      + (failed ? '<p>Some evidence could not be loaded. Open the measurement manifest to inspect its source links.</p>' : '');
-  }
-
-  async function attach(element, row, snapshot) {
-    const revision = snapshot.hf_revision;
-    element.innerHTML = '<summary>Test set · Loading provenance…</summary><div class="collection-content"></div>';
-    try {
-      if (!/^[0-9a-f]{40}$/.test(revision) || !validPath(row.measurement_manifest)) throw new Error('Invalid evidence identity');
-      const manifest = JSON.parse(await read(revision, row.measurement_manifest));
-      if (manifest.configuration_path !== row.configuration_path || manifest.snapshot_id !== row.snapshot_id || !Array.isArray(manifest.files)) throw new Error('Mismatched evidence identity');
-      const files = manifest.files.filter(file => validPath(file.path) && file.path.startsWith(row.configuration_path + '/measurements/'));
-      const method = await kind(files, revision);
-      element.querySelector('summary').textContent = `Test set · ${method}`;
-      let loaded = false;
-      const show = () => {
-        if (!element.open || loaded) return;
-        loaded = true;
-        expand(element.querySelector('.collection-content'), {...manifest, path:row.measurement_manifest}, files, revision, method);
-      };
-      element.addEventListener('toggle', show);
-      show();
-    } catch (_) {
-      element.querySelector('summary').textContent = 'Test set · Provenance unavailable';
-      element.querySelector('.collection-content').innerHTML = '<p>Could not load the pinned collection metadata. See the Measurements link.</p>';
+  function render(target, collection) {
+    const runs = collection?.runs || [];
+    if (!runs.length) { target.innerHTML = '<h3>Dataset and workload</h3><p>Unknown · Normalized collection metadata is unavailable for this evaluation.</p>'; return; }
+    const url = new URL(location.href);
+    const current = runs.find(r=>r.id === url.searchParams.get('collection_run')) || runs.find(r=>r.availability === 'available') || runs[0];
+    const runLabel = run => `${label(run.collection_type)} · ${number(run.workload.concurrency)} ${label(run.workload.concurrency_unit)}${run.started_at ? ' · '+run.started_at.slice(0,16).replace('T',' ')+' UTC' : ''}`;
+    target.innerHTML = `<h3>Dataset and workload</h3><p>${runs.length} contributing collection runs${collection.unattributed_measurements ? ` · ${number(collection.unattributed_measurements)} observations with unknown collection` : ''}</p><label class="fpm-wide-control">Collection run<select id="collection-run">${runs.map(r=>`<option value="${escape(r.id)}" ${r===current?'selected':''}>${escape(runLabel(r))}</option>`).join('')}</select></label><div id="collection-settings"></div><div id="request-charts" class="request-charts"></div>`;
+    function draw(run) {
+      const w = run.workload;
+      const length = value => value?.mode === 'fixed' ? number(value.value) : label(value?.mode);
+      const fields = [['Dataset',run.dataset.name],['Benchmark preset',run.benchmark_preset],['Replay mode',label(run.replay_mode)],['Collector',[run.collector.name,run.collector.version].filter(Boolean).join(' ') || null],['Serving layout',label(run.serving.layout)],['Concurrency',`${number(w.concurrency)} ${label(w.concurrency_unit)}`],['Input length',length(w.input_length)],['Output length',length(w.output_length)],['Duration',w.duration_s == null ? null : number(w.duration_s)+' s'],['Completed requests',number(w.completed_requests)]];
+      const stages = run.charts?.stage_counts;
+      const boundaries = w.stage_boundaries;
+      const phaseNote = boundaries ? `Profiling: ${number(boundaries.profiling_start_s)}–${number(boundaries.profiling_end_s)} s from run start. ` : '';
+      const sampleNote = stages ? `${number(stages.profiling || 0)} profiling requests; ${number((stages.warmup || 0)+(stages.drain || 0))} warmup/drain requests excluded from charts.` : '';
+      target.querySelector('#collection-settings').innerHTML = `<p>${escape(phaseNote+sampleNote)}</p><dl class="workload-settings">${fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('')}</dl>`;
+      target.querySelector('#request-charts').innerHTML = Object.entries(titles).map(([key,title])=>`<section class="matrix-panel request-chart"><h4>${title}</h4>${run.availability !== 'available' ? `<p class="workload-empty">${run.availability === 'not_applicable' ? 'Not applicable' : 'Unavailable'} · ${escape(run.reason || 'Request metrics are unavailable.')}</p>` : key === 'input' || key === 'output' ? histogram(run.charts?.[key],title) : series(run.charts?.[key],title,key === 'ttft' ? 'seconds' : 'tokens/s/user')}</section>`).join('');
     }
+    target.querySelector('#collection-run').addEventListener('change', event=> {
+      const run = runs.find(r=>r.id === event.target.value);
+      const next = new URL(location.href);next.searchParams.set('collection_run',run.id);history.replaceState(null,'',next);draw(run);
+    });
+    draw(current);
   }
-  window.fpmCollection = {attach};
+  window.fpmCollection = {attach, render};
 })();

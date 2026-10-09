@@ -50,14 +50,6 @@
 .overview-config-row[hidden] { display: none; }
 .overview-config-name { display: block; }
 .collection-note { margin: 6px 0; max-width: 380px; font-size: 11px; font-weight: 400; line-height: 1.5; white-space: normal; }
-.collection-note summary { cursor: pointer; color: var(--muted); }
-.collection-note summary:hover { color: var(--accent); }
-.collection-note summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.collection-content { margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); overflow-wrap: anywhere; }
-.collection-content p { margin: 0 0 8px; }
-.collection-content dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 8px 0; }
-.collection-content dt { color: var(--muted); }
-.collection-content dd { margin: 0; }
 .collection-run { padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--border); }
 .overview-slice-tags, .overview-cell-note { margin-top: 3px; font-size: 11px; }
 .overview-cell-note, .overview-measurement-cell span, .overview-method-cell span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
@@ -121,3 +113,18 @@
 .variant-evidence { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .variant-evidence a { color: inherit; }
 .variant-evidence:empty { display: none; }
+
+/* Collection metadata is built with the evaluation; charts never fetch live metadata. */
+.collection-note { margin: .3rem 0; color: var(--muted); font-size: .8rem; }
+.workload-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 1rem; margin: 1.2rem 0; }
+.workload-settings dt { font-size: .8rem; color: var(--muted); }
+.workload-settings dd { margin: .3rem 0 0; overflow-wrap: anywhere; }
+.request-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 1rem; }
+.request-chart { min-width: 0; }
+.request-chart h4 { margin: 0; text-align: left; }
+.request-chart p { color: var(--muted); font-size: .8rem; }
+.request-chart svg { width: 100%; display: block; overflow: visible; }
+.request-chart svg text { fill: currentColor; font-size: 12px; }
+.request-chart rect:focus { outline: 2px solid var(--text); }
+.workload-empty { padding: 1.5rem 0; }
+@media (max-width: 700px) { .request-charts { grid-template-columns: 1fr; } }

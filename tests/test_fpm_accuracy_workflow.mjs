@@ -133,3 +133,12 @@ test("shared measurements and every branch consume the single resolved HF revisi
   const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
   assert.match(branch, /HF_HOME: .*inputs\.hf_revision/);
 });
+
+test("manual migration previews pin an exact dataset revision", async () => {
+  const revision = "d".repeat(40);
+  const inputs = { EXPECTED_SHA: sha, EVALUATED_BRANCH: "main", HF_REVISION: revision };
+  const result = await resolve({ event: "workflow_dispatch", inputs });
+  assert.deepEqual(result, [entry("main", sha)]);
+  await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "migration-branch"} }), /full commit SHA/);
+  await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "e".repeat(40)} }), /differs/);
+});

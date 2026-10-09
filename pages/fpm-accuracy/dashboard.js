@@ -194,6 +194,7 @@
     const index = Number($('evaluation-filter').value), summary = summaries[index], entry = entries[index];
     selected = summary?.rows.find(r=>r.configuration_id+'/'+r.snapshot_id === $('configuration-filter').value);
     detail = null;
+    window.fpmCollection?.render($('dataset-workload'), null);
     phaseTable(selected ? [selected] : []);
     $('detail-evidence').textContent = '';
     maps();
@@ -206,6 +207,7 @@
       if (token !== request) return;
       detail = document.rows.find(r=>r.configuration_id === selected.configuration_id && r.snapshot_id === selected.snapshot_id);
       status('');
+      window.fpmCollection?.render($('dataset-workload'), detail?.collection);
       if (detail && !detail.workload_heatmaps[$('phase-filter').value]) {
         const available = ['prefill','decode','mixed'].find(phase => detail.workload_heatmaps[phase]);
         if (available) $('phase-filter').value = available;

@@ -13,12 +13,13 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -34,138 +35,89 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-async def collection_fixture(route):
-    """Synthetic public provenance; never fetch real HF data in offline checks."""
-    path = "data/" + unquote(urlsplit(route.request.url).path).split("/data/", 1)[1]
-    prefix = path.split("/measurements/", 1)[0]
-    root = prefix + "/measurements/"
-    if path.endswith("/manifest.json"):
-        names = (
-            [
-                ("truth", "fpm_iterations.json.gz"),
-                ("configuration", "provenance/agentx-job-123/collection_evidence.json"),
-            ]
-            if "Example--Alpha" in prefix
-            else [("truth", "benchmark_prefill.json"), ("window", "provenance/agx_windows.tsv")]
-        )
-        await route.fulfill(
-            json={
-                "configuration_path": prefix,
-                "snapshot_id": "fixture",
-                "files": [{"role": role, "path": root + name, "bytes": 1000} for role, name in names],
-            }
-        )
-    elif path.endswith("collection_evidence.json"):
-        await route.fulfill(
-            json={
-                "benchmark_id": "synthetic-run",
-                "completed_measured_requests": 635,
-                "input_config": {
-                    "phases": [{"timing_mode": "agentic_replay", "concurrency": 4, "duration": 3600}],
-                    "datasets": [{"dataset": "synthetic-traces"}],
-                },
-            }
-        )
-    elif path.endswith("windows.tsv"):
-        await route.fulfill(body="isl\tosl\tconcurrency\tnum_req\n128\t256\t4\t20\n")
-    elif path.endswith(("aiperf_c128.json", "aiperf_custom.json")):
-        config = {
-            "phases": [{"timing_mode": "agentic_replay", "concurrency": 128, "duration": 1200}],
-            "datasets": [{"dataset": "synthetic-traces"}],
-        }
-        if path.endswith("aiperf_c128.json"):
-            config["scenario"] = "inferencex-agentx-mvp"
-        await route.fulfill(json={"input_config": config})
-    else:
-        await route.fulfill(status=404)
-
-
 async def check_collection_provenance(page, url, data):
     await page.goto(url + "?branch=main")
-    alpha = page.locator(".overview-config-row").first
-    await expect(alpha.locator(".overview-config-name")).not_to_contain_text("aggregated")
-    await expect(alpha.locator(".collection-note summary")).to_have_text("Test set · AgentX trace replay")
-    await alpha.locator(".collection-note summary").focus()
-    await page.keyboard.press("Enter")
-    content = alpha.locator(".collection-content")
-    await expect(content).to_contain_text("AgentX job 123")
-    await expect(content).to_contain_text("Trace-defined (variable)")
-    await expect(content).not_to_contain_text("Requested num_req")
-    await expect(content.locator("dd")).to_contain_text(
-        [
-            "Agentic trace replay",
-            "Trace-defined (variable)",
-            "4",
-            "3,600",
-            "635",
-            "synthetic-run",
-            "synthetic-traces",
-        ]
-    )
-    await expect(content.get_by_role("link", name="AgentX job 123")).to_have_attribute(
-        "href",
-        f"https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/{data['snapshot']['hf_revision']}/{data['rows'][0]['configuration_path']}/measurements/provenance/agentx-job-123/collection_evidence.json",
-    )
-    beta = page.locator(".overview-config-row").nth(1)
-    await expect(beta.locator(".collection-note summary")).to_have_text("Test set · Self-benchmark")
-    await beta.locator(".collection-note summary").click()
-    await expect(beta.locator(".collection-content")).to_contain_text("Supporting collection evidence")
-    await expect(beta.locator(".collection-content")).to_contain_text(
-        "ISL: 128 · OSL: 256 · Concurrency: 4 · num_req: 20"
-    )
-    # Categories describe declared truth, not the existence of unrelated helper runs.
-    pattern = "**/Example--Alpha/**/measurements/manifest.json"
-    root = data["rows"][0]["configuration_path"] + "/measurements/"
-    for names, label in (
-        ([("truth", "fpm_stream.jsonl.gz")], "General trace replay"),
-        ([("truth", "fpm_stream.jsonl.gz"), ("window", "provenance/agx_windows.tsv")], "AgentX trace replay"),
-        (
-            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_c128.json")],
-            "AgentX trace replay",
-        ),
-        (
-            [("truth", "benchmark_prefill.json"), ("configuration", "provenance/run/aiperf_c128.json")],
-            "Self-benchmark",
-        ),
-        (
-            [
-                ("truth", "benchmark_prefill.json"),
-                ("truth", "fpm_stream.jsonl.gz"),
-                ("configuration", "provenance/run/aiperf_c128.json"),
-            ],
-            "Self-benchmark + AgentX trace replay",
-        ),
-        (
-            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_custom.json")],
-            "General trace replay",
-        ),
-        (
-            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_missing.json")],
-            "General trace replay",
-        ),
-        (
-            [("truth", "benchmark_prefill.json"), ("truth", "fpm_stream.jsonl.gz")],
-            "Self-benchmark + General trace replay",
-        ),
-        ([("window", "provenance/agx_windows.tsv")], "Collection method not recorded"),
-    ):
-        manifest = {
-            "configuration_path": data["rows"][0]["configuration_path"],
-            "snapshot_id": "fixture",
-            "files": [{"role": role, "path": root + name, "bytes": 1000} for role, name in names],
-        }
-        await page.route(pattern, lambda route, *, manifest=manifest: route.fulfill(json=manifest))
-        await page.reload()
-        await expect(page.locator(".collection-note summary").first).to_have_text("Test set · " + label)
-        await expect(page.locator("#overall-value")).not_to_have_text("—")
-        await page.unroute(pattern)
-    # A different snapshot's manifest must never be displayed as this row's provenance.
-    pattern = "**/Example--Alpha/**/measurements/manifest.json"
-    await page.route(pattern, lambda route: route.fulfill(json={"snapshot_id": "wrong-snapshot", "files": []}))
+    await expect(page.locator(".collection-note").first).to_contain_text("Test set · Unknown")
+    await expect(page.locator(".collection-note details")).to_have_count(0)
+    await expect(page.locator(".collection-note a").first).to_have_attribute("href", re.compile("#dataset-workload$"))
+    # Versioned metadata arrives with the evaluation; no HF request is needed.
+    normalized = copy.deepcopy(data)
+    normalized["schema_version"] = 2
+    normalized["rows"][0]["collection"] = {
+        "types": ["trace_replay"],
+        "datasets": ["Recorded dataset"],
+        "run_count": 2,
+        "unattributed_measurements": 0,
+    }
+    pattern = "**/" + artifact_key("main") + "/summary.json"
+    await page.route(pattern, lambda route: route.fulfill(json=normalized))
     await page.reload()
-    await expect(page.locator(".collection-note summary").first).to_have_text("Test set · Provenance unavailable")
-    await expect(page.locator("#overall-value")).not_to_have_text("—")
+    await expect(page.locator(".collection-note").first).to_contain_text(
+        "Trace replay · Recorded dataset · 2 collection runs"
+    )
     await page.unroute(pattern)
+    await page.goto(url + "evaluation-detail.html?branch=main")
+    await expect(page.locator("#dataset-workload")).to_contain_text("Unknown")
+    run = dict(
+        id="run-a",
+        collection_type="trace_replay",
+        benchmark_preset="inferencex-agentx-mvp",
+        benchmark_id=None,
+        started_at="2026-09-17T12:00:00+00:00",
+        collector={"name": "aiperf", "version": None},
+        replay_mode="agentic_replay",
+        dataset={"name": "Recorded dataset", "revision": None, "selection": None, "transformations": []},
+        workload={
+            "concurrency": 4,
+            "concurrency_unit": "session_trees",
+            "input_length": {"mode": "trace_defined", "value": None},
+            "output_length": {"mode": "trace_defined", "value": None},
+            "duration_s": 1200,
+            "completed_requests": 2,
+        },
+        serving={"layout": "pd_disaggregated"},
+        availability="available",
+        reason=None,
+        measurement_count=10,
+        charts={
+            "input": {
+                "count": 2,
+                "bins": [{"lower": 0, "upper": 0, "count": 1}, {"lower": 10, "upper": 10, "count": 1}],
+                "p50": 5,
+                "p90": 9,
+            },
+            "output": {"count": 2, "bins": [{"lower": 2, "upper": 2, "count": 2}], "p50": 2, "p90": 2},
+            **{
+                key: {"count": 2, "excluded": 0, "points": [[0, 1], [1, 2]], "rolling_p90": [[0, 1], [1, 1.9]]}
+                for key in ("ttft", "interactivity")
+            },
+        },
+    )
+
+    other = dict(run, id="run-b", availability="unavailable", charts=None, reason="No matching request trace.")
+    collection = {"runs": [run, other], "unattributed_measurements": 0}
+    details = json.loads((ROOT / "tests/fpm_accuracy/fixtures/dashboard/synthetic-details.json").read_text())
+    for row in details["rows"]:
+        row["collection"] = collection
+    await page.route("**/data/synthetic-details.json", lambda route: route.fulfill(json=details))
+    await page.reload()
+    await expect(page.locator("#request-charts svg")).to_have_count(4)
+    for width in (1400, 390):
+        await page.set_viewport_size({"width": width, "height": 900})
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        await page.get_by_role("button", name=re.compile("Switch to .* theme")).click()
+        await expect(page.locator("#request-charts svg")).to_have_count(4)
+    await page.locator("#collection-run").select_option("run-b")
+    assert "collection_run=run-b" in page.url
+    await expect(page.locator("#request-charts")).to_contain_text("No matching request trace.")
+    await page.reload()
+    await expect(page.locator("#collection-run")).to_have_value("run-b")
+    await page.locator("#collection-run").focus()
+    await expect(page.locator("#collection-run")).to_be_focused()
+    await page.locator("#collection-run").select_option("run-a")
+    await expect(page.locator("#collection-run")).to_have_value("run-a")
+    await expect(page.locator("#request-charts svg")).to_have_count(4)
+    await page.unroute("**/data/synthetic-details.json")
 
 
 def prepare_visualization_fixtures(directory: Path):
@@ -417,9 +369,6 @@ async def check():
             async with async_playwright() as playwright:
                 browser = await playwright.chromium.launch()
                 page = await browser.new_page(viewport={"width": 1600, "height": 1050}, color_scheme="light")
-                await page.route(
-                    "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/**", collection_fixture
-                )
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 url = f"http://127.0.0.1:{server.server_port}/fpm-accuracy/"
@@ -492,9 +441,6 @@ async def check():
                 await page.wait_for_timeout(650)
                 await expect(page.locator('[data-model="Release/Alpha"]')).to_be_visible()
                 await page.unroute_all(behavior="wait")
-                await page.route(
-                    "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/resolve/**", collection_fixture
-                )
                 if screenshot := os.environ.get("FPM_SCREENSHOT"):
                     await page.screenshot(path=screenshot, full_page=True)
                 await page.get_by_role("button", name="Switch to dark theme").click()
