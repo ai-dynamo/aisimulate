@@ -1,2 +1,0 @@
-index, uuid, name, driver_version, memory.total [MiB], memory.used [MiB], power.limit [W]
-0, GPU-e6961f25-a4ed-893a-9bde-dd1b8fe0905d, NVIDIA B200, 615.71.09, 183359 MiB, 0 MiB, 1000.00 W

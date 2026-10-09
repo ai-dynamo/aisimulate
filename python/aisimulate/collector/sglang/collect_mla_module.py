@@ -2057,10 +2057,9 @@ def _run_prefill(
                 indexer_mode = "skip_indexer" if _skip_indexer else "indexer"
                 executed_dsa_source = f"sglang_dsa_{indexer_mode}_{model_runner.attn_backend.dsa_prefill_impl}"
                 # Native dispatch/capture above is observed, not predicted from
-                # the requested shape. The installed compiled Inner still has
-                # a model-level Dynamo entry on every replay. Profiles in
-                # docs/perf_database/validation/aic-2004-sglang-collector/ show
-                # that it cannot currently be charged as one attention layer.
+                # the requested shape. The compiled Inner enters model-level
+                # Dynamo on every replay, so its timing cannot represent one
+                # attention layer.
                 # Preserve the native path and its failure; never emit a row
                 # with this known measurement-boundary error or fall back to eager.
                 raise MeasurementBoundaryError(
