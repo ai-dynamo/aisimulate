@@ -2,7 +2,9 @@
 
 2026-10-08 local CPU checks on macOS arm64, Python 3.11, PyArrow 25.0.1.
 Legacy HF source: `68fa3add95b32a0399d781b043cb0f1008c8040d`.
-Migrated source: the manifest v5 working tree accompanying this change.
+Migrated HF source: `f0b06f11a2ebdf298e6eb1eec37a2acb7c30b231`
+on `simonec/fpm-manifest-parquet`. HF main remains on the legacy revision until
+compatible consumers are deployed.
 
 All 39 current/historical snapshots have identical ordered predictor-facing rank
 payloads, actual latencies, logical source membership and exclusion counts:
@@ -29,3 +31,7 @@ records the exact source hashes, run boundaries, unknown fields, and renamed ass
 Request charts describe profiling requests; warmup/drain records remain separate.
 No new measurements, rank alignment, prediction policy or evaluation selection
 was introduced.
+
+The complete current-snapshot 3D export also passes the publication validator.
+Its diagnostic-only unsynchronized rank streams use the shared Parquet decoder;
+duplicate-rank exclusions are unchanged across Parquet row-group boundaries.
