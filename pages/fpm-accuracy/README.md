@@ -80,6 +80,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   request counts accompany the run, grouped into Dataset, Workload, and Collection
   with aligned label/value rows. A compact summary separates the profiling window,
   included request count, and warmup/drain exclusions. Groups stack on smaller screens.
+  Section headings use 14px text; summaries, selectors, and availability banners use
+  compact 12–13px text consistent with the metadata rows.
   Each chart reports its contributing population
   and unavailable measurements.
   Four request charts use generated JSON, so the browser needs no Parquet runtime:

@@ -116,6 +116,9 @@
 
 /* Collection metadata is built with the evaluation; charts never fetch live metadata. */
 .collection-note { margin: .3rem 0; color: var(--muted); font-size: .8rem; }
+#dataset-workload > h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; }
+#dataset-workload > p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+#collection-run { font-size: 12px; }
 #collection-settings { max-width: 1000px; }
 .workload-summary { display: flex; flex-wrap: wrap; gap: 12px 32px; padding: 12px 0; margin: 12px 0 0; border-bottom: 1px solid var(--border); }
 .workload-summary dt, .workload-settings dt { color: var(--muted); font-size: 12px; }
@@ -135,7 +138,8 @@
 .request-chart svg text { fill: currentColor; font-size: 16px; }
 .request-chart rect:focus { outline: 2px solid var(--text); }
 .workload-empty { padding: 1.5rem 0; }
-.workload-banner { grid-column: 1 / -1; display: grid; gap: .35rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.workload-banner { grid-column: 1 / -1; display: grid; gap: 4px; margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); font-size: 12px; line-height: 1.5; }
+.workload-banner strong { font-size: 13px; font-weight: 600; }
 .workload-banner span { color: var(--muted); }
 @media (max-width: 700px) {
   .request-charts { grid-template-columns: 1fr; }
