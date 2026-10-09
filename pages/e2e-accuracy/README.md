@@ -31,6 +31,8 @@ The overview and model picker include only models with successful AISim
 predictions under the active filters. Mixed-success models retain their failed
 operating points. The Models card counts visible models; overall predictor
 accuracy and coverage retain the full evaluated cohort, including hidden models.
+The overview summary shows model, predictor-point, and GPU counts plus overall
+accuracy; configuration evidence does not add separate summary cards.
 The operating-point table keeps each predictor beside its latency errors and
 shows configuration evidence (`verified` or `estimated`) plus separate replay
 and AIC statuses. Run links and chart metrics are also exported for the resolved
@@ -609,7 +611,7 @@ change predictions, cohort selection, or accuracy metrics.
   panel. Cancelled or skipped qualification jobs do not report update failures.
 - Models with successful AISim predictions stay selectable when all their points
   are excluded from MAPE. Verified and estimated configuration MAPE remain separate
-  and follow the current filters.
+  in exported data; evidence labels appear in operating-point details.
 - Chart points support keyboard activation. Shift+Enter on a legend button isolates
   that series; ordinary activation toggles it. Charts expose their interactive points
   to assistive technology.

@@ -795,6 +795,17 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     )
 
 
+def test_readme_checks_remain_in_full_ci_without_standalone_daily_jobs() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    assert "readme_commands" in COMPONENTS
+    assert jobs["readme-commands"]["uses"] == "./.github/workflows/readme-checks.yml"
+    assert "readme-commands" in jobs["readiness"]["needs"]
+    assert set(_workflow("readme-checks.yml")["on"]) == {"workflow_call"}
+    for name in ("readme-daily.yml", "readme-report.yml"):
+        assert not (WORKFLOW_ROOT / name).exists()
+        assert all(name not in path.read_text() for path in WORKFLOW_ROOT.glob("*.yml"))
+
+
 def test_full_ci_aggregate_checks_every_declared_dependency() -> None:
     jobs = _workflow("ci.yml")["jobs"]
     aggregate = jobs["readiness"]

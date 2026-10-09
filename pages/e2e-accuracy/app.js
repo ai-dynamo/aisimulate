@@ -113,10 +113,6 @@ function renderSummary() {
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
     accuracyCard("AISim Error · all configurations", totals.aisimulate, "aisimulate"),
     accuracyCard("AIC (legacy CLI) Error · all configurations", totals.aic, "aic"),
-    ...Object.entries(totals.by_configuration_quality ?? {}).map(([quality, group]) =>
-      `<article class="summary-card"><div class="summary-label">Configuration: ${escapeHtml(quality.replaceAll("_", " "))}</div>
-      <p>AISim: ${group.aisimulate.points} points; TPOT / TTFT MAPE ${formatPercent(group.aisimulate.tpot_mape_pct)} / ${formatPercent(group.aisimulate.ttft_mape_pct)}</p>
-      <p>AIC (legacy CLI): ${group.aic.points} points; TPOT / TTFT MAPE ${formatPercent(group.aic.tpot_mape_pct)} / ${formatPercent(group.aic.ttft_mape_pct)}</p></article>`),
   ].join("");
   const groups = new Map();
   const hardwareGroups = new Map();
