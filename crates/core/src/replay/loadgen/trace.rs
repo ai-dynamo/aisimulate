@@ -835,6 +835,18 @@ impl Trace {
                 images.identity_pool != Some(0),
                 "image identity_pool must be positive"
             );
+            // The placeholder hash keeps 28 bits of identity and 20 bits of block index.
+            ensure!(
+                images.visual_tokens <= 1 << 20,
+                "image visual_tokens must not exceed 2^20"
+            );
+            let identities = images
+                .identity_pool
+                .unwrap_or((spec.num_sessions * spec.turns_per_session * images.count) as u64);
+            ensure!(
+                identities <= 1 << 28,
+                "image identities must not exceed 2^28; set identity_pool"
+            );
             ensure!(
                 spec.cached_prefix_tokens == 0 && spec.shared_prefix_ratio == 0.0,
                 "image workloads cannot combine cached or shared text prefixes"

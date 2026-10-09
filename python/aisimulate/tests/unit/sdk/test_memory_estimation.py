@@ -70,6 +70,15 @@ def test_naive_reservation_validation_rejects_out_of_range():
             memory._validate_naive_reservation(bad)
 
 
+def test_vision_rank_inputs_are_validated_up_front():
+    for bad in ("TP", "tensor", ""):
+        with pytest.raises(ValueError, match="encoder_parallel"):
+            memory._validate_encoder_parallel(bad)
+    for bad in (-1, 1.5, True):
+        with pytest.raises(ValueError, match="reserved_bytes"):
+            memory._validate_reserved_bytes(bad)
+
+
 def test_estimate_num_gpu_blocks_rejects_non_positive_or_non_integer_block_size():
     # Caught up front (before any model build), so no perf DB / fixture is needed.
     # A positive non-integer (e.g. 0.5 -> int() == 0) must be rejected rather than

@@ -427,7 +427,7 @@ capture are unsupported. EPD cannot combine with AFD. See
 [Replay's analytical boundaries](../replay/engine/analytical.md) and the
 [existing EPD example](../../examples/cli/epd-recommend.yaml).
 `engine.workers.encoder.mode: native` lifts the fixed-concurrency,
-aggregate-SLA, per-request and op-level restrictions; see
+variable-load, aggregate-SLA, goodput, per-request and op-level restrictions; see
 [native encoder pools](../replay/engine/analytical.md#native-encoder-pools).
 
 <a id="removed-kvbm-fields"></a>

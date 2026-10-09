@@ -70,15 +70,25 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank():
     assert spec.workload["isl"] == 128  # placeholders are laid out by the workload driver
 
 
-def test_capacity_requires_the_tower_layout_on_a_vision_rank():
+@pytest.mark.parametrize("layout", [None, "TP"])
+def test_capacity_requires_the_tower_layout_on_a_vision_rank(layout):
     rank = {
         "aic_backend": "sglang",
         "aic_model_path": "Qwen/Qwen3-VL-8B-Instruct",
         "vision": True,
         "sglang": {"vlm_cache_bytes": 100 << 20},
+        **({"timing_model": {"config": {"encoder_parallel": layout}}} if layout else {}),
     }
     with pytest.raises(ValueError, match="timing_model.config.encoder_parallel"):
         materialize_aic_num_gpu_blocks(rank)
+
+
+def test_vision_requires_an_image_workload():
+    raw = _prediction()
+    del raw["traffic"]["source"]["images"]
+    raw["engine"]["workers"]["aggregated"]["vision"] = {"cache_mib": 100}
+    with pytest.raises(ValidationError, match="vision requires traffic.source.images"):
+        CorePredictionConfig.model_validate(raw)
 
 
 def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):

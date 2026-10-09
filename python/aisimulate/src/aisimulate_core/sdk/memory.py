@@ -142,6 +142,16 @@ def _validate_tolerance(tolerance_fraction: float | None) -> None:
         raise ValueError(f"tolerance_fraction must be finite and in [0, 1), got {tolerance_fraction}")
 
 
+def _validate_encoder_parallel(encoder_parallel: str | None) -> None:
+    if encoder_parallel not in (None, "tp", "dp"):
+        raise ValueError(f"encoder_parallel must be 'tp' or 'dp', got {encoder_parallel!r}")
+
+
+def _validate_reserved_bytes(reserved_bytes: int) -> None:
+    if isinstance(reserved_bytes, bool) or not isinstance(reserved_bytes, int) or reserved_bytes < 0:
+        raise ValueError(f"reserved_bytes must be a non-negative integer, got {reserved_bytes!r}")
+
+
 def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
     """Validate the fixed, rank-local CUDA graph reservation."""
     if (
@@ -1163,6 +1173,8 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
+    _validate_encoder_parallel(encoder_parallel)
+    _validate_reserved_bytes(reserved_bytes)
     # Before the model build and the naive fallback, which would swallow the error.
     validate_parallel_size("cp_size", cp_size)
     validate_parallel_size("dcp_size", dcp_size)

@@ -2112,7 +2112,7 @@ impl TraceCollector {
         // encoder pool is static, so it is charged for the whole duration.
         let gpu_hours = (prefill_worker_seconds * prefill_gpus_per_worker as f64
             + decode_worker_seconds * decode_gpus_per_worker as f64
-            + duration_s * encoder_gpus as f64)
+            + reporting_duration_s * encoder_gpus as f64)
             / 3600.0;
         // Goodput only when an SLA was supplied; otherwise it is undefined.
         let goodput = sla.is_set().then(|| TraceGoodputStats {

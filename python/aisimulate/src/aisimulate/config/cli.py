@@ -130,6 +130,9 @@ def _validate_epd(traffic, engine) -> None:
                 "with a native encoder pool the language worker runs --language-only: it neither hosts the vision "
                 "tower nor prices image frontend stages; only host_loop applies"
             )
+    if images is None and language is not None and language.vision is not None:
+        role = "aggregated" if engine.workers.aggregated is not None else "prefill"
+        raise ValueError(f"workers.{role}.vision requires traffic.source.images")
     if encoder is None and images is not None:
         # Images without an encoder pool are encoded on the aggregated or the prefill SGLang worker.
         if language is None or not _only(engine.backend, "sglang") or not _only(engine.mode, mode):

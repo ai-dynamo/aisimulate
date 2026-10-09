@@ -1288,7 +1288,8 @@ class SmartSearchConfig(BaseModel):
                 raise ValueError("min_goodput_rps cannot exceed the offered request rate")
         elif workload.concurrency is None:
             raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
-        if self.search_space.encoder is not None and self.goal.min_goodput_rps is not None:
+        encoder = self.search_space.encoder
+        if encoder is not None and encoder.mode == "analytical" and self.goal.min_goodput_rps is not None:
             raise ValueError("analytical EPD cannot enforce min_goodput_rps")
         return self
 

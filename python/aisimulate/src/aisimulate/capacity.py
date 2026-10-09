@@ -42,9 +42,9 @@ def _vision_cache_bytes(lowered: Mapping[str, Any]) -> int:
 def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
     """The tower layout a rank hosting the vision encoder sizes its weights by."""
     layout = ((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
-    if layout is None:
+    if layout not in ("tp", "dp"):
         raise ValueError("rank.vision requires timing_model.config.encoder_parallel (tp or dp)")
-    return str(layout)
+    return layout
 
 
 def materialize_aic_num_gpu_blocks(
