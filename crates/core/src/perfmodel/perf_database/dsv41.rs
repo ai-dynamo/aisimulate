@@ -269,13 +269,13 @@ fn validate_body<T: DeserializeOwned + Serialize + MeasuredGeometry>(
     Ok(op.geometry_key())
 }
 
-fn validate_geometry(component: &str, encoded: &str) -> Result<(Value, GeometryKey), AicError> {
+fn validate_geometry(component: &str, encoded: &str) -> Result<GeometryKey, AicError> {
     let value: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
     let key = match component {
-        "attention" => validate_body::<Dsv41AttentionOp>(&value)?,
-        "mhc" => validate_body::<Dsv41MhcOp>(&value)?,
-        "engram" => validate_body::<Dsv41EngramOp>(&value)?,
-        "linear" => validate_body::<Dsv41LinearOp>(&value)?,
+        Dsv41AttentionOp::COMPONENT => validate_body::<Dsv41AttentionOp>(&value)?,
+        Dsv41MhcOp::COMPONENT => validate_body::<Dsv41MhcOp>(&value)?,
+        Dsv41EngramOp::COMPONENT => validate_body::<Dsv41EngramOp>(&value)?,
+        Dsv41LinearOp::COMPONENT => validate_body::<Dsv41LinearOp>(&value)?,
         _ => return Err(invalid(format!("unknown V41 component {component:?}"))),
     };
     let object = value.as_object().expect("validated object");
@@ -297,12 +297,11 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<(Value, GeometryK
         compress_ratio,
         ..
     } = key
+        && (compress_ratio > 2 || (role == AttentionRole::Swa) != (compress_ratio == 0))
     {
-        if compress_ratio > 2 || (role == AttentionRole::Swa) != (compress_ratio == 0) {
-            return Err(invalid("invalid V41 CSA2 compression ratio"));
-        }
+        return Err(invalid("invalid V41 CSA2 compression ratio"));
     }
-    Ok((value, key))
+    Ok(key)
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -403,7 +402,7 @@ impl Dsv41Table {
         // operator path. Load first to preserve malformed-table error precedence.
         let grids = self.loaded_grids()?;
         let encoded = geometry(op)?;
-        let Ok((_, geometry)) = validate_geometry(component, &encoded) else {
+        let Ok(geometry) = validate_geometry(component, &encoded) else {
             // A noncanonical query could never match a validated table row.
             return Ok(None);
         };
@@ -496,7 +495,7 @@ fn load(path: &Path) -> Result<Grids, AicError> {
         let row = row?;
         let component = row.str(component)?;
         let encoded = row.str(geometry)?;
-        let (shape, geometry) = validate_geometry(component, encoded)?;
+        let geometry = validate_geometry(component, encoded)?;
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix)?, row.u32(x)?);
         let latency = row.f64(latency)?;
         if batch == 0
@@ -524,8 +523,13 @@ fn load(path: &Path) -> Result<Grids, AicError> {
         if !matches!(regime, "real_kv" | "n/a") {
             return Err(invalid("unknown V41 kv_seed_regime"));
         }
-        if component == "attention" {
-            let is_context = shape["is_context"].as_bool().expect("typed field");
+        if let GeometryKey::Attention {
+            is_context,
+            bounded_prefill,
+            window_size,
+            ..
+        } = geometry
+        {
             if (!is_context || prefix > 0) && regime != "real_kv" {
                 return Err(invalid(
                     "V41 decode/cached-prefill requires real KV initialization",
@@ -534,11 +538,7 @@ fn load(path: &Path) -> Result<Grids, AicError> {
             if !is_context && prefix != 0 {
                 return Err(invalid("V41 decode uses absolute KV length with prefix=0"));
             }
-            if shape["bounded_prefill"] == true
-                && (profile != "decoder_bounded"
-                    || !is_context
-                    || u64::from(x) > shape["window_size"].as_u64().unwrap())
-            {
+            if bounded_prefill && (profile != "decoder_bounded" || !is_context || x > window_size) {
                 return Err(invalid(
                     "V41 bounded prefill sample contradicts its execution profile or window",
                 ));
