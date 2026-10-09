@@ -8,7 +8,7 @@ import csv
 from pathlib import Path
 
 import pytest
-from tools.prediction_regression_gate import compare, expectations, grid, report
+from tools.prediction_regression_gate import compare, grid, report
 
 pytestmark = pytest.mark.unit
 
@@ -59,27 +59,11 @@ def test_tier1_and_tier2_both_compared(tmp_path: Path) -> None:
     assert categories == ["REGRESSION", "REGRESSION"]  # one tier-1, one tier-2
 
 
-def test_main_exit_codes_without_expectation_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # These synthetic TRT snapshots exercise ordinary report behavior; scoped
-    # expectation policies have their own tests with explicit fixtures.
-    expectation_path = tmp_path / "empty-expectations.csv"
-    with expectation_path.open("w", newline="") as f:
-        csv.writer(f).writerow(expectations.HEADER)
-
+def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def run(old: Path, new: Path) -> int:
         monkeypatch.setattr(
             "sys.argv",
-            [
-                "report.py",
-                "--old",
-                str(old),
-                "--new",
-                str(new),
-                "--report-dir",
-                str(tmp_path / "rep"),
-                "--expected-data-misses",
-                str(expectation_path),
-            ],
+            ["report.py", "--old", str(old), "--new", str(new), "--report-dir", str(tmp_path / "rep")],
         )
         return report.main()
 
@@ -94,9 +78,13 @@ def test_main_exit_codes_without_expectation_policy(tmp_path: Path, monkeypatch:
     assert run(clean_old, broken_new) == 1  # OK -> INVALID blocks
 
     no_harness_old = tmp_path / "o-empty"
+    assert run(no_harness_old, clean_new) == 2  # missing snapshot is not proof of an old harness
     no_harness_old.mkdir()
-    assert run(no_harness_old, clean_new) == 0  # degraded: old side predates harness
+    assert run(no_harness_old, clean_new) == 2
+    (no_harness_old / "NO_HARNESS.txt").touch()
+    assert run(no_harness_old, clean_new) == 0  # the collection job confirmed the harness is absent
     assert "no snapshot" in (tmp_path / "rep" / "summary.md").read_text()
+    assert run(no_harness_old, tmp_path / "missing-new") == 2
 
 
 def _write_silicon(path: Path, rows: list[dict]) -> Path:

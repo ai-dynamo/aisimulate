@@ -12,14 +12,15 @@ Outputs:
   <report-dir>/drift_report.csv   every difference, category-tagged
   <report-dir>/summary.md         markdown for the CI step summary / PR comment
 
-Exit code is 1 for an unexpected REGRESSION, a stale expectation (XPASS),
-or an expectation whose exact status/error/cause no longer matches. Exact
-reviewed data misses remain visible as EXPECTED_DATA_MISS. Ordinary drift,
-gains and grid changes are reported for review.
+Exit code is 1 only if a blocking difference exists (REGRESSION: a combo that
+ran OK on the old side stopped working on the new side). Everything else —
+drift, gains, added/removed rows — is reported for human review, never blocked
+on: with old-vs-new there is no baseline to refresh, the report itself is the
+review artifact.
 
-If the old side has no snapshot (base revision predates the harness), the
-report degrades to new-side statistics only outside reviewed combos and when
-no reopened cases require coverage.
+If the old side has no snapshot, the collection job's NO_HARNESS.txt marker
+must confirm that the base predates the harness before the report degrades to
+new-side statistics and exits 0. Missing snapshots without that marker exit 2.
 """
 
 from __future__ import annotations
@@ -33,21 +34,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))  # make `tools.` importable when run as a script
 
 from tools.accuracy_tracking.run_silicon import SILICON_FILENAME
-from tools.prediction_regression_gate import compare, expectations
+from tools.prediction_regression_gate import compare
 from tools.prediction_regression_gate.run_tier2 import TIER2_FILENAME
 
-CATEGORY_ORDER = (
-    "REGRESSION",
-    "XPASS",
-    "EXPECTATION_MISMATCH",
-    "REOPENED_FAILURE",
-    "EXPECTED_DATA_MISS",
-    "STATUS_CHANGE",
-    "DRIFT",
-    "GAIN",
-    "ROWS_ADDED",
-    "ROWS_REMOVED",
-)
+CATEGORY_ORDER = ("REGRESSION", "STATUS_CHANGE", "DRIFT", "GAIN", "ROWS_ADDED", "ROWS_REMOVED")
 MAX_INLINE_DIFFS = 50
 
 
@@ -155,7 +145,6 @@ def render_silicon_section(old_path: Path, new_path: Path) -> str | None:
         else:
             lines.append("- no accuracy movement vs old side")
     lines.append("")
-
     return "\n".join(lines)
 
 
@@ -181,15 +170,6 @@ def render_markdown(results: list[compare.ComboResult], blocking: list[compare.D
             gate = "**blocking**" if category in compare.BLOCKING_CATEGORIES else "report-only"
             lines.append(f"| {category} | {total_counts[category]} | {gate} |")
     lines.append("")
-
-    if total_counts.get("EXPECTED_DATA_MISS"):
-        lines.append(
-            "Expected data misses remain missing predictions, not successful estimates. "
-            "Their exact identities and original old/new statuses and causes are retained in drift_report.csv. "
-            "Restored coverage is blocking XPASS until its waiver is disabled; "
-            "the same case then requires a successful prediction."
-        )
-        lines.append("")
 
     if blocking:
         lines.append(f"### Blocking regressions ({len(blocking)})")
@@ -222,25 +202,19 @@ def main() -> int:
     parser.add_argument("--new", type=Path, required=True, help="Snapshot dir collected on the head revision.")
     parser.add_argument("--report-dir", type=Path, default=Path("gate_report"))
     parser.add_argument("--rtol", type=float, default=compare.DEFAULT_RTOL)
-    parser.add_argument("--expected-data-misses", type=Path, default=expectations.DEFAULT_PATH)
     args = parser.parse_args()
 
     args.report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = args.report_dir / "summary.md"
 
-    new_combos = _combo_relpaths(args.new)
-    if not new_combos:
+    if not _combo_relpaths(args.new):
         print(f"error: new-side snapshot {args.new} is empty or missing", file=sys.stderr)
         return 2
 
-    expected = expectations.load_expectations(args.expected_data_misses)
-    # Preserve the old-harness compatibility path only outside reviewed combos.
-    # Observing one requires its exact rows even when the baseline is absent.
-    if (
-        not _combo_relpaths(args.old)
-        and all(entry.expected_failure_enabled for entry in expected)
-        and not any(entry.combo in new_combos for entry in expected)
-    ):
+    if not _combo_relpaths(args.old):
+        if not (args.old / "NO_HARNESS.txt").is_file():
+            print(f"error: old-side snapshot {args.old} is empty or missing without NO_HARNESS.txt", file=sys.stderr)
+            return 2
         stats = _snapshot_stats(args.new)
         summary = (
             "## AIC Prediction Regression Gate (old vs new)\n\n"
@@ -252,7 +226,6 @@ def main() -> int:
         return 0
 
     results = compare_snapshots(args.old, args.new, rtol=args.rtol)
-    expectations.apply_expectations(results, args.old, args.new, expected)
     blocking = [d for r in results for d in r.diffs if d.category in compare.BLOCKING_CATEGORIES]
 
     compare.write_report(results, args.report_dir / "drift_report.csv")
