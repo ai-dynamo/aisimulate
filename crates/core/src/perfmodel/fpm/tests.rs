@@ -33,6 +33,26 @@ fn systems_root() -> PathBuf {
 
 const TEST_MODEL: &str = "MiniMaxAI/MiniMax-M2.5";
 
+#[test]
+fn dcp_cannot_construct_explicit_regression() {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        TEST_MODEL,
+        "b200_sxm",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Aggregated,
+    );
+    config.tp = 8;
+    config.dcp = Some(8);
+    config.estimation_mode = crate::EstimationMode::FpmRegression;
+    let error = ForwardPassPerfModel::best_available(config).unwrap_err();
+    assert!(matches!(error, AicError::UnsupportedModel(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("measured vLLM FPM interpolation")
+    );
+}
+
 /// Hand-built context op list against the b200_sxm/vllm/0.24.0 perf tables
 /// (same fixture pattern as `engine/runtime.rs` and `py.rs` tests).
 fn context_ops() -> Vec<Op> {
@@ -69,6 +89,7 @@ fn context_ops() -> Vec<Op> {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         }),
     ]
 }
@@ -94,6 +115,7 @@ fn generation_ops() -> Vec<Op> {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         }),
     ]
 }
@@ -109,6 +131,9 @@ fn fixture_engine_config() -> EngineConfig {
         forward_model: None,
         fpm_parquet_path: None,
         decoder_replay: false,
+        prefill_graph_profile: None,
+        prefill_graph_profile_id: None,
+        moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {
             tp_size: 8,
@@ -117,6 +142,7 @@ fn fixture_engine_config() -> EngineConfig {
             moe_tp_size: Some(1),
             moe_ep_size: Some(8),
             cp_size: None,
+            dcp_size: None,
         },
         quantization: QuantizationConfig {
             weight_dtype: None,
@@ -142,11 +168,248 @@ fn native_model(options: ForwardPassPerfOptions) -> ForwardPassPerfModel {
     ForwardPassPerfModel::from_engine(fixture_engine(), options)
 }
 
+/// Synthetic measured timings with no SOL operations. The fixture's expected
+/// answers are its literal measurements and raw linear midpoints.
+fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
+    use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
+    use crate::perf_database::fpm_forward::tests::{RowSpec, default_identity, write_pair};
+    let mut rows = Vec::new();
+    for (tokens, latency) in [(100, 10.0), (200, 20.0)] {
+        for (kv, bump) in [(0, 0.0), (200, 4.0)] {
+            rows.push(RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: tokens,
+                total_kv_read_tokens: kv,
+                latency_ms: latency + bump,
+                ..Default::default()
+            });
+        }
+    }
+    for (batch, kv, latency) in [
+        (8, 64, 8.0),
+        (8, 128, 16.0),
+        (9, 64, 9.0),
+        (9, 128, 17.0),
+        (16, 64, 16.0),
+        (16, 128, 24.0),
+        (17, 64, 170.0),
+        (17, 128, 178.0),
+    ] {
+        rows.push(RowSpec {
+            batch_size: batch,
+            total_kv_read_tokens: kv,
+            latency_ms: latency,
+            kv_seed_regime: Some("real_kv"),
+            ..Default::default()
+        });
+    }
+    rows.push(RowSpec {
+        batch_size: 8,
+        total_kv_read_tokens: 256,
+        latency_ms: 99.0,
+        kv_seed_regime: Some("fake_fallback"),
+        ..Default::default()
+    });
+    write_pair(dir, &rows);
+    let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
+    db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+        dir.to_path_buf(),
+        "b200_sxm",
+        "vllm",
+        "0.25.1",
+    ));
+    let op = |phase: FpmPhase| {
+        Op::FpmForward(FpmForwardOp {
+            name: format!("fpm_forward_{}", phase.as_str()),
+            phase,
+            model_path: "org/model-a".into(),
+            dcp_size: None,
+            match_identity: default_identity(4),
+            original_fmha_quant_mode: None,
+            weight_bytes: 0.0,
+            verify_width: 1,
+            interpolation: FpmInterpolation::Direct,
+            sol_ops: vec![],
+        })
+    };
+    let spec = EngineSpec::new(
+        fixture_engine_config(),
+        vec![op(FpmPhase::Prefill)],
+        vec![op(FpmPhase::Decode)],
+    );
+    let engine = Engine::build(spec, Arc::new(db)).unwrap();
+    let mut model = ForwardPassPerfModel::from_engine(Arc::new(engine), Default::default());
+    model.query_coverage = Some(Default::default());
+    model
+}
+
+#[test]
+fn direct_coverage_records_real_resolutions_and_mixed_baselines() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    assert_eq!(model.predict_prefill_latency(1, 100, 0).unwrap(), 10.0);
+    // At 150 new / 100 cached tokens, each axis is halfway between rows.
+    assert_eq!(model.predict_prefill_latency(1, 250, 100).unwrap(), 17.0);
+    assert_eq!(model.predict_decode_latency_total(8, 64).unwrap(), 8.0);
+    assert_eq!(model.predict_decode_latency_total(8, 96).unwrap(), 12.0);
+    let mixed = ForwardPassMetrics {
+        scheduled_requests: ScheduledRequestMetrics {
+            num_prefill_requests: 1,
+            sum_prefill_tokens: 100,
+            num_decode_requests: 12,
+            sum_decode_kv_tokens: 96,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // Same graph bracket rows 9/16 give decode=16, floor=12. Prefill=10.
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[mixed]).unwrap(),
+        Some(14.0)
+    );
+    let report = model.fpm_query_coverage().unwrap().unwrap();
+    assert_eq!(report.counting_unit, "native_lookup_resolutions");
+    assert_eq!(report.queries.measured, 3);
+    assert_eq!(report.queries.interpolated, 4);
+    assert_eq!(report.prefill.measured, 2);
+    assert_eq!(report.prefill.interpolated, 1);
+    assert_eq!(report.decode.measured, 1);
+    assert_eq!(report.decode.interpolated, 2);
+    assert_eq!(report.mixed_decode_baseline.interpolated, 1);
+    assert_eq!(report.queries.unsupported, 0);
+    assert!(report.gaps.is_empty());
+}
+
+#[test]
+fn direct_coverage_keeps_partial_failures_and_excludes_fake_rows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    let mixed = ForwardPassMetrics {
+        scheduled_requests: ScheduledRequestMetrics {
+            num_prefill_requests: 1,
+            sum_prefill_tokens: 100,
+            num_decode_requests: 8,
+            sum_decode_kv_tokens: 256,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error = model.estimate_forward_pass_time_ms(&[mixed]).unwrap_err();
+    assert!(error.to_string().contains("genuine FPM points"));
+    assert!(model.predict_decode_latency_total(8, 256).is_err());
+    let report = model.fpm_query_coverage().unwrap().unwrap();
+    assert_eq!(report.prefill.measured, 1);
+    assert_eq!(report.decode.unsupported, 2);
+    assert_eq!(report.mixed_decode_baseline, Default::default());
+    assert_eq!(report.gaps.len(), 1);
+    let gap = &report.gaps[0];
+    assert_eq!(gap.occurrences, 2);
+    assert_eq!(gap.phase, "decode");
+    assert_eq!(gap.model_path, "org/model-a");
+    assert_eq!(gap.cell_identity["tp"], "4");
+    assert!(!gap.cell_ids.is_empty());
+    assert_eq!(gap.coordinates["batch_size"], 8.0);
+    assert_eq!(gap.coordinates["total_kv_read_tokens"], 256.0);
+    assert_eq!(gap.reason, error.to_string());
+    assert_eq!(model.fpm_decode_kv_ceiling().unwrap(), Some(128));
+    assert_eq!(model.fpm_query_coverage().unwrap().unwrap(), report);
+}
+
+#[test]
+fn direct_coverage_is_bounded_and_owned_by_each_model() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    model.predict_prefill_latency(1, 100, 0).unwrap();
+    let clone = model.clone();
+    assert_eq!(
+        clone.fpm_query_coverage().unwrap().unwrap().queries,
+        Default::default()
+    );
+    assert_eq!(
+        model
+            .fpm_query_coverage()
+            .unwrap()
+            .unwrap()
+            .queries
+            .measured,
+        1
+    );
+    assert!(clone.predict_prefill_latency(3, 100, 0).is_err());
+    assert_eq!(
+        model
+            .fpm_query_coverage()
+            .unwrap()
+            .unwrap()
+            .queries
+            .unsupported,
+        0
+    );
+    for kv in 1000..1140 {
+        assert!(model.predict_decode_latency_total(8, kv).is_err());
+    }
+    let report = model.fpm_query_coverage().unwrap().unwrap();
+    assert_eq!(report.queries.unsupported, 140);
+    assert_eq!(report.gaps.len(), report.gap_limit);
+    assert_eq!(report.omitted_gap_queries, 12);
+    // A retained gap continues counting duplicates even after the cap.
+    assert!(model.predict_decode_latency_total(8, 1000).is_err());
+    let report = model.fpm_query_coverage().unwrap().unwrap();
+    assert_eq!(report.gaps[0].occurrences, 2);
+    assert_eq!(report.omitted_gap_queries, 12);
+}
+
+#[test]
+fn direct_coverage_static_wrappers_preserve_engine_answers_and_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model = direct_coverage_model(tmp.path());
+    let engine = model.native_engine().unwrap();
+    for (batch, isl, prefix) in [
+        (1, 100, 0),
+        (1, 250, 100),
+        (1, 400, 200),
+        (0, 100, 0),
+        (1, 100, 100),
+        (3, 100, 0),
+    ] {
+        assert_eq!(
+            model
+                .predict_prefill_latency(batch, isl, prefix)
+                .map_err(|err| err.to_string()),
+            engine
+                .predict_prefill_latency(batch, isl, prefix)
+                .map_err(|err| err.to_string()),
+        );
+    }
+    for (batch, kv) in [(0, 0), (8, 64), (8, 96), (12, 96), (8, 256)] {
+        assert_eq!(
+            model
+                .predict_decode_latency_total(batch, kv)
+                .map_err(|err| err.to_string()),
+            engine
+                .predict_decode_latency_total(batch, kv)
+                .map_err(|err| err.to_string()),
+        );
+    }
+    assert_eq!(
+        model.fpm_decode_kv_ceiling().unwrap(),
+        engine.fpm_decode_kv_ceiling().unwrap()
+    );
+    let mut disabled = model.clone();
+    disabled.query_coverage = None;
+    assert_eq!(disabled.predict_prefill_latency(1, 250, 100).unwrap(), 17.0);
+    assert_eq!(disabled.fpm_query_coverage().unwrap(), None);
+}
+
 fn regression_model(
     worker_type: ForwardPassWorkerType,
     options: ForwardPassPerfOptions,
 ) -> Result<ForwardPassPerfModel, AicError> {
-    ForwardPassPerfModel::from_regression(worker_type, options)
+    ForwardPassPerfModel::from_regression(
+        worker_type,
+        options,
+        &super::estimator::RegressionFitConfig::default(),
+    )
 }
 
 fn fixture_engine() -> Arc<Engine> {
@@ -509,6 +772,193 @@ fn invalid_schema_rejected() {
     let mut bad = prefill_fpm(10, 0.0);
     bad.version = 999;
     assert!(model.estimate_forward_pass_time_ms(&[bad]).is_err());
+}
+
+#[test]
+fn optional_request_lists_validate_at_public_prediction_and_tuning_boundaries() {
+    use super::{LinearFitConfig, RegressionFeatureAxis};
+
+    let legacy = serde_json::to_value(ScheduledRequestMetrics::default()).unwrap();
+    assert!(legacy.get("extend_lengths").is_none());
+    assert!(legacy.get("past_kv_lengths").is_none());
+
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.estimation_mode = crate::EstimationMode::FpmRegression;
+    config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+        feature_axes: vec![RegressionFeatureAxis::MaxPast],
+        ..Default::default()
+    });
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let sample = |i: u32| {
+        // Independent oracle: y = 3 + 0.5 * max(past), with past = [i, 2i].
+        let mut row = decode_fpm(2, 3 * i, (3.0 + f64::from(i)) / 1000.0);
+        row.scheduled_requests.extend_lengths = Some(vec![1, 1]);
+        row.scheduled_requests.past_kv_lengths = Some(vec![u64::from(i), 2 * u64::from(i)]);
+        row
+    };
+    for i in 1..=8 {
+        model.tune_with_fpms(&[vec![sample(i)]]).unwrap();
+    }
+    let query = sample(9);
+    let before = model
+        .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+        .unwrap();
+    assert_close(before.unwrap(), 12.0);
+    let diagnostics_before = model.regression_store_diagnostics();
+
+    let mut missing_past = query.clone();
+    missing_past.scheduled_requests.past_kv_lengths = None;
+    let mut missing_extend = query.clone();
+    missing_extend.scheduled_requests.extend_lengths = None;
+    let mut short_past = query.clone();
+    short_past.scheduled_requests.past_kv_lengths = Some(vec![27]);
+    let mut short_extend = query.clone();
+    short_extend.scheduled_requests.extend_lengths = Some(vec![2]);
+    let mut short_pair = query.clone();
+    short_pair.scheduled_requests.extend_lengths = Some(vec![2]);
+    short_pair.scheduled_requests.past_kv_lengths = Some(vec![27]);
+    for invalid in [
+        missing_past,
+        missing_extend,
+        short_past,
+        short_extend,
+        short_pair,
+    ] {
+        assert!(matches!(
+            model.estimate_forward_pass_time_ms(std::slice::from_ref(&invalid)),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        // A valid rank before the malformed rank must not partially tune an iteration.
+        assert!(matches!(
+            model.tune_with_fpms(&[vec![sample(10), invalid]]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+        assert_eq!(model.regression_store_diagnostics(), diagnostics_before);
+        assert_eq!(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+                .unwrap(),
+            before
+        );
+    }
+
+    let mut independent_sum = query.clone();
+    independent_sum.scheduled_requests.past_kv_lengths = Some(vec![9, 19]);
+    independent_sum.wall_time = 0.0125;
+    let mut overflow_sum = query;
+    overflow_sum.scheduled_requests.extend_lengths = Some(vec![u64::MAX, 1]);
+    // Neither a different aggregate sum nor an unrepresentable u64 array sum
+    // invalidates a paired list. The selected maxP feature still predicts
+    // 3 + 0.5 * 19 = 12.5 ms and 3 + 0.5 * 18 = 12 ms respectively.
+    for (row, expected_ms) in [(independent_sum, 12.5), (overflow_sum, 12.0)] {
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&row))
+                .unwrap()
+                .unwrap(),
+            expected_ms,
+        );
+        let retained = model.regression_store_diagnostics()[0].retained_observations;
+        model.tune_with_fpms(&[vec![row]]).unwrap();
+        assert_eq!(
+            model.regression_store_diagnostics()[0].retained_observations,
+            retained + 1
+        );
+    }
+}
+
+#[test]
+fn request_features_accept_sglang_arrays_with_independent_aggregate_counters() {
+    use super::{LinearFitConfig, RegressionFeatureAxis};
+
+    for (worker_type, axis, query_length, expected_ms) in [
+        (
+            ForwardPassWorkerType::Prefill,
+            RegressionFeatureAxis::MaxExtend,
+            7533,
+            10.533,
+        ),
+        (
+            ForwardPassWorkerType::Decode,
+            RegressionFeatureAxis::MaxPast,
+            106276,
+            13.6276,
+        ),
+    ] {
+        let mut config = crate::ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test-system",
+            BackendKind::Sglang,
+            worker_type,
+        );
+        config.estimation_mode = crate::EstimationMode::FpmRegression;
+        config.estimator_config.fpm_regression.fit.linear = Some(LinearFitConfig {
+            feature_axes: vec![axis],
+            ..Default::default()
+        });
+        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+        let sample = |length: u32| {
+            let (scheduled_requests, observed_ms) = match worker_type {
+                ForwardPassWorkerType::Prefill => (
+                    ScheduledRequestMetrics {
+                        num_prefill_requests: 1,
+                        sum_prefill_tokens: length.div_ceil(256) * 256,
+                        sum_prefill_kv_tokens: length,
+                        extend_lengths: Some(vec![u64::from(length)]),
+                        past_kv_lengths: Some(vec![0]),
+                        ..Default::default()
+                    },
+                    // Hand-derived oracle: 3 ms overhead plus 1 us per raw extend token.
+                    3.0 + f64::from(length) / 1000.0,
+                ),
+                ForwardPassWorkerType::Decode => (
+                    ScheduledRequestMetrics {
+                        num_decode_requests: 1,
+                        sum_decode_kv_tokens: length - 1,
+                        extend_lengths: Some(vec![1]),
+                        past_kv_lengths: Some(vec![u64::from(length)]),
+                        ..Default::default()
+                    },
+                    // Hand-derived oracle: 3 ms overhead plus 0.1 us per raw past token.
+                    3.0 + f64::from(length) / 10000.0,
+                ),
+                ForwardPassWorkerType::Aggregated => unreachable!(),
+            };
+            ForwardPassMetrics {
+                scheduled_requests,
+                wall_time: observed_ms / 1000.0,
+                ..Default::default()
+            }
+        };
+        for i in 1..=8 {
+            let length = if worker_type == ForwardPassWorkerType::Prefill {
+                i * 1000
+            } else {
+                i * 20000
+            };
+            model.tune_with_fpms(&[vec![sample(length)]]).unwrap();
+        }
+        // These counters and arrays reproduce the mismatches in captured SGLang
+        // rows: prefill 7680/7533 versus [7533]/[0], and decode 106275 versus [106276].
+        let query = sample(query_length);
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+                .unwrap()
+                .unwrap(),
+            expected_ms,
+        );
+        model.tune_with_fpms(&[vec![query]]).unwrap();
+        assert_eq!(
+            model.regression_store_diagnostics()[0].retained_observations,
+            9
+        );
+    }
 }
 
 // ---- options validation ----

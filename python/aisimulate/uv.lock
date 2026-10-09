@@ -31,6 +31,7 @@ dependencies = [
     { name = "chex" },
     { name = "flax" },
     { name = "google-vizier", extra = ["jax"] },
+    { name = "googleapis-common-protos" },
     { name = "ijson" },
     { name = "jax" },
     { name = "jaxlib" },
@@ -84,6 +85,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.115.12" },
     { name = "flax", specifier = "==0.10.0" },
     { name = "google-vizier", extras = ["jax"], specifier = "==0.1.21" },
+    { name = "googleapis-common-protos", specifier = "<1.75.4" },
     { name = "ijson", specifier = ">=3.4,<4" },
     { name = "import-ipynb", marker = "extra == 'dev'", specifier = "==0.2" },
     { name = "jax", specifier = "==0.4.38" },
@@ -659,14 +661,14 @@ jax = [
 
 [[package]]
 name = "googleapis-common-protos"
-version = "1.75.1"
+version = "1.75.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/73/74bcab964c9a7a61f2bb71e8179b0f13e6fa98f7ce00fd168aab291e4a2e/googleapis_common_protos-1.75.1.tar.gz", hash = "sha256:d3042c6c5a2d4e67113104d6b6818b59b6bd92a197f2a91508e801fe815cf071", size = 150967, upload-time = "2026-08-06T06:24:51.972Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/c5/4353a188e2c335aee33269e8b654af228278cca8e5f0b4b5f11e5d0e9adb/googleapis_common_protos-1.75.3.tar.gz", hash = "sha256:57c435ac2c68b108999b6db075d9053e4d7a936ba57b4a3d45667b1346f1738a", size = 153905, upload-time = "2026-09-03T22:31:21.869Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/51/186c02b8549b69ccda44429cf6ff5081e4b61a602ddfe6a8020d1be31d1b/googleapis_common_protos-1.75.1-py3-none-any.whl", hash = "sha256:28a1934bcd33b9c9da66ac301a0a4227e3367f095a17d0375cb98f0a09d93b79", size = 300626, upload-time = "2026-08-06T06:23:46.696Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/7a/7d79170c6ce6f12e109df2b3879d6b934010cf4f99aea8de8b7e5408c174/googleapis_common_protos-1.75.3-py3-none-any.whl", hash = "sha256:a018d2bf098ca9fb6faa08d5bb780e2a2c2f73c566f069761331386c9596d3f2", size = 306984, upload-time = "2026-09-03T22:30:45.133Z" },
 ]
 
 [[package]]

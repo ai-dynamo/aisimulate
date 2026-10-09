@@ -19,9 +19,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, snapshot_download
 
-from fpm_accuracy.contract import strict_json
-from fpm_accuracy.exceptions import ConfigurationError, DataError
-from fpm_accuracy.hf.models import (
+from scripts.fpm_accuracy.contract import strict_json
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DataError
+from scripts.fpm_accuracy.hf.models import (
     CaseStatus,
     ConfigurationSnapshot,
     FpmArtifact,
@@ -31,14 +31,14 @@ from fpm_accuracy.hf.models import (
     MeasurementReference,
     OrderingKind,
 )
-from fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
-from fpm_accuracy.hf.protocols import (
+from scripts.fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
+from scripts.fpm_accuracy.hf.protocols import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     ParsedObservation,
     adapter_for,
 )
-from fpm_accuracy.types.forward_pass import WorkloadKind
-from fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
+from scripts.fpm_accuracy.types.forward_pass import WorkloadKind
+from scripts.fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
 
 DEFAULT_REPO_ID = "nvidia/aisimulate-fpm-dataset"
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
@@ -49,7 +49,24 @@ _FPM_ROLES = frozenset({"primary", "comparator", "reference", "historical", "qua
 _FPM_PHASES = frozenset({"prefill", "decode"})
 _SNAPSHOT_STATUSES = frozenset({"current", "historical"})
 _FPM_SCHEMA_NAMES = frozenset({"aic_fpm_forward_perf", "fpm_forward_perf"})
-_FPM_SCHEMA_VERSION = 6
+_FPM_SCHEMA_VERSIONS = frozenset({6, 7})
+_FPM_V7_SELECTOR_FIELDS = frozenset(
+    {
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        "moe_backend",
+        "attention_backend",
+        "enable_wideep",
+        "enable_eplb",
+        "model_config_sha256",
+        "execution_profile",
+        "input_modality",
+        "engram_residency",
+        "fmha_resolution",
+    }
+)
 _FPM_CONFIGURATION_FIELDS = (
     "model_path",
     "system",
@@ -96,7 +113,7 @@ class HfDataset:
             raise DataError(
                 f"HF catalog dataset_id {self._index.get('dataset_id')!r} does not match requested repo {repo_id!r}"
             )
-        self._configuration_cache: tuple[ConfigurationSnapshot, ...] | None = None
+        self._configuration_cache: dict[bool, tuple[ConfigurationSnapshot, ...]] = {}
 
     @classmethod
     def from_local(
@@ -157,28 +174,31 @@ class HfDataset:
         )
 
     def configurations(self, *, include_history: bool = False) -> tuple[ConfigurationSnapshot, ...]:
-        if self._configuration_cache is None:
+        if include_history not in self._configuration_cache:
             current = self._manifest_paths("configuration_manifests")
-            history = self._manifest_paths("history_manifests")
-            history_hashes: dict[str, str] = {}
-            for path in current:
-                manifest = self._read_json(path)
-                for value in manifest.get("history") or ():
-                    if not isinstance(value, Mapping):
-                        raise DataError(f"configuration manifest {path} contains a non-object history entry")
-                    history_path = _required_str(value, "manifest_path", path)
-                    history_sha256 = _required_sha256(value, "manifest_sha256", path)
-                    previous = history_hashes.setdefault(history_path, history_sha256)
-                    if previous != history_sha256:
-                        raise DataError(f"conflicting recorded hashes for history manifest {history_path}")
-            missing_hashes = set(history) - set(history_hashes)
-            if missing_hashes:
-                raise DataError(f"historical manifests lack a current-manifest hash pointer: {sorted(missing_hashes)}")
-            extra_hashes = set(history_hashes) - set(history)
-            if extra_hashes:
-                raise DataError(f"current manifests reference uncataloged history: {sorted(extra_hashes)}")
-            for path in history:
-                self._verify_file(self._safe_path(path), history_hashes[path], description=path)
+            history = self._manifest_paths("history_manifests") if include_history else ()
+            if include_history:
+                history_hashes: dict[str, str] = {}
+                for path in current:
+                    manifest = self._read_json(path)
+                    for value in manifest.get("history") or ():
+                        if not isinstance(value, Mapping):
+                            raise DataError(f"configuration manifest {path} contains a non-object history entry")
+                        history_path = _required_str(value, "manifest_path", path)
+                        history_sha256 = _required_sha256(value, "manifest_sha256", path)
+                        previous = history_hashes.setdefault(history_path, history_sha256)
+                        if previous != history_sha256:
+                            raise DataError(f"conflicting recorded hashes for history manifest {history_path}")
+                missing_hashes = set(history) - set(history_hashes)
+                if missing_hashes:
+                    raise DataError(
+                        f"historical manifests lack a current-manifest hash pointer: {sorted(missing_hashes)}"
+                    )
+                extra_hashes = set(history_hashes) - set(history)
+                if extra_hashes:
+                    raise DataError(f"current manifests reference uncataloged history: {sorted(extra_hashes)}")
+                for path in history:
+                    self._verify_file(self._safe_path(path), history_hashes[path], description=path)
             snapshots: list[ConfigurationSnapshot] = []
             for expected_status, paths in (("current", current), ("historical", history)):
                 for path in paths:
@@ -192,13 +212,17 @@ class HfDataset:
             identities = [snapshot.configuration_id for snapshot in snapshots]
             if len(identities) != len(set(identities)):
                 raise DataError("HF catalog contains duplicate configuration/snapshot identities")
-            self._configuration_cache = tuple(
+            # Overrides may explicitly bind historical snapshots; validate their
+            # selectors against the full catalog only when overrides are supplied.
+            self._validate_override_selectors(
+                self.configurations(include_history=True)
+                if self._overrides.overrides and not include_history
+                else snapshots
+            )
+            self._configuration_cache[include_history] = tuple(
                 sorted(snapshots, key=lambda item: (item.configuration_path, item.snapshot_id))
             )
-            self._validate_override_selectors(self._configuration_cache)
-        if include_history:
-            return self._configuration_cache
-        return tuple(snapshot for snapshot in self._configuration_cache if snapshot.snapshot_status == "current")
+        return self._configuration_cache[include_history]
 
     def measurement_case(
         self,
@@ -668,7 +692,8 @@ class HfDataset:
             raise DataError(f"FPM sidecar {artifact.metadata_path} does not bind the selected parquet row count")
         if (
             metadata.get("schema_name") not in _FPM_SCHEMA_NAMES
-            or metadata.get("schema_version") != _FPM_SCHEMA_VERSION
+            or type(metadata.get("schema_version")) is not int
+            or metadata.get("schema_version") not in _FPM_SCHEMA_VERSIONS
         ):
             raise DataError(f"FPM sidecar {artifact.metadata_path} declares an unsupported schema")
         expected_identity = _configuration_identity(configuration)
@@ -679,6 +704,8 @@ class HfDataset:
         selector = {"dcp": 1, **selector}
         selector_fields = set(selector)
         expected_fields = set(expected_identity)
+        if metadata["schema_version"] == 7:
+            expected_fields |= _FPM_V7_SELECTOR_FIELDS
         if selector_fields != expected_fields:
             missing = sorted(expected_fields - selector_fields)
             unknown = sorted(selector_fields - expected_fields)
@@ -693,6 +720,23 @@ class HfDataset:
         }
         if mismatches:
             raise DataError(f"FPM sidecar {artifact.metadata_path} selects a different configuration: {mismatches}")
+        parquet_identity = dict(expected_identity)
+        if metadata["schema_version"] == 7:
+            for field in _FPM_V7_SELECTOR_FIELDS:
+                value = selector[field]
+                if field in {"enable_wideep", "enable_eplb"}:
+                    valid = type(value) is bool
+                elif field == "model_config_sha256":
+                    # Empty is the producer's legacy model-config identity.
+                    valid = isinstance(value, str) and (value == "" or _SHA256.fullmatch(value) is not None)
+                else:
+                    valid = isinstance(value, str) and bool(value.strip())
+                if not valid:
+                    raise DataError(f"FPM sidecar {artifact.metadata_path} has invalid v7 selector field {field!r}")
+            # Check pair consistency only: these values are not an authoritative
+            # configuration-to-execution binding. Native staging rejects every
+            # v7 pair, even if all rows agree, until that binding is available.
+            parquet_identity.update({field: selector[field] for field in _FPM_V7_SELECTOR_FIELDS})
         try:
             parquet = pq.ParquetFile(artifact.local_path)
             physical_rows = parquet.metadata.num_rows
@@ -703,7 +747,6 @@ class HfDataset:
                 f"selected FPM Parquet {artifact.path} has {physical_rows} rows; expected {artifact.row_count}"
             )
         parquet_fields = set(parquet.schema_arrow.names)
-        parquet_identity = dict(expected_identity)
         if "dcp" not in parquet_fields and expected_identity["dcp"] == 1:
             parquet_identity.pop("dcp")
         missing_identity_fields = sorted(set(parquet_identity) - parquet_fields)
@@ -729,9 +772,14 @@ class HfDataset:
             )
 
     def _select_configuration(self, configuration_path: str, snapshot_id: str | None) -> ConfigurationSnapshot:
+        snapshots = self.configurations()
+        if snapshot_id is not None and not any(
+            item.configuration_path == configuration_path and item.snapshot_id == snapshot_id for item in snapshots
+        ):
+            snapshots = self.configurations(include_history=True)
         candidates = [
             item
-            for item in self.configurations(include_history=True)
+            for item in snapshots
             if item.configuration_path == configuration_path
             and ((snapshot_id is None and item.snapshot_status == "current") or item.snapshot_id == snapshot_id)
         ]

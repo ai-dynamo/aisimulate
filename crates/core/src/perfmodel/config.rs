@@ -108,11 +108,33 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 //   for selector diagnostics. This appends a positional field after the schema-19
 //   release; serde defaults support legacy JSON, not legacy bincode.
-// - 21 (SGLang VL host loop): `EngineSpec` gained the optional `vision`
+// - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
+//   identity. Renumbered from the branch's concurrent v20 claim after the
+//   DeepSeek-V4.1 FPM layout landed first.
+// - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+//   identity and two appended composite operators extend the schema-21 layout.
+//   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+// - 23 (DCP identity): ParallelMapping gained optional recorded dcp_size.
+//   DCP and the pilot concurrently claimed 22; reject both older layouts.
+//   JSON defaults preserve unrecorded DCP.
+// - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
+//   base matching identity, so control flow never parses the string tuple.
+// - 25 (FPM decoupling): FpmForwardOp also carries the SOL/direct interpolation
+//   selector. The decoupling branch independently used 21 for this positional
+//   field; the combined layout differs from every prior schema, including 24.
+// - 26 (decode context parallelism): the context/generation attention, MLA,
+//   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
+//   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
+//   Claimed 19 through 25 on its own branch while the DeepSeek-V4.1, MoE
+//   kernel-source, VR200 pilot, FPM DCP and FPM decoupling changes landed;
+//   renumbered at each merge (precedent: 15, 18).
+// - 27 (SGLang VL host loop): `EngineSpec` gained the optional `vision`
 //   section (encoder parallelism plus the tower's ops grouped by the token
 //   count they run on), appended to the bincode wire so a VL estimator can
-//   price encoder calls through the canonical model.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
+//   price encoder calls through the canonical model. Claimed 21 on its own
+//   branch while 21 through 26 landed; renumbered at merge (precedent: 15,
+//   18, 26).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 27;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -156,6 +178,15 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Explicit direct-prefill-only measured profile and its immutable identity.
+    #[serde(default)]
+    pub prefill_graph_profile: Option<String>,
+    #[serde(default)]
+    pub prefill_graph_profile_id: Option<String>,
+    /// Exact collected MoE compute kernel-source lane.  Unlike
+    /// `moe_backend`, this selects one measured MoE table lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,
@@ -250,6 +281,14 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    /// Decode-context-parallel size (vLLM `-dcp` / SGLang `--dcp-size`): the
+    /// decode KV cache is striped by token position across ranks inside the
+    /// attention group. Part of the engine identity so dcp variants get
+    /// distinct compiled handles. `None`/1 means no DCP. Like `cp_size`, the
+    /// per-op math is carried on the ops themselves, not re-derived here.
+    /// Additive-optional: absent in older payloads.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field
@@ -332,6 +371,8 @@ pub enum DataType {
     // Append-only wire extension: keep existing bincode discriminants stable.
     #[serde(rename = "w4a16_nvfp4")]
     W4a16Nvfp4,
+    #[serde(rename = "w4a16_mxfp4_humming")]
+    W4a16Mxfp4Humming,
 }
 
 #[cfg(test)]

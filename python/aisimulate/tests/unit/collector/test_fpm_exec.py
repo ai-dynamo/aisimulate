@@ -891,7 +891,13 @@ def test_fpm_exec_consumes_only_contract_environment():
     consumed = set(re.findall(r"\bFPM_[A-Z0-9_]+\b", script))
 
     assert {"FPM_NODE_RANK", "FPM_MASTER_ADDR", "FPM_BENCHMARK_OUTPUT_PATH"} <= consumed
-    allowed = set(FPM_ENV_EXPORTED_VARS) | {"FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS", "FPM_READINESS_TIMEOUT_SECONDS"}
+    allowed = set(FPM_ENV_EXPORTED_VARS) | {
+        "FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS",
+        "FPM_READINESS_TIMEOUT_SECONDS",
+        "FPM_SLURM_CPUS_PER_TASK",
+        "FPM_SLURM_CPU_BIND",
+        "FPM_LOCAL_GPU_COUNT",
+    }
     assert consumed <= allowed, sorted(consumed - allowed)
 
 

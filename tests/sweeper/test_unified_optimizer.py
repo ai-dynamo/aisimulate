@@ -17,6 +17,7 @@ from aisimulate.sweeper.parallel_enum import (
 )
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
 from aisimulate.sweeper.sampler import (
+    InvalidSuggestionError,
     RandomBranchSampler,
     SeededBayesianBranchSampler,
     Suggestion,
@@ -148,7 +149,7 @@ def test_global_trial_budget_is_split_across_branches(monkeypatch) -> None:
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -193,7 +194,7 @@ def test_global_trial_budget_runs_branch_batches_round_robin(monkeypatch) -> Non
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -243,7 +244,7 @@ def test_legacy_rounds_remain_branch_major_without_max_trials(monkeypatch) -> No
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -288,7 +289,7 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: list(reversed(_branches())),
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -326,6 +327,89 @@ def test_branch_seed_is_stable_when_branch_order_changes(monkeypatch) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("max_trials", "error_type"),
+    [(None, InvalidSuggestionError), (8, InvalidSuggestionError), (8, KeyError)],
+)
+def test_sampler_failure_recovery_is_narrow_and_preserves_best_results(
+    monkeypatch, caplog, max_trials, error_type
+) -> None:
+    calls = []
+    observed = []
+    events = []
+
+    class FailingSampler(_CountingSampler):
+        def suggest(self, count):
+            calls.append(self.branch.deployment_mode)
+            if len(calls) > 2:
+                raise error_type("missing parameters: agg_max_num_batched_tokens")
+            suggestions = super().suggest(count)
+            # Distinct candidates even in the legacy branch-major order.
+            for suggestion in suggestions:
+                if self.branch.deployment_mode == "agg":
+                    suggestion.selection["agg_max_num_seqs"] += len(calls)
+            return suggestions
+
+        def observe(self, suggestion, metrics):
+            observed.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            pytest.fail(f"unexpected infeasible observation: {reason}")
+
+    class ScoredRunner(_Runner):
+        def run(self, spec):
+            report = super().run(spec)
+            report.metrics["output_throughput_tok_s"] = float(_Runner.runs * 10)
+            return report
+
+    runner = ScoredRunner()
+    monkeypatch.setattr(_Factory, "create", lambda self, worker_id: runner)
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: _branches())
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+    monkeypatch.setattr(
+        "aisimulate.supervision.checkpoint",
+        lambda event, value: events.append((event, value)),
+    )
+    _Runner.runs = 0
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {
+                "model_name": "model",
+                "hardware_sku": "hardware",
+                "deployment_mode": ["agg", "disagg"],
+            },
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "sweep": {
+                "max_rounds": 4,
+                "parallel_evals": 1,
+                "candidates_per_round": 1,
+                "max_eval_seconds": None,
+                "max_trials": max_trials,
+            },
+        }
+    )
+    sweeper = search_module.Sweeper(runner_factory=_Factory(), sampler_factory=FailingSampler, show_progress=False)
+    if error_type is KeyError:
+        # A programming error must propagate even when partial results exist.
+        with pytest.raises(KeyError, match="agg_max_num_batched_tokens"):
+            sweeper.run(config, top_n=1)
+        return
+    result = sweeper.run(config, top_n=1)
+
+    assert len(calls) == 3  # No retry and no later branch is searched.
+    assert _Runner.runs == len(observed) == result.counts.feasible == result.counts.evaluated == 2
+    assert result.counts.failed == result.counts.infeasible == 0
+    assert [(candidate.candidate_id, candidate.score) for candidate in result.candidates] == [
+        ("candidate-000001", 10.0),
+        ("candidate-000002", 20.0),
+    ]
+    assert result.selected_candidate_ids == ["candidate-000002"]
+    assert result.selected_candidates[0].score == 20.0
+    assert "agg_max_num_batched_tokens" in caplog.text
+    assert "search is incomplete" in caplog.text
+    assert events[-1][0] == "optimizer_stopped"
+
+
 def test_seeded_random_sampler_is_deterministic() -> None:
     branch = _branches()[0]
     first = RandomBranchSampler(branch, seed=11).suggest(4)
@@ -344,7 +428,36 @@ def test_seeded_bayesian_sampler_is_deterministic() -> None:
     assert [item.selection for item in first] == [item.selection for item in second]
 
 
-def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
+def test_seeded_bayesian_sampler_clears_compilation_cache_between_batches() -> None:
+    import jax
+
+    branch = _branches()[0]
+    branch.knob_choices["agg_max_num_seqs"] = [256, 512, 1024]
+    sampler = SeededBayesianBranchSampler(branch, objectives=None, seed=13)
+    seed = sampler.suggest(1)[0]
+    sampler.observe(seed, {"objective": 1.0})
+
+    traces = []
+
+    @jax.jit
+    def compiled(value):
+        traces.append(None)
+        return value + 1
+
+    assert int(compiled(1)) == 2
+    assert len(traces) == 1
+    for batch in range(2):
+        # Repeating the same signature reuses the executable until the next ask.
+        assert int(compiled(1)) == 2
+        assert len(traces) == batch + 1
+        suggestion = sampler.suggest(1)[0]
+        assert suggestion.selection["agg_max_num_seqs"] in [256, 512, 1024]
+        assert int(compiled(1)) == 2
+        assert len(traces) == batch + 2
+        sampler.observe(suggestion, {"objective": float(batch + 2)})
+
+
+def test_candidate_timeout_applies_with_parallelism_one(monkeypatch, capsys) -> None:
     _CountingSampler.created = []
     _CountingSampler.suggestion_batches = []
     _CountingSampler.suggested = 0
@@ -353,7 +466,7 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
         "enumerate_branches",
         lambda *args, **kwargs: [_branches()[0]],
     )
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "test")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "test")
     config = SmartSearchConfig.model_validate(
         {
             "search_space": {
@@ -381,11 +494,16 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
     result = search_module.Sweeper(
         runner_factory=_SlowFactory(),
         sampler_factory=_CountingSampler,
-        show_progress=False,
+        show_progress=True,
     ).run(config)
 
     assert result.selected_candidates == []
     assert _CountingSampler.suggested == 1
+    assert result.counts.timed_out == 1
+    output = capsys.readouterr().out
+    assert "1 timed out" in output
+    assert "0 gated" in output
+    assert "Candidate timeout: 0.01s" in output
 
 
 @pytest.fixture(autouse=True)
@@ -395,3 +513,80 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+def test_minimum_gpu_random_search_starts_with_smallest_legal_topology(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branches()[0]
+    small = branch.parallel_configs[0]
+    large = replace(small, replicas=2)
+    branch = replace(
+        branch,
+        parallel_configs=(small, large),
+        supported_backends={small: frozenset({"vllm"}), large: frozenset({"vllm"})},
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+
+    class SLARunner(_Runner):
+        def run(self, spec):
+            report = super().run(spec)
+            report.metrics.update(
+                mean_ttft_ms=1.0, mean_tpot_ms=1.0, completed_requests=1.0, num_ttft_samples=1.0, num_tpot_samples=1.0
+            )
+            return report
+
+    monkeypatch.setattr(_Factory, "create", lambda *args: SLARunner())
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {"model_name": "model", "hardware_sku": "hardware", "deployment_mode": ["agg"]},
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "goal": {"target": "min_gpus", "sla": {"ttft_ms": 10, "itl_ms": 10}},
+            "sweep": {
+                "max_rounds": 1,
+                "parallel_evals": 1,
+                "max_eval_seconds": None,
+                "max_trials": 1,
+                "algorithm": "random",
+                "seed": 1,
+            },
+        }
+    )
+    result = search_module.Sweeper(
+        runner_factory=_Factory(), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(config)
+    assert result.counts.feasible == 1, [(c.status, c.reason) for c in result.candidates]
+    assert result.selected_candidates[0].used_gpus == 1
+
+
+def test_exhausted_random_branch_releases_unused_global_budget(monkeypatch):
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branches = _branches()
+    branches[1].knob_choices["decode_max_num_seqs"] = [256, 512, 1024]
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: branches)
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, **kwargs: "test")
+    config = SmartSearchConfig.model_validate(
+        {
+            "search_space": {"model_name": "model", "hardware_sku": "hardware", "deployment_mode": ["agg", "disagg"]},
+            "workload": {"isl": 8, "osl": 2, "concurrency": 1, "num_request_ratio": 1},
+            "sweep": {
+                "max_rounds": 4,
+                "parallel_evals": 1,
+                "max_eval_seconds": None,
+                "max_trials": 4,
+                "algorithm": "random",
+                "seed": 1,
+            },
+        }
+    )
+    result = search_module.Sweeper(
+        runner_factory=_Factory(), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(config)
+    assert result.counts.evaluated == 4
+    assert result.counts.cache_hits == 0
+    assert [c.config["deployment_mode"] for c in result.candidates].count("agg") == 1
+    assert [c.config["deployment_mode"] for c in result.candidates].count("disagg") == 3

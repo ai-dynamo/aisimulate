@@ -355,12 +355,15 @@ def _resolve_topology(context: dict[str, Any], worker: DGDService, args: list[st
     tensor_parallel_size = _positive_cli_int(args, "--tensor-parallel-size")
     pipeline_parallel_size = _positive_cli_int(args, "--pipeline-parallel-size")
     data_parallel_size = _positive_cli_int(args, "--data-parallel-size")
-    expected_gpus = tensor_parallel_size * pipeline_parallel_size * data_parallel_size
+    # vLLM prefill context parallelism (-pcp) expands the world size
+    # (world = tp * pp * pcp); decode CP (-dcp) reuses the TP ranks and adds nothing.
+    prefill_context_parallel_size = _positive_cli_int(args, "--prefill-context-parallel-size")
+    expected_gpus = tensor_parallel_size * pipeline_parallel_size * data_parallel_size * prefill_context_parallel_size
     if expected_gpus != total_gpus:
         raise ValueError(
             "FPM topology does not match the resolved GPU count: "
             f"tp({tensor_parallel_size}) * pp({pipeline_parallel_size}) * dp({data_parallel_size}) "
-            f"!= gpus({total_gpus})"
+            f"* pcp({prefill_context_parallel_size}) != gpus({total_gpus})"
         )
 
     if data_parallel_size > 1:
@@ -371,7 +374,8 @@ def _resolve_topology(context: dict[str, Any], worker: DGDService, args: list[st
         local_data_parallel_size = 1
     if (
         data_parallel_size > 1
-        and local_data_parallel_size * tensor_parallel_size * pipeline_parallel_size > gpus_per_node
+        and local_data_parallel_size * tensor_parallel_size * pipeline_parallel_size * prefill_context_parallel_size
+        > gpus_per_node
     ):
         raise ValueError("FPM local parallel topology exceeds the per-node GPU count")
 
@@ -605,10 +609,50 @@ def _render_run_script(
             "",
             "# FlashInfer downloads missing cubins at first use; its default cache",
             "# lives inside site-packages, which is read-only in the deployed image",
-            "# and crashes every engine worker with EACCES. Default the cache to the",
-            "# writable model-cache volume so pods reuse previously fetched cubins.",
+            "# and crashes every engine worker with EACCES. Prefer the model-cache",
+            "# volume so pods reuse previously fetched cubins, but only when that",
+            "# directory can be created and written: shared model caches are often",
+            "# read-only or owned by another user, and an unwritable cubin dir fails",
+            "# engine init the same way. Fall back to container-local scratch then.",
+            "# An explicit FLASHINFER_CUBIN_DIR always wins.",
+            "_fpm_writable_dir() {",
+            '  mkdir -p "$1" 2>/dev/null && [[ -d "$1" && -w "$1" && -x "$1" ]]',
+            "}",
+            "# Print a fresh private (mode 0700) scratch directory for $1. A fixed",
+            "# shared name could be pre-created or modified by another user, so it is",
+            "# never reused; fail rather than hand the engine an unwritable path.",
+            "_fpm_scratch_dir() {",
+            "  local dir",
+            '  dir="$(mktemp -d "${TMPDIR:-/tmp}/$1.XXXXXX")" && _fpm_writable_dir "$dir" && printf "%s\\n" "$dir"',
+            "}",
             'if [[ -z "${FLASHINFER_CUBIN_DIR:-}" && -n "${HF_HOME:-}" ]]; then',
-            '  export FLASHINFER_CUBIN_DIR="${HF_HOME}/flashinfer-cubins"',
+            '  if _fpm_writable_dir "${HF_HOME}/flashinfer-cubins"; then',
+            '    export FLASHINFER_CUBIN_DIR="${HF_HOME}/flashinfer-cubins"',
+            "  else",
+            '    FLASHINFER_CUBIN_DIR="$(_fpm_scratch_dir flashinfer-cubins)" ||',
+            '      { echo "run.sh: no writable directory for FlashInfer cubins" >&2; exit 2; }',
+            "    export FLASHINFER_CUBIN_DIR",
+            '    echo "run.sh: HF_HOME is not writable; caching FlashInfer cubins in'
+            ' $FLASHINFER_CUBIN_DIR (not reused across runs)." >&2',
+            "  fi",
+            "fi",
+            "",
+            "# The engine caches the decode KV warm-up dataset in",
+            "# DYN_BENCH_KV_WARMUP_CACHE_DIR, defaulting to",
+            "# os.path.abspath(HF_HOME/../fpm_datasets); dirname is the same lexical",
+            "# parent, so a symlinked HF_HOME is probed at the engine's path. On a",
+            "# read-only shared model cache that default cannot be created, warm-up is",
+            "# skipped as dataset_unavailable, and readiness rejects warm-required",
+            "# strategies. Apply the same scratch fallback; an explicit",
+            "# DYN_BENCH_KV_WARMUP_CACHE_DIR always wins.",
+            'if [[ -z "${DYN_BENCH_KV_WARMUP_CACHE_DIR:-}" && -n "${HF_HOME:-}" ]]; then',
+            '  if ! _fpm_writable_dir "$(dirname -- "${HF_HOME%/}")/fpm_datasets"; then',
+            '    DYN_BENCH_KV_WARMUP_CACHE_DIR="$(_fpm_scratch_dir fpm_datasets)" ||',
+            '      { echo "run.sh: no writable directory for the KV warm-up dataset" >&2; exit 2; }',
+            "    export DYN_BENCH_KV_WARMUP_CACHE_DIR",
+            '    echo "run.sh: fpm_datasets next to HF_HOME is not writable; caching the KV warm-up'
+            ' dataset in $DYN_BENCH_KV_WARMUP_CACHE_DIR (not reused across runs)." >&2',
+            "  fi",
             "fi",
         ]
     )
@@ -763,7 +807,10 @@ def _resource_documents(
         raise ValueError("FPM single-node workload must not require a ComputeDomain document")
     if compute_domain is None:
         raise ValueError("FPM multinode workload requires a ComputeDomain document")
-    return [compute_domain.to_dict(), workload]
+    document = compute_domain.to_dict()
+    metadata = document["metadata"]
+    metadata["labels"] = {**(metadata.get("labels") or {}), **workload["metadata"]["labels"]}
+    return [document, workload]
 
 
 def _resource_metadata(context: dict[str, Any]) -> dict[str, Any]:

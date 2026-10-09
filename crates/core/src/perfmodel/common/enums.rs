@@ -339,8 +339,11 @@ pub enum MoeQuantMode {
     /// `w4a16_mxfp4` (mirrors Python `load_moe_data`).
     W4a16Mxfp4Cutlass,
     /// Scale-aware NVFP4 weights dequantized into the BF16 MoE compute lane.
-    /// Kept last so existing serialized enum discriminants remain stable.
+    /// Append-only extension preserving older serialized discriminants.
     W4a16Nvfp4,
+    /// Native Humming MXFP4 experts with unquantized BF16 activations.
+    /// Distinct from the Triton and FlashInfer CUTLASS W4A16 kernels.
+    W4a16Mxfp4Humming,
 }
 
 impl MoeQuantMode {
@@ -416,6 +419,12 @@ impl MoeQuantMode {
                 memory: 9.0 / 16.0,
                 compute: 1.0,
                 name: "w4a16_nvfp4",
+                compute_dtype: Some(ComputeDtype::Bfloat16),
+            },
+            Self::W4a16Mxfp4Humming => QuantMapping {
+                memory: 0.5,
+                compute: 1.0,
+                name: "w4a16_mxfp4_humming",
                 compute_dtype: Some(ComputeDtype::Bfloat16),
             },
         }
@@ -638,6 +647,8 @@ pub enum PerfDataFilename {
     Dsv4MegamoeModule,
     MoeA2a,
     MoeExpertCompute,
+    SglangPrefillAttentionSequence,
+    SglangPrefillCommNormBoundary,
 }
 
 impl PerfDataFilename {
@@ -679,6 +690,10 @@ impl PerfDataFilename {
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",
             Self::MoeExpertCompute => "moe_expert_compute_perf.parquet",
+            Self::SglangPrefillAttentionSequence => {
+                "sglang_prefill_attention_sequence_perf.parquet"
+            }
+            Self::SglangPrefillCommNormBoundary => "sglang_prefill_comm_norm_boundary_perf.parquet",
         }
     }
 }
@@ -729,6 +744,29 @@ mod tests {
                 compute_dtype: Some(ComputeDtype::Fp4)
             }
         );
+    }
+
+    #[test]
+    fn humming_moe_wire_identity_is_additive() {
+        let mode: MoeQuantMode = serde_json::from_str("\"w4a16_mxfp4_humming\"").unwrap();
+        assert_eq!(mode, MoeQuantMode::W4a16Mxfp4Humming);
+        assert_eq!(
+            serde_json::to_string(&mode).unwrap(),
+            "\"w4a16_mxfp4_humming\""
+        );
+        // Historical positional discriminants must remain stable.
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Mxfp4Cutlass).unwrap(),
+            10_u32.to_le_bytes()
+        );
+        assert_eq!(
+            bincode::serialize(&MoeQuantMode::W4a16Nvfp4).unwrap(),
+            11_u32.to_le_bytes()
+        );
+        let bytes = bincode::serialize(&mode).unwrap();
+        assert_eq!(bincode::deserialize::<MoeQuantMode>(&bytes).unwrap(), mode);
+        assert_eq!(mode.mapping().memory, 0.5);
+        assert_eq!(mode.mapping().compute_dtype, Some(ComputeDtype::Bfloat16));
     }
 
     #[test]
@@ -792,5 +830,47 @@ mod tests {
             PerfDataFilename::Dsv4HcaGenerationModule.as_str(),
             "dsv4_hca_generation_module_perf.parquet"
         );
+        assert_eq!(
+            PerfDataFilename::SglangPrefillAttentionSequence.as_str(),
+            "sglang_prefill_attention_sequence_perf.parquet"
+        );
+        assert_eq!(
+            PerfDataFilename::SglangPrefillCommNormBoundary.as_str(),
+            "sglang_prefill_comm_norm_boundary_perf.parquet"
+        );
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn prefill_data_filenames_match_live_python_enum() {
+        use pyo3::prelude::*;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let filenames = py
+                .import("aisimulate_core.sdk.common")
+                .unwrap()
+                .getattr("PerfDataFilename")
+                .unwrap();
+            for (rust, name) in [
+                (
+                    PerfDataFilename::SglangPrefillAttentionSequence,
+                    "sglang_prefill_attention_sequence",
+                ),
+                (
+                    PerfDataFilename::SglangPrefillCommNormBoundary,
+                    "sglang_prefill_comm_norm_boundary",
+                ),
+            ] {
+                let python: String = filenames
+                    .getattr(name)
+                    .unwrap()
+                    .getattr("value")
+                    .unwrap()
+                    .extract()
+                    .unwrap();
+                assert_eq!(rust.as_str(), python, "PerfDataFilename.{name}");
+            }
+        });
     }
 }

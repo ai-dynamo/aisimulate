@@ -297,12 +297,39 @@ def test_capacity_rejects_malformed_external_identity(invalid):
         )
 
 
+@pytest.mark.parametrize(
+    ("backend", "block_size", "fraction"), [("vllm", 64, 0.9), ("sglang", 1, 0.88), ("trtllm", 32, 0.9)]
+)
+def test_missing_kv_geometry_uses_backend_defaults(monkeypatch, backend, block_size, fraction):
+    from aisimulate.sweeper import kv_load
+
+    observed = []
+
+    def capacity(*args, **kwargs):
+        observed.append(kwargs["memory_fraction"])
+        return 4095
+
+    monkeypatch.setattr(kv_load, "_per_rank_capacity_tokens", capacity)
+    sample = _sample("agg")
+    sample.update(backend=backend, agg_block_size=None, agg_gpu_memory_utilization=None)
+    result = resolve_kv_load(
+        sample,
+        workload=Workload(isl=1, osl=1, concurrency=1, request_count=1),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ratio=1.0,
+        backend_version="test",
+    )
+    assert result.role_capacity_tokens["agg"] == (4095 // block_size) * block_size
+    assert observed == [fraction]
+
+
 def test_image_workloads_size_the_load_on_the_placeholders_the_runner_lays_out():
     """Native VL and analytical EPD both count the visual tokens, overrides included."""
     from aisimulate.sweeper.config import ImageWorkload
 
     sample = {
         "model_name": "Qwen/Qwen3-VL-8B-Instruct",
+        "backend": "sglang",
         "agg_block_size": 16,
         "agg_num_gpu_blocks": 6_250,
         "agg_vision": {"cache_mib": 100, "encoder_parallel": "tp"},

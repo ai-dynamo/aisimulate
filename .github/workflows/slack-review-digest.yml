@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Slack review digest
+
+on:
+  schedule:
+    - cron: '7 17 * * *'
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview messages in the log without posting to Slack
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: slack-review-digest
+  cancel-in-progress: false
+
+jobs:
+  digest:
+    if: github.repository == 'ai-dynamo/aisimulate'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check digest calculations
+        run: python3 scripts/notifications/test_slack_review_digest.py
+      - name: Generate and send digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLACK_REVIEW_DIGEST_WEBHOOK_URL: ${{ secrets.SLACK_REVIEW_DIGEST_WEBHOOK_URL }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          args=()
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python3 scripts/notifications/slack_review_digest.py "${args[@]}"

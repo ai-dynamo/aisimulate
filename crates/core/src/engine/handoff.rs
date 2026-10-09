@@ -69,6 +69,10 @@ pub struct HandoffTransferTiming {
     pub full_prompt_tokens: usize,
     /// Modeled KV bytes occupied by one prompt token.
     pub kv_bytes_per_token: Option<usize>,
+    /// Bytes sent once per request whatever the prompt footprint, such as one
+    /// recurrent-state copy. Zero for token-only KV.
+    #[serde(default)]
+    pub state_bytes: usize,
     /// Modeled transfer bandwidth in decimal gigabytes per second.
     pub bandwidth_gb_s: Option<f64>,
 }
@@ -94,7 +98,7 @@ impl HandoffTransferTiming {
         }
 
         Some(transfer_delay_ms(
-            tokens as f64 * bytes_per_token as f64,
+            tokens as f64 * bytes_per_token as f64 + self.state_bytes as f64,
             bandwidth_gb_s,
         ))
     }
@@ -134,6 +138,7 @@ pub fn prefill_handoff_delay_ms(
         mode: TransferTimingMode::FullPrompt,
         full_prompt_tokens: num_input_tokens,
         kv_bytes_per_token,
+        state_bytes: 0,
         bandwidth_gb_s,
     }
     .full_prompt_delay_ms()
@@ -156,6 +161,7 @@ mod tests {
             mode: TransferTimingMode::DestinationMissing,
             full_prompt_tokens: 100,
             kv_bytes_per_token: Some(1_000),
+            state_bytes: 0,
             bandwidth_gb_s: Some(1.0),
         };
 
@@ -164,11 +170,27 @@ mod tests {
     }
 
     #[test]
+    fn state_bytes_are_charged_once_in_every_timing_mode() {
+        let timing = HandoffTransferTiming {
+            mode: TransferTimingMode::DestinationMissing,
+            full_prompt_tokens: 100,
+            kv_bytes_per_token: Some(1_000),
+            state_bytes: 50_000,
+            bandwidth_gb_s: Some(1.0),
+        };
+        let close = |value: Option<f64>, expected: f64| (value.unwrap() - expected).abs() < 1e-12;
+        assert!(close(timing.delay_ms(0), 0.05));
+        assert!(close(timing.delay_ms(20), 0.07));
+        assert!(close(timing.full_prompt_delay_ms(), 0.15));
+    }
+
+    #[test]
     fn incomplete_or_non_positive_timing_model_has_no_delay() {
         let timing = HandoffTransferTiming {
             mode: TransferTimingMode::FullPrompt,
             full_prompt_tokens: 100,
             kv_bytes_per_token: None,
+            state_bytes: 0,
             bandwidth_gb_s: Some(1.0),
         };
         assert_eq!(timing.delay_ms(0), None);

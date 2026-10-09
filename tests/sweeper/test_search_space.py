@@ -236,6 +236,7 @@ def test_runner_incompatible_backend_is_removed_before_perf_lookup(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        role_max_seq_len=None,
         systems_paths=None,
     ):
         calls.append((deployment_mode, backend))
@@ -268,13 +269,15 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         gpu_budget,
         deployment_mode,
         backend,
+        worker_type,
         backend_version=None,
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        role_max_seq_len=None,
         systems_paths=None,
     ):
-        calls.append((hardware, deployment_mode, backend_version, role_runtime))
+        calls.append((hardware, deployment_mode, backend_version, role_runtime, role_max_seq_len, worker_type))
         return [_AGG_CFG if hardware == "h200_sxm" else _DP8_CFG]
 
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", fake_parallel_configs)
@@ -283,6 +286,8 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         deployment_mode=["disagg"],
         hardware_sku="gb200",
         prefill_hardware_sku="h200_sxm",
+        prefill_context_length=64_000,
+        decode_context_length=128_000,
         gpu_budget=16,
     )
 
@@ -293,6 +298,8 @@ def test_heterogeneous_disagg_enumerates_each_role_on_its_effective_hardware(mon
         ("gb200", "agg", "1.0"),
     ]
     assert all(set(call[3]) == {"agg"} for call in calls)
+    assert [call[4] for call in calls] == [{"agg": 64_000}, {"agg": 128_000}]
+    assert [call[5] for call in calls] == ["prefill", "decode"]
     expected = DisaggParallelConfig(prefill=_AGG_CFG, decode=_DP8_CFG)
     assert branch.parallel_configs == (expected,)
     assert branch.supported_backends[expected] == frozenset({"trtllm"})
@@ -700,6 +707,7 @@ def test_infeasible_mode_is_skipped_while_viable_mode_remains(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        role_max_seq_len=None,
         systems_paths=None,
     ):
         if deployment_mode == "disagg":
@@ -748,6 +756,7 @@ def test_backend_without_perf_database_is_dropped(monkeypatch):
         min_gpu_budget=None,
         max_seq_len=None,
         role_runtime=None,
+        role_max_seq_len=None,
         systems_paths=None,
     ):
         if backend == "vllm":

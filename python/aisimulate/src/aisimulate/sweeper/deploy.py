@@ -11,7 +11,7 @@ from typing import Any
 
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
-from ..config.engine import NgramSpeculationConfig
+from ..config.engine import NgramSpeculationConfig, resolve_block_size
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -52,6 +52,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     if sample.get("speculation") is not None:
         config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
+    if sample.get("systems_paths") is not None:
+        config["systems_paths"] = sample["systems_paths"]
     return {"provider": "aic", "config": config}
 
 
@@ -73,9 +75,7 @@ def _engine_args_payload(
     moe_tp = int(sample[f"{prefix}moe_tp"])
     moe_ep = int(sample[f"{prefix}moe_ep"])
     backend = sample["backend"]
-    block_size = sample[f"{role}_block_size"]
-    if block_size is None:
-        block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[backend]
+    block_size = resolve_block_size(backend, sample[f"{role}_block_size"])
     memory_fraction = sample[f"{role}_gpu_memory_utilization"]
     if memory_fraction is None:
         memory_fraction = 0.88 if backend == "sglang" else 0.9
@@ -99,11 +99,16 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if sample.get("systems_paths") is not None and sample.get(f"{role}_timing_model") is not None:
+        from .forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(sample["systems_paths"]))
     if role in ("agg", "prefill") and backend == "sglang":
         # Ahead of the capacity materialization below, which deducts the tower and cache.
         payload.update(_native_vl_engine_args(sample, role))
-    if sample.get("context_length") is not None:
-        payload["max_model_len"] = int(sample["context_length"])
+    context_length = sample.get(f"{role}_context_length") or sample.get("context_length")
+    if context_length is not None:
+        payload["max_model_len"] = int(context_length)
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
@@ -129,6 +134,7 @@ def _engine_args_payload(
         if sample.get(f"{role}_num_gpu_blocks") is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",
@@ -168,6 +174,7 @@ def _engine_args_payload(
                 pp_size=int(sample[f"{prefix}pp"]),
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
+                **_profile_kv_args(sample, role, backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if configured_bytes == "auto"
@@ -182,6 +189,7 @@ def _engine_args_payload(
                 pp_size=int(sample["prefill_pp"]),
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
+                **_profile_kv_args(sample, "prefill", backend_version),
                 **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if transfer_geometry == "auto"
@@ -195,6 +203,20 @@ def _engine_args_payload(
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     return payload
+
+
+def _profile_kv_args(sample: dict[str, Any], role: str, backend_version: str) -> dict[str, Any]:
+    if sample.get("fpm_profile") is None:
+        return {}
+    prefix = _role_prefix(role)
+    return {
+        "fpm_profile": sample["fpm_profile"],
+        "worker_type": "aggregated" if role == "agg" else role,
+        "system": _role_hardware_sku(sample, role),
+        "backend": sample["backend"],
+        "backend_version": backend_version,
+        "attention_dp_size": int(sample[f"{prefix}attention_dp"]),
+    }
 
 
 def _frontend_row(sample: dict[str, Any], role: str) -> dict[str, Any] | None:

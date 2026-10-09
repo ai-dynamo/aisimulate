@@ -11,11 +11,36 @@ from pathlib import Path
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def _absolute_systems_path(value: str) -> str:
+    if not value.strip() or "," in value:
+        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+    return str(Path(value).expanduser().resolve())
+
+
+SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
+
+
+def _normalize_systems_root(value: str) -> str:
+    if not value.strip():
+        raise ValueError("systems_paths entries must be nonempty")
+    if value.lower() == "default":
+        return "default"
+    return str(Path(value).expanduser().resolve())
+
+
+SystemsRoot = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_normalize_systems_root)]
+
+
+def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
+    """Return the version pin for one backend; ``None`` means resolve latest."""
+    return versions.get(backend) if isinstance(versions, dict) else versions
 
 
 T = TypeVar("T")
@@ -190,6 +215,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
+CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"
 PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation", "execution"})
 RECOMMENDATION_CORE_SECTIONS = frozenset({*PREDICTION_CORE_SECTIONS, "optimization", "optimizer"})
 
@@ -224,6 +250,7 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "enable_eplb",
     "wideep_num_slots",
     "moe_backend",
+    "moe_kernel_source",
     "attention_backend",
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -247,7 +274,7 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
+    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

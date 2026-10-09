@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import math
 from collections.abc import Mapping
 from copy import deepcopy
@@ -14,17 +15,19 @@ from typing import Any
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS
+from .config.engine import resolve_block_size
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
+from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
 from .sweeper.provider import InfeasibleCandidate, SweepContext
-from .sweeper.replay import ReplaySpec, RunnerFactory
+from .sweeper.replay import ReplayOutputRequirements, ReplaySpec, RunnerFactory
 from .sweeper.result import SweepResult
 
 
@@ -35,8 +38,10 @@ def run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     """Run a public recommendation through the existing Sweeper core."""
 
@@ -47,8 +52,10 @@ def run_recommendation(
         stack=stack,
         runner_factory=runner_factory,
         providers=providers,
+        output_configs=output_configs,
         afd_performance_model=afd_performance_model,
         show_progress=show_progress,
+        output_requirements=output_requirements,
     )
     if not in_supervised_process():
         return supervised_recommendation(config, kwargs)
@@ -62,8 +69,11 @@ def _run_recommendation(
     stack: str,
     runner_factory: RunnerFactory,
     providers: Mapping[str, SimulationConfigAdapter] | None = None,
+    output_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    output_adapters: Mapping[str, RecommendationOutputAdapter] | None = None,
     afd_performance_model: AFDPerformanceModel | None = None,
     show_progress: bool = True,
+    output_requirements: ReplayOutputRequirements | None = None,
 ) -> SweepResult:
     from .supervision import checkpoint
 
@@ -77,6 +87,24 @@ def _run_recommendation(
     if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
         raise ValueError("ngram speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
+    if config.traffic is None:
+        workload = smart.workload
+        logging.getLogger(__name__).warning(
+            "No traffic configured; using synthetic traffic: input_tokens=%s, output_tokens=%s, "
+            "concurrency=%s, requests=%s. Set traffic explicitly for your workload.",
+            workload.isl,
+            workload.osl,
+            workload.concurrency,
+            int(workload.concurrency * workload.num_request_ratio),
+        )
+    if config.engine.context_length == "max":
+        logging.getLogger(__name__).warning(
+            "engine.context_length is 'max'; using the %s of %s tokens. Parallel shapes whose "
+            "KV cache cannot hold one sequence of that length are excluded from the search. Set "
+            "engine.context_length to your longest request to admit them.",
+            "model maximum" if config.engine.fpm_profile is None else "FPM profile context length",
+            smart.search_space.context_length,
+        )
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
@@ -102,6 +130,7 @@ def _run_recommendation(
     adapter_sections = {name: provider.section for name, provider in (providers or {}).items()}
     sweeper = Sweeper(
         runner_factory=runner_factory,
+        output_requirements=output_requirements,
         providers=compiled_providers,
         show_progress=show_progress,
         prediction_config_factory=lambda sample, spec: _candidate_prediction(
@@ -109,7 +138,17 @@ def _run_recommendation(
         ),
         afd_performance_model=afd_performance_model,
     )
-    return sweeper.run(smart, top_n=None)
+    output_callbacks = resolve_output_callbacks(
+        output_configs or {},
+        injected=output_adapters,
+        context=RecommendationOutputContext(workload=smart.workload),
+    )
+    return sweeper.run(
+        smart,
+        top_n=None,
+        on_candidate=output_callbacks.on_candidate,
+        on_round=output_callbacks.on_round,
+    )
 
 
 def recommendation_to_sweeper(
@@ -151,8 +190,16 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (resolve_model_context_length(model) if context == "max" else context),
+        "context_length": (
+            config.engine.fpm_profile.context_length
+            if context == "max" and config.engine.fpm_profile is not None
+            else resolve_model_context_length(model)
+            if context == "max"
+            else context
+        ),
     }
+    if engine.get("fpm_profile") is not None:
+        search_space["fpm_profile"] = engine["fpm_profile"]
     for name in (
         "database_mode",
         "transfer_policy",
@@ -193,6 +240,8 @@ def recommendation_to_sweeper(
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("context_length") is not None:
+            search_space[f"{role}_context_length"] = workers[role]["context_length"]
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
     if isinstance(afd, dict):
@@ -555,9 +604,24 @@ def _parallel_entries(role: str, raw: dict[str, Any]) -> tuple[str, Any]:
     return "independent", {"choices": choices, "log_ranges": log_ranges}
 
 
+_CONTEXT_PARALLEL_KEYS = ("prefill_context", "decode_context")
+
+
 def _parallel_mapping(value: Any, path: str) -> dict[str, int]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} entries must be mappings")
+    # Context parallelism is a predict-only knob: preset entries are full
+    # ParallelismPredictionConfig dumps, so they may carry the two keys unset
+    # (None) or at 1. The sweeper does not enumerate CP/DCP yet, so anything
+    # else is rejected explicitly instead of being silently dropped.
+    value = dict(value)
+    for key in _CONTEXT_PARALLEL_KEYS:
+        leaf = value.pop(key, None)
+        if leaf not in (None, 1):
+            raise ValueError(
+                f"{path}.{key}={leaf!r} is not supported by recommend; context parallelism "
+                "is a predict-only knob (use `aisimulate predict` with a fixed parallelism)"
+            )
     missing = set(_PARALLEL_KEYS) - set(value)
     unknown = set(value) - set(_PARALLEL_KEYS)
     if missing or unknown:
@@ -720,6 +784,8 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
                 result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
             if load.get("agentic_warmup"):
                 result["agentic_warmup"] = True
+            if load.get("agentic_profile") is not None:
+                result["agentic_profile"] = deepcopy(load["agentic_profile"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
@@ -854,6 +920,10 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    if sample.get("systems_paths") is not None:
+        engine["systems_paths"] = sample["systems_paths"]
+    if sample.get("fpm_profile") is not None:
+        engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
     for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
         if sample.get(name) is not None:
             engine[name] = sample[name]
@@ -906,9 +976,7 @@ def _candidate_prediction(
         raw_worker = (
             raw_engine.get("workers", {}).get(public_role, {}) if isinstance(raw_engine.get("workers"), dict) else {}
         )
-        block_size = sample[f"{role}_block_size"]
-        if block_size is None:
-            block_size = {"vllm": 64, "sglang": 1, "trtllm": 32}[sample["backend"]]
+        block_size = resolve_block_size(sample["backend"], sample[f"{role}_block_size"])
         memory_fraction = sample[f"{role}_gpu_memory_utilization"]
         if memory_fraction is None:
             memory_fraction = 0.88 if sample["backend"] == "sglang" else 0.9
@@ -939,6 +1007,20 @@ def _candidate_prediction(
             timing["database_mode"] = resolved["database_mode"]
             policy = resolved["transfer_policy"]
             timing["transfer_policy"] = list(policy) if policy is not None else None
+            timing.update(
+                {
+                    field: resolved[field]
+                    for field in (
+                        "gemm_quant_mode",
+                        "moe_quant_mode",
+                        "fmha_quant_mode",
+                        "kvcache_quant_mode",
+                        "comm_quant_mode",
+                        "attention_backend",
+                    )
+                    if resolved.get(field) is not None
+                }
+            )
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],
@@ -956,7 +1038,7 @@ def _candidate_prediction(
             kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
         if sample.get(f"{role}_native_host_offload") is not None:
             kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
-        engine["workers"][public_role] = {
+        worker_config = {
             "parallelism": {
                 "replicas": sample[f"{prefix}replicas"],
                 "tensor": sample[f"{prefix}tp"],
@@ -964,6 +1046,11 @@ def _candidate_prediction(
                 "attention_data": sample[f"{prefix}attention_dp"],
                 "moe_tensor": sample[f"{prefix}moe_tp"],
                 "moe_expert": sample[f"{prefix}moe_ep"],
+                **(
+                    {"decode_context": estimator.config["dcp"]}
+                    if estimator is not None and estimator.config.get("dcp") is not None
+                    else {}
+                ),
             },
             "scheduler": {
                 "max_batched_tokens": sample[f"{role}_max_num_batched_tokens"],
@@ -975,6 +1062,9 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if role != "agg" and sample.get(f"{role}_context_length") is not None:
+            worker_config["context_length"] = sample[f"{role}_context_length"]
+        engine["workers"][public_role] = worker_config
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
         if role in ("agg", "prefill"):

@@ -3,27 +3,42 @@ SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<!--
+Maintainers and agents: CI executes the bash/yaml examples in this README.
+- Keep each existing readme-check marker directly above its opening code fence,
+  with no blank line between them. Keep IDs stable and unique.
+- Use unindented triple-backtick fences labeled exactly bash or yaml. Do not
+  change fence labels or formatting to bypass command coverage.
+- When adding a block, copy an existing marker's format and use a new ID made
+  of lowercase letters, digits, and hyphens. Add the matching entry to
+  scripts/readme/readme_commands.json; remove both together when deleting a block.
+- The manifest contains profiles, dependencies, timeouts, output assertions,
+  and YAML filenames, not copies of commands. README blocks are the source.
+- Keep dependencies before their consumers (source-install is bootstrapped
+  first). Update manifest paths/assertions when changing outputs or examples.
+- Validate structure before committing (requires psutil and PyYAML):
+  python scripts/readme/check_readme_commands.py --validate
+  This checks parsing/manifest consistency; CI also executes the commands.
+See docs/ci.md and scripts/readme/check_readme_commands.py for execution details.
+-->
+
 # AISimulate
 
 AISimulate predicts LLM serving behavior and searches for strong deployment
 configurations offline, without bringing up a GPU serving cluster.
 
+[Documentation](docs/README.md) ·
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
 [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
-Whole-forward FPM data is supplied at runtime rather than shipped in this
-repository. Supply both the Parquet file and its adjacent, same-stem
-`.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
-`reviewed-fpm.metadata.json`). Set `estimation_mode="fpm_interpolation"` and
-`estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical Python or Rust configuration. Prediction/recommendation YAML also accepts the legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` fields; see the [core API guide](docs/core-api.md#external-whole-forward-fpm-data).
-
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
 standalone home with Dynamo-independent Replay and Sweeper capabilities.
+See the [migration guide](docs/aic-backward-compatibility/migration.md) for command and API mappings.
 
 The performance-modeling methodology is described in
 [AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
@@ -31,15 +46,18 @@ LLM Serving](https://arxiv.org/abs/2601.06288).
 
 ## Install
 
-See the [installation guide](docs/installation.md) for published versions,
+See the [installation guide](docs/getting-started/installation.md) for published versions,
 platform requirements, current-source setup, and internal nightlies. Documentation
 on `main` can describe features newer than the latest published wheel.
 
 ### Engine-only
 
 Install AISimulate by itself to use the built-in simulation engine without a
-Dynamo dependency:
+Dynamo dependency. Use a fresh virtual environment for each installation profile.
+These commands install published releases; for the examples on `main`, use
+[Develop from source](#develop-from-source):
 
+<!-- readme-check: release-install -->
 ```bash
 python3 -m pip install aisimulate
 aisimulate --help
@@ -47,54 +65,40 @@ aisimulate --help
 
 ### With Dynamo
 
-Install compatible AISimulate and Dynamo releases to enable the `dynamo`
-runner and Dynamo-owned configuration adapters:
+> **Compatibility warning:** Older Dynamo releases may be incompatible with
+> current AISimulate source. Dynamo 1.5.0 uses removed AISimulate imports, and
+> 1.4.2 does not register the `dynamo` stack. The pinned nightly pair below is
+> validated together; it does not establish compatibility with AISimulate tip
+> of tree. Do not upgrade AISimulate independently of Dynamo's declared dependency.
 
+Install this pair on Linux with Python 3.12 in a **separate environment**:
+
+<!-- readme-check: dynamo-install -->
 ```bash
-python3 -m pip install aisimulate ai-dynamo
+python3 -m pip install --extra-index-url https://pypi.nvidia.com \
+  "aisimulate==0.13.0.dev202609270000000058" "ai-dynamo==1.6.0.dev20260930"
+python3 -m pip check
 aisimulate predict --help
 ```
 
-AISimulate remains the CLI owner in both profiles. Select the integration at
-runtime with `--stack dynamo`; installing Dynamo does not add another
-simulation command.
+This pair exercises the nightly AISimulate wheel, not the current source checkout.
+The daily README workflow records installed versions and runs both Dynamo
+prediction and recommendation; `--help` alone does not validate the adapters.
 
-**Planner needs additional dependencies.** The two-package installation above
-supports basic Dynamo prediction, but does not install the complete Planner
-environment. Before using a top-level `planner` section, install Dynamo's
-`container/deps/requirements.planner.txt` from the same release tag or commit
-as your Dynamo wheels. For example, after installing the Dynamo 1.5.0 RC9
-artifacts and their compatible AISimulate wheel:
-
-```bash
-# Example for Dynamo 1.5.0 RC9; change this to your installed build's revision.
-DYNAMO_REF=ffd7c1a90eb403c0d43911690c5c9b8457acd826
-python3 -m pip install "grpcio-tools<=1.76.0" -r \
-  "https://raw.githubusercontent.com/ai-dynamo/dynamo/${DYNAMO_REF}/container/deps/requirements.planner.txt"
-python3 -m pip check
-```
-
-The `grpcio-tools` cap matches RC9's
-[common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
-It keeps the tooling compatible with Planner's `protobuf==6.33.6` pin.
-When selecting another Dynamo revision, check its common requirements and
-update this cap together with `DYNAMO_REF`.
-
-For release candidates, use the exact release artifacts; a package version
-alone may not identify the RC build. Alternatively, use the matching
-`dynamo-planner` image, which includes the Planner prerequisites. See the
-[Planner installation example](docs/cli/examples/dynamo-planner/README.md)
-for a complete CPU-only prediction that loads Planner. `predict --help`
-does not verify that optional adapters can load.
+**Planner needs additional dependencies.** Install the requirements from the
+same Dynamo revision as the wheels before using a top-level `planner` section.
+See the [Planner installation example](examples/cli/dynamo-planner/README.md).
+The root README examples use the replay adapter without Planner.
 
 ### Upgrade from standalone AIConfigurator
 
-Remove the former standalone distributions first so that only AISimulate owns
-the installed package files and legacy command:
+In an engine-only environment, remove the former distributions before upgrading:
 
+<!-- readme-check: release-upgrade -->
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
 python3 -m pip install --upgrade aisimulate
+python3 -m pip check
 ```
 
 ## Predict one deployment
@@ -102,6 +106,7 @@ python3 -m pip install --upgrade aisimulate
 `predict` evaluates one pinned deployment configuration. Save this example as
 `prediction.yaml`:
 
+<!-- readme-check: prediction-config -->
 ```yaml
 engine:
   mode: aggregated
@@ -114,6 +119,7 @@ engine:
 
 ### Engine-only prediction
 
+<!-- readme-check: engine-predict -->
 ```bash
 aisimulate predict \
   --stack engine \
@@ -121,8 +127,15 @@ aisimulate predict \
   --output-dir ./aisimulate-prediction
 ```
 
+### Python prediction API
+
+Use the same `prediction.yaml` with the
+[Python prediction API](docs/core-api.md#python-prediction-api).
+See the API reference for the runnable example, arguments and results.
+
 ### Dynamo-integrated prediction
 
+<!-- readme-check: dynamo-predict -->
 ```bash
 aisimulate predict \
   --stack dynamo \
@@ -135,7 +148,20 @@ report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
 
-For agentic trace replay, follow the [AgentX simulation quickstart](docs/agentx-quickstart.md).
+For example, use two-way tensor parallelism, capture requests, and replace the
+previous output with a JSON summary:
+
+<!-- readme-check: engine-options -->
+```bash
+aisimulate predict \
+  --stack engine \
+  --config prediction.yaml \
+  --set engine.workers.aggregated.parallelism.tensor=2 \
+  --capture-per-request --format json --overwrite \
+  --output-dir ./aisimulate-prediction > prediction-summary.json
+```
+
+For agentic trace replay, follow the [AgentX simulation quickstart](docs/replay/agentic/quickstart.md).
 It includes a Weka workload, a complete eight-GPU prefill/decode configuration,
 KV cache warmup, and commands for running and inspecting the simulation.
 
@@ -144,7 +170,13 @@ KV cache warmup, and commands for running and inspecting the simulation.
 `recommend` searches the prediction schema plus search domains and an
 optimization goal. Save this example as `recommendation.yaml`:
 
+<!-- readme-check: recommendation-config -->
 ```yaml
+traffic:
+  source: {type: synthetic, input_tokens: 1024, output_tokens: 128}
+  load: {type: concurrency, concurrency: 10}
+  stop: {requests: 100}
+
 engine:
   mode: aggregated
   model: Qwen/Qwen3-32B-FP8
@@ -159,10 +191,17 @@ optimization:
   hardware: h200_sxm
   constraints:
     max_candidate_gpus: 8
+
+optimizer:
+  max_trials: 8
 ```
+
+This quickstart limits the search to eight trials. Remove `optimizer.max_trials`
+for the default 320-trial search, which can take substantially longer.
 
 ### Engine-only recommendation
 
+<!-- readme-check: engine-recommend -->
 ```bash
 aisimulate recommend \
   --stack engine \
@@ -170,8 +209,15 @@ aisimulate recommend \
   --output-dir ./aisimulate-recommendation
 ```
 
+### Python recommendation API
+
+Use the same `recommendation.yaml` with the
+[Python recommendation API](docs/core-api.md#python-recommendation-api).
+See the API reference for the runnable example, arguments and results.
+
 ### Dynamo-integrated recommendation
 
+<!-- readme-check: dynamo-recommend -->
 ```bash
 aisimulate recommend \
   --stack dynamo \
@@ -183,14 +229,25 @@ Each file under `<output-dir>/recommendations/` is a fully materialized,
 concrete configuration. It contains no search domains and can be passed
 directly back to `predict`:
 
+<!-- readme-check: engine-roundtrip -->
 ```bash
 aisimulate predict \
   --config ./aisimulate-recommendation/recommendations/0001.yaml \
   --output-dir ./aisimulate-best-prediction
 ```
 
+For the Dynamo result, use the same stack on the round trip:
+
+<!-- readme-check: dynamo-roundtrip -->
+```bash
+aisimulate predict \
+  --stack dynamo \
+  --config ./aisimulate-dynamo-recommendation/recommendations/0001.yaml \
+  --output-dir ./aisimulate-dynamo-best-prediction
+```
+
 Both commands support `--set PATH=YAML_VALUE`, `--output-dir`, `--overwrite`,
-and `--format table|json`. See the [AISimulate CLI User Guide](docs/cli/user-guide.md) for the
+and `--format table|json`. See the [AISimulate CLI User Guide](docs/reference/cli.md) for the
 complete schema, traffic models, search domains, presets, outputs, and error
 contract.
 
@@ -201,6 +258,7 @@ workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
+<!-- readme-check: legacy-cli -->
 ```bash
 # Check whether a model/system combination is supported.
 aiconfigurator cli support \
@@ -225,10 +283,10 @@ The compatibility CLI preserves six workflows:
 | `generate` | Generate deployment artifacts without a parameter sweep |
 | `support` | Check model and system coverage |
 
-Read the [Legacy AIC CLI User Guide](docs/cli/legacy-aic-user-guide.md) for
+Read the [Legacy AIC CLI User Guide](docs/aic-backward-compatibility/cli.md) for
 command examples and the [package overview](python/aisimulate/README.md)
 for installation and current AISimulate workflows. The
-[AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
+[AIC migration guide](docs/aic-backward-compatibility/migration.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
 
@@ -263,16 +321,28 @@ decisions.
 Use the focused SDK documentation instead of treating CLI internals as public
 APIs:
 
-- [Estimator/FPE Python and Rust SDK](docs/core-api.md)
-- [AIC-compatible modeled-power contract (semantics only)](docs/power-model.md)
-- [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
+- [Estimator/FPE Python and Rust SDK](docs/perf-model/api/python.md)
+- [Prediction and recommendation Python APIs](docs/core-api.md#python-prediction-api)
+- [FPM self-service: onboard a model on target hardware](docs/perf-model/fpm-self-service/README.md)
+- [FPM self-service implementation and CLI reference](docs/perf-model/fpm-self-service/implementation.md)
+- [FPM self-service examples](docs/perf-model/fpm-self-service/examples.md)
+- [AIC-compatible modeled-power contract (semantics only)](docs/perf-model/power.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
-- [Sweeper SDK](docs/sweeper/overview.md)
-- [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)
+- [Sweeper SDK](docs/sweeper/README.md)
+- [Legacy CLI reference](docs/aic-backward-compatibility/cli.md)
+
+### Whole-forward FPM data
+
+Open-source whole-forward FPM datasets are hosted on
+[Hugging Face](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset).
+FPM prediction requires a Parquet dataset and its adjacent, same-stem
+`.metadata.json` sidecar. See the
+[core API guide](docs/perf-model/methods/whole-forward.md#external-whole-forward-fpm-data) for
+configuration and compatibility fields.
 
 ## Support and accuracy
 
-[Understand your prediction](docs/cli/understand-your-prediction.md) explains
+[Understand your prediction](docs/getting-started/understand-results.md) explains
 report fields, latency populations, incomplete requests, and SLA interpretation.
 
 Support coverage and accuracy are separate evidence. A supported cell means a
@@ -287,7 +357,7 @@ reservation before allocating KV cache and preserves it when the native replay
 runtime rematerializes capacity. For SGLang, the value is additional to the
 graph/runtime headroom already encoded by `mem_fraction_static`. The default is
 zero, so existing serialized callers do not change. See the
-[core API contract](docs/core-api.md#kv-cache-capacity-reservation).
+[core API contract](docs/perf-model/memory.md#kv-cache-capacity-reservation).
 
 ### FPE support matrix
 
@@ -300,8 +370,9 @@ Sweeper, serving orchestration, or prediction accuracy.
 
 The matrix was introduced in
 [AISimulate PR #41](https://github.com/ai-dynamo/aisimulate/pull/41). Nightly
-CI refreshes the complete matrix at the nightly source SHA before release
-artifacts advance to Artifactory.
+CI refreshes the complete matrix from the staged nightly wheel at its source
+SHA. Qualification gates the later GitLab security handoff, not initial
+Artifactory staging.
 
 ### AIC CLI support matrix
 
@@ -310,10 +381,12 @@ disaggregated workflows by model, system, backend, and backend version:
 
 - [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 - [AIC support-matrix data](python/aisimulate/src/aisimulate_core/systems/support_matrix/)
-- [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
+- [Curated model roster](docs/aic-backward-compatibility/support-matrix.md)
 
-Check one exact cell from the installed package with:
+Check one exact cell from the installed package with (this cell currently reports
+`NO`; exit status zero means the support query completed, not that it is supported):
 
+<!-- readme-check: support-negative -->
 ```bash
 aiconfigurator cli support \
   --model-path Qwen/Qwen3-32B-FP8 \
@@ -330,7 +403,7 @@ matched measured-silicon operating points. It is evidence for the measured
 configurations, not a universal support contract.
 
 Forward-pass accuracy is tracked separately; see the
-[prediction regression and accuracy design](python/aisimulate/docs/design/prediction_regression_gate_design.md)
+[prediction regression and accuracy design](docs/ci/accuracy.md#prediction-regression-gate)
 and the current [silicon anchor set](python/aisimulate/tools/accuracy_tracking/silicon_refs.csv).
 
 ## Release artifacts and compatibility
@@ -352,7 +425,7 @@ It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 `aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
-[Python source migration](docs/python-source-migration.md) for removed imports.
+[Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
@@ -365,19 +438,31 @@ are the canonical repository legal files. Because the Python wheel build is
 rooted at `python/aisimulate/`, byte-identical copies are retained there so the
 wheel can declare and distribute them. These copies do not create a separate
 licensing boundary, and CI fails if either copy differs from its root original.
-See the [artifact contract](docs/artifact-contract.md#packaged-license-files) for
+See the [artifact contract](docs/ci/release.md#packaged-license-files) for
 the complete packaging contract.
 
 ## Develop from source
 
+Install Python 3.12, `uv`, Rust/Cargo, and a C/C++ compiler first. From an empty
+working directory (set `AISIMULATE_REF` to an exact commit for reproducibility):
+
+<!-- readme-check: source-install -->
 ```bash
 git clone https://github.com/ai-dynamo/aisimulate.git
 cd aisimulate
+git checkout "${AISIMULATE_REF:-main}"
 
-uv venv .venv
+uv venv --python 3.12 --seed .venv
 source .venv/bin/activate
 uv pip install -e ./python/aisimulate
+python -m pip check
 ```
+
+After pulling native Rust changes, rebuild the editable installation with
+`uv pip install --reinstall-package aisimulate -e ./python/aisimulate`.
+A missing `_runtime` attribute such as `SglangPrefillAttentionSequence` usually
+means the Python source and compiled extension are from different revisions.
+Run the command in the environment that owns your `aiconfigurator` executable.
 
 Current performance profiles are checked-in Parquet files, so normal builds
 and usage do not require Git LFS. Install Git LFS and run `git lfs pull` only
@@ -399,15 +484,47 @@ that were measured. It is not a universal support or deployment-certification
 claim. Forward-pass accuracy and strict-native estimator coverage remain
 separate evidence lanes.
 
-For a quick local validation subset:
+For complete local validation, start in the repository root with the source
+virtual environment active. Keep this environment engine-only; Dynamo's pytest
+plugins and optional modules can interfere with isolated package tests.
 
+<!-- readme-check: test-install -->
 ```bash
-cargo test --workspace
-python -m pytest -c pytest.ini tests
-python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
+uv pip install -e './python/aisimulate[dev]' 'maturin>=1.12,<2' 'pip-licenses==5.5.5'
+uv pip install -r scripts/fpm_accuracy/requirements.txt
+python -m pip check
+git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
 ```
 
-See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
+These tests need network access for model metadata. Use valid Hugging Face
+credentials, or anonymous access to public models. For anonymous metadata access,
+set `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`; custom token/cache locations use
+`HF_TOKEN_PATH`, `HF_HOME`, and `XDG_CACHE_HOME` (including `~/` paths).
+The per-process Git settings
+below disable signing only for temporary test repositories. On macOS, append
+`-p no:timeout` to pytest to avoid SIGALRM crash dialogs.
+
+<!-- readme-check: rust-tests -->
+```bash
+cargo test --workspace
+```
+
+<!-- readme-check: root-tests -->
+```bash
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  PYTHONPATH="$PWD/python/aisimulate:$PWD/python/aisimulate/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python -m pytest -c pytest.ini tests
+```
+
+<!-- readme-check: package-tests -->
+```bash
+(cd python/aisimulate && \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+  PYTHONPATH="$PWD:$PWD/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python -m pytest -c pytest.ini tests -m "unit or build")
+```
+
+See the [CI guide](docs/ci/README.md) for the Fast/Full/Nightly hierarchy, code review,
 complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
 for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
 before sending a change.

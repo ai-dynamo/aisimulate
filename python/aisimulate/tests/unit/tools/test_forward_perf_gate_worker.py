@@ -78,7 +78,7 @@ def test_additional_profiles_preserve_original_cache_groups() -> None:
 
 def test_workflow_filters_cover_matrix_dependencies() -> None:
     repo_root = Path(__file__).resolve().parents[5]
-    matches_path = runpy.run_path(str(repo_root / "scripts/select_forward_perf.py"))["matches_path"]
+    matches_path = runpy.run_path(str(repo_root / "scripts/performance/select_forward_perf.py"))["matches_path"]
     dependencies = set()
     for case in cases.expand_cases():
         root = "python/aisimulate/src/aisimulate_core"
@@ -105,7 +105,7 @@ def test_request_validation_rejects_protocol_and_case_drift() -> None:
     request = _request()
     assert worker.validate_request(request)[0]["case_id"] == request["case"]["case_id"]
 
-    request["protocol_version"] = 2
+    request["protocol_version"] = 1
     with pytest.raises(ValueError, match="protocol_version"):
         worker.validate_request(request)
 
@@ -113,6 +113,27 @@ def test_request_validation_rejects_protocol_and_case_drift() -> None:
     request["case"] = {**request["case"], "unexpected": True}
     with pytest.raises(ValueError, match="unknown"):
         worker.validate_request(request)
+
+
+def test_single_case_cli_returns_one_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    request = _request()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps(request))
+    expected = {"case_id": request["case"]["case_id"], "status": "OK"}
+    calls = []
+
+    def fake_run_case_group(group, *, warmup, iterations, revision):
+        calls.append((group, warmup, iterations, revision))
+        return [expected]
+
+    monkeypatch.setattr(worker, "_run_case_group", fake_run_case_group)
+    monkeypatch.setattr(worker.sys, "argv", ["worker.py", "--request", str(request_path), "--pretty"])
+
+    assert worker.main() == 0
+    assert calls == [([request["case"]], request["warmup"], request["iterations"], request["revision"])]
+    assert json.loads(capsys.readouterr().out) == expected
 
 
 def test_batch_request_validation_requires_unique_cases() -> None:
@@ -172,11 +193,14 @@ def test_worker_reraises_control_flow(error: BaseException) -> None:
 
 
 def test_missing_database_is_a_data_miss(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(measurement.perf_database, "get_database_view", lambda *args, **kwargs: None)
+    def missing_database(*args, **kwargs):
+        assert kwargs == {"database_mode": "SILICON", "shared_layer": True}
+        return None
+
+    monkeypatch.setattr(measurement.perf_database, "get_database_view", missing_database)
     with pytest.raises(PerfDataNotAvailableError, match="failed to load perf database"):
         measurement.build_session(
             measurement.BenchmarkCase(model_path="model"),
-            suppress_loader_output=True,
             database_mode="SILICON",
         )
 
@@ -252,7 +276,6 @@ def test_batch_evicts_outgoing_database_on_configuration_changes(monkeypatch: py
         return lambda: 1.0
 
     monkeypatch.setattr(measurement.perf_database, "unload_database", unload)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(worker, "measure_session_setup_ms", setup)
     monkeypatch.setattr(worker, "phase_call", phase_call)
     monkeypatch.setattr(worker, "measure_cold_and_warm", lambda *args, **kwargs: (1.0, 10.0, [5.0], {}))
@@ -274,7 +297,6 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
     runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=grid.CTX_OSL)
 
     monkeypatch.setattr(worker, "clear_caches", lambda case: reset_calls.append(case))
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
 
     def fake_setup(*args: object, **kwargs: object) -> tuple[float, object, object]:
         setup_calls.append(None)
@@ -308,7 +330,6 @@ def test_case_group_resets_and_builds_once_and_continues_after_case_failure(
 def test_case_group_isolates_base_exception_during_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     selected = cases.expand_cases()[:9]
     monkeypatch.setattr(worker, "clear_caches", lambda case: None)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(
         worker,
         "measure_session_setup_ms",
@@ -336,7 +357,6 @@ def test_priming_failure_is_limited_to_one_phase(
     runtime = measurement.config.RuntimeConfig(batch_size=1, isl=1024, osl=grid.CTX_OSL)
 
     monkeypatch.setattr(worker, "clear_caches", lambda case: None)
-    monkeypatch.setattr(worker, "ensure_rust_library_present", lambda: None)
     monkeypatch.setattr(
         worker,
         "measure_session_setup_ms",
@@ -419,21 +439,21 @@ def test_cache_reset_uses_public_database_eviction(monkeypatch: pytest.MonkeyPat
     assert calls == [("b200_sxm", "vllm", "0.24.0")]
 
 
-def test_run_worker_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_worker_batch_rejects_non_object_json(monkeypatch: pytest.MonkeyPatch) -> None:
     completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="null\n", stderr="warning\n")
     monkeypatch.setattr(gate_run.subprocess, "run", lambda *args, **kwargs: completed)
-    response = gate_run.run_worker(
+    results, error = gate_run.run_worker_batch(
         python=Path("/python"),
         worker=Path("/worker"),
         revision="abc123",
-        case=cases.expand_cases()[0],
+        cases=cases.expand_cases()[:1],
         warmup=0,
         iterations=1,
         cpu=0,
         timeout=1.0,
     )
-    assert response["status"] == "WORKER_ERROR"
-    assert response["error"]["message"] == "worker JSON must be an object, got NoneType"
+    assert results == []
+    assert error == "worker JSON must be an object, got NoneType"
 
 
 @pytest.mark.parametrize(
@@ -474,8 +494,17 @@ def test_run_worker_batch_rejects_incomplete_duplicate_or_reordered_results(
     assert "do not match the request" in error
 
 
-def test_run_worker_batch_reports_process_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    completed = subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr="boom")
+@pytest.mark.parametrize(
+    ("stderr", "expected_tail"),
+    [
+        ("boom", "boom"),
+        ("discarded output\n" * 300 + "x" * 1996 + "boom\n", "x" * 1996 + "boom"),
+    ],
+)
+def test_run_worker_batch_reports_process_failure(
+    monkeypatch: pytest.MonkeyPatch, stderr: str, expected_tail: str
+) -> None:
+    completed = subprocess.CompletedProcess(args=[], returncode=7, stdout="", stderr=stderr)
     monkeypatch.setattr(gate_run.subprocess, "run", lambda *args, **kwargs: completed)
     results, error = gate_run.run_worker_batch(
         python=Path("/python"),
@@ -488,12 +517,49 @@ def test_run_worker_batch_reports_process_failure(monkeypatch: pytest.MonkeyPatc
         timeout=1.0,
     )
     assert results == []
-    assert error == "WORKER_ERROR: exit 7: boom"
+    assert error == f"WORKER_ERROR: exit 7: {expected_tail}"
 
 
-def test_full_controller_uses_twelve_batch_processes_and_alternates_case_order(
+@pytest.mark.parametrize(
+    ("response", "expected_error"),
+    [
+        (subprocess.TimeoutExpired(cmd=[], timeout=1.0), "TIMEOUT: worker exceeded 1s"),
+        (
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="not json", stderr=""),
+            "WORKER_ERROR: invalid JSON: Expecting value: line 1 column 1 (char 0): not json",
+        ),
+    ],
+)
+def test_run_worker_batch_reports_timeout_and_malformed_json(
+    monkeypatch: pytest.MonkeyPatch,
+    response: subprocess.CompletedProcess | subprocess.TimeoutExpired,
+    expected_error: str,
+) -> None:
+    def fake_run(*args, **kwargs):
+        if isinstance(response, subprocess.TimeoutExpired):
+            raise response
+        return response
+
+    monkeypatch.setattr(gate_run.subprocess, "run", fake_run)
+    results, error = gate_run.run_worker_batch(
+        python=Path("/python"),
+        worker=Path("/worker"),
+        revision="abc123",
+        cases=cases.expand_cases()[:1],
+        warmup=0,
+        iterations=1,
+        cpu=0,
+        timeout=1.0,
+    )
+    assert results == []
+    assert error == expected_error
+
+
+@pytest.mark.parametrize("missing_sides", [(), ("base",), ("head",), ("base", "head")])
+def test_full_controller_checks_availability_before_paired_rounds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    missing_sides: tuple[str, ...],
 ) -> None:
     selected = cases.expand_cases()[:2]
     executable = tmp_path / "python"
@@ -512,7 +578,8 @@ def test_full_controller_uses_twelve_batch_processes_and_alternates_case_order(
                     "revision": revision,
                     "case_id": case["case_id"],
                     "case_hash": worker.canonical_case_hash(case),
-                    "status": "OK",
+                    "status": "DATA_MISS" if revision in missing_sides else "OK",
+                    "error": {"type": "PRIMING_FAILED", "message": "missing GEMM data"},
                     "cold_us": 100_000.0,
                     "warm": {"call_median_us": 100.0},
                 }
@@ -545,8 +612,17 @@ def test_full_controller_uses_twelve_batch_processes_and_alternates_case_order(
     monkeypatch.setattr(gate_run, "run_worker_batch", fake_batch)
     monkeypatch.setattr(gate_run, "_command_version", lambda command: "test")
 
-    assert gate_run.main() == 0
+    assert gate_run.main() == int(bool(missing_sides))
     raw = json.loads((output_dir / "raw_results.json").read_text())
+    if missing_sides:
+        assert len(calls) == 2
+        assert raw["worker_processes"] == 2
+        summary = (output_dir / "summary.md").read_text().split("<details>", maxsplit=1)[0]
+        assert "**FAIL**" in summary
+        assert selected[0]["case_id"] in summary
+        assert "PRIMING_FAILED missing GEMM data" in summary
+        assert (output_dir / "annotations.txt").read_text()
+        return
     forward = [case["case_id"] for case in selected]
     assert raw["worker_processes"] == 12
     assert len(calls) == 12

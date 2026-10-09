@@ -15,8 +15,8 @@ from typing import Any, Protocol
 
 import yaml
 
-from fpm_accuracy.contract import strict_json
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from scripts.fpm_accuracy.contract import strict_json
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DependencyError
 
 
 class FpmArtifactSource(Protocol):
@@ -49,6 +49,8 @@ def prepare_aic_fpm_database(
     if not parquet_path.is_file() or not metadata_path.is_file():
         raise ConfigurationError(f"FPM artifact {artifact.artifact_id!r} is not materialized locally")
     metadata = _read_metadata(metadata_path)
+    if metadata.get("schema_version") == 7:
+        raise DependencyError("FPM schema v7 execution identity is not yet supported by the Gym worker adapter.")
 
     temporary = TemporaryDirectory(prefix="aisim-fpm-")
     systems_root = Path(temporary.name)

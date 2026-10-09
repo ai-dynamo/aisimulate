@@ -9,13 +9,14 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
-from .cli_args import _apply_overrides, _CliConfigError, _load_mapping, build_parser
-from .compiler import prediction_to_replay_spec
+from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
@@ -28,18 +29,27 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, energy_diagnostics, prediction_summary
+from .detail import build_prediction_details, energy_diagnostics
+from .estimator_readiness import perf_data_missing_message
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
+    write_fpm_coverage,
     write_prediction_report,
     write_recommendation_csv,
     write_recommendation_result,
     write_recommendations,
     write_requests,
 )
+from .output_adapter import (
+    OutputAdapterExecutionError,
+    OutputAdapterResolutionError,
+    resolve_output_adapters,
+    write_output_adapters,
+)
 from .power import normalize_power_summary
+from .predict import PredictionExecutionError, run_prediction
 from .resources import (
     GuardedRunnerFactory,
     ResourceLimitError,
@@ -48,12 +58,67 @@ from .resources import (
     workload_bounds,
 )
 from .stack import StackResolutionError, resolve_runner_factory
+from .support.cli import run_support_command
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
 
 
 class _CliExecutionError(RuntimeError):
     pass
+
+
+def _write_incomplete_fpm_coverage(root: Path, error: BaseException) -> None:
+    coverage = getattr(error, "fpm_query_coverage", None)
+    try:
+        if isinstance(coverage, str):
+            coverage = json.loads(coverage)
+        if isinstance(coverage, dict):
+            write_fpm_coverage(root, {**coverage, "status": "incomplete", "error": str(error)})
+    except (ValueError, OSError) as write_error:
+        sys.stderr.write(f"could not save FPM coverage: {write_error}\n")
+
+
+class _PredictionCliRunner:
+    def __init__(self, runner, output_root: Path, mark_execution_ready, mark_shutdown) -> None:
+        self._runner = runner
+        self._output_root = output_root
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+
+    def run(self, spec, *, output_requirements=None):
+        try:
+            return self._runner.run(spec, output_requirements=output_requirements)
+        except BaseException as exc:
+            # Persist native query evidence before close() can replace the
+            # execution error.
+            _write_incomplete_fpm_coverage(self._output_root, exc)
+            raise
+
+    def close(self) -> None:
+        self._mark_shutdown()
+        try:
+            self._runner.close()
+        finally:
+            self._mark_execution_ready()
+
+
+class _PredictionCliRunnerFactory:
+    def __init__(self, factory, output_dir, overwrite, mark_execution_ready, mark_shutdown) -> None:
+        self._factory = factory
+        self._output_dir = output_dir
+        self._overwrite = overwrite
+        self._mark_execution_ready = mark_execution_ready
+        self._mark_shutdown = mark_shutdown
+        self.output_root: Path | None = None
+
+    def capabilities(self):
+        return self._factory.capabilities()
+
+    def create(self, worker_id):
+        self.output_root = prepare_output_directory(self._output_dir, overwrite=self._overwrite)
+        runner = self._factory.create(worker_id)
+        self._mark_execution_ready()
+        return _PredictionCliRunner(runner, self.output_root, self._mark_execution_ready, self._mark_shutdown)
 
 
 def _resolve_section_adapters(sections: dict[str, dict[str, Any]], stack: str) -> dict[str, SimulationConfigAdapter]:
@@ -107,63 +172,35 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if analytical_epd and args.capture_per_request:
         raise ValueError("analytical EPD cannot capture per-request records")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
-    adapter_specs = _compile_prediction_adapters(
-        adapter_raw,
-        adapters,
-        stack=args.stack,
-        context=_prediction_adapter_context(config),
+    factory = _PredictionCliRunnerFactory(
+        factory,
+        args.output_dir,
+        args.overwrite,
+        mark_execution_ready,
+        mark_shutdown,
     )
-    spec = prediction_to_replay_spec(
+    result = run_prediction(
         config,
-        adapter_specs=adapter_specs,
+        adapter_configs=adapter_raw,
+        stack=args.stack,
+        runner_factory=factory,
+        providers=adapters,
         execution_mode="online" if args.online else "offline",
+        output_requirements=ReplayOutputRequirements(
+            include_raw_report=not analytical_epd,
+            capture_per_request=args.capture_per_request,
+            capture_memory_diagnostics="memory" in args.detail,
+            capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
+        ),
     )
-    factory.capabilities().require_compatible(spec)
-    root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
-    runner = factory.create(0)
-    mark_execution_ready()
-    try:
-        try:
-            report = runner.run(
-                spec,
-                output_requirements=ReplayOutputRequirements(
-                    include_raw_report=not analytical_epd,
-                    capture_per_request=args.capture_per_request,
-                    capture_memory_diagnostics="memory" in args.detail,
-                    capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
-                ),
-            )
-        except (KeyboardInterrupt, ResourceLimitError):
-            raise
-        except Exception as exc:
-            raise _CliExecutionError(f"{type(exc).__name__}: {exc}") from exc
-    finally:
-        mark_shutdown()
-        runner.close()
-        mark_execution_ready()
-    native = report.metadata.get("native_report")
-    if not isinstance(native, dict):
-        native = {"summary": dict(report.metrics)}
-    if analytical_epd:
-        native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
-        if "memory_diagnostics" in native["metadata"]:
-            native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
-        # JSON stdout, like prediction.json, must identify the approximation.
-        native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-    # The aggregated or the prefill worker hosts the measured frontend stages.
-    for role in ("aggregated", "prefill"):
-        vl = (spec.backend_deployment.performance_model_metadata.get(role) or {}).get("vl")
-        if isinstance(vl, dict):
-            native = {**native, "vl": vl}
-    summary = prediction_summary(native)
-    summary.update(normalize_power_summary(report.metrics))
-    if encoder is not None:
-        # Both tiers' GPUs, reported alike by the analytical overlay and the native pool.
-        summary["total_gpus"] = report.metadata["total_gpus"]
-    if "summary" in native:
-        native = {**native, "summary": summary}
-    else:
-        native = {**native, **summary}
+    root = factory.output_root
+    if root is None:
+        raise RuntimeError("prediction runner was not created")
+    spec = result.replay_spec
+    summary = result.summary
+    native = result.native
+    if isinstance(native.get("fpm_query_coverage"), dict):
+        write_fpm_coverage(root, native["fpm_query_coverage"])
     power_diagnostics = None
     if args.diagnostics == "power":
         power_diagnostics = energy_diagnostics(native)
@@ -194,7 +231,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if any(not isinstance(record, dict) for record in records):
             raise RuntimeError("per-request records must be JSON mappings")
         write_requests(root, records)
-    phases = report.metadata.get("agentic_phases")
+    phases = result.report.metadata.get("agentic_phases")
     if isinstance(phases, dict) and phases.get("phase") == "aborted":
         sys.stderr.write(
             f"ERROR: agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}; "
@@ -216,9 +253,32 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     return 0
 
 
+def _scheduler_variant_key(candidate, concrete: dict[str, Any]) -> str | None:
+    """Fold only scheduler-limit variants with identical complete predictions.
+
+    All other inputs and reported metrics must match, not merely the score.
+    The full result ledger retains every evaluated configuration.
+    """
+    if not candidate.metrics:
+        return None
+    normalized = deepcopy(concrete)
+    for worker in normalized.get("engine", {}).get("workers", {}).values():
+        scheduler = worker.get("scheduler", {})
+        scheduler.pop("max_batched_tokens", None)
+        scheduler.pop("max_sequences", None)
+    return json.dumps(
+        [normalized, candidate.score, candidate.objectives, candidate.metrics],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
 def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     from .recommend import run_recommendation
 
+    raw, output_configs = _extract_output_configs(raw, getattr(args, "outputs", []), stack=args.stack)
+    output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
@@ -228,10 +288,13 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         stack=args.stack,
         runner_factory=factory,
         providers=adapters,
+        output_configs=output_configs,
         show_progress=args.format == "table",
     )
     selected: list[tuple[str, Any, dict[str, Any]]] = []
     seen_configs: set[str] = set()
+    seen_variants: set[str] = set()
+    folded = 0
     for candidate_id, candidate in zip(
         result.selected_candidate_ids,
         result.selected_candidates,
@@ -258,6 +321,12 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         if config_key in seen_configs:
             continue
         seen_configs.add(config_key)
+        variant_key = _scheduler_variant_key(candidate, concrete)
+        if variant_key is not None:
+            if variant_key in seen_variants:
+                folded += 1
+                continue
+            seen_variants.add(variant_key)
         selected.append((candidate_id, candidate, concrete))
     result = result.with_selected_prediction_configs(
         [(candidate_id, concrete) for candidate_id, _, concrete in selected]
@@ -265,10 +334,24 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     root = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
     result_path = write_recommendation_result(root, result)
     write_recommendation_csv(root, result)
+    if folded:
+        sys.stderr.write(
+            f"Folded {folded} scheduler-limit variant(s) with identical predicted metrics; "
+            "all evaluated candidates remain in recommendation.json and recommendation.csv\n"
+        )
     if not selected:
         sys.stderr.write(f"no feasible candidate found; saved full result to: {result_path}\n")
         return 3 if getattr(result.counts, "resource_limited", 0) else 1
     paths = write_recommendations(root, [config for _, _, config in selected])
+    try:
+        write_output_adapters(
+            output_adapters,
+            output_configs,
+            result=result,
+            output_dir=root,
+        )
+    except OutputAdapterExecutionError as exc:
+        raise _CliExecutionError(str(exc)) from exc
     rows = []
     for index, ((_, candidate, _), path) in enumerate(zip(selected, paths, strict=True), start=1):
         row = {
@@ -309,6 +392,13 @@ def _write_resource_plan(args, plan: dict[str, Any]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.command == "onboard":
+        try:
+            return run_support_command(args)
+        except (ValidationError, ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)
@@ -323,6 +413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (
         _CliConfigError,
         ConfigAdapterResolutionError,
+        OutputAdapterResolutionError,
         ValidationError,
         ValueError,
     ) as exc:
@@ -336,8 +427,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as output_error:
             sys.stderr.write(f"could not save resource plan: {output_error}\n")
         return 3
-    except _CliExecutionError as exc:
-        sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
+    except PredictionExecutionError as exc:
+        message = perf_data_missing_message(exc) or str(exc)
+        sys.stderr.write(f"aisimulate {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")

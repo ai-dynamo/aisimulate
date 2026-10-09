@@ -1,0 +1,1206 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""The onboarding plan stays usable before model integration or GPU collection."""
+
+from __future__ import annotations
+
+import builtins
+import fcntl
+import inspect
+import json
+import os
+import select
+import shlex
+import subprocess
+import sys
+import zipfile
+from contextlib import contextmanager
+from importlib.machinery import PathFinder
+from importlib.resources import files
+from pathlib import Path
+from types import SimpleNamespace
+from typing import ClassVar
+
+import pytest
+from pydantic import ValidationError
+
+from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.support.fpm import run_fpm
+from aisimulate.support.plan import check_plan, create_plan, plan_lock, request_id, validation_id
+from aisimulate.support.schema import SupportRequest
+
+pytestmark = pytest.mark.unit
+
+
+class _OfflineRunner:
+    def run(self, spec):
+        from aisimulate.sweeper.replay import ReplayReport
+
+        return ReplayReport(metrics={"output_throughput_tok_s": 10.0, "gpu_hours": 1.0})
+
+    def close(self):
+        pass
+
+
+class _OfflineRunnerFactory:
+    def capabilities(self):
+        from aisimulate.sweeper.replay import RunnerCapabilities
+
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+
+    def create(self, worker_id):
+        return _OfflineRunner()
+
+
+class _OfflinePerfModel:
+    requests: ClassVar[list[dict]] = []
+
+    @classmethod
+    def best_available(cls, request):
+        import aisimulate_core
+
+        payload = request.to_dict()
+        cls.requests.append(payload)
+        config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+        return cls(config)
+
+    def __init__(self, config):
+        self.config = config
+
+    def diagnostics(self):
+        return {
+            "readiness": "ready",
+            "provenance": {
+                "config": self.config,
+                "selected_systems_root": self.config["systems_paths"][0],
+                "requested_estimation_mode": "fpm_interpolation",
+                "selected_estimation_mode": "fpm_interpolation",
+                "selection_failures": [],
+            },
+        }
+
+    def close(self):
+        pass
+
+
+def _assert_estimator_requests(requests, systems_root, moe_tensor):
+    expected = {
+        "model": "unregistered/Example Model",
+        "system": "h200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.25.1",
+        "worker_type": "aggregated",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp_size": moe_tensor if moe_tensor > 1 else None,
+        "moe_ep_size": 1 if moe_tensor > 1 else None,
+        "kv_block_size": 64,
+        "systems_paths": [str(systems_root)],
+        "estimation_mode": "fpm_interpolation",
+        "fallback_policy": "deny",
+        "database_mode": "SILICON",
+        "estimator_config": {},
+    }
+    for request in requests:
+        assert {key: request[key] for key in expected} == expected
+
+
+def _request(**updates) -> SupportRequest:
+    payload = {
+        "identity": {
+            "model": "unregistered/Example Model",
+            "model_revision": "checkpoint-2026-09-14",
+            "model_kind": "moe",
+            "framework_version": "0.25.1",
+            "runtime_framework_version": "0.25.1",  # Synthetic observed runtime for execution/resume fixtures.
+            "gpu": "h200_sxm",
+            "interconnect": "NVLink",
+        },
+        "search": {"tensor_parallel": 4},
+    }
+    for section, values in updates.items():
+        payload.setdefault(section, {}).update(values)
+    return SupportRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"identity": {"model_kind": "auto"}},
+        {"identity": {"model_revision": "main"}},
+        {"identity": {"framework_version": " "}},
+        {"identity": {"gpu": "../h200_sxm"}},
+        {"search": {"moe_tensor_parallel": 2}},
+        {"search": {"tensor_parallel": True}},
+        {"search": {"context_length": 1151}},
+        {"workload": {"input_tokens": 0}},
+        {"workload": {"request_count": 0}},
+        {"workload": {"concurrency": 5}},
+        {"workload": {"slo": {"ttft_ms": float("inf"), "tpot_ms": 1.0}}},
+        {"workload": {"slo": {"ttft_ms": 1.0, "tpot_ms": True}}},
+        {"collection": {"gpu_memory_utilization": True}},
+        {"collection": {"gpu_memory_utilization": "0.8"}},
+        {"collection": {"gpu_memory_utilization": float("nan")}},
+        {"collection": {"gpu_memory_utilization": 0.0}},
+        {"collection": {"gpu_memory_utilization": 1.1}},
+        {"collection": {"prefill_cudagraph_policy": "runtime", "max_prefill_cudagraph_size": 512}},
+    ],
+)
+def test_request_rejects_invalid_topology_workload_and_identity(updates):
+    with pytest.raises(ValidationError):
+        _request(**updates)
+
+
+@pytest.mark.parametrize(
+    "updates,field",
+    [
+        ({"identity": {"gpu_count": 4}}, "identity.gpu_count"),
+        ({"identity": {"node_count": 1}}, "identity.node_count"),
+        ({"identity": {"gpus_per_node": 4}}, "identity.gpus_per_node"),
+        ({"search": {"max_candidates": 1}}, "search.max_candidates"),
+        ({"search": {"max_candidates": 2}}, "search.max_candidates"),
+    ],
+)
+def test_legacy_allocation_fields_require_explicit_request_migration(updates, field):
+    with pytest.raises(ValidationError) as error:
+        _request(**updates)
+    message = str(error.value)
+    assert field in message
+    assert "Copy the request, remove these fields" in message
+    assert "new output directory" in message
+    assert "ordinary predict/recommend configs" in message
+
+
+def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path, monkeypatch):
+    real_import = builtins.__import__
+
+    def no_model_or_collector_import(name, *args, **kwargs):
+        assert not name.startswith(("collector", "huggingface_hub", "transformers")), name
+        assert ".sdk.models" not in name, name
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_model_or_collector_import)
+    request = _request()
+    root = tmp_path / "plan with 'quotes'"
+    plan = create_plan(request, root)
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    assert SupportRequest.from_yaml(root / "request.yaml") == request
+    assert json.loads((root / "support-plan.json").read_text()) == plan
+    assert prediction.engine.systems_paths == [str(root / "systems")]
+    assert recommendation.engine.systems_paths == prediction.engine.systems_paths
+    assert prediction.engine.model == "unregistered/Example Model"
+    worker = prediction.engine.workers.aggregated
+    assert worker.timing.type == "default"
+    assert worker.timing.estimation_mode == "fpm_interpolation"
+    assert worker.timing.fallback_policy == "deny"
+    assert worker.parallelism.model_dump() == {
+        "replicas": 1,
+        "tensor": 4,
+        "pipeline": 1,
+        "attention_data": 1,
+        "moe_tensor": 4,
+        "moe_expert": 1,
+        "prefill_context": None,
+        "decode_context": None,
+    }
+    assert recommendation.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"
+    assert recommendation.engine.workers.aggregated.timing.fallback_policy == "deny"
+    assert recommendation.optimizer.max_trials == 1
+    assert recommendation.optimizer.parallelism == 1
+    assert plan["search"]["candidate_count"] == 1
+    assert "single-worker validation" in plan["search"]["detail"]
+    assert {item["status"] for item in plan["prerequisites"]} == {"not_checked"}
+    assert plan["accuracy"]["status"] == "not_assessed"
+    assert (root / "systems/h200_sxm.yaml").is_file()
+    assert not list((root / "systems/data").iterdir())
+    assert not (root / "evidence.yaml").exists()
+
+
+@pytest.mark.parametrize("limit", [None, 512])
+def test_legacy_collection_policy_round_trip_retains_identity_and_launch_arguments(tmp_path, limit):
+    request = _request(collection={} if limit is None else {"max_prefill_cudagraph_size": limit})
+    serialized = request.model_dump(mode="json", exclude_none=True)
+    assert "prefill_cudagraph_policy" not in serialized["collection"]
+    assert "gpu_memory_utilization" not in serialized["collection"]
+    assert request.collection.prefill_cudagraph_policy == "explicit"
+    assert request.collection_settings()["max_prefill_cudagraph_size"] == (limit or 2048)
+    plan = create_plan(request, tmp_path / "plan")
+    saved = SupportRequest.from_yaml(tmp_path / "plan/request.yaml")
+    assert request_id(saved) == request_id(request)
+    assert saved.model_dump(mode="json", exclude_none=True) == serialized
+    check_plan(saved, tmp_path / "plan")
+    command = plan["fpm"]["plan_command"]
+    assert "--fpm-prefill-cudagraph-policy" not in command
+    assert "--fpm-gpu-memory-utilization" not in command
+    if limit is None:
+        assert "--fpm-max-prefill-cudagraph-size" not in command
+    else:
+        assert command[command.index("--fpm-max-prefill-cudagraph-size") + 1] == str(limit)
+
+
+def test_onboarding_plan_and_preview_do_not_import_estimator_runtime(tmp_path):
+    request = tmp_path / "request.json"
+    request.write_text(_request().model_dump_json())
+    root = tmp_path / "plan"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import importlib.abc
+import sys
+from pathlib import Path
+
+blocked = ("aisimulate._runtime", "aisimulate_core._native", "aisimulate_core.sdk", "aiconfigurator",
+           "aiconfigurator_core", "numpy", "pandas", "torch", "transformers", "huggingface_hub", "collector")
+
+class NoEstimatorRuntime(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "aisimulate_core":
+            return None  # Resource lookup may inspect the package spec without importing it.
+        assert not any(fullname == name or fullname.startswith(name + ".") for name in blocked), fullname
+
+sys.meta_path.insert(0, NoEstimatorRuntime())
+from aisimulate.supervision import main
+
+request, output = sys.argv[1:]
+assert main(["onboard", "plan", "--config", request, "--output-dir", output, "--format", "json"]) == 0
+assert main(["onboard", "collect-fpm", "--config", request, "--output-dir", output]) == 0
+assert (Path(output) / "systems/h200_sxm.yaml").is_file()
+assert not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules for prefix in blocked)
+""",
+            str(request),
+            str(root),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (root / "fpm-checkpoint").exists()
+    assert not (root / "fpm-artifacts").exists()
+
+
+@pytest.mark.parametrize("model_kind,preset,moe_tensor", [("dense", "tp", 1), ("moe", "pure_tp", 4)])
+def test_plan_collects_one_chosen_worker_and_generates_validation_configs(tmp_path, model_kind, preset, moe_tensor):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    request = _request(identity={"model_kind": model_kind})
+    plan = create_plan(request, tmp_path)
+    configs = [CoreRecommendationConfig.from_yaml(path) for path in plan["outputs"]["recommendation_configs"]]
+    candidates = [candidate for config in configs for candidate in config.engine.workers.aggregated.parallelism.preset]
+    assert [(c.replicas, c.tensor, c.moe_tensor) for c in candidates] == [(1, 4, moe_tensor)]
+    assert all(config.optimizer.max_trials == 1 for config in configs)
+    assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 4
+    assert all(config.optimization.constraints.max_candidate_gpus == 4 for config in configs)
+    assert "max_candidates" not in plan["search"]
+    assert not (tmp_path / "recommend/replicas-2.yaml").exists()
+    for config in configs:
+        search = recommendation_to_sweeper(config).search_space
+        assert search.agg_max_num_batched_tokens == [8192]
+        assert search.agg_max_num_seqs == [256]
+    commands = json.loads((tmp_path / "commands.json").read_text())
+    command = commands["fpm_plan_local"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == "4"
+    assert command[command.index("--fpm-max-gpus") + 1] == "4"
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
+    assert "--plan-only" in command
+    assert "--execute" in commands["fpm_run_local"]
+
+
+@pytest.mark.parametrize(
+    "topology,preset",
+    [
+        ({"tensor_parallel": 64}, "pure_tp"),
+        (
+            {"tensor_parallel": 1, "attention_data_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64},
+            "dep",
+        ),
+        ({"tensor_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64}, "tep"),
+    ],
+)
+def test_wide_worker_requirement_is_not_limited_by_node_allocation_or_runtime_default(tmp_path, topology, preset):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    request = _request(search=topology)
+    plan = create_plan(request, tmp_path)
+    commands = json.loads((tmp_path / "commands.json").read_text())
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
+
+    assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 64
+    assert recommendation_to_sweeper(recommendation).search_space.gpu_budget == 64
+    assert recommendation.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+    command = plan["fpm"]["plan_command"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == "64"
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
+    assert plan["outputs"]["recommendation_configs"] == [str(tmp_path / "recommend/pilot.yaml")]
+    assert len(commands["recommend"]) == 1
+    assert "available allocation" in plan["search"]["detail"]
+
+
+@pytest.mark.parametrize("seed", [0, 7, 42])
+@pytest.mark.parametrize("model_kind,moe_tensor", [("dense", 1), ("moe", 4)])
+@pytest.mark.parametrize("runtime_replicas", [1, 3])
+def test_validation_recommendation_and_user_runtime_replica_budget(
+    tmp_path, monkeypatch, seed, model_kind, moe_tensor, runtime_replicas
+):
+    from aisimulate.main import build_parser
+    from aisimulate.recommend import run_recommendation
+    from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    # Keep process-local doubles in this orchestration test. The real lowering,
+    # estimator resolver, sampler, resource admission and scoring still run.
+    monkeypatch.setattr("aisimulate.supervision.in_supervised_process", lambda: True)
+    monkeypatch.setattr(_OfflinePerfModel, "requests", [])
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", _OfflinePerfModel.best_available)
+    legal = [
+        ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=moe_tensor, moe_ep=1), replicas=count)
+        for count in (1, 2, 3)
+    ]
+    monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: legal)
+    request = _request(identity={"model_kind": model_kind}, search={"seed": seed})
+    plan = create_plan(request, tmp_path)
+    commands = json.loads((tmp_path / "commands.json").read_text())["recommend"]
+    evaluated = []
+    results = []
+    configs = []
+    outputs = []
+    for command in commands:
+        args = build_parser().parse_args(command[1:])
+        config = CoreRecommendationConfig.from_yaml(args.config)
+        assert config.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+        if runtime_replicas > 1:
+            # Deployment choices remain ordinary runtime inputs; onboarding is unchanged.
+            payload = config.model_dump(mode="json", exclude_none=True)
+            payload["engine"]["workers"]["aggregated"]["parallelism"]["preset"][0]["replicas"] = runtime_replicas
+            payload["optimization"]["constraints"]["max_candidate_gpus"] = runtime_replicas * request.worker_gpus
+            config = CoreRecommendationConfig.model_validate(payload)
+            prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml").model_dump(mode="json")
+            prediction["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = runtime_replicas
+            assert (
+                CorePredictionConfig.model_validate(prediction).engine.workers.aggregated.parallelism.replicas
+                == runtime_replicas
+            )
+        result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
+        evaluated.extend(candidate.config["replicas"] for candidate in result.candidates)
+        results.append(result)
+        configs.append(args.config)
+        outputs.append(args.output_dir)
+    assert evaluated == [runtime_replicas]
+    assert configs == plan["outputs"]["recommendation_configs"]
+    assert outputs == plan["outputs"]["recommendation_results"]
+    assert len(set(outputs)) == 1
+    assert all(result.counts.evaluated == 1 and result.counts.cache_hits == 0 for result in results)
+    assert len(_OfflinePerfModel.requests) == 1
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == request
+    _assert_estimator_requests(_OfflinePerfModel.requests, tmp_path / "systems", moe_tensor)
+
+
+@pytest.mark.parametrize("missing_samples", [False, True])
+def test_documented_recommendation_command_evaluates_one_worker(tmp_path, missing_samples):
+    guide = Path(__file__).resolve().parents[4] / "docs/perf-model/fpm-self-service/implementation.md"
+    snippet = "aisimulate recommend " + guide.read_text().split("\naisimulate recommend ", 1)[1].split("\n```", 1)[0]
+    workdir = tmp_path / "work with 'quotes'; $(literal)"
+    workdir.mkdir()
+    request = _request(identity={"model_kind": "dense"}, search={"objective": "ttft"})
+    plan = create_plan(request, workdir / "aisimulate-support")
+    evaluated = tmp_path / "evaluated.txt"
+    estimator_requests = tmp_path / "estimator-requests.jsonl"
+    wrapper = tmp_path / "bin/aisimulate"
+    wrapper.parent.mkdir()
+    # Install the same Core double in each supervised child. The command executes
+    # real subprocesses, CLI dispatch, estimator resolution, sampling and export.
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        f"""
+import os
+import sys
+import json
+from pathlib import Path
+from typing import ClassVar
+
+from aisimulate_core.sdk import RustForwardPassPerfModel
+import aisimulate.main as cli
+import aisimulate.sweeper.search_space as search_space
+from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+
+{inspect.getsource(_OfflinePerfModel)}
+
+def best_available(request):
+    model = _OfflinePerfModel.best_available(request)
+    with Path(os.environ["SUPPORT_TEST_ESTIMATOR_REQUESTS"]).open("a") as stream:
+        stream.write(json.dumps(request.to_dict()) + "\\n")
+    return model
+
+RustForwardPassPerfModel.best_available = best_available
+
+legal = [
+    ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=1, moe_ep=1), replicas=count)
+    for count in (1, 2)
+]
+search_space.parallel_configs_for = lambda *args, **kwargs: legal
+
+class Runner:
+    def run(self, spec):
+        replicas = spec.backend_deployment.num_workers
+        with Path(os.environ["SUPPORT_TEST_EVALUATED"]).open("a") as stream:
+            stream.write(str(replicas) + "\\n")
+        samples = 0.0 if {missing_samples!r} else 4.0
+        return ReplayReport(metrics={{"mean_ttft_ms": 10.0, "num_ttft_samples": samples}})
+
+    def close(self):
+        pass
+
+class Factory:
+    def capabilities(self):
+        return RunnerCapabilities(supported_backend_topologies=(("vllm", "agg"),))
+
+    def create(self, worker_id):
+        return Runner()
+
+cli.resolve_runner_factory = lambda stack: Factory()
+if __name__ == "__main__":
+    raise SystemExit(cli.main(sys.argv[1:]))
+"""
+    )
+    wrapper.chmod(0o755)
+    result = subprocess.run(
+        shlex.split(snippet.replace("\\\n", "")),
+        cwd=workdir,
+        env={
+            **os.environ,
+            "PATH": str(wrapper.parent) + os.pathsep + os.environ.get("PATH", ""),
+            "SUPPORT_TEST_EVALUATED": str(evaluated),
+            "SUPPORT_TEST_ESTIMATOR_REQUESTS": str(estimator_requests),
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == (1 if missing_samples else 0), result.stderr
+    assert evaluated.read_text().splitlines() == ["1"]
+    resolved_requests = [json.loads(line) for line in estimator_requests.read_text().splitlines()]
+    assert len(resolved_requests) == 1
+    _assert_estimator_requests(resolved_requests, workdir / "aisimulate-support/systems", 1)
+    for output in plan["outputs"]["recommendation_results"]:
+        root = Path(output)
+        payload = json.loads((root / "recommendation.json").read_text())
+        assert payload["counts"]["evaluated"] == 1
+        assert payload["counts"]["feasible"] == (0 if missing_samples else 1)
+        assert payload["counts"]["infeasible"] == (1 if missing_samples else 0)
+        assert payload["candidates"][0]["config"]["replicas"] == 1
+        exported = root / "recommendations/0001.yaml"
+        if missing_samples:
+            assert "no qualifying samples" in payload["candidates"][0]["reason"]
+            assert not exported.exists()
+        else:
+            prediction = CorePredictionConfig.from_yaml(exported)
+            assert prediction.engine.workers.aggregated.parallelism.replicas == 1
+            assert prediction.engine.systems_paths == [str(workdir / "aisimulate-support/systems")]
+            timing = prediction.engine.workers.aggregated.timing
+            assert timing.estimation_mode == "fpm_interpolation"
+            assert timing.fallback_policy == "deny"
+            assert timing.systems_paths == prediction.engine.systems_paths
+
+
+def test_collection_bounds_are_independent_of_synthetic_validation(tmp_path):
+    request = _request(workload={"input_tokens": 10, "concurrency": 3, "request_count": 4})
+    command = create_plan(request, tmp_path)["fpm"]["plan_command"]
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
+    assert command[command.index("--fpm-max-model-len") + 1] == "256000"
+    small = _request(workload={"input_tokens": 1})
+    command = create_plan(small, tmp_path / "small")["fpm"]["plan_command"]
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"search": {"tensor_parallel": 2}},
+        {"search": {"context_length": 65536}},
+        {"collection": {"max_num_tokens": 16384}},
+        {"collection": {"max_prefill_cudagraph_size": 512}},
+        {"collection": {"prefill_cudagraph_policy": "runtime"}},
+        {"collection": {"gpu_memory_utilization": 0.7}},
+        {"identity": {"model_revision": "other-checkpoint"}},
+        {"identity": {"framework_version": "0.26.0"}},
+        {"identity": {"tokenizer_revision": "tokenizer-v2"}},
+    ],
+)
+@pytest.mark.parametrize("complete", [False, True])
+def test_overwrite_rejects_different_requests_without_touching_data(tmp_path, updates, complete):
+    request = _request()
+    create_plan(request, tmp_path)
+    if not complete:
+        (tmp_path / "support-plan.json").unlink()
+    data = tmp_path / "systems/data/collected.parquet"
+    data.write_bytes(b"timings")
+    before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    changed = _request(**updates)
+    assert request_id(changed) != request_id(request)
+    with pytest.raises(ValueError, match="identity|different request|mix"):
+        create_plan(changed, tmp_path, overwrite=True)
+    after = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tmp_path):
+    request = _request()
+    plan = create_plan(request, tmp_path)
+    data = tmp_path / "systems/data/collected.parquet"
+    data.write_bytes(b"timings")
+    with pytest.raises(ValueError, match="nonempty|already exists|overwrite"):
+        create_plan(request, tmp_path)
+    assert create_plan(request, tmp_path, overwrite=True) == plan
+    assert data.read_bytes() == b"timings"
+    (tmp_path / "request.yaml").write_text("modified: true\n")
+    with pytest.raises(ValueError, match="modified|request|identity"):
+        create_plan(request, tmp_path, overwrite=True)
+    assert data.read_bytes() == b"timings"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"workload": {"input_tokens": 4096, "output_tokens": 256, "concurrency": 8, "request_count": 16}},
+        {"workload": {"slo": {"ttft_ms": 2500.0, "tpot_ms": 75.0}}},
+        {"search": {"seed": 7, "objective": "goodput"}},
+    ],
+)
+def test_validation_refresh_keeps_collection_artifacts_and_updates_examples(tmp_path, updates):
+    request = _request()
+    original = create_plan(request, tmp_path)
+    data = tmp_path / "systems/data/collected.parquet"
+    data.write_bytes(b"collected timings")
+    checkpoint = tmp_path / "fpm-checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "campaign.json").write_bytes(b"immutable checkpoint")
+    changed = _request(**updates)
+    assert request_id(changed) == request_id(request)
+    assert validation_id(changed) != validation_id(request)
+
+    updated = create_plan(changed, tmp_path, overwrite=True)
+
+    assert updated["request_id"] == original["request_id"]
+    assert updated["fpm"] == original["fpm"]
+    assert updated["validation_id"] != original["validation_id"]
+    assert data.read_bytes() == b"collected timings"
+    assert (checkpoint / "campaign.json").read_bytes() == b"immutable checkpoint"
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == changed
+    prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
+    assert prediction.traffic.source.input_tokens == changed.workload.input_tokens
+    assert prediction.traffic.load.concurrency == changed.workload.concurrency
+    assert recommendation.optimizer.seed == changed.search.seed
+    check_plan(changed, tmp_path)
+
+
+@pytest.mark.parametrize("relative", ["request.yaml", "predict/pilot.yaml", "commands.json", "support-plan.json"])
+def test_validation_refresh_does_not_bless_tampered_generated_files(tmp_path, relative):
+    create_plan(_request(), tmp_path)
+    target = tmp_path / relative
+    target.write_bytes(target.read_bytes() + b"\n")
+    before = _file_contents(tmp_path)
+    with pytest.raises(ValueError, match="modified|identity"):
+        create_plan(_request(workload={"input_tokens": 4096}), tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "search,expected_context",
+    [(None, 16384), ({}, 16384), ({"tensor_parallel": 4, "context_length": 8192}, 8192)],
+)
+def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan(tmp_path, search, expected_context):
+    import yaml
+
+    legacy = _request().model_dump(mode="json", exclude_none=True)
+    legacy["schema_version"] = "aisimulate-support-request/v1"
+    legacy.pop("collection")
+    if search is None:
+        legacy.pop("search")
+    else:
+        legacy["search"] = search
+    source = tmp_path / "old-request.yaml"
+    source.write_text(yaml.safe_dump(legacy))
+    migrated = SupportRequest.from_yaml(source)
+    assert migrated.schema_version == "aisimulate-support-request/v2"
+    assert migrated.search.context_length == expected_context
+    assert migrated.scheduler_limits() == {"max_batched_tokens": 8192, "max_sequences": 256}
+    root = tmp_path / "old-plan"
+    root.mkdir()
+    (root / "support-plan.json").write_text(json.dumps({"schema_version": "aisimulate-support-plan/v1"}))
+    with pytest.raises(ValueError, match="new output directory"):
+        create_plan(migrated, root, overwrite=True)
+    assert create_plan(migrated, tmp_path / "new-plan")["fpm"]["runtime_limits"]["context_length"] == expected_context
+
+
+@pytest.mark.parametrize("modification", ["retired_command", "missing_execute", "formatting"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_overwrite_rejects_modified_commands_before_repairing_missing_files(tmp_path, modification, complete):
+    request = _request()
+    create_plan(request, tmp_path)
+    if not complete:
+        (tmp_path / "support-plan.json").unlink()
+    command_file = tmp_path / "commands.json"
+    commands = json.loads(command_file.read_text())
+    if modification == "retired_command":
+        commands["fpm_run_local"][1] = "support"
+    elif modification == "missing_execute":
+        commands["fpm_run_local"].remove("--execute")
+    command_file.write_text(
+        json.dumps(commands, indent=4 if modification == "formatting" else 2, sort_keys=True) + "\n"
+    )
+    _seed_campaign(tmp_path)
+    prediction = tmp_path / "predict/pilot.yaml"
+    prediction.unlink()
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="generated plan input .*commands.json was modified"):
+        create_plan(request, tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before_repair
+
+
+@pytest.mark.parametrize("layout", ["directory", "zip"])
+def test_plan_copies_system_specification_from_core_package_resources(tmp_path, monkeypatch, layout):
+    from aisimulate.support import plan
+
+    system_spec = files("aisimulate_core").joinpath("systems", "h200_sxm.yaml").read_bytes()
+    system_spec += b"\n# Packaged separately from the onboarding module.\n"
+    package_init = "raise AssertionError('reading system resources must not execute the core package')\n"
+    if layout == "directory":
+        distribution = tmp_path / "separate-core-package"
+        package = distribution / "aisimulate_core"
+        (package / "systems").mkdir(parents=True)
+        (package / "__init__.py").write_text(package_init)
+        (package / "systems/h200_sxm.yaml").write_bytes(system_spec)
+    else:
+        distribution = tmp_path / "core.zip"
+        with zipfile.ZipFile(distribution, "w") as handle:
+            handle.writestr("aisimulate_core/__init__.py", package_init)
+            handle.writestr("aisimulate_core/systems/h200_sxm.yaml", system_spec)
+    package_spec = PathFinder.find_spec("aisimulate_core", [str(distribution)])
+    assert package_spec is not None
+
+    def core_spec(name):
+        assert name == "aisimulate_core"
+        return package_spec
+
+    monkeypatch.setattr(plan, "find_spec", core_spec)
+    root = tmp_path / "plan"
+
+    create_plan(_request(), root)
+
+    assert (root / "systems/h200_sxm.yaml").read_bytes() == system_spec
+
+
+def test_missing_core_package_is_rejected_before_creating_outputs(tmp_path, monkeypatch):
+    from aisimulate.support import plan
+
+    monkeypatch.setattr(plan, "find_spec", lambda name: None)
+    root = tmp_path / "plan"
+
+    with pytest.raises(ValueError, match="aisimulate_core package resources"):
+        create_plan(_request(), root)
+
+    assert not root.exists()
+
+
+def test_new_gpu_is_rejected_before_creating_outputs(tmp_path):
+    root = tmp_path / "new-plan"
+    with pytest.raises(ValueError, match="packaged.*system|system specification"):
+        create_plan(_request(identity={"gpu": "unreleased_gpu"}), root)
+    assert not root.exists()
+
+
+def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(tmp_path, monkeypatch, capsys):
+    request = _request()
+    root = tmp_path / "plan with 'quotes'"
+    real_import = builtins.__import__
+
+    def no_collector_import(name, *args, **kwargs):
+        assert not name.startswith("collector"), name
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_collector_import)
+    assert run_fpm(request, output_dir=root) == 0
+    command = shlex.split(capsys.readouterr().out)
+    assert command[1:3] == ["-m", "collector.fpm_forward"]
+    assert command[command.index("--model-path") + 1] == request.identity.model
+    assert command[command.index("--fpm-database-root") + 1] == str(root / "systems/data")
+    assert "--plan-only" in command
+    assert not root.exists()
+
+
+def _mock_collector_execution(monkeypatch, calls):
+    from collector.fpm_forward import cli, entry
+
+    from aisimulate.support import collection_readiness, fpm
+
+    def resolve(command):
+        calls.append(command[3:])
+        return cli._parser().parse_args(command[3:]), (SimpleNamespace(cells=(), sha256="a" * 64), {})
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+    monkeypatch.setattr(entry, "run_resolved", lambda *_: [{"error_message": "synthetic collection failure"}])
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+
+def test_execute_delegates_only_for_matching_plan(tmp_path, monkeypatch):
+    calls = []
+    _mock_collector_execution(monkeypatch, calls)
+    request = _request()
+    with pytest.raises(ValueError, match="plan"):
+        run_fpm(request, execute=True, output_dir=tmp_path)
+    assert not calls
+    create_plan(request, tmp_path)
+    assert run_fpm(request, execute=True, output_dir=tmp_path, smoke=True, limit=1) == 1
+    assert calls[0][calls[0].index("--limit") + 1] == "1"
+    assert "--smoke" in calls[0]
+    assert "--plan-only" not in calls[0]
+    with pytest.raises(ValueError, match="identity|different request|mix"):
+        run_fpm(_request(search={"tensor_parallel": 2}), execute=True, resume=True, output_dir=tmp_path)
+    assert len(calls) == 1
+
+
+def _seed_campaign(root, *, smoke=False, checkpoint_dir=None):
+    sha = "a" * 64
+    artifact = root / "fpm-artifacts" / sha[:16]
+    if smoke:
+        artifact /= "smoke"
+    timing = artifact / "cells/cell-prefill/raw/existing-timing.json"
+    timing.parent.mkdir(parents=True)
+    timing.write_bytes(b"previous measured data")
+    checkpoint = (checkpoint_dir or root / "fpm-checkpoint") / (
+        "fpm_forward_smoke.json" if smoke else "fpm_forward.json"
+    )
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text(json.dumps({"schema": "aic-fpm-collector-checkpoint-v3", "plan_sha256": sha, "cells": {}}))
+    if not smoke:
+        (root / "systems/data/collected.parquet").write_bytes(b"formal timings")
+    return checkpoint, timing
+
+
+def _file_contents(root):
+    return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def _reject_collector_import(monkeypatch):
+    real_import = builtins.__import__
+
+    def no_collector_import(name, *args, **kwargs):
+        assert not name.startswith("collector"), "occupied campaigns must be rejected before collector import"
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_collector_import)
+
+
+def test_published_execution_command_rejects_an_occupied_campaign(tmp_path, monkeypatch, capsys):
+    from aisimulate.main import main
+
+    create_plan(_request(), tmp_path)
+    _seed_campaign(tmp_path)
+    before = _file_contents(tmp_path)
+    command = json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"]
+    assert command[:3] == ["aisimulate", "onboard", "collect-fpm"]
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(SystemExit) as error:
+        main(command[1:])
+
+    assert error.value.code == 2
+    assert "require --resume" in capsys.readouterr().err
+    assert _file_contents(tmp_path) == before
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+def test_repeated_execute_requires_resume_without_touching_campaign(tmp_path, monkeypatch, smoke):
+    create_plan(_request(), tmp_path)
+    _seed_campaign(tmp_path, smoke=smoke)
+    before = _file_contents(tmp_path)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="resume.*new output|new output.*resume"):
+        run_fpm(SupportRequest.from_yaml(tmp_path / "request.yaml"), output_dir=tmp_path, execute=True, smoke=smoke)
+
+    assert _file_contents(tmp_path) == before
+    with plan_lock(tmp_path):
+        pass
+
+
+@pytest.mark.parametrize(
+    "smoke,relative",
+    [
+        (False, "systems/data/collected.parquet"),
+        (False, "fpm-checkpoint/custom/fpm_forward.json"),
+        (True, "fpm-checkpoint/custom/fpm_forward_smoke.json"),
+        (False, "fpm-artifacts/aaaaaaaaaaaaaaaa/cells/raw.json"),
+        (True, "fpm-artifacts/aaaaaaaaaaaaaaaa/smoke/cells/raw.json"),
+    ],
+)
+def test_partial_campaign_output_alone_prevents_restart(tmp_path, monkeypatch, smoke, relative):
+    request = _request()
+    create_plan(request, tmp_path)
+    sentinel = tmp_path / relative
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_bytes(b"interrupted campaign")
+    before = _file_contents(tmp_path)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="resume"):
+        run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke)
+
+    assert _file_contents(tmp_path) == before
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize("checkpoint_state", ["missing", "invalid_json", "empty_object", "new_directory"])
+def test_resume_occupied_campaign_requires_usable_selected_checkpoint(tmp_path, monkeypatch, smoke, checkpoint_state):
+    request = _request()
+    create_plan(request, tmp_path)
+    checkpoint, _ = _seed_campaign(tmp_path, smoke=smoke)
+    selected_dir = checkpoint.parent
+    if checkpoint_state == "missing":
+        checkpoint.unlink()
+    elif checkpoint_state == "new_directory":
+        selected_dir /= "new-campaign"
+    else:
+        checkpoint.write_text("invalid JSON" if checkpoint_state == "invalid_json" else "{}")
+    before = _file_contents(tmp_path)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="checkpoint"):
+        run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke, resume=True, checkpoint_dir=selected_dir)
+
+    assert _file_contents(tmp_path) == before
+    with plan_lock(tmp_path):
+        pass
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+def test_matching_explicit_resume_delegates_and_preserves_campaign(tmp_path, monkeypatch, smoke):
+    request = _request()
+    create_plan(request, tmp_path)
+    checkpoint, _ = _seed_campaign(tmp_path, smoke=smoke, checkpoint_dir=tmp_path / "fpm-checkpoint/custom")
+    before = _file_contents(tmp_path)
+    calls = []
+    _mock_collector_execution(monkeypatch, calls)
+
+    assert (
+        run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke, resume=True, checkpoint_dir=checkpoint.parent)
+        == 1
+    )
+
+    assert "--resume" in calls[0]
+    assert calls[0][calls[0].index("--checkpoint-dir") + 1] == str(checkpoint.parent)
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+def test_fresh_smoke_and_formal_campaigns_are_independent(tmp_path, monkeypatch, smoke):
+    request = _request()
+    create_plan(request, tmp_path)
+    _seed_campaign(tmp_path, smoke=not smoke)
+    before = _file_contents(tmp_path)
+    calls = []
+    _mock_collector_execution(monkeypatch, calls)
+
+    assert run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke) == 1
+
+    assert len(calls) == 1
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
+
+
+def test_execute_checks_for_campaign_outputs_while_holding_lock(tmp_path, monkeypatch):
+    from aisimulate.support import plan
+
+    request = _request()
+    create_plan(request, tmp_path)
+    real_lock = plan.plan_lock
+
+    @contextmanager
+    def raced_lock(root):
+        with real_lock(root):
+            _seed_campaign(root)
+            yield
+
+    monkeypatch.setattr(plan, "plan_lock", raced_lock)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="resume"):
+        run_fpm(request, output_dir=tmp_path, execute=True)
+
+    assert (tmp_path / "systems/data/collected.parquet").read_bytes() == b"formal timings"
+    with plan_lock(tmp_path):
+        pass
+
+
+@pytest.mark.parametrize("smoke,limit", [(False, 1), (True, 0), (True, -1), (True, True)])
+def test_invalid_limited_collection_fails_before_preview_or_execution(tmp_path, smoke, limit):
+    with pytest.raises(ValueError, match="limit"):
+        run_fpm(_request(), output_dir=tmp_path, smoke=smoke, limit=limit)
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_plan_rejects_symlinked_output_without_touching_target(tmp_path, complete):
+    external = tmp_path / "external"
+    external.mkdir()
+    data = external / "collected.parquet"
+    data.write_bytes(b"timings")
+    root = tmp_path / "plan"
+    create_plan(_request(), root)
+    if not complete:
+        (root / "support-plan.json").unlink()
+    (root / "systems/data").rmdir()
+    (root / "systems/data").symlink_to(external, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        create_plan(_request(), root, overwrite=True)
+    assert data.read_bytes() == b"timings"
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "fpm-artifacts/aaaaaaaaaaaaaaaa/smoke/cells/output",
+        "fpm-checkpoint/custom/output",
+        "systems/data/h200_sxm/vllm/0.25.1/output",
+    ],
+)
+@pytest.mark.parametrize("target_kind", ["directory", "file", "dangling_directory", "dangling_file"])
+@pytest.mark.parametrize("operation", ["repair", "execute"])
+def test_nested_symlinks_rejected_before_repair_or_collector_import(
+    tmp_path, monkeypatch, relative, target_kind, operation
+):
+    request = _request()
+    root = tmp_path / "plan"
+    create_plan(request, root)
+    _seed_campaign(root)
+    (root / "predict/pilot.yaml").unlink()
+    external = tmp_path / "external"
+    if target_kind == "directory":
+        external.mkdir()
+    elif target_kind == "file":
+        external.write_bytes(b"outside data")
+    link = root / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(external, target_is_directory=target_kind.endswith("directory"))
+    before = _file_contents(tmp_path)
+    _reject_collector_import(monkeypatch)
+
+    with pytest.raises(ValueError, match="refusing symlinked plan output"):
+        if operation == "repair":
+            create_plan(request, root, overwrite=True)
+        else:
+            run_fpm(request, output_dir=root, execute=True, resume=True)
+
+    assert _file_contents(tmp_path) == before
+    assert link.is_symlink()
+    assert link.readlink() == external
+    if target_kind == "directory":
+        assert not list(external.iterdir())
+    elif target_kind.startswith("dangling"):
+        assert not external.exists()
+
+
+@pytest.mark.parametrize("relative", ["../shared", "fpm-checkpoint/../../shared"])
+def test_checkpoint_override_cannot_escape_request_directory(tmp_path, relative):
+    with pytest.raises(ValueError, match="checkpoint_dir"):
+        run_fpm(_request(), output_dir=tmp_path, checkpoint_dir=tmp_path / relative)
+
+
+@pytest.mark.parametrize("kill_owner", [False, True])
+def test_plan_lock_recovers_after_owner_exit_and_preserves_existing_files(tmp_path, kill_owner):
+    request = _request()
+    create_plan(request, tmp_path)
+    before = (tmp_path / "support-plan.json").read_bytes()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from aisimulate.support.plan import plan_lock; "
+            "lock = plan_lock(Path(sys.argv[1])); lock.__enter__(); "
+            "print('locked', flush=True); sys.stdin.read(); lock.__exit__(None, None, None)",
+            str(tmp_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert select.select([process.stdout], [], [], 10)[0], "lock owner did not become ready"
+        assert process.stdout.readline().strip() == "locked"
+        with pytest.raises(ValueError, match="another onboarding operation"):
+            create_plan(request, tmp_path, overwrite=True)
+        if kill_owner:
+            process.kill()
+        process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=10)
+
+    (tmp_path / "predict/pilot.yaml").unlink()
+    create_plan(request, tmp_path, overwrite=True)
+    assert (tmp_path / "predict/pilot.yaml").is_file()
+    assert (tmp_path / "support-plan.json").read_bytes() == before
+
+
+def test_plan_lock_does_not_unlink_the_inode_used_by_a_waiting_process(tmp_path):
+    create_plan(_request(), tmp_path)
+    with (tmp_path / ".support.lock").open("r") as waiting:
+        with plan_lock(tmp_path):
+            pass
+        fcntl.flock(waiting, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="another onboarding operation"):
+            create_plan(_request(), tmp_path, overwrite=True)
+
+
+@pytest.mark.parametrize("existing_target", [False, True])
+def test_plan_lock_does_not_follow_a_symlink(tmp_path, existing_target):
+    root = tmp_path / "plan"
+    root.mkdir()
+    external = tmp_path / "external"
+    if existing_target:
+        external.write_text("preserve this")
+    (root / ".support.lock").symlink_to(external)
+
+    with pytest.raises(OSError):
+        create_plan(_request(), root)
+
+    assert not (root / "request.yaml").exists()
+    assert external.read_text() == "preserve this" if existing_target else not external.exists()
+
+
+def test_racing_writer_cannot_be_overwritten_or_reported_as_success(tmp_path, monkeypatch):
+    original_open = Path.open
+    destination = tmp_path / "predict/pilot.yaml"
+
+    def racing_open(path, mode="r", *args, **kwargs):
+        if path == destination and mode == "xb":
+            with original_open(path, "wb") as handle:
+                handle.write(b"another writer's config")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", racing_open)
+    with pytest.raises(FileExistsError):
+        create_plan(_request(), tmp_path)
+    assert destination.read_bytes() == b"another writer's config"
+    assert not (tmp_path / "support-plan.json").exists()
+    with plan_lock(tmp_path):
+        pass
+
+    before_repair = _file_contents(tmp_path)
+    with pytest.raises(ValueError, match="generated plan input .*pilot.yaml was modified"):
+        create_plan(_request(), tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before_repair
+
+    monkeypatch.setattr(Path, "open", original_open)
+    destination.unlink()
+    create_plan(_request(), tmp_path, overwrite=True)
+    assert CorePredictionConfig.from_yaml(destination).engine.model == _request().identity.model
+
+
+@pytest.mark.parametrize(
+    "interrupted_file",
+    ["predict/pilot.yaml", "recommend/pilot.yaml", "systems/h200_sxm.yaml", "commands.json", "support-plan.json"],
+)
+def test_overwrite_repairs_interrupted_plan_and_preserves_existing_outputs(tmp_path, monkeypatch, interrupted_file):
+    request = _request()
+    original_open = Path.open
+
+    def interrupted_open(path, mode="r", *args, **kwargs):
+        if path == tmp_path / interrupted_file and mode == "xb":
+            raise InterruptedError("interrupted plan generation")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", interrupted_open)
+    with pytest.raises(InterruptedError):
+        create_plan(request, tmp_path)
+    monkeypatch.setattr(Path, "open", original_open)
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == request
+    assert not (tmp_path / "support-plan.json").exists()
+    (tmp_path / "systems/data").mkdir(parents=True, exist_ok=True)
+    _seed_campaign(tmp_path)
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="nonempty"):
+        create_plan(request, tmp_path)
+    _reject_collector_import(monkeypatch)
+    with pytest.raises(ValueError, match="readable onboarding plan"):
+        run_fpm(request, execute=True, resume=True, output_dir=tmp_path)
+    assert _file_contents(tmp_path) == before_repair
+
+    repaired = create_plan(request, tmp_path, overwrite=True)
+
+    assert json.loads((tmp_path / "support-plan.json").read_text()) == repaired
+    assert repaired["request_id"] == request_id(request)
+    assert CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml").engine.model == request.identity.model
+    assert CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml").engine.model == request.identity.model
+    assert json.loads((tmp_path / "commands.json").read_text())["fpm_run_local"][1:3] == ["onboard", "collect-fpm"]
+    assert (tmp_path / "systems/h200_sxm.yaml").is_file()
+    assert {name: (tmp_path / name).read_bytes() for name in before_repair} == before_repair
+    assert create_plan(request, tmp_path, overwrite=True) == repaired
+
+
+def test_plan_can_restart_after_interruption_before_saved_request(tmp_path, monkeypatch):
+    original_open = Path.open
+
+    def interrupted_open(path, mode="r", *args, **kwargs):
+        if path == tmp_path / "request.yaml" and mode == "xb":
+            raise InterruptedError("interrupted plan generation")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", interrupted_open)
+    with pytest.raises(InterruptedError):
+        create_plan(_request(), tmp_path)
+    monkeypatch.setattr(Path, "open", original_open)
+
+    assert [path.name for path in tmp_path.iterdir()] == [".support.lock"]
+    assert create_plan(_request(), tmp_path)["request_id"] == request_id(_request())
+
+
+@pytest.mark.parametrize("metadata", ["invalid JSON", "{}", '{"request_id": "another-request"}'])
+def test_overwrite_rejects_existing_invalid_metadata_before_repair(tmp_path, metadata):
+    request = _request()
+    create_plan(request, tmp_path)
+    (tmp_path / "support-plan.json").write_text(metadata)
+    (tmp_path / "predict/pilot.yaml").unlink()
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="readable onboarding plan|request identity|legacy or invalid onboarding plan"):
+        create_plan(request, tmp_path, overwrite=True)
+
+    assert _file_contents(tmp_path) == before_repair
+
+
+@pytest.mark.parametrize("saved_request", [None, "identity: broken\n"])
+def test_overwrite_requires_frozen_request_for_interrupted_plan(tmp_path, saved_request):
+    request = _request()
+    create_plan(request, tmp_path)
+    (tmp_path / "support-plan.json").unlink()
+    request_path = tmp_path / "request.yaml"
+    if saved_request is None:
+        request_path.unlink()
+    else:
+        request_path.write_text(saved_request)
+    before_repair = _file_contents(tmp_path)
+
+    with pytest.raises(ValueError, match="saved request"):
+        create_plan(request, tmp_path, overwrite=True)
+
+    assert _file_contents(tmp_path) == before_repair

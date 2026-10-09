@@ -81,9 +81,17 @@ impl FrontendRuntime {
         self.requests.is_empty() && self.ready.is_empty()
     }
 
-    pub(super) fn holds_request(&self, uuid: Uuid) -> bool {
-        self.requests.iter().any(|request| request.uuid == uuid)
-            || self.ready.iter().any(|(request, _)| request.uuid == uuid)
+    /// Requests in a stage or parked in the exit buffer.
+    pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        self.requests
+            .iter()
+            .chain(self.ready.iter().map(|(request, _)| request))
+            .map(|request| request.uuid)
+    }
+
+    #[cfg(test)]
+    fn holds_request(&self, uuid: Uuid) -> bool {
+        self.request_ids().any(|id| id == uuid)
     }
 
     /// Current service time of a job on `stage` given how many jobs share its pool.

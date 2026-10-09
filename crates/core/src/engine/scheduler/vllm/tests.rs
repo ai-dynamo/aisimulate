@@ -468,6 +468,60 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
     );
 }
 
+#[rstest]
+#[case::prefill_survives_retraction(3, true)]
+#[case::decode_retraction_is_not_committed(4, false)]
+fn speculative_retraction_preserves_only_executed_work(
+    #[case] blocks: usize,
+    #[case] prefill_pass: bool,
+) {
+    let args = MockEngineArgs::builder()
+        .block_size(4)
+        .num_gpu_blocks(blocks)
+        .max_num_batched_tokens(Some(8))
+        .max_num_seqs(Some(2))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(false)
+        .preemption_mode(PreemptionMode::Lifo)
+        .speedup_ratio(0.0)
+        .aic_nextn(Some(2))
+        .aic_nextn_accept_rates(Some("1,1".to_string()))
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let survivor = Uuid::from_u128(91_001);
+    let retracted = Uuid::from_u128(91_002);
+    for (uuid, tokens) in [(survivor, vec![1; 4]), (retracted, vec![2; 4])] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 8,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let first = core.execute_pass(&mut collector, 0.0);
+    let pass = if prefill_pass {
+        first
+    } else {
+        assert_eq!(first.output_signals.len(), 6);
+        core.execute_pass(&mut collector, first.end_ms)
+    };
+    assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == survivor)
+    );
+    assert!(
+        pass.output_signals
+            .iter()
+            .all(|signal| signal.uuid != retracted)
+    );
+    assert!(pass.committed_requests.contains(&survivor));
+    assert_eq!(pass.committed_requests.contains(&retracted), prefill_pass);
+}
+
 mod source_holds {
     use super::*;
 

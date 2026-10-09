@@ -3,6 +3,7 @@
 
 """Core Sweeper orchestration parity through the RunnerFactory/ReplaySpec boundary."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from aisimulate.sweeper.replay import (
     ReplaySpec,
     RunnerCapabilities,
 )
+from aisimulate.sweeper.result import CandidateRecord, CandidateStatus
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search import Sweeper
 from aisimulate.sweeper.search_space import BranchSpace
@@ -155,7 +157,7 @@ def _stub(monkeypatch, branch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
@@ -307,7 +309,7 @@ def test_heterogeneous_disagg_materializes_role_hardware_and_provenance(monkeypa
     )
     version_calls = []
 
-    def resolve_version(hardware, backend):
+    def resolve_version(hardware, backend, *, systems_paths=None):
         version_calls.append((hardware, backend))
         return "0.24.0"
 
@@ -1097,7 +1099,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):
@@ -1307,3 +1309,130 @@ def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeyp
         assert payload == {
             k: v for k, v in identity.items() if k not in {"enable_eplb", "moe_backend", "wideep_num_slots"}
         }
+
+
+def test_on_candidate_fires_once_per_feasible_outcome_in_evaluation_order(monkeypatch):
+    branch = _branch(_pc())  # 8 GPUs
+    _stub(monkeypatch, branch)
+    factory = _FakeRunnerFactory()
+    seen: list[CandidateRecord] = []
+
+    result = Sweeper(
+        runner_factory=factory,
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(), top_n=None, on_candidate=seen.append)
+
+    assert [record.status for record in seen] == [CandidateStatus.FEASIBLE] * 3
+    # Evaluation order (increasing max_num_seqs), not the best-first ranked order.
+    assert [record.score for record in seen] == [256.0, 512.0, 768.0]
+
+    # on_candidate must receive a detached copy: mutating it must not reach the
+    # ledger record returned in the SweepResult. A shallow copy (or handing out
+    # the ledger record itself) would let this mutation leak through.
+    mutated = seen[0]
+    original_config = deepcopy(mutated.config)
+    mutated.config["max_num_seqs"] = "mutated-by-callback"
+
+    ledger_record = next(r for r in result.candidates if r.candidate_id == mutated.candidate_id)
+    assert ledger_record.config == original_config
+    assert ledger_record.config is not mutated.config
+
+
+def test_on_candidate_reports_infeasible_outcomes_too(monkeypatch):
+    branch = _branch(_pc(tp=16, replicas=4))  # 64 GPUs, exceeds a 32 GPU budget
+    _stub(monkeypatch, branch)
+    seen: list[CandidateRecord] = []
+
+    Sweeper(
+        runner_factory=_FakeRunnerFactory(),
+        sampler_factory=_FakeSampler,
+        show_progress=False,
+    ).run(_config(gpu_budget=32), top_n=None, on_candidate=seen.append)
+
+    assert len(seen) == 33
+    assert all(record.status == CandidateStatus.INFEASIBLE for record in seen)
+    assert all("over gpu_budget" in (record.reason or "") for record in seen)
+
+
+@pytest.mark.parametrize("transient", [False, True])
+def test_duplicate_failure_cache_preserves_transient_retries(monkeypatch, capsys, transient):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+
+    _stub(monkeypatch, _branch(_pc()))
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def controlled_score(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if transient and runner.calls > 1:
+            return result
+        return replace(
+            result,
+            candidate=None,
+            observe_metrics=None,
+            outcome="resource_limited" if transient else "infeasible",
+            reason="test host admission" if transient else "test fixed SLA violation",
+            reason_category=ReasonCategory.RESOURCE_LIMIT if transient else ReasonCategory.SLA_CONSTRAINT,
+        )
+
+    monkeypatch.setattr(search_mod, "_score_prepared", controlled_score)
+    sampler_seen = []
+
+    def factory(branch, study_id, objectives=None, **kwargs):
+        sampler = _FakeSampler(branch, study_id, objectives)
+        sampler_seen.append(sampler)
+        return sampler
+
+    result = Sweeper(runner_factory=_FakeRunnerFactory(runner), sampler_factory=factory, show_progress=True).run(
+        _config(max_rounds=4, max_trials=4, candidates_per_round=1, max_eval_seconds=None),
+        top_n=None,
+    )
+    assert len(sampler_seen[0].scored) == 4
+    assert runner.calls == (2 if transient else 1)
+    assert result.counts.cache_hits == (2 if transient else 3)
+    assert result.counts.resource_limited == (1 if transient else 0)
+    assert result.counts.infeasible == (0 if transient else 1)
+    assert len(result.selected_candidates) == (1 if transient else 0)
+    captured = capsys.readouterr()
+    assert "4/4" in captured.err
+    assert "Search coverage: 4/4 suggestions" in captured.out
+
+
+def test_random_retries_transient_failure_before_exhausting_space(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.result import ReasonCategory
+    from aisimulate.sweeper.sampler import make_branch_sampler
+
+    branch = _branch(_pc())
+    branch.knob_choices.update(agg_max_num_batched_tokens=[8192], agg_max_num_seqs=[256])
+    _stub(monkeypatch, branch)
+    runner = _FakeRunner()
+    score = search_mod._score_prepared
+
+    def refuse_first(prepared, replay_result, **kwargs):
+        result = score(prepared, replay_result, **kwargs)
+        if runner.calls == 1:
+            return replace(
+                result,
+                candidate=None,
+                observe_metrics=None,
+                outcome="resource_limited",
+                reason="temporary host pressure",
+                reason_category=ReasonCategory.RESOURCE_LIMIT,
+            )
+        return result
+
+    monkeypatch.setattr(search_mod, "_score_prepared", refuse_first)
+    result = Sweeper(
+        runner_factory=_FakeRunnerFactory(runner), sampler_factory=make_branch_sampler, show_progress=False
+    ).run(
+        _config(max_rounds=3, max_trials=3, candidates_per_round=1, max_eval_seconds=None, algorithm="random"),
+    )
+    assert runner.calls == 2
+    assert result.counts.resource_limited == result.counts.feasible == 1
+    assert result.counts.cache_hits == 0
+    assert len(result.selected_candidates) == 1

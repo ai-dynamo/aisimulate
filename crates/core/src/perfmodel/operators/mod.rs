@@ -35,6 +35,7 @@ mod moe_ll_monte_carlo;
 pub mod msa;
 pub mod op;
 pub mod overlap;
+pub mod prefill_graph;
 pub mod util_empirical;
 pub mod vision;
 pub mod wideep_mla;

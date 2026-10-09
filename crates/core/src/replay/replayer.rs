@@ -441,6 +441,18 @@ impl<C: ReplayComposition> Replayer<C> {
                             .to_string(),
                     ));
                 }
+                // Shared-pool transfers have no fixed completion time to record.
+                if artifact_sink.is_some()
+                    && engine_config
+                        .rank
+                        .native_host_offload
+                        .as_ref()
+                        .is_some_and(|host| host.scope == crate::engine::G2Scope::ClusterShared)
+                {
+                    return Err(ReplayError::InvalidSpec(
+                        "detailed replay artifacts require dp_rank_local host_offload".to_string(),
+                    ));
+                }
 
                 let mut runtime = AggRuntimeImpl::<
                     PlacementPolicyBoundary<C::AggregatedPlacement>,

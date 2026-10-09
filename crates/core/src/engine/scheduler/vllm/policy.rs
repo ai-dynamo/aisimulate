@@ -81,6 +81,42 @@ pub(super) enum AdmissionDecision {
     Reject,
 }
 
+/// Grouped cold-cache admission uses the pending forward's physical bytes.
+/// Logical prompt length remains independent of bounded cache residency.
+pub(super) fn decide_grouped_waiting_admission<S: PolicySequence>(
+    sequence: &S,
+    kv_manager: &G1Manager,
+    token_budget: usize,
+    enable_chunked_prefill: bool,
+    prefill_cost: &PrefillCost,
+) -> Option<AdmissionDecision> {
+    let pool = kv_manager.grouped()?;
+    let required_tokens = sequence.len();
+    // A known context whose smallest possible final forward cannot fit will
+    // never be admitted, regardless of chunking or competing requests.
+    let minimum = pool.required_bytes(required_tokens.saturating_sub(1), required_tokens);
+    if minimum.is_none_or(|bytes| bytes > pool.capacity_bytes()) {
+        return Some(AdmissionDecision::Reject);
+    }
+    if token_budget == 0 || (!enable_chunked_prefill && required_tokens > token_budget) {
+        return Some(AdmissionDecision::Wait);
+    }
+    let target = required_tokens.min(token_budget);
+    let needed = pool.required_bytes(0, target);
+    // A request whose configured chunk alone exceeds the entire pool must
+    // enter schedule_request, which reports an explicit configuration error.
+    // Contention alone preserves FIFO and must never preempt running work.
+    if needed.is_some_and(|bytes| {
+        bytes <= pool.capacity_bytes() && bytes > pool.capacity_bytes() - pool.used_bytes()
+    }) {
+        Some(AdmissionDecision::Wait)
+    } else {
+        Some(AdmissionDecision::Admit {
+            prefill_cost: prefill_cost.clone(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct WaitingAdmissionConfig {
     pub(super) policy: SchedulingPolicy,
@@ -102,18 +138,24 @@ pub(super) enum DestinationAdmissionDecision {
     Wait,
 }
 
+/// `state_blocks` is the transferred recurrent state reserved with the prompt.
 pub(super) fn destination_capacity_error<S: PolicySequence>(
     policy: SchedulingPolicy,
     sequence: &S,
     num_gpu_blocks: usize,
+    state_blocks: usize,
 ) -> Option<&'static str> {
     let (exceeds, message) = match policy {
         SchedulingPolicy::Vllm => (
-            sequence.current_known_blocks() > num_gpu_blocks,
-            "destination prompt exceeds the KV pool capacity",
+            sequence.current_known_blocks().saturating_add(state_blocks) > num_gpu_blocks,
+            if state_blocks == 0 {
+                "destination prompt exceeds the KV pool capacity"
+            } else {
+                "destination prompt and state exceed the KV pool capacity"
+            },
         ),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => (
-            sequence.to_completion_blocks() > num_gpu_blocks,
+            sequence.to_completion_blocks().saturating_add(state_blocks) > num_gpu_blocks,
             "TRT-LLM destination request exceeds the to-completion KV pool capacity",
         ),
     };

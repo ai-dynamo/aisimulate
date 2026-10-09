@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Daily README validation
+on:
+  schedule:
+    - cron: '17 17 * * *'
+      timezone: America/Los_Angeles
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: readme-daily
+  cancel-in-progress: false
+jobs:
+  readme:
+    if: github.repository == 'ai-dynamo/aisimulate' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/readme-checks.yml
+    with:
+      daily: true

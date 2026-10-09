@@ -29,7 +29,13 @@ from .afd_parallel import (
 )
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SmartSearchConfig
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
-from .model_hw import ModelHardware, NoViableParallelConfig, parallel_configs_for, resolve_model_hardware
+from .model_hw import (
+    ModelHardware,
+    NoViableParallelConfig,
+    _profile_parallel_configs,
+    parallel_configs_for,
+    resolve_model_hardware,
+)
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .replay import RunnerCapabilities
 
@@ -92,6 +98,7 @@ class BranchSpace:
     parallel_custom_choices: dict[str, tuple[ReplicaParallelConfig, ...]] = field(default_factory=dict)
     conditional_dimensions: tuple[ConditionalDimensionSpace, ...] = ()
     domain_provenance: dict[str, Any] = field(default_factory=dict)
+    prefer_smallest: bool = False
 
 
 def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
@@ -113,6 +120,19 @@ def _parallel_leaf_values(config: _ParallelConfig) -> dict[str, int]:
         **role_values("prefill_", config.prefill),
         **role_values("decode_", config.decode),
     }
+
+
+def matches_parallel_domains(config: _ParallelConfig, choices, log_ranges) -> bool:
+    """Filter the legal joint pool by user-owned independent leaf domains."""
+    if not choices and not log_ranges:
+        return True
+    values = _parallel_leaf_values(config)
+    return all(
+        log_ranges[name][0] <= values[name] <= log_ranges[name][1]
+        if name in log_ranges
+        else choices.get(name) is None or values[name] in choices[name]
+        for name in choices.keys() | log_ranges.keys()
+    )
 
 
 def _parallel_role(config: _ParallelConfig, role: str) -> ReplicaParallelConfig:
@@ -162,6 +182,42 @@ def _parse_parallel_entry(entry: dict[str, Any], deployment_mode: str):
         prefill=_replica_from_dict(entry["prefill"]),
         decode=_replica_from_dict(entry["decode"]),
     )
+
+
+def _fpm_parallel_configs(search_space, deployment_mode: str):
+    """Apply declared topology domains before grouped compatibility or resource checks."""
+    from aisimulate.fpm_profile import load_fpm_profile
+
+    profile = load_fpm_profile(search_space.fpm_profile)
+    configs = _profile_parallel_configs(
+        profile,
+        hardware_sku=search_space.hardware_sku_for("agg" if deployment_mode == "agg" else "prefill"),
+        decode_hardware_sku=(search_space.hardware_sku_for("decode") if deployment_mode == "disagg" else None),
+        backend="vllm",
+        backend_version=search_space.requested_backend_version("vllm"),
+        gpu_budget=search_space.gpu_budget,
+        min_gpu_budget=search_space.min_gpu_budget,
+        deployment_mode=deployment_mode,
+    )
+    raw_pinned = search_space.parallel_configs_by_mode.get(deployment_mode, search_space.parallel_configs)
+    if raw_pinned:
+        pinned = {_parse_parallel_entry(entry, deployment_mode) for entry in raw_pinned}
+        configs = [config for config in configs if config in pinned]
+    for role, entries in search_space.parallel_custom_configs_by_mode.get(deployment_mode, {}).items():
+        choices = {_replica_from_dict(entry) for entry in entries}
+        configs = [config for config in configs if _parallel_role(config, role) in choices]
+    domains = search_space.parallel_independent_by_mode.get(deployment_mode, {})
+    bounds = search_space.parallel_independent_log_ranges_by_mode.get(deployment_mode, {})
+    return [
+        config
+        for config in configs
+        if all(
+            bounds[name][0] <= value <= bounds[name][1]
+            if name in bounds
+            else domains.get(name) is None or value in domains[name]
+            for name, value in _parallel_leaf_values(config).items()
+        )
+    ]
 
 
 def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[Any]]:
@@ -255,11 +311,25 @@ def _runtime_by_role(search_space, backend: str, mode: str) -> dict[str, tuple[i
     return {role: _role_runtime(search_space, backend, role) for role in roles}
 
 
+def _context_by_role(search_space, mode: str, max_seq_len: int | None) -> dict[str, int] | None:
+    if mode == "agg":
+        return None
+    result = {}
+    for role in ("prefill", "decode"):
+        value = getattr(search_space, f"{role}_context_length")
+        if value is not None:
+            result[role] = value
+        elif max_seq_len is not None:
+            result[role] = max_seq_len
+    return result or None
+
+
 def _heterogeneous_disagg_configs(
     search_space,
     *,
     backend: str,
     max_seq_len: int | None,
+    candidate_configs: list[DisaggParallelConfig] | None = None,
 ) -> list[DisaggParallelConfig]:
     """Enumerate each P/D role against its own hardware, then apply the shared budget."""
     role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
@@ -285,13 +355,25 @@ def _heterogeneous_disagg_configs(
                 hardware,
                 gpu_budget=search_space.gpu_budget,
                 deployment_mode="agg",
+                worker_type=role,
                 backend=backend,
                 backend_version=backend_version,
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
+                role_max_seq_len=(
+                    {"agg": getattr(search_space, f"{role}_context_length") or max_seq_len}
+                    if getattr(search_space, f"{role}_context_length") is not None or max_seq_len is not None
+                    else None
+                ),
                 **_engine_memory_kwargs(search_space),
                 **_estimator_root_kwargs(search_space, role),
+                **({"fpm_profile": search_space.fpm_profile} if search_space.fpm_profile is not None else {}),
+                **(
+                    {"candidate_configs": list(dict.fromkeys(getattr(config, role) for config in candidate_configs))}
+                    if candidate_configs is not None
+                    else {}
+                ),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -412,6 +494,11 @@ def _afd_branch(
                     min_gpu_budget=None,
                     max_seq_len=max_seq_len,
                     role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
+                    role_max_seq_len=(
+                        {"agg": getattr(ss, f"{companion_role}_context_length") or max_seq_len}
+                        if getattr(ss, f"{companion_role}_context_length") is not None or max_seq_len is not None
+                        else None
+                    ),
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue
@@ -586,6 +673,7 @@ def enumerate_branches(
         custom_by_role = {
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()
         }
+        profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
 
         def matches_custom(config: _ParallelConfig) -> bool:
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
@@ -606,6 +694,7 @@ def enumerate_branches(
                         ss,
                         backend=backend,
                         max_seq_len=max_seq_len,
+                        candidate_configs=profile_configs,
                     )
                 else:
                     legal = parallel_configs_for(
@@ -618,8 +707,11 @@ def enumerate_branches(
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                        role_max_seq_len=_context_by_role(ss, deployment_mode, max_seq_len),
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
+                        **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
+                        **({"candidate_configs": profile_configs} if profile_configs is not None else {}),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
@@ -628,6 +720,15 @@ def enumerate_branches(
             ]
             if custom_by_role:
                 legal = [cfg for cfg in legal if matches_custom(cfg)]
+            legal = [
+                cfg
+                for cfg in legal
+                if matches_parallel_domains(
+                    cfg,
+                    ss.parallel_independent_by_mode.get(deployment_mode, {}),
+                    ss.parallel_independent_log_ranges_by_mode.get(deployment_mode, {}),
+                )
+            ]
             legal_set = set(legal)
             for cfg in pinned if pinned is not None else legal:
                 if cfg in legal_set:
@@ -705,9 +806,8 @@ def enumerate_branches(
             if config.workload.load_log_scale:
                 log_float_ranges.add("traffic_load")
         branches.append(
-            # Independent mode exposes each YAML leaf as an optimizer dimension.
-            # Omitted ranges are derived from the legal pool; explicit ranges may
-            # still form infeasible Cartesian combinations, which the main loop gates.
+            # Omitted ranges are derived from the legal pool; requested leaf
+            # domains have already been intersected with joint feasibility.
             BranchSpace(
                 deployment_mode=deployment_mode,
                 parallel_configs=tuple(support),

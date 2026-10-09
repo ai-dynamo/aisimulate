@@ -4,16 +4,24 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+from array import array
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from fpm_accuracy.exceptions import DependencyError
-from fpm_accuracy.hf.models import MeasurementCase
-from fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
-from fpm_accuracy.models.worker_regression import WorkerRegressionPredictor, infer_worker_roles
+from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
+from scripts.fpm_accuracy.exceptions import DependencyError
+from scripts.fpm_accuracy.hf.models import MeasurementCase
+from scripts.fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, PredictorContext
+from scripts.fpm_accuracy.models.worker_regression import (
+    WorkerRegressionPredictor,
+    infer_worker_roles,
+)
+from scripts.notifications.accuracy_digest import encode_points
 
 WORKLOADS = ("all", "prefill", "decode", "mixed")
 METHODS = ("warmup", "nowarmup", "regression")
@@ -60,8 +68,12 @@ def score(
     artifact: Any = None,
     *,
     factory: Callable = create_predictor,
+    include_points: bool = False,
+    heatmaps: dict | None = None,
 ) -> dict:
     """Keep every eligible outcome; targets reach regression only after scoring."""
+    cells = {}
+    points = array("d")
     metrics = {workload: Metric() for workload in WORKLOADS}
     status = "evaluated"
     predictor = None
@@ -71,7 +83,9 @@ def score(
         status = "no_fpm_input"
     else:
         context = PredictorContext(
-            worker=case.configuration.worker_config_record, worker_role=case.worker_role, fpm_artifact=artifact
+            worker=case.configuration.worker_config_record,
+            worker_role=case.worker_role,
+            fpm_artifact=artifact,
         )
         try:
             if method == "regression":
@@ -81,7 +95,10 @@ def score(
                 predictor = factory("aic-fpm", context)
         except Exception as exc:
             # Raw diagnostics stay in Actions logs, never in the public JSON.
-            print(f"{case.configuration_id} {method}: construction failed: {exc}", flush=True)
+            print(
+                f"{case.configuration_id} {method}: construction failed: {exc}",
+                flush=True,
+            )
             construction_failed = not isinstance(exc, DependencyError)
             status = "predictor_error" if construction_failed else "unsupported_predictor"
     try:
@@ -100,6 +117,13 @@ def score(
                         raise ValueError("invalid prediction")
                 except Exception:
                     predicted, error = None, True
+            if heatmaps is not None:
+                heatmap = heatmaps[workload]
+                x, y = _axis_values(observation)
+                key = (workload, _bin_index(x, heatmap.x_bins), _bin_index(y, heatmap.y_bins))
+                cells.setdefault(key, Metric()).add(actual, predicted, error, False)
+            if include_points:
+                points.append(-1 if error or predicted is None else abs(predicted - actual) / actual * 100)
             # Score before the model sees this target.
             for key in ("all", workload):
                 metrics[key].add(actual, predicted, error, False)
@@ -115,6 +139,24 @@ def score(
         if predictor is not None:
             predictor.close()
     return {
+        **(
+            {
+                "_heatmaps": {
+                    phase: {
+                        **heatmap.model_dump(mode="json"),
+                        "cells": [
+                            {"x_index": x, "y_index": y, **metric.export()}
+                            for (kind, x, y), metric in sorted(cells.items())
+                            if kind == phase
+                        ],
+                    }
+                    for phase, heatmap in heatmaps.items()
+                }
+            }
+            if heatmaps is not None
+            else {}
+        ),
+        **({"_points": encode_points(points)} if include_points else {}),
         "status": status,
         "artifact": None
         if artifact is None
@@ -134,31 +176,73 @@ def choose_variant(results: list[dict]) -> dict:
         metric = result["metrics"]["all"]
         coverage = metric["predicted_count"] / metric["measured_count"] if metric["measured_count"] else 0
         mape = metric["mape_pct"]
-        return (-coverage, mape if mape is not None else math.inf, result["artifact"]["id"])
+        return (
+            -coverage,
+            mape if mape is not None else math.inf,
+            result["artifact"]["id"],
+        )
 
     return min(results, key=rank)
 
 
-def evaluate_case(case: MeasurementCase, *, factory: Callable = create_predictor) -> dict:
+def evaluate_case(
+    case: MeasurementCase,
+    *,
+    factory: Callable = create_predictor,
+    comparison: dict | None = None,
+    details: list | None = None,
+) -> dict:
     config = case.configuration
     ids = [item.observation_id for item in case.observations]
     orders = [item.order for item in case.observations]
     if len(ids) != len(set(ids)) or orders != sorted(set(orders)):
         raise ValueError("measurement stream must have unique IDs and strictly increasing order")
     results = {}
+    variants_by_method = {}
+    heatmaps = measurement_workload_heatmaps(case.observations) if details is not None else None
     if str(case.status) == "ready":
-        results["regression"] = score(case, "regression", factory=factory)
+        results["regression"] = score(
+            case, "regression", factory=factory, include_points=comparison is not None, heatmaps=heatmaps
+        )
         for mode in METHODS[:2]:
             variants = [
                 item
                 for item in case.fpm_artifacts
                 if ("nowarmup" if ".kv-off." in item.path.lower() else "warmup") == mode
             ]
+            variants_by_method[mode] = [
+                score(case, mode, item, factory=factory, include_points=comparison is not None, heatmaps=heatmaps)
+                for item in variants
+            ]
             results[mode] = (
-                choose_variant([score(case, mode, item, factory=factory) for item in variants])
+                choose_variant(variants_by_method[mode])
                 if variants
-                else score(case, mode, factory=factory)
+                else score(case, mode, factory=factory, include_points=comparison is not None, heatmaps=heatmaps)
             )
+    if details is not None:
+        details.append(
+            {
+                "configuration_id": config.configuration_id,
+                "snapshot_id": config.snapshot_id,
+                "membership_sha256": case.measurement_membership_sha256,
+                "workload_heatmaps": {key: value.model_dump(mode="json") for key, value in heatmaps.items()},
+                "methods": {
+                    method: [
+                        {key: value for key, value in candidate.items() if key != "_points"}
+                        for candidate in (variants_by_method.get(method) or [result])
+                    ]
+                    for method, result in results.items()
+                },
+            }
+        )
+        for candidates in [list(results.values()), *variants_by_method.values()]:
+            for candidate in candidates:
+                candidate.pop("_heatmaps", None)
+    if comparison is not None:
+        comparison[config.configuration_id + "/" + config.snapshot_id] = {
+            "order_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+            "methods": {method: result.pop("_points") for method, result in results.items()},
+        }
     return {
         "configuration_id": config.configuration_id,
         "configuration_path": config.configuration_path,

@@ -160,6 +160,55 @@ def test_predict_cli_reaches_native_rank_host_offload(tmp_path, monkeypatch, cap
     assert rank["native_host_offload"] == _host_offload()
 
 
+@pytest.mark.parametrize(
+    "scopes",
+    [("default",), ("dp_rank_local",), ("cluster_shared",)]
+    + [
+        (prefill, decode)
+        for prefill in (None, "dp_rank_local", "cluster_shared")
+        for decode in (None, "dp_rank_local", "cluster_shared")
+        if prefill is not None or decode is not None
+    ],
+)
+def test_agentic_g2_public_config_preserves_role_scopes_through_native_payload(scopes) -> None:
+    mode = "aggregated" if len(scopes) == 1 else "disaggregated"
+    engine = _prediction_engine(mode=mode)
+    if mode == "disaggregated":
+        engine["kv_transfer"] = {"bytes_per_token": 131_072}
+    roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
+    for role, scope in zip(roles, scopes, strict=True):
+        worker = engine["workers"][role]
+        worker["parallelism"]["tensor"] = 1
+        if scope is not None:
+            offload = _host_offload()
+            if scope != "default":
+                offload["scope"] = scope
+            worker["kv_cache"].update(bytes_per_token=131_072, host_offload=offload)
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "trace", "paths": ["self-authored-weka.jsonl"], "format": "weka"},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+        }
+    )
+    runtime = _RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(prediction_to_replay_spec(public))
+    native = runtime.execution_spec["spec"]["engine"]
+    for role, scope in zip(roles, scopes, strict=True):
+        rank = native["rank"] if role == "aggregated" else native[role]["rank"]
+        if scope is None:
+            assert rank.get("native_host_offload") is None
+        else:
+            offload = rank["native_host_offload"]
+            assert offload.get("scope", "dp_rank_local") == ("dp_rank_local" if scope == "default" else scope)
+            assert {key: offload[key] for key in _host_offload()} == _host_offload()
+            assert rank["kv_cache_bytes_per_token"] == 131_072
+            if scope == "cluster_shared":
+                assert offload["kv_layout_id"]
+
+
 def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
     monkeypatch,
 ) -> None:
@@ -185,6 +234,7 @@ def test_prediction_host_offload_auto_geometry_uses_aggregated_shape(
             "pp_size": 1,
             "moe_tp_size": 1,
             "moe_ep_size": 1,
+            "kvcache_quant_mode": None,
         }
     ]
 
@@ -345,15 +395,6 @@ def test_recommendation_materializes_concrete_host_offload_prediction() -> None:
             lambda engine: engine["workers"]["aggregated"]["kv_cache"].update(prefix_caching=False),
             "prefix_caching=true",
         ),
-        (
-            lambda engine: engine["workers"]["aggregated"].update(
-                parallelism={
-                    **engine["workers"]["aggregated"]["parallelism"],
-                    "attention_data": 2,
-                }
-            ),
-            "attention_data=1",
-        ),
     ],
 )
 def test_prediction_host_offload_rejects_unsupported_runtime_scope(mutation, message: str) -> None:
@@ -365,34 +406,12 @@ def test_prediction_host_offload_rejects_unsupported_runtime_scope(mutation, mes
         CorePredictionConfig.model_validate({"engine": engine})
 
 
-def test_prediction_host_offload_rejects_disaggregated_role() -> None:
-    engine = _prediction_engine(mode="disaggregated")
-    engine["workers"]["prefill"]["kv_cache"]["host_offload"] = _host_offload()
-
-    with pytest.raises(ValidationError, match="aggregated worker"):
-        CorePredictionConfig.model_validate({"engine": engine})
-
-
 def test_recommendation_host_offload_rejects_mixed_backend_domain() -> None:
     engine = _recommendation_engine()
     engine["backend"] = {"choices": ["vllm", "sglang"]}
     engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
 
     with pytest.raises(ValidationError, match="concrete backend=vllm"):
-        CoreRecommendationConfig.model_validate(
-            {
-                "engine": engine,
-                "optimization": {"constraints": {"max_candidate_gpus": 8}},
-            }
-        )
-
-
-def test_recommendation_host_offload_rejects_attention_dp_domain() -> None:
-    engine = _recommendation_engine()
-    engine["workers"]["aggregated"]["parallelism"]["attention_data"] = {"choices": [1, 2]}
-    engine["workers"]["aggregated"]["kv_cache"]["host_offload"] = _host_offload()
-
-    with pytest.raises(ValidationError, match="fixed parallelism"):
         CoreRecommendationConfig.model_validate(
             {
                 "engine": engine,

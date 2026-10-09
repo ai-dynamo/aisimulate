@@ -3,6 +3,7 @@
 
 """collection_meta.yaml provenance writer tests (Collector V3 design §5)."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -91,10 +92,28 @@ def test_provenance_modules_include_active_vllm_xpu_registry():
 
 
 def test_hash_closures_yaml_has_no_stale_entries():
-    # Entries for modules no registry or standalone declaration references
-    # anymore would be silently wrong — keep the file exact.
+    # The audited offline publisher has no GPU registry route. Its declared
+    # identity remains part of its hash closure; all other entries stay exact.
     closures = provenance.load_closures(HASH_CLOSURES_PATH)
-    stale = closures.keys() - provenance.enumerate_provenance_modules()
+    offline_publisher = "collector.sglang_rubin.publish_observed_moe"
+    identity_file = "collector/sglang_rubin/observed_moe_identity.json"
+    assert identity_file in closures[offline_publisher]
+    identity = json.loads((REPO_ROOT / identity_file).read_text())
+    assert identity["module"] == offline_publisher
+    assert identity["kind"] == "offline_publication_of_qualified_native_measurements"
+    composite_publisher = "collector.sglang_rubin.publish_observed_moe_v2"
+    composite_identity = "collector/sglang_rubin/observed_moe_v2_identity.json"
+    assert composite_identity in closures[composite_publisher]
+    assert json.loads((REPO_ROOT / composite_identity).read_text())["module"] == composite_publisher
+    graph_publisher = "collector.sglang_rubin.publish_prefill_graph"
+    graph_identity = "collector/sglang_rubin/prefill_graph_identity.json"
+    assert graph_identity in closures[graph_publisher]
+    assert json.loads((REPO_ROOT / graph_identity).read_text())["module"] == graph_publisher
+    stale = (
+        closures.keys()
+        - provenance.enumerate_provenance_modules()
+        - {offline_publisher, composite_publisher, graph_publisher}
+    )
     assert stale == set()
 
 
@@ -139,6 +158,58 @@ def test_collector_hash_changes_when_shared_core_file_changes(tmp_path):
     _write(tmp_path / "collector" / "helper.py", "# helper.py changed\n")
     after = provenance.collector_hash("collector.sglang.collect_gemm", tmp_path, FAKE_CLOSURES)
     assert before != after
+
+
+@pytest.mark.parametrize("backend", ["sglang", "sglang_rubin"])
+@pytest.mark.parametrize("binding_file", ["registry_types.py", "collect.py", "sglang/registry.py"])
+def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_file):
+    module = f"collector.{backend}.collect_mla_module"
+    closures = provenance.load_closures(HASH_CLOSURES_PATH)
+    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
+    for relative in paths - {provenance.MODEL_CASES_GROUP}:
+        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
+    before = provenance.collector_hash(module, tmp_path, closures)
+    binding_path = tmp_path / "collector" / binding_file
+    _write(binding_path, binding_path.read_text(encoding="utf-8") + "\n# binding changed\n")
+    assert provenance.collector_hash(module, tmp_path, closures) != before
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "collect_attn",
+        "collect_computescale",
+        "collect_dsv4_attn",
+        "collect_gemm",
+        "collect_mhc_module",
+        "collect_mla_module",
+        "collect_mla_module_027",
+        "collect_moe",
+        "collect_msa_module",
+    ],
+)
+def test_vllm_collector_hash_covers_native_setup(tmp_path, module_name):
+    module = f"collector.vllm.{module_name}"
+    closures = provenance.load_closures(HASH_CLOSURES_PATH)
+    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
+    for relative in paths - {provenance.MODEL_CASES_GROUP}:
+        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
+    before = provenance.collector_hash(module, tmp_path, closures)
+    utils_path = tmp_path / "collector/vllm/utils.py"
+    _write(utils_path, utils_path.read_text(encoding="utf-8") + "\n# rendezvous changed\n")
+    assert provenance.collector_hash(module, tmp_path, closures) != before
+
+
+def test_vllm_mla_shim_hash_covers_executed_module(tmp_path):
+    module = "collector.vllm.collect_mla_module_027"
+    closures = provenance.load_closures(HASH_CLOSURES_PATH)
+    paths = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE, *closures[module]}
+    for relative in paths - {provenance.MODEL_CASES_GROUP}:
+        _write(tmp_path / relative, (REPO_ROOT / relative).read_text(encoding="utf-8"))
+    before = provenance.collector_hash(module, tmp_path, closures)
+    implementation = tmp_path / "collector/vllm/collect_mla_module.py"
+    _write(implementation, implementation.read_text(encoding="utf-8") + "\n# native forward changed\n")
+    assert provenance.collector_hash(module, tmp_path, closures) != before
 
 
 def test_collector_hash_changes_when_model_cases_group_changes(tmp_path):

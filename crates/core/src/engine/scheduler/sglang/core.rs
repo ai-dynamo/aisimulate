@@ -11,6 +11,7 @@
 //! (`_should_defer_prefill`, `_arm_prefill_decode_interval`, `get_next_batch_to_run`).
 //! This countdown and group feedback integration are independently implemented.
 
+use rustc_hash::FxHashSet;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -40,7 +41,7 @@ use super::frontend::FrontendRuntime;
 use super::host_loop::{ForwardOutputs, HostLoop};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
-use super::request::SglangRequest;
+use super::request::{SglangRequest, WaitingQueue};
 use super::vision::VisionCache;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionInvariant, AdmissionStage, CapturedKvEventBuffer,
@@ -53,7 +54,8 @@ use crate::engine::scheduler::{
 pub(crate) struct SglangCore {
     pub(super) config: SglangConfig,
     dp_rank: u32,
-    pub(super) waiting: VecDeque<SglangRequest>,
+    pub(super) waiting: WaitingQueue,
+    active_request_ids: FxHashSet<Uuid>,
     prebuilt_ready: VecDeque<SglangRequest>,
     pub(super) running: Vec<SglangRequest>,
     pub(super) new_token_ratio: f64,
@@ -108,6 +110,7 @@ impl ReservedSglangDecode {
             &request.sequence_tokens[..request.prompt_len()],
             &mut request.kv_lease,
         );
+        request.is_decode_handoff = true;
         request.materialized_tokens = request.prompt_len();
         request.allocated_tokens = allocated_tokens;
         request.debug_assert_invariants(block_size);
@@ -121,6 +124,51 @@ impl ReservedSglangDecode {
 }
 
 impl SglangCore {
+    #[cfg(test)]
+    fn reference_queued_fpm(&self) -> crate::engine::common::protocols::ForwardPassSnapshot {
+        let queued_prefills = self
+            .waiting
+            .iter()
+            .filter(|request| {
+                request.output_len() == 0
+                    && !self
+                        .active_destination_handoffs
+                        .contains_request(request.uuid)
+            })
+            .map(|request| request.prompt_len() as u64);
+        let ordinary_queued_decodes = self
+            .waiting
+            .iter()
+            .filter(|request| {
+                request.output_len() > 0
+                    || self
+                        .active_destination_handoffs
+                        .contains_request(request.uuid)
+            })
+            .map(|request| request.current_sequence_len() as u64)
+            .chain(
+                self.prebuilt_ready
+                    .iter()
+                    .map(|request| request.current_sequence_len() as u64),
+            );
+        let preactivation_decodes = self
+            .pending_destinations
+            .payloads()
+            .map(|request| request.prompt_len() as u64)
+            .chain(
+                self.destination_holds
+                    .payloads()
+                    .map(|reservation| reservation.request.prompt_len() as u64),
+            );
+        build_fpm_snapshot(
+            std::iter::empty(),
+            std::iter::empty(),
+            queued_prefills,
+            ordinary_queued_decodes.chain(preactivation_decodes),
+            0.0,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn new(args: MockEngineArgs) -> Self {
         Self::new_internal(args, 0, 0, None, KvEventPublishers::default())
@@ -169,7 +217,8 @@ impl SglangCore {
         Self {
             config,
             dp_rank,
-            waiting: VecDeque::new(),
+            waiting: WaitingQueue::default(),
+            active_request_ids: FxHashSet::default(),
             prebuilt_ready: VecDeque::new(),
             running: Vec::new(),
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
@@ -365,6 +414,7 @@ impl SglangCore {
                 let request = reservation.activate(&mut self.kv_manager, self.config.block_size);
                 self.active_destination_handoffs
                     .insert(handoff_id, request.uuid);
+                self.active_request_ids.insert(request.uuid);
                 self.prebuilt_ready.push_back(request);
                 if self.kv_manager.cache().available_tokens() > available_before {
                     self.bump_capacity_generation();
@@ -457,24 +507,21 @@ impl SglangCore {
     }
 
     fn request_is_active(&self, uuid: Uuid) -> bool {
-        self.waiting.iter().any(|request| request.uuid == uuid)
-            || self
-                .prebuilt_ready
-                .iter()
-                .any(|request| request.uuid == uuid)
-            || self.running.iter().any(|request| request.uuid == uuid)
-            || self
-                .inflight_source
-                .iter()
-                .any(|request| request.uuid == uuid)
-            || self
-                .host
-                .as_ref()
-                .is_some_and(|host| host.holds_request(uuid))
-            || self
-                .frontend
-                .as_ref()
-                .is_some_and(|frontend| frontend.holds_request(uuid))
+        self.active_request_ids.contains(&uuid)
+    }
+
+    /// Requests `active_request_ids` indexes: queued, running, inflight, delivered
+    /// to the host loop, or still inside the frontend pools.
+    fn indexed_request_ids(&self) -> FxHashSet<Uuid> {
+        self.waiting
+            .iter()
+            .chain(&self.prebuilt_ready)
+            .chain(&self.running)
+            .chain(&self.inflight_source)
+            .map(|request| request.uuid)
+            .chain(self.host.iter().flat_map(HostLoop::request_ids))
+            .chain(self.frontend.iter().flat_map(FrontendRuntime::request_ids))
+            .collect()
     }
 
     fn submit(&mut self, request: DirectRequest, now_ms: Option<f64>) -> anyhow::Result<Uuid> {
@@ -484,6 +531,7 @@ impl SglangCore {
         }
         request.debug_assert_invariants(self.config.block_size);
         let uuid = request.uuid;
+        self.active_request_ids.insert(uuid);
         match (&mut self.frontend, &mut self.host) {
             (Some(frontend), _) => {
                 let now_ms = now_ms.unwrap_or_else(|| frontend.now_ms());
@@ -553,10 +601,12 @@ impl SglangCore {
 
     fn complete_source(&mut self, request: SglangRequest) {
         let uuid = request.uuid;
+        self.active_request_ids.remove(&uuid);
         let transfer_timing = prefill_handoff_transfer_timing(
             request.prompt_len(),
             self.config.kv_transfer_bandwidth,
             self.config.kv_transfer_bytes_per_token,
+            0,
             self.config.kv_transfer_timing_mode,
         );
         let payload = HeldSglangPrefill { request };
@@ -658,6 +708,7 @@ impl SglangCore {
         let Some(mut request) = request else {
             return false;
         };
+        self.active_request_ids.remove(&request_id);
         if let Some(host) = &mut self.host {
             // The forward in flight may have produced this request's outputs and
             // prefix commits; the scheduler never observes them now.
@@ -924,7 +975,13 @@ impl SglangCore {
         // Keep rejected requests alive until the pass succeeds so a provider
         // failure can restore both their queue position and terminal bookkeeping.
         let mut rejected = Vec::new();
-        if let Some(limit) = self.config.max_model_len {
+        if let Some(limit) = self.config.max_model_len
+            && self
+                .waiting
+                .stats
+                .maximum_length()
+                .is_some_and(|length| length >= limit as u64)
+        {
             for index in 0..self.waiting.len() {
                 let request = self.waiting.pop_front().expect("waiting request retained");
                 if request.prompt_len() < limit {
@@ -940,9 +997,24 @@ impl SglangCore {
         let admission_checkpoint = (!self.waiting.is_empty()
             && self.config.perf_model.prefill_pass_can_fail())
         .then(|| {
+            // FIFO admission only touches an admitted prefix and possibly its
+            // first blocked request. LPM may reorder the small queue it scores;
+            // keep the complete rollback image in that bounded case.
+            let checkpoint_len = if self.config.schedule_policy
+                == super::config::SchedulePolicy::Lpm
+                && self.waiting.len() <= super::config::LPM_FALLBACK_THRESHOLD
+            {
+                self.waiting.len()
+            } else {
+                self.config
+                    .max_running_requests
+                    .saturating_sub(self.running.len())
+                    .saturating_add(1)
+            };
             let waiting = self
                 .waiting
                 .iter()
+                .take(checkpoint_len)
                 .map(|request| {
                     (
                         request.uuid,
@@ -1029,12 +1101,17 @@ impl SglangCore {
                 self.group_pass_prepared = grouped;
                 if let Some((checkpoint, waiting)) = admission_checkpoint {
                     self.kv_manager.rollback_admission(checkpoint);
-                    let mut requests = self
-                        .waiting
-                        .drain(..)
-                        .chain(admit.can_run)
-                        .map(|request| (request.uuid, request))
-                        .collect::<rustc_hash::FxHashMap<_, _>>();
+                    let checkpoint_ids: FxHashSet<_> =
+                        waiting.iter().map(|entry| entry.0).collect();
+                    let mut requests = rustc_hash::FxHashMap::default();
+                    let mut untouched = Vec::new();
+                    for request in self.waiting.drain(..).chain(admit.can_run) {
+                        if checkpoint_ids.contains(&request.uuid) {
+                            requests.insert(request.uuid, request);
+                        } else {
+                            untouched.push(request);
+                        }
+                    }
                     for (uuid, materialized, allocated, lease) in waiting {
                         let mut request =
                             requests.remove(&uuid).expect("admission request retained");
@@ -1045,6 +1122,9 @@ impl SglangCore {
                         self.waiting.push_back(request);
                     }
                     debug_assert!(requests.is_empty());
+                    for request in untouched {
+                        self.waiting.push_back(request);
+                    }
                 }
                 for request in self.running.drain(running_before_admission..).rev() {
                     self.prebuilt_ready.push_front(request);
@@ -1052,6 +1132,7 @@ impl SglangCore {
                 for (index, request) in rejected {
                     self.waiting.insert(index.min(self.waiting.len()), request);
                 }
+                self.active_request_ids = self.indexed_request_ids();
                 return Err(error);
             }
         };
@@ -1075,6 +1156,16 @@ impl SglangCore {
             }
         }
 
+        // Retain chunks that computed input even when no output token is emitted.
+        // Cache-only completions do not share a cold sibling's in-flight work.
+        debug_assert_eq!(admit.can_run.len(), admit.prefill_fpm.len());
+        let mut committed_requests: Vec<_> = admit
+            .can_run
+            .iter()
+            .zip(&admit.prefill_fpm)
+            .filter(|(_, work)| work.tokens_computed > 0)
+            .map(|(request, _)| request.uuid)
+            .collect();
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
 
@@ -1148,9 +1239,22 @@ impl SglangCore {
                 for (index, request) in rejected {
                     self.waiting.insert(index.min(self.waiting.len()), request);
                 }
+                self.active_request_ids = self.indexed_request_ids();
                 return Err(error);
             }
         };
+        if !prefill_pass {
+            // The decode step can retract requests before executing the batch.
+            committed_requests.extend(
+                decode
+                    .output_signals
+                    .iter()
+                    .filter(|signal| signal.token_id.is_some())
+                    .map(|signal| signal.uuid),
+            );
+            committed_requests.sort_unstable();
+            committed_requests.dedup();
+        }
         if let Some(host) = &mut self.host {
             // `retract_decode` marks a request before the previous forward's result is
             // processed, and `process_batch_result` then skips it (`is_retracted`): the
@@ -1247,6 +1351,7 @@ impl SglangCore {
         }
         // Rejections never ran a forward: their signals are visible in this pass.
         for (_, request) in rejected {
+            self.active_request_ids.remove(&request.uuid);
             self.source_holds.remove_request(request.uuid);
             output_signals.push(OutputSignal {
                 uuid: request.uuid,
@@ -1294,31 +1399,10 @@ impl SglangCore {
             .iter()
             .map(|item| (item.cache_reused_tokens + item.tokens_computed) as u64)
             .sum::<u64>();
-        let queued_prefills = self
-            .waiting
-            .iter()
-            .filter(|request| {
-                request.output_len() == 0
-                    && !self
-                        .active_destination_handoffs
-                        .contains_request(request.uuid)
-            })
-            .map(|request| request.prompt_len() as u64);
-        let ordinary_queued_decodes = self
-            .waiting
-            .iter()
-            .filter(|request| {
-                request.output_len() > 0
-                    || self
-                        .active_destination_handoffs
-                        .contains_request(request.uuid)
-            })
-            .map(|request| request.current_sequence_len() as u64)
-            .chain(
-                self.prebuilt_ready
-                    .iter()
-                    .map(|request| request.current_sequence_len() as u64),
-            );
+        let mut queued = self.waiting.stats.snapshot();
+        for request in &self.prebuilt_ready {
+            queued.add_decode(request.current_sequence_len() as u64);
+        }
         let preactivation_decodes = self
             .pending_destinations
             .payloads()
@@ -1328,7 +1412,7 @@ impl SglangCore {
                     .payloads()
                     .map(|reservation| reservation.request.prompt_len() as u64),
             );
-        let fpm = build_fpm_snapshot(
+        let mut fpm = build_fpm_snapshot(
             prefill_fpm
                 .iter()
                 .filter(|p| p.tokens_computed > 0)
@@ -1340,10 +1424,23 @@ impl SglangCore {
                     )
                 }),
             scheduled_decode_lens.into_iter(),
-            queued_prefills,
-            ordinary_queued_decodes.chain(preactivation_decodes),
-            (decode.end_ms - selected_ms) / 1000.0,
+            std::iter::empty(),
+            std::iter::empty(),
+            (decode.end_ms - now_ms) / 1000.0,
         );
+
+        for length in preactivation_decodes {
+            queued.add_decode(length);
+        }
+        queued.apply(&mut fpm);
+        #[cfg(test)]
+        {
+            crate::engine::scheduler::queue_metrics::assert_queue_metrics(
+                &fpm,
+                &self.reference_queued_fpm(),
+            );
+            assert_eq!(self.active_request_ids, self.indexed_request_ids());
+        }
 
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
         if !grouped {
@@ -1351,6 +1448,7 @@ impl SglangCore {
             self.finish_group_pass(self.prefill_in_pass, self.model_work_in_pass);
         }
         Ok(EnginePassResult {
+            committed_requests,
             end_ms,
             same_timestamp_retry: if defer_prefill {
                 crate::engine::generalized::SameTimestampRetry::Countdown {

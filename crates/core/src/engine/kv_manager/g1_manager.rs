@@ -18,7 +18,7 @@ use super::vllm_backend::{
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
 pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
-use super::{AllocationRequirement, DestinationReservationMode, G1Acquire};
+use super::{AllocationRequirement, DestinationReservationMode, G1Acquire, GroupedKvPool};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
     match outcome {
@@ -70,8 +70,22 @@ pub(crate) struct G1Manager {
 }
 
 impl G1Manager {
+    pub(crate) fn set_grouped_cache(&mut self, groups: GroupedKvPool) {
+        self.inner.set_grouped_cache(groups);
+    }
+
+    pub(crate) fn grouped(&self) -> Option<&GroupedKvPool> {
+        self.inner.grouped()
+    }
+
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         self.inner.set_belady_oracle(oracle);
+    }
+
+    /// Hold each G1 block a host store reads until its copy completes, instead
+    /// of letting a new owner write it behind a fence.
+    pub(crate) fn hold_native_store_sources(&mut self) {
+        self.inner.hold_store_sources();
     }
 
     pub(crate) fn new_with_event_sink(
@@ -114,6 +128,11 @@ impl G1Manager {
 
     pub(crate) fn requires_write_preparation(&self) -> bool {
         self.inner.requires_write_preparation()
+    }
+
+    /// Blocks one recurrent state occupies; zero without a state cache.
+    pub(crate) fn state_blocks_per_request(&self) -> usize {
+        self.inner.state_cache_blocks()
     }
 
     pub(crate) fn begin_step(&mut self) {
@@ -185,6 +204,11 @@ impl G1Manager {
             len,
             end_of_burst,
         );
+    }
+
+    pub(crate) fn with_prefix_match_unit(mut self, unit: Option<usize>) -> Self {
+        self.inner.configure_prefix_match_unit(unit);
+        self
     }
 
     pub(crate) fn allocate_native(
@@ -310,6 +334,10 @@ impl G1Manager {
             .attach_store_source_dependency(owner, snapshot.inner, dependency);
     }
 
+    pub(crate) fn publish_host_pinned_event(&mut self, data: crate::engine::KvEventData) {
+        self.inner.publish_host_pinned_event(data);
+    }
+
     pub(crate) fn satisfy_native_source_dependency(
         &mut self,
         dependency: SourceReuseDependency,
@@ -389,6 +417,7 @@ mod tests {
         let mut manager =
             G1Manager::new_with_event_sink(8, 4, KvEventPublishers::new(Some(sink)), 0);
         let (mut sequence, identities) = RequestSequence::new(
+            owner,
             (0..8).collect(),
             4,
             4,

@@ -131,6 +131,8 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
     }
     match &op {
         Op::Gemm(_) => wrap!(PyGemm),
+        Op::SglangPrefillAttentionSequence(_) => wrap!(PySglangPrefillAttentionSequence),
+        Op::SglangPrefillCommNormBoundary(_) => wrap!(PySglangPrefillCommNormBoundary),
         Op::Embedding(_) => wrap!(PyEmbedding),
         Op::Elementwise(_) => wrap!(PyElementWise),
         Op::ContextAttention(_) => wrap!(PyContextAttention),
@@ -1016,7 +1018,7 @@ impl PyContextAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kvcache_quant_mode, fmha_quant_mode, window_size=0, head_size=128, use_qk_norm=false, cp_size=1, lane_order=None, apply_rope=true, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1031,7 +1033,13 @@ impl PyContextAttention {
         cp_size: u32,
         lane_order: Option<Vec<String>>,
         apply_rope: bool,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextAttention(ContextAttentionOp {
             name,
             scale_factor,
@@ -1045,6 +1053,7 @@ impl PyContextAttention {
             cp_size,
             lane_order: lane_order.unwrap_or_else(default_lane_order),
             apply_rope,
+            dcp_size,
         });
         Ok((PyContextAttention, PyOperation { inner }))
     }
@@ -1069,12 +1078,32 @@ impl PyContextAttention {
             o.apply_rope,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().context_attention()?.n)
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextAttentionOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1166,7 +1195,7 @@ impl PyGenerationAttention {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0))]
+    #[pyo3(signature = (name, scale_factor, n, n_kv, kv_cache_dtype, window_size=0, head_size=128, use_qk_norm=false, lane_order=None, *, scale_num_tokens=1, verify_query_tokens=0, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1180,7 +1209,13 @@ impl PyGenerationAttention {
         lane_order: Option<Vec<String>>,
         scale_num_tokens: u32,
         verify_query_tokens: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationAttention(GenerationAttentionOp {
             name,
             scale_factor,
@@ -1193,6 +1228,7 @@ impl PyGenerationAttention {
             use_qk_norm,
             scale_num_tokens,
             verify_query_tokens,
+            dcp_size,
         });
         Ok((PyGenerationAttention, PyOperation { inner }))
     }
@@ -1219,12 +1255,30 @@ impl PyGenerationAttention {
         kwargs.set_item("lane_order", o.lane_order.clone())?;
         kwargs.set_item("scale_num_tokens", o.scale_num_tokens)?;
         kwargs.set_item("verify_query_tokens", o.verify_query_tokens)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_n)]
     fn n(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_attention()?.n)
+    }
+
+    /// Decode context parallelism (see `GenerationAttentionOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_attention()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationAttention dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_attention_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_n_kv)]
@@ -1406,7 +1460,8 @@ impl PyContextMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, cp_size=1, dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -1414,7 +1469,13 @@ impl PyContextMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         cp_size: u32,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::ContextMla(ContextMlaOp {
             name,
             scale_factor,
@@ -1422,8 +1483,27 @@ impl PyContextMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             cp_size,
+            dcp_size,
         });
         Ok((PyContextMLA, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `ContextMlaOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().context_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().context_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(
@@ -1440,7 +1520,9 @@ impl PyContextMLA {
             o.cp_size,
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
@@ -1496,18 +1578,25 @@ impl PyGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, dcp_size=1))]
     fn new(
         name: String,
         scale_factor: f64,
         num_heads: u32,
         kv_cache_dtype: &Bound<'_, PyAny>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
         let inner = Op::GenerationMla(GenerationMlaOp {
             name,
             scale_factor,
             num_heads,
             kv_cache_dtype: kv_quant(kv_cache_dtype)?,
+            dcp_size,
         });
         Ok((PyGenerationMLA, PyOperation { inner }))
     }
@@ -1524,12 +1613,31 @@ impl PyGenerationMLA {
             enum_token(&o.kv_cache_dtype),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_num_heads)]
     fn num_heads(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(slf.as_super().generation_mla()?.num_heads)
+    }
+
+    /// Decode context parallelism (see `GenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kv_cache_dtype)]
@@ -1559,7 +1667,7 @@ impl PyMLAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "module";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None))]
+    #[pyo3(signature = (name, scale_factor, is_context, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, native_num_heads=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1570,7 +1678,11 @@ impl PyMLAModule {
         fmha_quant_mode: &Bound<'_, PyAny>,
         gemm_quant_mode: &Bound<'_, PyAny>,
         native_num_heads: Option<u32>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
         let module = MlaModuleOp {
             name,
             scale_factor,
@@ -1579,6 +1691,7 @@ impl PyMLAModule {
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             gemm_quant_mode: gemm_quant(gemm_quant_mode)?,
             native_num_heads,
+            dcp_size,
         };
         let inner = if is_context {
             Op::MlaModuleContext(module)
@@ -1606,12 +1719,28 @@ impl PyMLAModule {
             .into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("native_num_heads", o.native_num_heads)?;
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
     #[getter(_is_context)]
     fn is_context(slf: PyRef<'_, Self>) -> bool {
         matches!(slf.as_super().op(), Op::MlaModuleContext(_))
+    }
+
+    /// Decode context parallelism (generation variant; see `MlaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().mla_module()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err("MLAModule dcp_size must be positive"));
+        }
+        slf.as_super().mla_module_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[setter(_is_context)]
@@ -1755,7 +1884,7 @@ impl PyMoE {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, enable_eplb=false, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, moe_kernel_source=None, enable_eplb=false, seq_split=1, require_exact_workload_distribution=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1772,8 +1901,10 @@ impl PyMoE {
         is_context: bool,
         is_gated: bool,
         moe_backend: Option<String>,
+        moe_kernel_source: Option<String>,
         enable_eplb: bool,
         seq_split: u32,
+        require_exact_workload_distribution: bool,
     ) -> PyResult<(Self, PyOperation)> {
         // The retired class was CP-aware but the MoE wire carries no
         // seq_split: models divide the token count at the construction site
@@ -1797,8 +1928,10 @@ impl PyMoE {
             attention_dp_size,
             quant_mode: moe_quant(quant_mode)?,
             workload_distribution,
+            require_exact_workload_distribution,
             is_gated,
             moe_backend,
+            moe_kernel_source,
             enable_eplb,
             is_context,
         });
@@ -1828,7 +1961,12 @@ impl PyMoE {
         kwargs.set_item("is_context", o.is_context)?;
         kwargs.set_item("is_gated", o.is_gated)?;
         kwargs.set_item("moe_backend", o.moe_backend.clone())?;
+        kwargs.set_item("moe_kernel_source", o.moe_kernel_source.clone())?;
         kwargs.set_item("enable_eplb", o.enable_eplb)?;
+        kwargs.set_item(
+            "require_exact_workload_distribution",
+            o.require_exact_workload_distribution,
+        )?;
         Ok((args, kwargs))
     }
 
@@ -1881,6 +2019,11 @@ impl PyMoE {
         Ok(slf.as_super().moe()?.workload_distribution.clone())
     }
 
+    #[getter(_require_exact_workload_distribution)]
+    fn require_exact_workload_distribution(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().moe()?.require_exact_workload_distribution)
+    }
+
     #[getter(_is_context)]
     fn is_context(slf: PyRef<'_, Self>) -> PyResult<bool> {
         Ok(slf.as_super().moe()?.is_context)
@@ -1894,6 +2037,11 @@ impl PyMoE {
     #[getter(_moe_backend)]
     fn moe_backend(slf: PyRef<'_, Self>) -> PyResult<Option<String>> {
         Ok(slf.as_super().moe()?.moe_backend.clone())
+    }
+
+    #[getter(_moe_kernel_source)]
+    fn moe_kernel_source(slf: PyRef<'_, Self>) -> PyResult<Option<String>> {
+        Ok(slf.as_super().moe()?.moe_kernel_source.clone())
     }
 
     #[getter(_enable_eplb)]
@@ -3162,7 +3310,8 @@ impl PyWideEPGenerationMLA {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer"))]
+    #[pyo3(signature = (name, scale_factor, tp_size, kvcache_quant_mode, fmha_quant_mode, attn_backend="flashinfer", dcp_size=1))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
         scale_factor: f64,
@@ -3170,11 +3319,17 @@ impl PyWideEPGenerationMLA {
         kvcache_quant_mode: &Bound<'_, PyAny>,
         fmha_quant_mode: &Bound<'_, PyAny>,
         attn_backend: &str,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
         if tp_size == 0 || 128 % tp_size != 0 {
             return Err(PyValueError::new_err(format!(
                 "WideEPGenerationMLA tp_size must divide 128, got {tp_size}"
             )));
+        }
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
         }
         let inner = Op::WideEpGenerationMla(crate::operators::WideEpGenerationMlaOp {
             name,
@@ -3183,6 +3338,7 @@ impl PyWideEPGenerationMLA {
             kv_cache_dtype: kv_quant(kvcache_quant_mode)?,
             fmha_quant_mode: fmha_quant(fmha_quant_mode)?,
             attn_backend: attn_backend.to_string(),
+            dcp_size,
         });
         Ok((PyWideEPGenerationMLA, PyOperation { inner }))
     }
@@ -3201,12 +3357,31 @@ impl PyWideEPGenerationMLA {
             o.attn_backend.clone(),
         )
             .into_pyobject(py)?;
-        Ok((args, PyDict::new(py)))
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dcp_size", o.dcp_size)?;
+        Ok((args, kwargs))
     }
 
     #[getter(_tp_size)]
     fn tp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
         Ok(128 / slf.as_super().wideep_generation_mla()?.num_heads.max(1))
+    }
+
+    /// Decode context parallelism (see `WideEpGenerationMlaOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().wideep_generation_mla()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "WideEPGenerationMLA dcp_size must be positive",
+            ));
+        }
+        slf.as_super().wideep_generation_mla_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_kvcache_quant_mode)]
@@ -3539,7 +3714,7 @@ impl PyContextDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "context";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kvcache_quant_mode, fmha_quant_mode, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", cp_size=1, index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3553,7 +3728,13 @@ impl PyContextDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaContext(crate::operators::DsaModuleOp {
@@ -3571,8 +3752,27 @@ impl PyContextDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size,
         });
         Ok((PyContextDSAModule, PyOperation { inner }))
+    }
+
+    /// Decode CP on the same engine (cached-context gather); see
+    /// `DsaModuleOp::dcp_size`.
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "ContextDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     fn __getnewargs_ex__<'py>(
@@ -3599,6 +3799,7 @@ impl PyContextDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
     }
 
@@ -3686,7 +3887,7 @@ impl PyGenerationDSAModule {
     const _ENGINE_QUERY_SHAPE: &'static str = "generation";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None))]
+    #[pyo3(signature = (name, scale_factor, num_heads, kv_cache_dtype, gemm_quant_mode, architecture="DeepseekV32ForCausalLM", index_topk_freq=1, dsa_full_layer_fraction=None, attn_projection_quant_modes=None, dcp_size=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -3698,7 +3899,13 @@ impl PyGenerationDSAModule {
         index_topk_freq: i64,
         dsa_full_layer_fraction: Option<f64>,
         attn_projection_quant_modes: Option<&Bound<'_, PyDict>>,
+        dcp_size: u32,
     ) -> PyResult<(Self, PyOperation)> {
+        if dcp_size == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
         let gemm = gemm_quant(gemm_quant_mode)?;
         let freq = index_topk_freq.max(1) as f64;
         let inner = Op::DsaGeneration(crate::operators::DsaModuleOp {
@@ -3716,6 +3923,7 @@ impl PyGenerationDSAModule {
                 attn_projection_quant_modes,
                 gemm,
             )?),
+            dcp_size,
         });
         Ok((PyGenerationDSAModule, PyOperation { inner }))
     }
@@ -3742,7 +3950,25 @@ impl PyGenerationDSAModule {
                 dsa_projection_dict(py, quants)?,
             )?;
         }
+        kwargs.set_item("dcp_size", o.dcp_size)?;
         Ok((args, kwargs))
+    }
+
+    /// Decode context parallelism (see `DsaModuleOp::dcp_size`).
+    #[getter(_dcp_size)]
+    fn dcp_size(slf: PyRef<'_, Self>) -> PyResult<u32> {
+        Ok(slf.as_super().dsa()?.dcp_size)
+    }
+
+    #[setter(_dcp_size)]
+    fn set_dcp_size(mut slf: PyRefMut<'_, Self>, value: u32) -> PyResult<()> {
+        if value == 0 {
+            return Err(PyValueError::new_err(
+                "GenerationDSAModule dcp_size must be positive",
+            ));
+        }
+        slf.as_super().dsa_mut()?.dcp_size = value;
+        Ok(())
     }
 
     #[getter(_num_heads)]
@@ -4219,9 +4445,106 @@ impl PyFallbackOp {
     }
 }
 
+/// Fixed-scope attention sequence; weight bytes are the original DSA inventory.
+#[pyclass(extends = PyOperation, subclass, name = "SglangPrefillAttentionSequence", module = "aisimulate_core._native")]
+pub struct PySglangPrefillAttentionSequence;
+#[pymethods]
+impl PySglangPrefillAttentionSequence {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "context";
+
+    #[new]
+    fn new(name: String, profile_id: String, weight_bytes: f64) -> PyResult<(Self, PyOperation)> {
+        crate::perf_database::prefill_graph::validate_id(&profile_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if !weight_bytes.is_finite() || weight_bytes <= 0.0 {
+            return Err(PyValueError::new_err(
+                "original full-model attention weight bytes must be positive and finite",
+            ));
+        }
+        Ok((
+            Self,
+            PyOperation {
+                inner: Op::SglangPrefillAttentionSequence(
+                    crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                        name,
+                        profile_id,
+                        weight_bytes,
+                    },
+                ),
+            },
+        ))
+    }
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let Op::SglangPrefillAttentionSequence(op) = &slf.as_super().inner else {
+            unreachable!()
+        };
+        Ok((
+            (op.name.clone(), op.profile_id.clone(), op.weight_bytes).into_pyobject(py)?,
+            PyDict::new(py),
+        ))
+    }
+}
+
+/// Fixed-count TP reduction/residual/RMSNorm boundary (78 or 77).
+#[pyclass(extends = PyOperation, subclass, name = "SglangPrefillCommNormBoundary", module = "aisimulate_core._native")]
+pub struct PySglangPrefillCommNormBoundary;
+#[pymethods]
+impl PySglangPrefillCommNormBoundary {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "context";
+
+    #[new]
+    fn new(
+        name: String,
+        profile_id: String,
+        boundary_role: String,
+    ) -> PyResult<(Self, PyOperation)> {
+        crate::perf_database::prefill_graph::validate_id(&profile_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let op = crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+            name,
+            profile_id,
+            boundary_role,
+        };
+        op.count()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((
+            Self,
+            PyOperation {
+                inner: Op::SglangPrefillCommNormBoundary(op),
+            },
+        ))
+    }
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let Op::SglangPrefillCommNormBoundary(op) = &slf.as_super().inner else {
+            unreachable!()
+        };
+        Ok((
+            (
+                op.name.clone(),
+                op.profile_id.clone(),
+                op.boundary_role.clone(),
+            )
+                .into_pyobject(py)?,
+            PyDict::new(py),
+        ))
+    }
+}
+
 /// Register every op class on the extension module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOperation>()?;
+    m.add_class::<PySglangPrefillAttentionSequence>()?;
+    m.add_class::<PySglangPrefillCommNormBoundary>()?;
     m.add_class::<PyGemm>()?;
     m.add_class::<PyEmbedding>()?;
     m.add_class::<PyElementWise>()?;

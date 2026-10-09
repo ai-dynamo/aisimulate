@@ -97,8 +97,9 @@ impl HostLoop {
         self.inbox.is_empty() && self.in_flight.is_none()
     }
 
-    pub(super) fn holds_request(&self, uuid: Uuid) -> bool {
-        self.inbox.iter().any(|request| request.uuid == uuid)
+    /// Requests delivered but not yet received.
+    pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        self.inbox.iter().map(|request| request.uuid)
     }
 
     /// Deliver a request to the scheduler process. It is received at the next

@@ -123,7 +123,9 @@ def _default_cp_list_for(model_family: str, backend_name: str) -> list[int]:
     Capability-derived: any model whose class declares ``supports_cp`` on this
     backend is auto-swept over cp ∈ {1,2,4,8}. Keying off the registry (not a
     hardcoded family list) means the sweep policy never drifts from
-    ``BaseModel.supports_cp``. Decode is always forced to cp=1 by iter_parallel.
+    ``BaseModel.supports_cp``. Decode defaults to [1] in ``_fill_role_search``
+    (prefill CP never runs on a decode worker); decode CP is the separate
+    per-role ``*_dcp_size`` scalar.
     """
     from aisimulate.sdk.models.base import _MODEL_REGISTRY
 
@@ -576,12 +578,22 @@ class Task:
     # closed; None/default uses the mapped framework default or safe default fallback. SGLang WideEP
     # maps None/default to flashinfer and also supports fa3.
     attention_backend: common.AttentionBackend | None = None
+    # Exact collected MoE compute kernel-source lane; unlike moe_backend this
+    # does not select topology or a runtime implementation family.
+    moe_kernel_source: str | None = field(default=None, kw_only=True)
     wideep_num_slots: int | None = None  # EPLB slot count; defaults to num_experts when None
     gemm_quant_mode: common.GEMMQuantMode | None = None
     moe_quant_mode: common.MoEQuantMode | None = None
     kvcache_quant_mode: common.KVCacheQuantMode | None = None
     fmha_quant_mode: common.FMHAQuantMode | None = None
     comm_quant_mode: common.CommQuantMode | None = None
+
+    # Decode context parallelism for the agg worker (vLLM ``-dcp`` / SGLang
+    # ``--dcp-size``). A per-role scalar, not a swept candidate list: the
+    # (tp, pp, dp, moe_tp, moe_ep, cp) tuple is unpacked positionally by the
+    # sweep/pareto code, so widening it is a separate change. Combining it with
+    # a prefill-CP candidate above 1 is rejected in ``iter_parallel("agg")``.
+    dcp_size: int | None = None
 
     # ====== 3. Agg search space ======
     agg_num_gpu_candidates: list[int] | None = None
@@ -600,6 +612,8 @@ class Task:
     prefill_enable_wideep: bool = False
     prefill_enable_chunked_prefill: bool = False
     prefill_enable_eplb: bool = False
+    # Decode CP on a prefill worker is allowed but pointless; carried for symmetry.
+    prefill_dcp_size: int | None = None
     prefill_gemm_quant_mode: common.GEMMQuantMode | None = None
     prefill_moe_quant_mode: common.MoEQuantMode | None = None
     prefill_kvcache_quant_mode: common.KVCacheQuantMode | None = None
@@ -620,6 +634,8 @@ class Task:
     decode_system_name: str = ""
     decode_backend_name: str = "trtllm"
     decode_backend_version: str | None = None
+    # Decode context parallelism for the decode worker (its natural home).
+    decode_dcp_size: int | None = None
     decode_enable_wideep: bool = False
     decode_enable_eplb: bool = False
     decode_gemm_quant_mode: common.GEMMQuantMode | None = None
@@ -860,6 +876,7 @@ class Task:
             common.AttentionBackend,
             "attention_backend",
         )
+        self.moe_kernel_source = config.normalize_kernel_source(self.moe_kernel_source, "moe_kernel_source")
         # Canonicalize at construction so downstream config and routing see
         # exactly one spelling for the only supported engine-step backend.
         self.engine_step_backend = validate_engine_step_backend(self.engine_step_backend)
@@ -2018,10 +2035,11 @@ class Task:
         for k_src, k_attr in map_to_attr.items():
             if getattr(self, k_attr) is None:
                 if k_src == "cp_list":
-                    # Decode is always cp=1 (CP is prefill-only). prefill/agg
-                    # auto-sweep cp for CP-validated families (else [1]); an
-                    # explicit worker-config cp_list still wins. A user-supplied
-                    # non-1 decode cp is rejected in iter_parallel.
+                    # Prefill CP never runs on a decode worker, so decode
+                    # DEFAULTS to [1] (an explicit list still wins and is
+                    # priced as given). prefill/agg auto-sweep cp for
+                    # CP-validated families (else [1]); an explicit
+                    # worker-config cp_list still wins.
                     if role == "decode":
                         value = [1]
                     else:
@@ -2093,12 +2111,15 @@ class Task:
         """
         num_gpus_per_node = self._num_gpus_per_node(role)
         model_config = config.ModelConfig(
-            tp_size=parallel[0] if parallel is not None else 1,
+            # The template config's TP is a placeholder; ModelConfig requires it to
+            # be divisible by the role's dcp_size, so the placeholder is the dcp.
+            tp_size=parallel[0] if parallel is not None else (self._role_attr(role, "dcp_size") or 1),
             pp_size=parallel[1] if parallel is not None else 1,
             attention_dp_size=parallel[2] if parallel is not None else 1,
             moe_tp_size=parallel[3] if parallel is not None else 1,
             moe_ep_size=parallel[4] if parallel is not None else 1,
             cp_size=parallel[5] if parallel is not None else 1,
+            dcp_size=self._role_attr(role, "dcp_size"),
             gemm_quant_mode=self._role_attr(role, "gemm_quant_mode"),
             moe_quant_mode=self._role_attr(role, "moe_quant_mode"),
             kvcache_quant_mode=self._role_attr(role, "kvcache_quant_mode"),
@@ -2125,6 +2146,7 @@ class Task:
             # this field as the kernel-LANE override — materializing a lane name here
             # would silently pin every model to the flashinfer lane.
             attention_backend=self.attention_backend,
+            moe_kernel_source=self.moe_kernel_source,
             wideep_num_slots=self.wideep_num_slots,
             forward_model=self.forward_model or "op_level",
             moe_comm_backend=None,
@@ -2211,14 +2233,42 @@ class Task:
         def _cands(dim: str) -> list[int]:
             return getattr(self, f"{prefix}{dim}_candidates")
 
-        # CP is modeled for context/prefill only; decode must be cp=1. Fail loud
-        # rather than silently coercing a user-supplied decode cp>1.
         cp_list = _cands("cp") or [1]
-        if role == "decode" and any(c != 1 for c in cp_list):
+        # Topology-layer rules (same as the compiler's): one aggregated engine
+        # prices prefill CP and decode CP one at a time; a disaggregated prefill
+        # engine stripes its KV only as the PCP+DCP layout (dcp == cp); vLLM
+        # refuses a replicated-PCP prefill next to a DCP-sharded decode and
+        # needs the two DCP sizes to divide one another. Fail loud instead of
+        # silently dropping the user's prefill-CP candidates.
+        # None means "not requested" (priced as 1); it stays None on the ModelConfig
+        # so the FPM cell identity can tell unrecorded DCP from recorded DCP=1.
+        dcp_size = self._role_attr(role, "dcp_size") or 1
+        if role == "agg" and dcp_size > 1 and any(c > 1 for c in cp_list):
             raise ValueError(
-                f"decode CP must be 1 (CP is modeled for prefill only); got "
-                f"decode_cp_candidates={cp_list}. Enable CP via prefill/agg instead."
+                f"aggregated workers support at most one of prefill CP and decode CP above 1; got "
+                f"dcp_size={dcp_size} with agg_cp_candidates={cp_list}. Pin agg_cp_candidates=[1] "
+                "(or set dcp_size=1), or use serving_mode='disagg' to put prefill CP on the prefill "
+                "worker and decode CP on the decode worker."
             )
+        if role == "prefill":
+            if dcp_size > 1 and cp_list != [dcp_size]:
+                raise ValueError(
+                    f"prefill_dcp_size={dcp_size} is only accepted as the PCP+DCP layout, i.e. with "
+                    f"prefill_cp_candidates=[{dcp_size}] (got {cp_list}); a prefill engine gains nothing "
+                    "from striping its KV on its own"
+                )
+            decode_dcp = self.decode_dcp_size or 1
+            if self.prefill_backend_name == "vllm" and decode_dcp > 1:
+                if dcp_size == 1 and any(c > 1 for c in cp_list):
+                    raise ValueError(
+                        f"vLLM cannot pair a replicated-PCP prefill worker (prefill_cp_candidates={cp_list}, "
+                        f"prefill_dcp_size=1) with a DCP-sharded decode worker (decode_dcp_size={decode_dcp})"
+                    )
+                if decode_dcp % dcp_size and dcp_size % decode_dcp:
+                    raise ValueError(
+                        f"vLLM requires prefill_dcp_size={dcp_size} and decode_dcp_size={decode_dcp} to divide "
+                        "one another"
+                    )
 
         backend = common.BackendName[self._role_attr(role, "backend_name")]
         parallel = enumerate_parallel_config(

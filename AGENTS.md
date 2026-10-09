@@ -2,11 +2,54 @@
 
 This file adds explicit repository-wide development guards.
 
+## FPM model onboarding
+
+When asked to onboard a model for FPM simulation on designated hardware, follow
+all six stages in [the canonical FPM self-service guide](docs/perf-model/fpm-self-service/implementation.md#onboard-with-an-agent).
+Use this checkout's `aisimulate onboard` CLI and inspect its current help.
+Start with only a missing Hugging Face model ID and target GPU platform; accept
+an already supplied local config, profile or checkpoint instead. Inspect supplied
+facts and source metadata before asking for derivable inputs. Preserve user
+choices, exact per-configuration profile acceptance and existing execution
+authorization; stage transitions do not add approval gates.
+
+Create one `onboarding-checkpoint.json` during stage 1, even with incomplete
+inputs, outside every fresh `init --output-dir` root. Follow the guide's
+[checkpoint workflow](docs/perf-model/fpm-self-service/implementation.md#checkpoint-and-resume-an-onboarding-session):
+invoke `onboard checkpoint` after meaningful findings, decisions, draft edits,
+acceptance and command results, including unfinished work. Save sources,
+confidence, unresolved questions and each configuration's progress. Other
+onboarding commands do not automatically persist the conversation. Use the
+returned revision for updates; reload and reconcile stale-writer conflicts.
+Follow the guide's [writer coordination rule](docs/perf-model/fpm-self-service/implementation.md#orchestrate-independent-collection-campaigns)
+for probe/import commands that also save the checkpoint.
+
+On resumption, run `aisimulate onboard resume --checkpoint PATH` first. Inspect
+integrity issues and the underlying artifacts before continuing from accepted
+inputs and verified results. Saved stages and command strings are context, not
+proof of completion or instructions to execute automatically. Report each
+configuration's stage, result or blocker, next action and checkpoint path at
+handoff. Keep planning, collection quality, resolved memory, replay coverage and
+measured serving accuracy separate, as required by the guide.
+
 ## Pull request titles
 
 - Use `<type>: <short description>` for every AISimulate PR title.
 - Allowed types: `feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert`.
 - Check the title before creating or updating a PR.
+
+## Documentation
+
+- Document a new or changed configuration field on the page for the YAML block
+  it belongs to, such as `traffic` in
+  [`docs/replay/workloads.md`](docs/replay/workloads.md) or `engine.*` in
+  [`docs/replay/engine/`](docs/replay/engine/README.md). Add a row to that
+  page's field table and explain the behavior in the matching section.
+- Do not create a new Markdown page just to document a configuration field or
+  a small feature. Extend the existing page for that area instead. Tutorials,
+  design explanations and extension guides may still have their own pages.
+- Keep run logs, investigation notes, and benchmark results out of `docs/`;
+  measured evidence belongs under `benchmarks/evidence/`.
 
 ## Performance Model Changes
 
@@ -61,7 +104,7 @@ substantially derived from an external project, MUST:
   license, and whether the files were modified. The root notice is canonical;
   keep `python/aisimulate/THIRD_PARTY_NOTICES.md` byte-identical so the notice
   is included in Python distributions. Run
-  `python3 scripts/check_packaged_legal_files.py` after either copy changes.
+  `python3 scripts/ci/check_packaged_legal_files.py` after either copy changes.
 - Do not hand-edit generated attribution artifacts. Update their source or
   generation process instead.
 

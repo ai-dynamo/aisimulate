@@ -12,21 +12,29 @@ pub mod generalized;
 mod handoff;
 mod host_offload;
 mod kv_manager;
+mod launch;
+mod offload_transfer;
 mod protocol;
 mod runtime;
 mod scheduler;
 mod timing;
 mod trace;
 
+pub use host_offload::SharedG2Pool;
 pub(crate) use host_offload::{
-    HostBlockKey, HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver,
+    G2Binding, G2Registry, HostBlockKey, HostOffloadObservation, HostOffloadObservationData,
+    HostOffloadObserver,
 };
+pub use launch::EngineLaunchConfig;
 
 pub use belady::KvEvictionPolicy;
+pub(crate) use common::hashing::{
+    XXH3_SEED, block_hashes, compute_block_hash_for_tokens, compute_next_sequence_hash,
+};
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, FrontendConfig, FrontendStage, G3OffloadConfig, G3Scope,
+    Backend, EngineConfig, FrontendConfig, FrontendStage, G2Scope, G3OffloadConfig, G3Scope,
     NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy, StateCacheConfig,
     TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
@@ -37,12 +45,14 @@ pub use handoff::{
 };
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, LifecycleEvent,
-    Metrics, Output, PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind,
-    PressureState, Request, StoredBlocks, TtftMilestone,
+    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, KvEventTier,
+    LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects, PressureEvent,
+    PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(feature = "python")]
+pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase};
 pub use timing::{
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
     TimingOperationEvidence, TimingPhaseEvidence, VisionShape,

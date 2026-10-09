@@ -122,3 +122,14 @@ test("HF resolution rejects failed responses and invalid immutable revisions", a
     await assert.rejects(resolve({hfResponse: {ok: true, sha}}), /HF revision/);
   }
 });
+
+test("shared measurements and every branch consume the single resolved HF revision", () => {
+  assert.equal((workflow.match(/huggingface\.co\/api\/datasets/g) || []).length, 1);
+  assert.match(workflow, /measurements:\s+name: Qualify FPM measurements\s+needs: resolve/);
+  assert.match(workflow, /HF_REVISION: \$\{\{ needs\.resolve\.outputs\.hf_revision \}\}/);
+  assert.match(workflow, /name: fpm-accuracy-measurements/);
+  assert.match(workflow, /retention-days: 90/);
+  assert.match(workflow, /hf_revision: \$\{\{ needs\.resolve\.outputs\.hf_revision \}\}/);
+  const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
+  assert.match(branch, /HF_HOME: .*inputs\.hf_revision/);
+});
