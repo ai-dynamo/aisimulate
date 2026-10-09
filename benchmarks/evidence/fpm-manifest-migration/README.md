@@ -35,3 +35,24 @@ was introduced.
 The complete current-snapshot 3D export also passes the publication validator.
 Its diagnostic-only unsynchronized rank streams use the shared Parquet decoder;
 duplicate-rank exclusions are unchanged across Parquet row-group boundaries.
+
+## Scoring and the existing regression reproducibility limit
+
+Actions run `37880548507` qualifies the migrated revision with the same AISim
+`e45612e18376c6aef28fb697f3131602613354f4` source as legacy run `37610421466`.
+All 29 configurations retain their observation/exclusion counts and status.
+Both FPM variants have exactly equal phase MAPEs and prediction/error counts.
+The [scoring comparison](scoring-comparison.json) checks 1,080 metric fields.
+
+Regression MAPEs are not identical between independent runs. The unchanged native
+sampler uses randomized `HashMap` iteration to break ties when evicting from the
+largest bucket (`crates/core/src/perfmodel/fpm/samples.rs`). Existing
+[regression evidence](../fpm-regression/README.md) documents this behavior.
+Two runs on the same migrated dataset (`37879998324` and `37880548507`) also produce
+different regression MAPEs while all counts and FPM results remain identical.
+The former run's scoring job succeeded; its separate 3D export failed before the
+format-dispatch fix, so only the latter complete campaign is published.
+
+This migration preserves ordered prediction/tuning inputs and leaves the sampler
+unchanged. Exact regression-score reproducibility remains an existing limitation,
+not a passed equality check. Resolving it requires a separate predictor change.
