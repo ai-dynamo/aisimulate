@@ -3301,9 +3301,17 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     resolved_lock = old_lock.replace(b"55.2.0", b"59.0.0")
     lock.write_bytes(old_lock)
     built = []
+    patched = []
+    compatibility = {"api_has_state_bytes": True, "token_only_state_bytes": 0}
+
+    def patch_handoff_timing(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append((actual_core, actual_dynamo))
+        return compatibility
 
     def check_output(args, **kwargs):
         if args[:2] == ["cargo", "metadata"]:
+            assert patched == [(core.parent, dynamo)]
             assert "--locked" not in args
             assert kwargs["cwd"] == bindings
             assert lock.read_bytes() == old_lock
@@ -3339,6 +3347,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
 
     monkeypatch.setattr(builder.subprocess, "check_output", check_output)
     monkeypatch.setattr(builder.subprocess, "run", run)
+    monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
     if wrong_core:
         with pytest.raises(ValueError, match="different AISimulate core"):
             builder.build(source, dynamo, output)
@@ -3348,7 +3357,9 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         builder.build(source, dynamo, output)
         assert len(built) == 2
         assert (output / "dynamo-Cargo.lock").read_bytes() == resolved_lock
-        assert json.loads((output / "dynamo-build.json").read_text())["aisimulate_sha"] == "a" * 40
+        provenance = json.loads((output / "dynamo-build.json").read_text())
+        assert provenance["aisimulate_sha"] == "a" * 40
+        assert provenance["handoff_compatibility"] == compatibility
         assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
 
 
