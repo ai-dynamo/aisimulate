@@ -13,7 +13,6 @@ status, so snapshots are rectangular and diffs are reviewable:
 
   OK         latency computed; value_ms holds the rounded scalar
   DATA_MISS  PerfDataNotAvailableError (combo lacks silicon for the request)
-             data_miss_detail retains the native missing-op diagnostic
   INVALID    anything else (validation error, unsupported layout, ...);
              err holds the exception type name
 
@@ -59,7 +58,6 @@ CSV_HEADER = [
     "status",
     "value_ms",
     "err",
-    "data_miss_detail",
 ]
 
 # The Python engine-step path has been removed; the compiled Rust engine is the
@@ -142,7 +140,7 @@ def collect_combo(combo: grid.Combo) -> tuple[grid.Combo, list[dict], float]:
                     build_err = e
 
                 for phase, bs, isl in points:
-                    row = dict(base, phase=phase, bs=bs, isl=isl, status="", value_ms="", err="", data_miss_detail="")
+                    row = dict(base, phase=phase, bs=bs, isl=isl, status="", value_ms="", err="")
                     if session is None:
                         row["status"] = "INVALID"
                         row["err"] = type(build_err).__name__
@@ -162,9 +160,8 @@ def collect_combo(combo: grid.Combo) -> tuple[grid.Combo, list[dict], float]:
                             )
                         row["status"] = "OK"
                         row["value_ms"] = f"{latency:.6f}"
-                    except PerfDataNotAvailableError as error:
+                    except PerfDataNotAvailableError:
                         row["status"] = "DATA_MISS"
-                        row["data_miss_detail"] = str(error)
                     except Exception as e:
                         row["status"] = "INVALID"
                         row["err"] = type(e).__name__
