@@ -1902,9 +1902,8 @@ class TestAttentionProjectionExclusions:
     def test_existing_consumers_keep_their_projection_exclusion_interpretation(self):
         from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
-        # This rollout corrects vLLM DSA only. Preserve the existing default
-        # for SGLang, TRT-LLM and ordinary MLA; their precision correction and
-        # measured data remain separate work.
+        # SGLang, TRT-LLM and ordinary MLA retain the default exclusion matching.
+        # vLLM DSA opts into precise projection paths.
         raw = {"quantization_config": {"ignore": ["model.layers.0.self_attn.q_a_layernorm"]}}
         assert attention_projection_exclusions(raw) == frozenset({"q", "kv", "o", "indexer"})
         assert self._excl(["model.layers.0.self_attn.indexers_proj"], precise_module_paths=False) == frozenset(
