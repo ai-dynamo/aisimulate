@@ -68,6 +68,14 @@ async def collection_fixture(route):
         )
     elif path.endswith("windows.tsv"):
         await route.fulfill(body="isl\tosl\tconcurrency\tnum_req\n128\t256\t4\t20\n")
+    elif path.endswith(("aiperf_c128.json", "aiperf_custom.json")):
+        config = {
+            "phases": [{"timing_mode": "agentic_replay", "concurrency": 128, "duration": 1200}],
+            "datasets": [{"dataset": "synthetic-traces"}],
+        }
+        if path.endswith("aiperf_c128.json"):
+            config["scenario"] = "inferencex-agentx-mvp"
+        await route.fulfill(json={"input_config": config})
     else:
         await route.fulfill(status=404)
 
@@ -112,6 +120,30 @@ async def check_collection_provenance(page, url, data):
         ([("truth", "fpm_stream.jsonl.gz")], "General trace replay"),
         ([("truth", "fpm_stream.jsonl.gz"), ("window", "provenance/agx_windows.tsv")], "AgentX trace replay"),
         (
+            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_c128.json")],
+            "AgentX trace replay",
+        ),
+        (
+            [("truth", "benchmark_prefill.json"), ("configuration", "provenance/run/aiperf_c128.json")],
+            "Self-benchmark",
+        ),
+        (
+            [
+                ("truth", "benchmark_prefill.json"),
+                ("truth", "fpm_stream.jsonl.gz"),
+                ("configuration", "provenance/run/aiperf_c128.json"),
+            ],
+            "Self-benchmark + AgentX trace replay",
+        ),
+        (
+            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_custom.json")],
+            "General trace replay",
+        ),
+        (
+            [("truth", "fpm_stream.jsonl.gz"), ("configuration", "provenance/run/aiperf_missing.json")],
+            "General trace replay",
+        ),
+        (
             [("truth", "benchmark_prefill.json"), ("truth", "fpm_stream.jsonl.gz")],
             "Self-benchmark + General trace replay",
         ),
@@ -125,6 +157,7 @@ async def check_collection_provenance(page, url, data):
         await page.route(pattern, lambda route, *, manifest=manifest: route.fulfill(json=manifest))
         await page.reload()
         await expect(page.locator(".collection-note summary").first).to_have_text("Test set · " + label)
+        await expect(page.locator("#overall-value")).not_to_have_text("—")
         await page.unroute(pattern)
     # A different snapshot's manifest must never be displayed as this row's provenance.
     pattern = "**/Example--Alpha/**/measurements/manifest.json"

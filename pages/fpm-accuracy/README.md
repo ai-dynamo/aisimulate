@@ -60,9 +60,12 @@ Details and 3D Visualization are separate tabs with independent controls.
   Each row has expandable test-collection provenance from its measurement
   manifest at the evaluation's exact HF revision. Three collection categories
   describe declared evaluation truth: **Self-benchmark**, **AgentX trace replay**,
-  and **General trace replay**. AgentX collection JSON or `agx_windows` markers
-  distinguish AgentX replay from general captured serving workloads; the general
-  label does not establish production-traffic origin. Mixed truth lists both
+  and **General trace replay**. The recorded `inferencex-agentx-mvp` scenario in
+  small collection/AIPerf JSON files identifies AgentX, including runs whose
+  filenames have no AgentX marker. Legacy `agentx-job` and `agx_windows` markers
+  remain supported. Agentic timing or a dataset name alone does not identify
+  AgentX. Other captured serving workloads use the general
+  label, which does not establish production-traffic origin. Mixed truth lists both
   categories. Supporting replay metadata alone never changes a benchmark label.
   Expanded details start with collection evidence and recorded settings, followed
   by the manifest link; explanatory paragraphs and campaign metadata are omitted.
@@ -153,7 +156,7 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
-Dashboard script URLs carry a shared version (`collection-compact-1`) so returning
+Dashboard script URLs carry a shared version (`collection-scenario-1`) so returning
 visitors fetch scripts compatible with the unified banner. Bump this version
 across all five tabs when changing shared DOM or navigation APIs. The browser
 check covers a cached 3D script that still references the removed status header.

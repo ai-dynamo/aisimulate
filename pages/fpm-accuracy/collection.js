@@ -21,16 +21,26 @@
     return cache.get(key);
   }
 
-  function hasAgentXEvidence(files) {
-    return files.some(file => /\/agentx-job-\d+\/collection_evidence\.json$/.test(file.path)
-      || /\/agx_windows[^/]*\.tsv$/.test(file.path));
+  const collectionJSON = file => /\/(?:collection_evidence|aiperf_[^/]+)\.json$/.test(file.path);
+
+  async function hasAgentXEvidence(files, revision) {
+    if (files.some(file => /\/agentx-job-\d+\/collection_evidence\.json$/.test(file.path)
+      || /\/agx_windows[^/]*\.tsv$/.test(file.path))) return true;
+    const evidence = files.filter(file => collectionJSON(file) && Number.isFinite(file.bytes) && file.bytes <= 2 * 1024 * 1024);
+    const results = await Promise.allSettled(evidence.map(async file => {
+      const data = JSON.parse(await read(revision, file.path));
+      // Agentic timing or the dataset name alone does not identify the replay harness.
+      return data?.input_config?.scenario === 'inferencex-agentx-mvp'
+        || data?.metadata?.scenario === 'inferencex-agentx-mvp';
+    }));
+    return results.some(result => result.status === 'fulfilled' && result.value);
   }
 
-  function kind(files) {
+  async function kind(files, revision) {
     const truth = files.filter(file => ['truth', 'derived_truth'].includes(file.role));
     const benchmark = truth.some(file => /\/benchmark[^/]*\.json(?:\.gz)?$/.test(file.path));
     const stream = truth.some(file => /(?:fpm_stream|fpm_iterations|\.csv\.gz$)/.test(file.path));
-    const replay = hasAgentXEvidence(files) ? 'AgentX trace replay' : 'General trace replay';
+    const replay = stream && await hasAgentXEvidence(files, revision) ? 'AgentX trace replay' : 'General trace replay';
     if (benchmark && stream) return `Self-benchmark + ${replay}`;
     if (benchmark) return 'Self-benchmark';
     return stream ? replay : 'Collection method not recorded';
@@ -70,7 +80,7 @@
   }
 
   async function expand(content, manifest, files, revision, method) {
-    const evidence = files.filter(file => /\/(?:collection_evidence|aiperf_[^/]+)\.json$/.test(file.path) || (file.role === 'window' && file.path.endsWith('.tsv')));
+    const evidence = files.filter(file => collectionJSON(file) || (file.role === 'window' && file.path.endsWith('.tsv')));
     content.innerHTML = '<p>Loading collection evidence…</p>';
     const results = await Promise.allSettled(evidence.map(async file => {
       // Only small, declared metadata files are read, never raw measurement streams.
@@ -99,7 +109,7 @@
       const manifest = JSON.parse(await read(revision, row.measurement_manifest));
       if (manifest.configuration_path !== row.configuration_path || manifest.snapshot_id !== row.snapshot_id || !Array.isArray(manifest.files)) throw new Error('Mismatched evidence identity');
       const files = manifest.files.filter(file => validPath(file.path) && file.path.startsWith(row.configuration_path + '/measurements/'));
-      const method = kind(files);
+      const method = await kind(files, revision);
       element.querySelector('summary').textContent = `Test set · ${method}`;
       let loaded = false;
       const show = () => {
