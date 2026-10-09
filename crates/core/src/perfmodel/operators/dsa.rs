@@ -1516,16 +1516,43 @@ mod tests {
         db
     }
 
-    /// Any shipped system at sglang 0.5.14 — the release that first split the
-    /// DSA tables into full + `*_skip_indexer` rows (and did not do so on
-    /// every system).
-    fn b200_db_on(system: &str, backend: &str, version: &str, mode: DatabaseMode) -> PerfDatabase {
+    fn full_only_dsa_db(mode: DatabaseMode) -> (tempfile::TempDir, PerfDatabase) {
+        use crate::config::{PerfDbSources, PerfSource};
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+
+        let tmp = tempfile::tempdir().expect("full-only fixture");
+        let mut sources = PerfDbSources::new();
+        for (op_name, prefix, latency) in [
+            ("dsa_context_module", 512, 1.0),
+            ("dsa_generation_module", 0, 0.5),
+        ] {
+            let basename = format!("{op_name}_perf.parquet");
+            let path = tmp.path().join(&basename);
+            write_parquet(
+                &path,
+                &[
+                    Col::Str("architecture", vec![GLM]),
+                    Col::Str("mla_dtype", vec!["bfloat16"]),
+                    Col::Str("kv_cache_dtype", vec!["bfloat16"]),
+                    Col::Str("gemm_type", vec!["bfloat16"]),
+                    Col::I64("num_heads", vec![64]),
+                    Col::I64("batch_size", vec![2]),
+                    Col::I64("isl", vec![4096]),
+                    Col::I64("step", vec![prefix]),
+                    Col::Str("op_name", vec![op_name]),
+                    Col::Str("kernel_source", vec!["default"]),
+                    Col::F64("latency", vec![latency]),
+                ],
+            );
+            sources.insert(basename, vec![PerfSource(path, None)]);
+        }
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems");
-        let mut db = PerfDatabase::load(&root, system, backend, version).expect("db loads");
+        let mut db = PerfDatabase::load_with_sources(&root, "h200_sxm", "vllm", "0.24.0", &sources)
+            .expect("full-only db loads");
         db.database_mode = mode;
-        db
+        (tmp, db)
     }
 
     fn sglang_db(system: &str, version: &str, mode: DatabaseMode) -> PerfDatabase {
@@ -1568,20 +1595,14 @@ mod tests {
         );
     }
 
-    /// AIC-1747: the sglang 0.5.9–0.5.12-era tables ship `dsa_context_module`
-    /// / `dsa_generation_module` rows ONLY — the collector's `*_skip_indexer`
-    /// split never ran there (0.5.14's gap closed with the AIC-1747 probe
-    /// collection, PR #1556). GLM-5.2 (`full_frac` = 21/78) used to take the
-    /// skip branch and die on the whole sweep. The amortization must degrade
-    /// to all-full, mirroring Python `operations/dsa.py::_effective_full_frac`.
-    /// Vehicle: h200/vllm/0.24.0 — the one current-slot table that ships
-    /// full rows only (every sglang 0.5.14 table carries skip variants).
+    /// Without measured skip-indexer rows, Silicon amortization must use
+    /// all-full costs. The fixture keeps this independent of shipped coverage.
     #[test]
     fn missing_skip_indexer_variant_degrades_amortization_to_all_full() {
-        let db = b200_db_on("h200_sxm", "vllm", "0.24.0", DatabaseMode::Silicon);
+        let (_fixture, db) = full_only_dsa_db(DatabaseMode::Silicon);
         assert!(
             !db.dsa.has_context_skip_rows().expect("probe"),
-            "h200/vllm/0.24.0 ships full rows only"
+            "fixture must contain full rows only"
         );
         assert!(!db.dsa.has_generation_skip_rows().expect("probe"));
 
@@ -1668,15 +1689,11 @@ mod tests {
         approx_rel_1e9(mixed_gen, 0.10149143817608174);
     }
 
-    /// PR #1540 review follow-up: SOL is analytic and skip-aware directly
-    /// (the context get_sol port zeroes the indexer terms on skip layers), so
-    /// a full-only table must NOT degrade the configured blend there. Without
-    /// the mode gate the degraded op (w -> 1.0) collapses to the all-full SOL;
-    /// with it the blend keeps the cheaper skip layers and stays strictly
-    /// below. Generation follows the same executed full/reuse distinction.
+    /// Analytic SOL keeps the configured full/reuse blend even when measured
+    /// tables contain only full rows, for both context and generation.
     #[test]
     fn sol_mode_keeps_configured_amortization_on_full_only_table() {
-        let db = b200_db_on("h200_sxm", "vllm", "0.24.0", DatabaseMode::Sol);
+        let (_fixture, db) = full_only_dsa_db(DatabaseMode::Sol);
         assert!(
             !db.dsa.has_context_skip_rows().expect("probe"),
             "anchor must be full-only"
