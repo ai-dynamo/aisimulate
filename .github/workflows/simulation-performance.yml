@@ -91,7 +91,7 @@ jobs:
             else
               revision="${PR_HEAD_SHA}"
             fi
-            for gate_file in __init__.py cases.py compare.py contract.py run.py worker.py fixtures/agentx.jsonl; do
+            for gate_file in __init__.py cases.py compare.py contract.py run.py worker.py; do
               if ! git cat-file -e "${revision}:${gate_path}/${gate_file}" 2>/dev/null; then
                 if [[ "${revision_label}" == "base" ]]; then
                   skip_reason="base revision \`${revision}\` does not contain the complete simulation-performance gate"
@@ -116,6 +116,8 @@ jobs:
               invalid_reason="could not read PROTOCOL_VERSION from base revision \`${base_sha}\`"
             elif [[ ! "${head_protocol}" =~ ^[0-9]+$ ]]; then
               invalid_reason="could not read PROTOCOL_VERSION from head revision \`${PR_HEAD_SHA}\`"
+            elif (( base_protocol < head_protocol )); then
+              skip_reason="base protocol ${base_protocol} does not support head protocol ${head_protocol}; rebase after rollout"
             elif [[ "${base_protocol}" != "${head_protocol}" ]]; then
               invalid_reason="protocol versions differ: base is ${base_protocol}, head is ${head_protocol}"
             fi
@@ -148,7 +150,8 @@ jobs:
 
           controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
             ":(glob)${gate_path}/**/*.py" \
-            "${gate_path}/fixtures/agentx.jsonl")"
+            ":(glob)${gate_path}/fixtures/*.json" \
+            ":(glob)${gate_path}/fixtures/*.jsonl")"
           if [[ -n "${controller_changes}" ]]; then
             echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
           else
@@ -195,6 +198,14 @@ jobs:
           python-version: "3.12"
       - name: Configure Python linker path
         run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+      - name: Select pinned Dynamo source
+        run: python -c 'from scripts.performance.build_simulation_dynamo import DYNAMO_REVISION; print("DYNAMO_SHA=" + DYNAMO_REVISION)' >> "${GITHUB_ENV}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ai-dynamo/dynamo
+          ref: ${{ env.DYNAMO_SHA }}
+          path: dynamo
+          persist-credentials: false
       - name: Install native build toolchain
         run: bash scripts/ci/ci_install_build_tools.sh
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -202,8 +213,12 @@ jobs:
           toolchain: "1.99.0"
       - name: Install wheel builder
         run: |
-          python -m pip install 'uv==0.11.3'
+          python -m pip install 'uv==0.11.3' 'hatchling==1.27.0'
           python -m pip install --require-hashes -r scripts/release/requirements.txt
+          as_root=()
+          if [[ "$(id -u)" != 0 ]]; then as_root=(sudo); fi
+          "${as_root[@]}" apt-get update
+          "${as_root[@]}" apt-get install --yes --no-install-recommends protobuf-compiler libprotobuf-dev clang libclang-dev pkg-config libssl-dev libudev-dev cmake unzip patchelf
       - name: Build exact revision
         env:
           SOURCE_SHA: ${{ matrix.sha }}
@@ -220,6 +235,8 @@ jobs:
           )
           uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
             --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
+          python scripts/performance/build_simulation_dynamo.py source dynamo "${RUNNER_TEMP}/wheel"
+          cp scripts/performance/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"
           export BUILD_SECONDS=$(( $(date +%s) - started ))
           python scripts/performance/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \
             "${BUILD_SIDE}" "${SOURCE_SHA}" source
@@ -310,9 +327,14 @@ jobs:
             fi
             python -m venv "${venv}"
             "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/requirements.txt"
-            "${venv}/bin/python" -m pip install --no-deps "${dist}"/aisimulate-*.whl
+            "${venv}/bin/python" -m pip install --require-hashes -r "${dist}/dynamo-requirements.txt"
+            "${venv}/bin/python" -m pip install --no-deps "${dist}"/*.whl
             cp "${dist}/requirements.txt" "${RESULTS_DIR}/provenance/${side}-requirements.txt"
+            cp "${dist}/dynamo-requirements.txt" "${RESULTS_DIR}/provenance/${side}-dynamo-requirements.txt"
+            cp "${dist}/dynamo-build.patch" "${RESULTS_DIR}/provenance/${side}-dynamo-build.patch"
             cp "${dist}/provenance.json" "${RESULTS_DIR}/provenance/${side}-build.json"
+            "${venv}/bin/python" -c 'import aisimulate._runtime, dynamo._core, dynamo.replay.simulation; print(aisimulate._runtime.__file__); print(dynamo._core.__file__); print(dynamo.replay.simulation.__file__)' \
+              > "${RESULTS_DIR}/provenance/${side}-imports.txt"
             "${venv}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/${side}-packages.txt"
           done
           echo "$(( $(date +%s) - started ))" > "${RESULTS_DIR}/provenance/install-seconds.txt"

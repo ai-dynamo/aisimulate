@@ -291,6 +291,7 @@ class SlurmCellRunner:
         plan_sha256: str,
         attempt_id: str,
         expected_backend_version: str | None = None,
+        runtime_backend_version: str | None = None,
     ) -> None:
         from .runner import _attempt_provenance_command
 
@@ -299,6 +300,7 @@ class SlurmCellRunner:
             plan_sha256=plan_sha256,
             attempt_id=attempt_id,
             expected_backend_version=expected_backend_version,
+            runtime_backend_version=runtime_backend_version,
         )
         for unit in pods:
             self._exec(unit, command, timeout=300)

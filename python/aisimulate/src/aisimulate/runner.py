@@ -1889,27 +1889,23 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     state_cache = StateCacheConfig.model_validate(raw)
     if rank.get("prefix_match_unit") is not None and rank.get("aic_nextn") is not None:
         raise ValueError("prefix_match_unit does not support speculative decoding")
-    if backend != "vllm" or role != "aggregated":
-        raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
+    if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
+        raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
     if rank.get("native_host_offload") is not None:
         raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
     if rank.get("g3_offload") is not None:
         raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    # Only prefill and decode roles transfer KV.
+    transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
     conflicts = [
         name
-        for name in (
-            "gpu_memory_utilization",
-            "mem_fraction_static",
-            "free_gpu_memory_fraction",
-            "kv_transfer_bytes_per_token",
-            "kv_transfer_bandwidth",
-        )
+        for name in ("gpu_memory_utilization", "mem_fraction_static", "free_gpu_memory_fraction", *transfer)
         if rank.get(name) is not None
     ]
     if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
         conflicts.append("cuda_graph_reserved_bytes")
     # Rust serializes this default explicitly; it does not enable PD transfer.
-    if rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+    if role == "aggregated" and rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
         conflicts.append("kv_transfer_timing_mode")
     if conflicts:
         raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")

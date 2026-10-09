@@ -22,7 +22,7 @@ from .config_adapter import (
     RecommendationAdapterContext,
     SimulationConfigAdapter,
 )
-from .output_adapter import RecommendationOutputAdapter, resolve_output_callbacks
+from .output_adapter import RecommendationOutputAdapter, RecommendationOutputContext, resolve_output_callbacks
 from .resources import GuardedRunnerFactory, discover_host, resolve_budget
 from .sweeper.afd_perfmodel import AFDPerformanceModel
 from .sweeper.config import SmartSearchConfig
@@ -97,6 +97,14 @@ def _run_recommendation(
             workload.concurrency,
             int(workload.concurrency * workload.num_request_ratio),
         )
+    if config.engine.context_length == "max":
+        logging.getLogger(__name__).warning(
+            "engine.context_length is 'max'; using the %s of %s tokens. Parallel shapes whose "
+            "KV cache cannot hold one sequence of that length are excluded from the search. Set "
+            "engine.context_length to your longest request to admit them.",
+            "model maximum" if config.engine.fpm_profile is None else "FPM profile context length",
+            smart.search_space.context_length,
+        )
     smart.sweep.parallel_evals = min(config.optimizer.parallelism, budget["cpu_limit"])
     sweep_context = SweepContext(
         core_search_space=smart.search_space.model_dump(mode="json"),
@@ -130,7 +138,11 @@ def _run_recommendation(
         ),
         afd_performance_model=afd_performance_model,
     )
-    output_callbacks = resolve_output_callbacks(output_configs or {}, injected=output_adapters)
+    output_callbacks = resolve_output_callbacks(
+        output_configs or {},
+        injected=output_adapters,
+        context=RecommendationOutputContext(workload=smart.workload),
+    )
     return sweeper.run(
         smart,
         top_n=None,
@@ -228,6 +240,8 @@ def recommendation_to_sweeper(
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("context_length") is not None:
+            search_space[f"{role}_context_length"] = workers[role]["context_length"]
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
     if isinstance(afd, dict):
@@ -966,7 +980,7 @@ def _candidate_prediction(
             kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
         if sample.get(f"{role}_native_host_offload") is not None:
             kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
-        engine["workers"][public_role] = {
+        worker_config = {
             "parallelism": {
                 "replicas": sample[f"{prefix}replicas"],
                 "tensor": sample[f"{prefix}tp"],
@@ -990,6 +1004,9 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if role != "agg" and sample.get(f"{role}_context_length") is not None:
+            worker_config["context_length"] = sample[f"{role}_context_length"]
+        engine["workers"][public_role] = worker_config
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:

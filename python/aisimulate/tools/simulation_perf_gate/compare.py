@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
-from tools.simulation_perf_gate.contract import check_finite, check_models, model_identity
+from tools.simulation_perf_gate.contract import check_completion, check_finite, check_models, model_identity
 
 RELATIVE_THRESHOLD = 0.10
 ABSOLUTE_THRESHOLD_MS = 100.0
@@ -38,26 +38,7 @@ def validate(response: object, case: dict, revision: str, phase: str) -> dict:
             raise ValueError(f"invalid {name}")
     check_models(response, case)
     report = response.get("report")
-    if not isinstance(report, dict):
-        raise ValueError("missing replay report")
-    for name, expected in (
-        ("num_requests", case["expected_requests"]),
-        ("completed_requests", case["expected_requests"]),
-        ("total_output_tokens", case["expected_output_tokens"]),
-    ):
-        if type(report.get(name)) is not int or report[name] != expected:
-            raise ValueError(f"incomplete {name}")
-    if case.get("trace_sha256"):
-        outcomes = report.get("agentic_play_outcomes")
-        if (
-            not isinstance(outcomes, list)
-            or len(outcomes) != 1
-            or not isinstance(outcomes[0], dict)
-            or outcomes[0].get("status") != "completed"
-            or type(outcomes[0].get("settled_at_ms")) not in (int, float)
-            or outcomes[0]["settled_at_ms"] < 0
-        ):
-            raise ValueError("incomplete AgentX play")
+    check_completion(report, case)
     return model_identity(response["model_identity"])
 
 

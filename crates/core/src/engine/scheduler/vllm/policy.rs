@@ -138,18 +138,24 @@ pub(super) enum DestinationAdmissionDecision {
     Wait,
 }
 
+/// `state_blocks` is the transferred recurrent state reserved with the prompt.
 pub(super) fn destination_capacity_error<S: PolicySequence>(
     policy: SchedulingPolicy,
     sequence: &S,
     num_gpu_blocks: usize,
+    state_blocks: usize,
 ) -> Option<&'static str> {
     let (exceeds, message) = match policy {
         SchedulingPolicy::Vllm => (
-            sequence.current_known_blocks() > num_gpu_blocks,
-            "destination prompt exceeds the KV pool capacity",
+            sequence.current_known_blocks().saturating_add(state_blocks) > num_gpu_blocks,
+            if state_blocks == 0 {
+                "destination prompt exceeds the KV pool capacity"
+            } else {
+                "destination prompt and state exceed the KV pool capacity"
+            },
         ),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => (
-            sequence.to_completion_blocks() > num_gpu_blocks,
+            sequence.to_completion_blocks().saturating_add(state_blocks) > num_gpu_blocks,
             "TRT-LLM destination request exceeds the to-completion KV pool capacity",
         ),
     };

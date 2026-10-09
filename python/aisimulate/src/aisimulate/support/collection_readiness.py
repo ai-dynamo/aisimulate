@@ -184,6 +184,10 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         or plan.system != request.identity.gpu
         or plan.backend != request.identity.framework
         or plan.capability.aic_database_version != request.identity.framework_version
+        or (
+            request.identity.runtime_framework_version is not None
+            and getattr(plan, "runtime_backend_version", None) != request.identity.runtime_framework_version
+        )
         or plan.fpm_profile != request.fpm_profile
     ):
         return False

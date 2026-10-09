@@ -58,6 +58,7 @@ areas:
       - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_output_adapter_discovery.py
+      - tests/test_output_adapter_context.py
       - tests/test_power_diagnostics.py
       - tests/test_unified_cli.py
       - tests/test_ngram_cli.py
@@ -92,6 +93,7 @@ areas:
       - crates/core/deny.toml
       - pytest.ini
       - scripts/
+      - benchmarks/
       - tests/test_aic_sync.py
       - tests/test_ci_workflow_contracts.py
       - tests/test_ci_qualification.py
@@ -111,6 +113,20 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: docs/replay/
+    owners: [replay, maintainers]
+  - glob: docs/adapters/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: docs/reference/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: docs/aic-backward-compatibility/
+    owners: [forward-pass-engine, maintainers]
+  - glob: docs/ci/
+    owners: [infra, forward-pass-engine, maintainers]
+  - glob: benchmarks/evidence/
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: benchmarks/reports/perf-data/
+    owners: [forward-pass-engine, infra, maintainers]
   - glob: .agents/skills/aisimulate-fpe-performance/
     owners: [forward-pass-engine, maintainers]
   - glob: .claude/skills/aisimulate-fpe-performance
@@ -139,9 +155,9 @@ shared:
     owners: [forward-pass-engine, maintainers]
   - glob: python/aisimulate/
     owners: [forward-pass-engine, maintainers]
-  - glob: docs/artifact-contract.md
+  - glob: docs/ci/release.md
     owners: [forward-pass-engine, maintainers]
-  - glob: docs/aic-sync.md
+  - glob: docs/ci/aic-sync.md
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_aic_sync.py
     owners: [infra, maintainers]
@@ -159,11 +175,11 @@ shared:
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/test_e2e_accuracy_workflow.mjs
     owners: [forward-pass-engine, replay, infra, maintainers]
-  - glob: docs/core-api.md
+  - glob: docs/perf-model/
     owners: [forward-pass-engine, maintainers]
-  - glob: docs/power-model.md
+  - glob: docs/perf-model/power.md
     owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: docs/schemas/power-metrics-v1.schema.json
+  - glob: docs/perf-model/schemas/power-metrics-v1.schema.json
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/__init__.py
     owners: [forward-pass-engine, sweeper, replay, maintainers]
@@ -207,6 +223,8 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_output_adapter_discovery.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_output_adapter_context.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: python/aisimulate/src/aisimulate/resources.py
     owners: [replay, sweeper, maintainers]
   - glob: python/aisimulate/src/aisimulate/resource_scheduler.py
@@ -225,7 +243,7 @@ shared:
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_weka_host_resources.py
     owners: [replay, sweeper, maintainers]
-  - glob: docs/local-resources.md
+  - glob: docs/reference/local-resources.md
     owners: [replay, sweeper, maintainers]
   - glob: tests/test_power_diagnostics.py
     owners: [replay, forward-pass-engine, maintainers]

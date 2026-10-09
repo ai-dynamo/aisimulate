@@ -796,25 +796,12 @@ impl EngineConfig {
                 "state_cache is supported only for backend=vllm"
             );
             ensure!(
-                self.worker_type == WorkerType::Aggregated,
-                "state_cache is supported only for worker_type=aggregated"
-            );
-            ensure!(
                 self.native_host_offload.is_none(),
                 "state_cache does not support native_host_offload in the G1-only implementation"
             );
             ensure!(
                 self.g3_offload.is_none(),
                 "state_cache does not support g3_offload in the G1-only implementation"
-            );
-            ensure!(
-                self.kv_transfer_bytes_per_token.is_none() && self.kv_transfer_bandwidth.is_none(),
-                "state_cache does not support kv_transfer_bytes_per_token or kv_transfer_bandwidth"
-            );
-            // Keep the default accepted, including serialized configs that emit it explicitly.
-            ensure!(
-                self.kv_transfer_timing_mode == TransferTimingMode::FullPrompt,
-                "state_cache does not support non-default kv_transfer_timing_mode"
             );
             ensure!(
                 self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
@@ -1241,20 +1228,10 @@ mod tests {
     }
 
     #[test]
-    fn state_cache_rejects_non_vllm_disaggregated_and_host_offload_configs() {
+    fn state_cache_rejects_non_vllm_and_offload_configs() {
         for (field, value, message) in [
             ("backend", serde_json::json!("sglang"), "backend=vllm"),
             ("backend", serde_json::json!("trtllm"), "backend=vllm"),
-            (
-                "worker_type",
-                serde_json::json!("prefill"),
-                "worker_type=aggregated",
-            ),
-            (
-                "worker_type",
-                serde_json::json!("decode"),
-                "worker_type=aggregated",
-            ),
             (
                 "native_host_offload",
                 serde_json::json!({"num_host_blocks": 8}),
@@ -1286,28 +1263,22 @@ mod tests {
                 serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
             assert_eq!(config, roundtrip);
         }
-        for (field, value) in [
-            ("kv_transfer_bytes_per_token", serde_json::json!(16)),
-            ("kv_bytes_per_token", serde_json::json!(16)),
-            ("kv_transfer_bandwidth", serde_json::json!(0.0)),
-            (
-                "kv_transfer_timing_mode",
-                serde_json::json!("destination_missing"),
-            ),
-        ] {
+    }
+
+    #[test]
+    fn state_cache_accepts_transfer_fields_on_every_role() {
+        // Replay descriptors omit worker_type until a stage assigns it, so
+        // transfer settings must deserialize before the role is known.
+        for worker_type in [None, Some("prefill"), Some("decode")] {
             let mut input = state_cache_config_json();
-            input[field] = value;
-            assert!(
-                serde_json::from_value::<EngineConfig>(input.clone()).is_err(),
-                "{field}"
-            );
-            input.as_object_mut().unwrap().remove("state_cache");
-            let mut config: EngineConfig = serde_json::from_value(input).unwrap();
+            if let Some(worker_type) = worker_type {
+                input["worker_type"] = serde_json::json!(worker_type);
+            }
+            input["kv_transfer_bytes_per_token"] = serde_json::json!(16);
+            input["kv_transfer_bandwidth"] = serde_json::json!(50.0);
+            input["kv_transfer_timing_mode"] = serde_json::json!("destination_missing");
+            let config: EngineConfig = serde_json::from_value(input).unwrap();
             config.validate().unwrap();
-            config.state_cache = Some(StateCacheConfig {
-                bytes_per_request: 1500,
-            });
-            assert!(config.validate().is_err(), "{field}");
         }
     }
 

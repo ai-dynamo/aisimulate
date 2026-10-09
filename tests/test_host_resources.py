@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 from copy import deepcopy
@@ -35,6 +36,37 @@ from aisimulate.resources import (
 @pytest.fixture
 def host():
     return HostResources(32 * GB, 16 * GB, 8)
+
+
+def _supervised(monkeypatch, memory_limit_bytes=8 * GB):
+    # Unit admission tests must not depend on the pytest process or its children.
+    monkeypatch.setattr(resources.psutil.Process, "memory_info", lambda self: SimpleNamespace(rss=64 * resources.MIB))
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    monkeypatch.setenv(
+        "_AISIMULATE_SUPERVISED_BUDGET",
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "memory_limit_bytes": memory_limit_bytes,
+                "cpu_limit": 4,
+                "reserved_host_memory_bytes": GB,
+            }
+        ),
+    )
+
+
+def _dynamo_row(request_id="r", *, input_length=8, output_tokens=3, contextual=True):
+    return {
+        "schema": "dynamo.request.trace.v1",
+        "event_type": "request_end",
+        "event_time_unix_ms": 10,
+        "agent_context": {"session_id": "session"} if contextual else None,
+        "request": {
+            "request_id": request_id,
+            "output_tokens": output_tokens,
+            "replay": {"trace_block_size": 4, "input_length": input_length, "input_sequence_hashes": [1, 2]},
+        },
+    }
 
 
 def _config():
@@ -276,6 +308,69 @@ def test_recommendation_applies_slots_without_changing_suggestion_batches(monkey
     assert config.optimizer.parallelism == 8
 
 
+def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    received = []
+    searched = []
+
+    class ContextAdapter:
+        def __init__(self, name, mutate):
+            self.name = name
+            self.api_version = OUTPUT_ADAPTER_API_VERSION
+            self._mutate = mutate
+
+        def subscribe(self, config, context):
+            workload = context.workload
+            received.append((self.name, workload.model_copy(deep=True)))
+            if self._mutate:
+                # A misbehaving adapter edits "its" workload while preparing output.
+                object.__setattr__(workload, "isl", workload.isl + 1)
+                assert workload.isl != received[-1][1].isl
+            return RecommendationOutputCallbacks(on_candidate=lambda candidate: None)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del top_n, on_candidate, on_round
+            searched.append(smart.workload)
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    assert (
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"first": {}, "second": {}},
+            output_adapters={
+                "first": ContextAdapter("first", mutate=True),
+                "second": ContextAdapter("second", mutate=False),
+            },
+        )
+        == "result"
+    )
+
+    # Both subscribers saw the workload the search consumes, and the second one saw it
+    # unchanged even though the first mutated its copy; the search itself was not affected.
+    assert [name for name, _ in received] == ["first", "second"]
+    assert received[0][1] == received[1][1]
+    assert searched[0] == received[0][1]
+    assert searched[0].isl == received[0][1].isl
+
+
 def test_resource_refusal_is_not_a_failed_replay_observation():
     from aisimulate.sweeper.search import _run_replay_detailed
 
@@ -365,12 +460,27 @@ def test_missing_container_mount_probe_fails_closed(tmp_path, host):
         constrain_to_cgroups(host, proc=proc, root=tmp_path)
 
 
-def test_trace_scalar_lengths_are_counted_before_token_expansion(tmp_path, host):
+@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
+@pytest.mark.parametrize("length_field", ["input_length", "output_length", "input_tokens", "output_tokens"])
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
+def test_trace_scalar_lengths_are_counted_before_token_expansion(
+    tmp_path, host, monkeypatch, trace_format, length_field, stack
+):
     trace = tmp_path / "large.jsonl"
-    trace.write_text(json.dumps({"input_length": 10**12, "output_length": 1, "hash_ids": [1]}) + "\n")
-    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    row = {"input_length": 1, "output_length": 1, "hash_ids": [1]}
+    row.pop(length_field.replace("_tokens", "_length"))
+    row[length_field] = 10**12
+    trace.write_text(json.dumps(row) + "\n")
+    _supervised(monkeypatch)
+    plan = build_plan({"trace_path": str(trace), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
-    assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
+    if trace_format == "agentic_mooncake":
+        assert plan["estimate"]["estimated_peak_bytes"] is None
+        assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+        assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
+        assert "requires supervised" not in plan["reason"]
+    else:
+        assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
 
 
 def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
@@ -417,36 +527,379 @@ def test_cgroup_parent_components_never_escape_a_root_mount(tmp_path, host):
 
 
 def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypatch, host):
-    import os
-
     workload = {"source_type": "synthetic-session", "request_count": 4, "turns_per_session": 2}
     assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 8 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch)
     plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch):
+@pytest.mark.parametrize("trace_format,profile", [("mooncake", None), ("agentic_mooncake", {})])
+def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format, profile):
     trace = tmp_path / "oversized.jsonl"
     with trace.open("wb") as stream:
         stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
     monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
+    workload = {"trace_path": str(trace), "trace_format": trace_format}
+    if profile is not None:
+        workload["agentic_profile"] = profile
+    plan = build_plan(workload, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
     assert "before metadata parsing" in plan["estimate"]["reason"]
+
+
+@pytest.mark.parametrize(
+    "trace_format,stack",
+    [
+        ("agentic_mooncake", "engine"),
+        ("agentic_mooncake", "dynamo"),
+        ("weka", "dynamo"),
+        ("dynamo", "engine"),
+        ("dynamo", "dynamo"),
+    ],
+)
+def test_finite_agentic_lanes_share_compact_trace_and_require_supervision(
+    tmp_path, host, monkeypatch, stack, trace_format
+):
+    trace = tmp_path / "agentic.jsonl"
+    header = {
+        "schema": "dynamo.agentic_mooncake",
+        "version": 2,
+        "block_size": 1048576,
+        "hash_id_scope": "local",
+        "source": {"format": "test", "digest": "test"},
+    }
+    rows = [
+        {
+            "request_id": str(i),
+            "play_id": str(i),
+            "session_id": str(i),
+            "model": "test",
+            "input_length": 1048576,
+            "output_length": 1,
+            "hash_ids": [i],
+            "not_before_ms": 0,
+            "dependencies": [],
+        }
+        for i in range(4)
+    ]
+    if trace_format == "weka":
+        documents = [
+            {
+                "id": "play",
+                "block_size": 1048576,
+                "requests": [{"type": "s", "in": row["input_length"], "out": row["output_length"]} for row in rows],
+            }
+        ]
+    elif trace_format == "dynamo":
+        documents = [_dynamo_row(row["request_id"], input_length=1048576, output_tokens=1) for row in rows]
+    else:
+        documents = [header, *rows]
+    trace.write_text("\n".join(json.dumps(row) for row in documents) + "\n")
+    base = {"trace_path": str(trace), "trace_format": trace_format, "trace_block_size": 1048576}
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    for lanes in (1, 32, 128, 512):
+        plan = build_plan({**base, "agentic_lanes": lanes}, stack=stack, host=host)
+        assert plan["estimate"]["estimated_peak_bytes"] is None
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB  # One expanded prompt, not the corpus.
+        assert plan["status"] == "resource_limited"  # An unknown peak needs the live supervisor.
+        assert plan["reason"].startswith("unknown peak requires supervised serial execution:")
+        assert plan["estimate"]["reason"] in plan["reason"]
+
+    _supervised(monkeypatch, memory_limit_bytes=2 * GB)
+    for lanes in (1, 32, 128, 512):
+        workload = {**base, "agentic_lanes": lanes}
+        original = deepcopy(workload)
+        plan = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+        assert plan["status"] == "admitted"
+        assert plan["effective_parallelism"] == 1  # One simulation; all requested lanes are retained.
+        assert plan["estimate"]["lower_bound_bytes"] == 4 * resources.MIB
+        assert workload == original
+
+    # Whitespace adds file bytes without changing stored arrays. The former
+    # 128-times-file-size guard would reject this padded trace under 2 GB.
+    estimate = plan["estimate"]
+    with trace.open("a") as stream:
+        for _ in range(256):
+            stream.write(" " * (64 * 1024) + "\n")
+    padded = build_plan(workload, stack=stack, host=host, requested_parallelism=4)
+    assert padded["status"] == "admitted"
+    assert padded["estimate"] == estimate
+
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    spec = SimpleNamespace(workload={**base, "agentic_lanes": 512}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), stack, ResourceConfig())
+    assert factory.admit_wave([spec])["status"] == "admitted"
+    with pytest.raises(ResourceLimitError, match="wave"):
+        factory.admit_wave([spec, spec])
+
+
+def test_native_weka_keeps_qualified_parallel_admission(tmp_path, host, monkeypatch):
+    trace = tmp_path / "play.json"
+    trace.write_text(json.dumps({"block_size": 4, "requests": [{"t": 0, "type": "s", "in": 4, "out": 1}]}))
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    workload = {"trace_path": str(trace), "trace_format": "weka"}
+    expected = estimate_workload(workload, stack="engine")
+    assert expected.allocation_model == "weka-materialized-v1"
+    assert expected.estimated_peak_bytes is not None
+    for lanes in (1, 32, 128, 512):
+        candidate = {**workload, "agentic_lanes": lanes}
+        assert estimate_workload(candidate, stack="engine") == expected
+        plan = build_plan(candidate, stack="engine", host=host, requested_parallelism=2)
+        assert plan["effective_parallelism"] == 2
+        spec = SimpleNamespace(workload=candidate, concurrency=None)
+        wave = factory.admit_wave([spec, spec])
+        assert wave["status"] == "admitted"
+        assert wave["required_bytes"] == 2 * expected.estimated_peak_bytes
+
+
+@pytest.mark.parametrize("output_length,authored,expected", [(0, None, 16), (5, None, 28), (2, [7, 8], 24)])
+def test_finite_agentic_arrays_ignore_unloaded_fields(tmp_path, output_length, authored, expected):
+    trace = tmp_path / "agentic.jsonl"
+    row = {
+        "request_id": "r",
+        "input_tokens": 2,
+        "output_tokens": output_length,
+        "hash_ids": [1, 2],
+        "output_token_ids": authored,
+    }
+    workload = {"trace_path": str(trace), "trace_format": "agentic_mooncake"}
+    trace.write_text(json.dumps(row) + "\n")
+    original = estimate_workload(workload, stack="engine")
+    # Two source u64 hashes occupy 16 bytes; five planned u32 outputs plus
+    # compact hashes occupy 28; two authored u32 outputs beside source hashes occupy 24.
+    assert original.lower_bound_bytes == expected
+    row["input_sequence_hashes"] = [1] * 100
+    row["provenance"] = {
+        "input_length": "ignored",
+        "output_tokens": 10**12,
+        "hash_ids": [1] * 100,
+        "output_token_ids": [1] * 100,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    assert estimate_workload(workload, stack="engine") == original
+
+
+@pytest.mark.parametrize(
+    "prefix,lower", [("input_tokens", 4), ("output_tokens", 4), ("hash_ids.item", 8), ("output_token_ids.item", 4)]
+)
+def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, monkeypatch, prefix, lower):
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text("{}\n")
+
+    def events(*args, **kwargs):
+        yield "", "start_map", None
+        yield prefix, "number", 1
+        pytest.fail("must stop before reading more metadata after the lower bound cannot fit")
+
+    monkeypatch.setattr(resources.ijson, "parse", events)
+    estimate = estimate_workload(
+        {"trace_path": str(trace), "trace_format": "agentic_mooncake"},
+        stack="engine",
+        inspection_budget_bytes=resources.WORKER_BASELINE_BYTES + lower - 1,
+    )
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.lower_bound_bytes == lower
+
+
+@pytest.mark.parametrize("peak", [None, GB])
+@pytest.mark.parametrize("external", [False, True])
+def test_only_builtin_unknown_peaks_add_baseline_to_array_bound(monkeypatch, host, peak, external):
+    # Fixed supervisor RSS plus coordinator reserve leaves exactly 1 GB free.
+    _supervised(monkeypatch, memory_limit_bytes=GB + 320 * resources.MIB)
+    factory = SimpleNamespace(
+        estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 900_000_000, peak)
+    )
+    if not external:
+        monkeypatch.setattr(resources, "estimate_workload", factory.estimate_host_resources)
+        factory = None
+    plan = build_plan({}, stack="engine", host=host, factory=factory)
+    if peak is None and not external:
+        assert plan["status"] == "resource_limited"  # 900 MB alone fits; adding the baseline does not.
+        assert "lower bound plus worker baseline" in plan["reason"]
+        _supervised(monkeypatch, memory_limit_bytes=900_000_000 + resources.WORKER_BASELINE_BYTES + 320 * resources.MIB)
+        assert build_plan({}, stack="engine", host=host, factory=factory)["status"] == "admitted"
+    else:
+        assert plan["status"] == "admitted"  # Adapter v1 bounds and qualified peaks may include process memory.
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_unknown_peak_wave_reserves_arrays_after_child_rss(monkeypatch, host, external):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    adapter = SimpleNamespace(
+        estimate_host_resources=lambda *args, **kwargs: ResourceEstimate("test-v1", 1, 0, 6 * GB, None)
+    )
+    if not external:
+        monkeypatch.setattr(resources, "estimate_workload", adapter.estimate_host_resources)
+        adapter = object()
+    factory = GuardedRunnerFactory(adapter, "engine", ResourceConfig())
+    spec = SimpleNamespace(workload={}, concurrency=None)
+    required = 6 * GB + (0 if external else resources.WORKER_BASELINE_BYTES)
+    assert factory.admit_wave([spec])["required_bytes"] == required
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 5 * GB)
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec])
+    assert caught.value.plan["required_bytes"] == required
+    assert caught.value.plan["available_bytes"] < 3 * GB
+
+
+@pytest.mark.parametrize("warmup", [False, True])
+@pytest.mark.parametrize("trace_format", ["agentic_mooncake", "weka", "dynamo"])
+def test_snapshot_and_warmup_keep_previous_accounting(tmp_path, warmup, trace_format):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    trace = tmp_path / "agentic.jsonl"
+    trace.write_text(json.dumps({"input_length": 4, "output_length": 1, "hash_ids": [1]}) + "\n")
+    raw = _config()
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": trace_format, "paths": [str(trace)], "block_size": 4},
+        "load": {
+            "type": "trace_timestamps",
+            "agentic_lanes": 32,
+            "agentic_snapshot": {"seed": 42},
+            "agentic_warmup": warmup,
+        },
+    }
+    config = CoreRecommendationConfig.model_validate(raw)
+    bounds = workload_bounds(config)
+    assert bounds["agentic_snapshot"] == {"seed": 42}
+    assert bounds["agentic_warmup"] is warmup
+    concrete = recommendation_to_sweeper(config).workload.model_dump(mode="python", exclude_none=True)
+    # Native Weka snapshot/warmup accounting has its own peak-model tests.
+    stacks = ("dynamo",) if trace_format == "weka" else ("engine", "dynamo")
+    for stack in stacks:
+        estimate = estimate_workload(bounds, stack=stack)
+        assert estimate.allocation_model == "trace-json-metadata-v1"
+        assert estimate.estimated_peak_bytes is not None
+        assert estimate_workload(concrete, stack=stack) == estimate
+    ordinary = {key: value for key, value in bounds.items() if key not in {"agentic_snapshot", "agentic_warmup"}}
+    if trace_format == "weka":
+        trace.write_text(json.dumps({"block_size": 4, "requests": [{"type": "s", "in": 4, "out": 1}]}))
+    elif trace_format == "dynamo":
+        trace.write_text(json.dumps(_dynamo_row()))
+    for stack in stacks:
+        assert estimate_workload(ordinary, stack=stack).estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize("layout", ["json", "jsonl", "directory"])
+def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
+    # Put block_size last: request accounting must not depend on JSON field order.
+    play = {
+        "id": "play",
+        "requests": [
+            {"type": "s", "in": 5, "out": 2, "hash_ids": []},
+            {"type": "n", "in": 4, "out": 0, "hash_ids": [7]},
+            {
+                "type": "subagent",
+                "total_tokens": 10**12,
+                "requests": [
+                    {"type": "s", "in": 9, "out": 3, "hash_ids": [9]},
+                ],
+            },
+        ],
+        "totals": {"in": 10**12, "out": "ignored"},
+        "block_size": 4,
+    }
+    source = tmp_path / f"play.{layout}"
+    copies = 1 if layout == "json" else 2
+    if layout == "directory":
+        source.mkdir()
+        (source / "a.json").write_text(json.dumps(play))
+        (source / "b.jsonl").write_text(json.dumps(play) + "\n")
+        (source / "ignored.txt").write_text("not a trace")
+    else:
+        source.write_text((json.dumps(play) + "\n") * copies)
+    estimate = estimate_workload({"trace_path": str(source), "trace_format": "weka"}, stack="dynamo")
+    assert estimate.allocation_model == "agentic-trace-unqualified-v1"
+    # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
+    assert estimate.lower_bound_bytes == 48 * copies
+    assert estimate.estimated_peak_bytes is None
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_agentic_dynamo_counts_only_loaded_request_events(tmp_path, compressed):
+    first = _dynamo_row("first")
+    second = _dynamo_row("second", input_length=4, output_tokens=4)
+    second["request"]["replay"]["input_sequence_hashes"] = [3]
+    ignored = {"event_type": "request_payload", "request": {"output_tokens": 10**12}, "input_length": "ignored"}
+    tool = {"event_type": "tool_end", "agent_context": {"session_id": "s"}, "request": {"output_tokens": 10**12}}
+    first["provenance"] = {"input_tokens": 10**12, "output_token_ids": [1] * 100}
+    paths = [tmp_path / "a.jsonl", tmp_path / ("b.jsonl.gz" if compressed else "b.jsonl")]
+    paths[0].write_text(json.dumps(ignored) + "\n" + json.dumps(first) + "\n")
+    contents = json.dumps(tool) + "\n" + json.dumps({"event": second, "output_tokens": 10**12}) + "\n"
+    if compressed:
+        with gzip.open(paths[1], "wt") as stream:
+            stream.write(contents)
+    else:
+        paths[1].write_text(contents)
+    workload = {"trace_paths": list(map(str, paths)), "trace_format": "dynamo"}  # No lane hint.
+    for stack in ("engine", "dynamo"):
+        estimate = estimate_workload(workload, stack=stack)
+        assert estimate.allocation_model == "agentic-trace-unqualified-v1"
+        assert estimate.lower_bound_bytes == 40  # Three compact hashes and seven planned outputs.
+        assert estimate.estimated_peak_bytes is None
+
+
+def test_standard_dynamo_keeps_previous_accounting_and_rejects_mixed_context(tmp_path):
+    path = tmp_path / "requests.jsonl"
+    row = _dynamo_row(contextual=False)
+    path.write_text(json.dumps(row) + "\n")
+    workload = {"trace_path": str(path), "trace_format": "dynamo", "trace_block_size": 4}
+    estimate = estimate_workload(workload, stack="engine")
+    assert estimate.allocation_model == "trace-json-metadata-v1"
+    assert (
+        estimate.estimated_peak_bytes
+        == resources.WORKER_BASELINE_BYTES + 128 * path.stat().st_size + 32 * 19 + 65536 * 2
+    )
+    for rows in ([row, _dynamo_row("agent")], [_dynamo_row("agent"), row]):
+        path.write_text("\n".join(map(json.dumps, rows)))
+        with pytest.raises(ResourceLimitError, match="cannot mix requests with and without agent_context"):
+            estimate_workload(workload, stack="engine")
+
+
+@pytest.mark.parametrize("trace_format,stack", [("weka", "dynamo"), ("dynamo", "engine"), ("dynamo", "dynamo")])
+@pytest.mark.parametrize("input_oversized", [False, True])
+def test_added_agentic_formats_reject_oversized_arrays(
+    tmp_path, monkeypatch, host, trace_format, input_oversized, stack
+):
+    _supervised(monkeypatch)
+    source = tmp_path / "large.jsonl"
+    input_length, output_length = (10**12, 1) if input_oversized else (4, 10**12)
+    if trace_format == "weka":
+        row = {"block_size": 4, "requests": [{"type": "s", "in": input_length, "out": output_length}]}
+    else:
+        row = _dynamo_row(input_length=input_length, output_tokens=output_length)
+    # A parser failure after this object would hide the bound if inspection continued.
+    source.write_text(json.dumps(row) + "\nnot JSON")
+    plan = build_plan({"trace_path": str(source), "trace_format": trace_format}, stack=stack, host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+    assert "lower bound plus worker baseline" in plan["reason"]
+
+
+def test_unsupervised_refusal_keeps_the_estimate_reason(tmp_path, monkeypatch, host):
+    monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
+    path = tmp_path / "invalid.jsonl"
+    path.write_text(json.dumps({"input_tokens": -1}))
+    for workload, detail in [
+        (
+            {"trace_path": str(path), "trace_format": "agentic_mooncake"},
+            "trace token lengths must be nonnegative integers",
+        ),
+        ({"unresolved_resource_count": True}, "candidate-specific request count is unresolved"),
+    ]:
+        plan = build_plan(workload, stack="engine", host=host)
+        assert plan["status"] == "resource_limited"
+        assert detail in plan["reason"]
+        with pytest.raises(ResourceLimitError, match=detail):
+            resources.require_plan(plan)
 
 
 @pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
@@ -486,6 +939,7 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
     assert unmonitored["status"] == "resource_limited"
     assert unmonitored["estimate"]["estimated_peak_bytes"] is None
     assert unmonitored["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+    assert unmonitored["estimate"]["reason"] in unmonitored["reason"]
 
     # The recommendation compiler's concrete workload reaches both the per-run
     # guard and whole-wave admission; profile estimates must not admit a pool.
@@ -494,17 +948,7 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     with pytest.raises(ResourceLimitError, match="profile"):
         guard_replay(spec, stack="engine")
-    monkeypatch.setenv(
-        "_AISIMULATE_SUPERVISED_BUDGET",
-        json.dumps(
-            {
-                "supervisor_pid": os.getpid(),
-                "memory_limit_bytes": 8 * GB,
-                "cpu_limit": 4,
-                "reserved_host_memory_bytes": GB,
-            }
-        ),
-    )
+    _supervised(monkeypatch)
     plan = build_plan(bounds, stack="engine", host=host, requested_parallelism=4)
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1
