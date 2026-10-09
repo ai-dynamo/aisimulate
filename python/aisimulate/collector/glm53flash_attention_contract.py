@@ -742,16 +742,21 @@ def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
             raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
 
 
-def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
+def load_attempt(attempt: Path, partial: bool = False) -> tuple[dict, list[dict], list[dict]]:
     """Admit one runner attempt: completion receipt, plan closure, every target.
 
     ``attempt`` holds the frozen ``manifest.json``; the runner's per-rank
-    streams and completion receipt live in ``attempt/raw``.
+    streams and completion receipt live in ``attempt/raw``. A ``partial``
+    attempt (no receipt; its progress log records a failed set) contributes
+    only the request sets it measured completely on every rank; the returned
+    manifest then lists ``admitted_sets`` and ``failed_sets``, and the other
+    sets' keys must come from other attempts (finalize closure).
     """
     attempt = Path(attempt)
     raw = attempt / "raw"
-    if not (raw / "COMPLETE").is_file():
-        raise ValueError(f"{attempt} has no completion receipt")
+    complete = (raw / "COMPLETE").is_file()
+    if complete == partial:
+        raise ValueError(f"{attempt} has {'a' if complete else 'no'} completion receipt; partial={partial}")
     manifest = json.loads((attempt / "manifest.json").read_text())
     body = {k: v for k, v in manifest.items() if k != "manifest_sha256"}
     if manifest["manifest_sha256"] != sha256_json(body):
@@ -773,9 +778,44 @@ def load_attempt(attempt: Path) -> tuple[dict, list[dict], list[dict]]:
             raise ValueError(f"{attempt} sample geometry differs from its deployment")
         if record["provenance"]["layer_id"] != manifest["layer_id"]:
             raise ValueError(f"{attempt} sample layer differs from the manifest")
+    queued = queued_plan(manifest)
+    if partial:
+        failed = set()
+        for path in raw.glob("progress*.jsonl"):
+            for line in path.read_text().splitlines():
+                entry = json.loads(line) if line.strip() else {}
+                if entry.get("status") == "failed":
+                    failed.add(entry["set_id"])
+        if not failed:
+            raise ValueError(f"{attempt} is partial but records no failed set")
+        reps_by_rank: dict[str, dict[int, set]] = defaultdict(lambda: defaultdict(set))
+        for record in records:
+            reps_by_rank[record["target_id"]][record["tp_rank"]].add(record["repetition"])
+        # A target is complete when every rank wrote the same repetitions.
+        full = {
+            t
+            for t, ranks in reps_by_rank.items()
+            if set(ranks) == set(range(tp_size)) and len({frozenset(v) for v in ranks.values()}) == 1
+        }
+        admitted = []
+        for request_set in queued["sets"]:
+            ids = set()
+            for value in request_set["targets"]:
+                phase, batch, prefix, x = _target_context(request_set, value)[0]
+                ids.add(f"{phase}-b{batch}-p{prefix}-x{x}")
+            if request_set["set_id"] not in failed and ids <= full:
+                admitted.append(request_set)
+        queued = {**queued, "sets": admitted}
+        keep = {f"{k[0]}-b{k[1]}-p{k[2]}-x{k[3]}" for k in target_keys(queued)}
+        records = [r for r in records if r["target_id"] in keep]
+        manifest = {
+            **manifest,
+            "admitted_sets": [s["set_id"] for s in admitted],
+            "failed_sets": sorted(failed),
+        }
     rows, evidence = aggregate_rank_samples(records, tp_size)
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
-    expected = set(target_keys(queued_plan(manifest)))
+    expected = set(target_keys(queued))
     if manifest["max_model_len"] != selected_max_model_len(manifest):
         raise ValueError(f"{attempt} server max_model_len differs from its selected context class")
     if measured != expected:
@@ -801,7 +841,10 @@ def main() -> None:
     plan_parser = sub.add_parser("plan", help="print the frozen plan for a sweep YAML")
     plan_parser.add_argument("--sweep", type=Path, required=True)
     finalize = sub.add_parser("finalize", help="merge admitted attempts into one backend/version table")
-    finalize.add_argument("attempts", type=Path, nargs="+")
+    finalize.add_argument("attempts", type=Path, nargs="*")
+    finalize.add_argument(
+        "--partial", type=Path, action="append", default=[], help="failed attempt: admit its completed sets only"
+    )
     finalize.add_argument("--output", type=Path, required=True)
     finalize.add_argument("--evidence", type=Path, required=True, help="per-row sample evidence JSON")
     args = parser.parse_args()
@@ -813,8 +856,8 @@ def main() -> None:
         print(json.dumps({"plan_sha256": plan["plan_sha256"], "targets": len(target_keys(plan))}))
         return
     rows, evidence, manifests, loaded = [], [], [], []
-    for attempt in args.attempts:
-        manifest, attempt_rows, attempt_evidence = load_attempt(attempt)
+    for attempt, partial in [(a, False) for a in args.attempts] + [(a, True) for a in args.partial]:
+        manifest, attempt_rows, attempt_evidence = load_attempt(attempt, partial=partial)
         loaded.append((manifest, attempt_rows))
         rows += attempt_rows
         evidence += [{**e, "attempt": Path(attempt).name} for e in attempt_evidence]
@@ -828,6 +871,11 @@ def main() -> None:
                 "max_model_len": manifest["max_model_len"],
                 **{k: manifest[k] for k in CAPACITY_KNOBS if manifest.get(k) is not None},
                 **({"only_sets": manifest["only_sets"]} if manifest.get("only_sets") is not None else {}),
+                **(
+                    {"partial": {"admitted_sets": manifest["admitted_sets"], "failed_sets": manifest["failed_sets"]}}
+                    if partial
+                    else {}
+                ),
                 **(
                     {"memory_budget": manifest["memory_budget"], "memory_drops": manifest["memory_drops"]}
                     if manifest.get("memory_drops")

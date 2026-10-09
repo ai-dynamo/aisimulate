@@ -570,3 +570,43 @@ def test_memory_feasibility_drops_are_generation_time_and_close_the_plan(tmp_pat
     (raw / "rank-0.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
     (raw / "COMPLETE").write_text("done\n")
     assert len(contract.load_attempt(attempt)[1]) == len(records)
+
+
+def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    plan = build_plan(SMOKE_SWEEPS["validation-vllm"])
+    sets = [s["set_id"] for s in plan["sets"]]
+    failed_set = sets[-1]
+    broken, _ = _attempt(tmp_path, name="broken")
+    (broken / "raw/COMPLETE").unlink()
+    with pytest.raises(ValueError, match="no completion receipt"):
+        load_attempt(broken)
+    lost = {f"{p}-b{b}-p{q}-x{x}" for p, b, q, x in target_keys({"sets": plan["sets"][-1:]})}
+    rank1 = (broken / "raw/rank-1.jsonl").read_text().splitlines()
+    kept = [line for line in rank1 if json.loads(line)["target_id"] not in lost]
+    (broken / "raw/rank-1.jsonl").write_text("\n".join(kept) + "\n")
+    with pytest.raises(ValueError, match="no failed set"):
+        load_attempt(broken, partial=True)
+    (broken / "raw/progress.jsonl").write_text(json.dumps({"set_id": failed_set, "status": "failed"}) + "\n")
+    manifest, rows, _ = load_attempt(broken, partial=True)
+    assert manifest["failed_sets"] == [failed_set] and failed_set not in manifest["admitted_sets"]
+    assert len(rows) == len(target_keys(plan)) - len(lost)
+    rerun, _ = _attempt(tmp_path, only_sets=[failed_set], name="rerun")
+    out = tmp_path / "p" / BASENAME
+    argv = [
+        "x",
+        "finalize",
+        str(rerun),
+        "--partial",
+        str(broken),
+        "--output",
+        str(out),
+        "--evidence",
+        str(tmp_path / "e"),
+    ]
+    monkeypatch.setattr("sys.argv", argv)
+    contract.main()
+    assert pq.read_table(out).num_rows == len(target_keys(plan))
+    meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
+    assert meta["tables"]["glm53_attention_module_perf"]["attempts"][1]["partial"]["failed_sets"] == [failed_set]
