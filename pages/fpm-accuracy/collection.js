@@ -39,17 +39,22 @@
     function draw(run) {
       const w = run.workload;
       const length = value => value?.mode === 'fixed' ? number(value.value) : label(value?.mode);
-      const fields = [['Dataset',run.dataset.name],['Benchmark preset',run.benchmark_preset],['Replay mode',label(run.replay_mode)],['Collector',[run.collector.name,run.collector.version].filter(Boolean).join(' ') || null],['Serving layout',label(run.serving.layout)],['Concurrency',`${number(w.concurrency)} ${label(w.concurrency_unit)}`],['Input length',length(w.input_length)],['Output length',length(w.output_length)],['Duration',w.duration_s == null ? null : number(w.duration_s)+' s'],['Completed requests',number(w.completed_requests)]];
+      const dataset = [['Name',run.dataset.name],['Benchmark preset',run.benchmark_preset],['Replay mode',label(run.replay_mode)]];
+      const workload = [['Concurrency',`${number(w.concurrency)} ${label(w.concurrency_unit)}`],['Input length',length(w.input_length)],['Output length',length(w.output_length)],['Duration',w.duration_s == null ? null : number(w.duration_s)+' s']];
+      const collection = [['Collector',[run.collector.name,run.collector.version].filter(Boolean).join(' ') || null],['Serving layout',label(run.serving.layout)],['Completed requests',number(w.completed_requests)]];
       const settings = value => Array.isArray(value) ? value.map(settings).join(' · ') : value && typeof value === 'object' ? Object.entries(value).map(([key,item])=>`${label(key)}: ${settings(item)}`).join(' · ') : typeof value === 'number' ? number(value) : label(value);
-      for (const [key,value] of [['Dataset revision',run.dataset.revision],['Dataset selection',run.dataset.selection],['Dataset transformations',run.dataset.transformations?.join(' · ')],['Worker topology',run.serving.topology],['Worker roles',run.serving.worker_roles?.map(label).join(' · ')],['Warmup',w.warmup && settings(w.warmup)],['Seed',w.seed],['Requested requests',w.requested_requests],['Failed requests',w.failed_requests],['Cancelled requests',w.cancelled_requests]]) {
-        if (value != null && value !== '') fields.push([key, settings(value)]);
+      for (const [group,key,value] of [[dataset,'Revision',run.dataset.revision],[dataset,'Selection',run.dataset.selection],[dataset,'Transformations',run.dataset.transformations?.join(' · ')],[collection,'Worker topology',run.serving.topology],[collection,'Worker roles',run.serving.worker_roles?.map(label).join(' · ')],[workload,'Warmup',w.warmup && settings(w.warmup)],[workload,'Seed',w.seed],[collection,'Requested requests',w.requested_requests],[collection,'Failed requests',w.failed_requests],[collection,'Cancelled requests',w.cancelled_requests]]) {
+        if (value != null && value !== '') group.push([key, settings(value)]);
       }
       const stages = run.charts?.stage_counts;
       const boundaries = w.stage_boundaries;
-      const phaseNote = boundaries ? `Profiling: ${number(boundaries.profiling_start_s)}–${number(boundaries.profiling_end_s)} s from run start. ` : '';
-      const sampleNote = stages ? `${number(stages.profiling || 0)} profiling requests; ${number((stages.warmup || 0)+(stages.drain || 0))} warmup/drain requests excluded from charts.` : '';
-      const hasSettings = fields.some(([,value])=>value != null && !/^unknown(?: unknown)*$/i.test(String(value)));
-      target.querySelector('#collection-settings').innerHTML = hasSettings ? `<p>${escape(phaseNote+sampleNote)}</p><dl class="workload-settings">${fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('')}</dl>` : '';
+      const summary = [];
+      if (boundaries) summary.push(['Profiling window', `${number(boundaries.profiling_start_s)}–${number(boundaries.profiling_end_s)} s from run start`]);
+      if (stages) summary.push(['Profiling requests',number(stages.profiling || 0)],['Excluded from charts',`${number((stages.warmup || 0)+(stages.drain || 0))} warmup/drain requests`]);
+      const groups = [['Dataset',dataset],['Workload',workload],['Collection',collection]];
+      const rows = fields => fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('');
+      const hasSettings = groups.some(([,fields])=>fields.some(([,value])=>value != null && !/^unknown(?: unknown)*$/i.test(String(value))));
+      target.querySelector('#collection-settings').innerHTML = hasSettings ? `${summary.length ? `<dl class="workload-summary">${rows(summary)}</dl>` : ''}<div class="workload-groups">${groups.map(([title,fields])=>`<section class="workload-group"><h4>${title}</h4><dl class="workload-settings">${rows(fields)}</dl></section>`).join('')}</div>` : '';
       target.querySelector('#request-charts').innerHTML = run.availability !== 'available' ? banner(
         run.availability === 'not_applicable' ? 'Request charts are not applicable' : 'Request charts unavailable',
         run.reason || 'Matching request-level records are not included in this evaluation.'

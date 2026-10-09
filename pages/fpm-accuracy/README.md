@@ -69,7 +69,10 @@ Details and 3D Visualization are separate tabs with independent controls.
   The default is the earliest run with request metrics, then the earliest known
   run; unknown dates use stable ID order. Supporting-only runs are not shown.
   Recorded dataset transformations, worker topology, warmup settings, seed, and
-  request counts accompany the run. Each chart reports its contributing population
+  request counts accompany the run, grouped into Dataset, Workload, and Collection
+  with aligned label/value rows. A compact summary separates the profiling window,
+  included request count, and warmup/drain exclusions. Groups stack on smaller screens.
+  Each chart reports its contributing population
   and unavailable measurements.
   Four request charts use generated JSON, so the browser needs no Parquet runtime:
   observed input/output token histograms, interactivity (`1000 / TPOT_ms`), and

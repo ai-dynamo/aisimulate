@@ -116,9 +116,17 @@
 
 /* Collection metadata is built with the evaluation; charts never fetch live metadata. */
 .collection-note { margin: .3rem 0; color: var(--muted); font-size: .8rem; }
-.workload-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 1rem; margin: 1.2rem 0; }
-.workload-settings dt { font-size: .8rem; color: var(--muted); }
-.workload-settings dd { margin: .3rem 0 0; overflow-wrap: anywhere; }
+#collection-settings { max-width: 1000px; }
+.workload-summary { display: flex; flex-wrap: wrap; gap: 12px 32px; padding: 12px 0; margin: 12px 0 0; border-bottom: 1px solid var(--border); }
+.workload-summary dt, .workload-settings dt { color: var(--muted); font-size: 12px; }
+.workload-summary dd { margin: 4px 0 0; font-size: 13px; }
+.workload-groups { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 24px; margin: 20px 0 24px; }
+.workload-group { min-width: 0; }
+.workload-group h4 { margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); font-size: 14px; text-align: left; }
+.workload-settings { margin: 0; }
+.workload-settings > div { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 10px; padding: 6px 0; line-height: 1.5; }
+.workload-settings dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 1000px) { .workload-groups { grid-template-columns: 1fr; gap: 16px; } }
 .request-charts { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; max-width: 1000px; }
 [data-view] .request-chart { min-width: 0; margin-top: 0; padding: 12px; }
 .request-chart h4 { margin: 0; text-align: left; font-size: 14px; }
