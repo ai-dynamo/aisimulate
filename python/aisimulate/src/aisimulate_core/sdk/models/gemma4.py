@@ -564,7 +564,37 @@ class Gemma4MixModel(BaseModel):
         return float(swa_bytes + global_bytes)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Capacity inverse over the window-capped KV curve (non-linear past the window)."""
+        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.
+        Find the longest sequence that fits in the given budget."""
         if not self._gemma4_config:
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Token capacity with vLLM block-aligned SWA reservation (vLLM only).
+
+        Find the token capacity using vLLM's per-request SWA block reservation
+        based on the max_model_len. If max_model_len is not set, fall back to
+        the default KV Cache token calculation.
+        """
+        if not self._gemma4_config:
+            return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
+
+        cfg = self._gemma4_config
+        bytes_per_elem = self.config.kvcache_quant_mode.value.memory
+        tp = self.config.tp_size
+
+        swa_kv_per_gpu = (cfg.swa_num_kv_heads + tp - 1) // tp
+        global_kv_per_gpu = (cfg.global_num_kv_heads + tp - 1) // tp
+        num_swa = cfg.layer_types.count("sliding_attention")
+        num_global = cfg.layer_types.count("full_attention")
+
+        result = self._vllm_swa_batch_capacity(
+            kv_budget_bytes,
+            window_size=cfg.sliding_window_size,
+            swa_per_token=num_swa * swa_kv_per_gpu * cfg.swa_head_dim * 2 * bytes_per_elem,
+            global_per_token=num_global * global_kv_per_gpu * cfg.global_head_dim * 2 * bytes_per_elem,
+        )
+        if result is not None:
+            return result
+        return self.get_kvcache_max_tokens(kv_budget_bytes)

@@ -183,6 +183,10 @@ class ModelConfig:
     # Selection emits a warning with the original model mode and matched cell IDs.
     # Exact table-label matching is not independent runtime-precision proof.
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
+    # Maximum sequence length for the deployment (vLLM's --max-model-len).
+    # Set by the KV-cache estimator from the caller's max_num_tokens so
+    # sliding-window models can compute block-level reservation overhead.
+    max_model_len: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         validate_parallel_size("cp_size", self.cp_size)
@@ -190,6 +194,10 @@ class ModelConfig:
             type(self.dcp_size) is not int or self.dcp_size <= 0 or self.tp_size % self.dcp_size
         ):
             raise ValueError("dcp_size must be positive and divide tp_size")
+        if self.max_model_len is not None and (
+            isinstance(self.max_model_len, bool) or not isinstance(self.max_model_len, int) or self.max_model_len <= 0
+        ):
+            raise ValueError(f"max_model_len must be a positive integer, got {self.max_model_len!r}")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,

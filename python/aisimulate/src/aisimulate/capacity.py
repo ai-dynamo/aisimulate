@@ -246,7 +246,9 @@ def materialize_aic_num_gpu_blocks(
             if lowered.get("aic_fpm_profile") is not None
             else {}
         ),
-        **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
+        # Most models do not use context_length in their KV Cache calculation,
+        # so it's safe to pass it in as a catch-all for models that do use it
+        context_length=lowered.get("max_model_len"),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)

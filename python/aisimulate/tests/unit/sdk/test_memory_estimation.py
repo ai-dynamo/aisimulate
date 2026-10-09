@@ -1302,3 +1302,88 @@ def test_tolerance_zero_is_noop_margin(monkeypatch):
     adj = out["tolerance_adjusted"]
     assert adj is not None
     assert adj["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+
+
+# --------------------------------------------------------------------------- #
+# context_length -> max_model_len plumbing
+# --------------------------------------------------------------------------- #
+
+
+def test_context_length_forwarded_as_max_model_len(monkeypatch):
+    """estimate_kv_cache forwards context_length to from_request as max_model_len."""
+    received = {}
+
+    def _spy(*args, **kwargs):
+        received.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
+    with pytest.raises(ValueError, match="unsupported model/backend/GPU"):
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "h200_sxm",
+            "trtllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_free",
+            memory_fraction_value=0.9,
+            context_length=4096,
+            allow_naive_fallback=False,
+        )
+    assert received["max_model_len"] == 4096
+
+
+def test_context_length_none_forwards_none(monkeypatch):
+    """When context_length is omitted, max_model_len defaults to None."""
+    received = {}
+
+    def _spy(*args, **kwargs):
+        received.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_spy))
+    with pytest.raises(ValueError, match="unsupported model/backend/GPU"):
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "h200_sxm",
+            "trtllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_free",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=False,
+        )
+    assert received["max_model_len"] is None
+
+
+def test_non_swa_capacity_invariant_to_context_length(monkeypatch):
+    """For non-SWA models, capacity is identical with and without context_length.
+
+    Routes through ``estimate_kv_cache`` (the real entry point) so the
+    ``context_length`` parameter is forwarded as ``max_model_len`` to
+    ``from_request``. A synthetic breakdown with a linear
+    ``tokens_from_kv_bytes`` inverse (the default for standard GQA/MHA
+    models) verifies that the budget math is unaffected.
+    """
+    capacity, non_kv, kv_per_token = 141.0 * _GIB, 60.0 * _GIB, 327_680.0
+    bd = _breakdown(non_kv, kv_per_token, capacity)
+
+    monkeypatch.setattr(
+        memory.KVCacheEstimator,
+        "from_request",
+        classmethod(lambda cls, *a, **k: cls(bd)),
+    )
+
+    common = dict(
+        system="h200_sxm",
+        backend="trtllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_free",
+        memory_fraction_value=0.9,
+    )
+    without = memory.estimate_kv_cache("Qwen/Qwen3-32B", **common)
+    with_ctx = memory.estimate_kv_cache("Qwen/Qwen3-32B", context_length=4096, **common)
+
+    assert without["total_kv_size_tokens"] == with_ctx["total_kv_size_tokens"]
+    assert without["total_kv_size_bytes"] == with_ctx["total_kv_size_bytes"]

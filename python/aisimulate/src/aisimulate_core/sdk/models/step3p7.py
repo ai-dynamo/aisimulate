@@ -144,7 +144,31 @@ class Step3p7Model(HybridMoEModel):
         return float(num_swa * per * swa_seq + num_global * per * seq_len)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Capacity inverse over the window-capped (piecewise) KV curve."""
+        """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.
+        Find the longest sequence that fits in the given budget."""
         if not self._hybrid_config:
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Token capacity with vLLM block-aligned SWA reservation (vLLM only).
+
+        Find the token capacity using vLLM's per-request SWA block reservation
+        based on the max_model_len. If max_model_len is not set, fall back to
+        the default KV Cache token calculation.
+        """
+        if not self._hybrid_config:
+            return super().get_kvcache_batch_capacity(kv_budget_bytes, max_batch_size)
+
+        num_swa, num_global = self._swa_global_counts()
+        per = self._kv_per_layer_per_token()
+
+        result = self._vllm_swa_batch_capacity(
+            kv_budget_bytes,
+            window_size=self._hybrid_config.sliding_window_size,
+            swa_per_token=num_swa * per,
+            global_per_token=num_global * per,
+        )
+        if result is not None:
+            return result
+        return self.get_kvcache_max_tokens(kv_budget_bytes)

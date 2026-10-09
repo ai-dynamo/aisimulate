@@ -157,6 +157,14 @@ def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
         )
 
 
+def _validate_max_model_len(value: int | None, *, param_name: str = "max_model_len") -> None:
+    """Validate an optional positive-integer context bound (``max_model_len`` / ``context_length``)."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{param_name} must be a positive integer, got {value!r}")
+
+
 # --------------------------------------------------------------------------- #
 # Shared scalar budget math.
 #
@@ -300,6 +308,7 @@ class KVCacheEstimator:
         wideep_num_slots: int | None = None,
         nextn: int = 0,
         systems_path: str | None = None,
+        max_model_len: int | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
 
@@ -357,6 +366,9 @@ class KVCacheEstimator:
         # Memory is cost-side only; accepted-token progress never enters
         # capacity math.
         apply_nextn(model_config, nextn)
+        _validate_max_model_len(max_model_len)
+        if max_model_len is not None:
+            model_config.max_model_len = max_model_len
         # Capacity needs model/system metadata, including when external FPM
         # timing has no backend data directory.
         database = perf_database.get_database(
@@ -1144,6 +1156,7 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
+    _validate_max_model_len(context_length, param_name="context_length")
     # Before the model build and the naive fallback, which would swallow the error.
     validate_parallel_size("cp_size", cp_size)
     validate_parallel_size("dcp_size", dcp_size)
@@ -1283,6 +1296,7 @@ def estimate_kv_cache(
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
             systems_path=systems_path,
+            max_model_len=context_length,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
