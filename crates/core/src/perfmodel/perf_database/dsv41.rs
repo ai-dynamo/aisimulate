@@ -94,72 +94,130 @@ pub(crate) enum AttentionRole {
     Reuse,
 }
 
+impl AttentionRole {
+    pub(crate) fn parse(role: &str) -> Option<Self> {
+        match role {
+            "swa" => Some(Self::Swa),
+            "full" => Some(Self::Full),
+            "reindex" => Some(Self::Reindex),
+            "reuse" => Some(Self::Reuse),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) trait MeasuredGeometry {
+    const COMPONENT: &'static str;
+
     // An unknown attention role cannot occur in a valid measured table.
     fn geometry_key(&self) -> Option<GeometryKey>;
 }
 
 impl MeasuredGeometry for Dsv41AttentionOp {
+    const COMPONENT: &'static str = "attention";
+
     fn geometry_key(&self) -> Option<GeometryKey> {
-        let role = match self.role.as_str() {
-            "swa" => AttentionRole::Swa,
-            "full" => AttentionRole::Full,
-            "reindex" => AttentionRole::Reindex,
-            "reuse" => AttentionRole::Reuse,
-            _ => return None,
-        };
-        Some(GeometryKey::Attention {
-            is_context: self.is_context,
+        let Self {
+            name: _,
+            kv_cache_layout: _,
+            is_context,
             role,
-            compress_ratio: self.compress_ratio,
-            hidden_size: self.hidden_size,
-            num_heads: self.num_heads,
-            head_dim: self.head_dim,
-            q_lora_rank: self.q_lora_rank,
-            o_lora_rank: self.o_lora_rank,
-            o_groups: self.o_groups,
-            index_n_heads: self.index_n_heads,
-            index_head_dim: self.index_head_dim,
-            index_topk: self.index_topk,
-            window_size: self.window_size,
-            candidate_limit: self.candidate_limit,
-            is_candidate_source: self.is_candidate_source,
-            bounded_prefill: self.bounded_prefill,
-            gemm_quant_mode: self.gemm_quant_mode,
-            fmha_quant_mode: self.fmha_quant_mode,
+            compress_ratio,
+            hidden_size,
+            num_heads,
+            head_dim,
+            q_lora_rank,
+            o_lora_rank,
+            o_groups,
+            index_n_heads,
+            index_head_dim,
+            index_topk,
+            window_size,
+            candidate_limit,
+            is_candidate_source,
+            bounded_prefill,
+            gemm_quant_mode,
+            fmha_quant_mode,
+        } = self;
+        Some(GeometryKey::Attention {
+            is_context: *is_context,
+            role: AttentionRole::parse(role)?,
+            compress_ratio: *compress_ratio,
+            hidden_size: *hidden_size,
+            num_heads: *num_heads,
+            head_dim: *head_dim,
+            q_lora_rank: *q_lora_rank,
+            o_lora_rank: *o_lora_rank,
+            o_groups: *o_groups,
+            index_n_heads: *index_n_heads,
+            index_head_dim: *index_head_dim,
+            index_topk: *index_topk,
+            window_size: *window_size,
+            candidate_limit: *candidate_limit,
+            is_candidate_source: *is_candidate_source,
+            bounded_prefill: *bounded_prefill,
+            gemm_quant_mode: *gemm_quant_mode,
+            fmha_quant_mode: *fmha_quant_mode,
         })
     }
 }
 
 impl MeasuredGeometry for Dsv41MhcOp {
+    const COMPONENT: &'static str = "mhc";
+
     fn geometry_key(&self) -> Option<GeometryKey> {
+        let Self {
+            name: _,
+            hidden_size,
+            hc_mult,
+            sinkhorn_iters,
+        } = self;
         Some(GeometryKey::Mhc {
-            hidden_size: self.hidden_size,
-            hc_mult: self.hc_mult,
-            sinkhorn_iters: self.sinkhorn_iters,
+            hidden_size: *hidden_size,
+            hc_mult: *hc_mult,
+            sinkhorn_iters: *sinkhorn_iters,
         })
     }
 }
 
 impl MeasuredGeometry for Dsv41EngramOp {
+    const COMPONENT: &'static str = "engram";
+
     fn geometry_key(&self) -> Option<GeometryKey> {
+        let Self {
+            name: _,
+            num_embeddings,
+            head_dim,
+            hash_columns,
+            hidden_size,
+            hc_mult,
+            tp_size,
+        } = self;
         Some(GeometryKey::Engram {
-            num_embeddings: self.num_embeddings,
-            head_dim: self.head_dim,
-            hash_columns: self.hash_columns,
-            hidden_size: self.hidden_size,
-            hc_mult: self.hc_mult,
-            tp_size: self.tp_size,
+            num_embeddings: *num_embeddings,
+            head_dim: *head_dim,
+            hash_columns: *hash_columns,
+            hidden_size: *hidden_size,
+            hc_mult: *hc_mult,
+            tp_size: *tp_size,
         })
     }
 }
 
 impl MeasuredGeometry for Dsv41LinearOp {
+    const COMPONENT: &'static str = "linear";
+
     fn geometry_key(&self) -> Option<GeometryKey> {
+        let Self {
+            name: _,
+            n,
+            k,
+            quant_mode,
+        } = self;
         Some(GeometryKey::Linear {
-            n: self.n,
-            k: self.k,
-            quant_mode: self.quant_mode,
+            n: *n,
+            k: *k,
+            quant_mode: *quant_mode,
         })
     }
 }
@@ -233,17 +291,18 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<(Value, GeometryK
             return Err(invalid(format!("V41 geometry {key} must be positive")));
         }
     }
-    if component == "attention" {
-        let role = value["role"].as_str().unwrap_or_default();
-        if !matches!(role, "swa" | "full" | "reindex" | "reuse") {
-            return Err(invalid("invalid V41 CSA2 role"));
-        }
-        let ratio = value["compress_ratio"].as_u64().unwrap_or(u64::MAX);
-        if ratio > 2 || (role == "swa") != (ratio == 0) {
+    let key = key.ok_or_else(|| invalid("invalid V41 CSA2 role"))?;
+    if let GeometryKey::Attention {
+        role,
+        compress_ratio,
+        ..
+    } = key
+    {
+        if compress_ratio > 2 || (role == AttentionRole::Swa) != (compress_ratio == 0) {
             return Err(invalid("invalid V41 CSA2 compression ratio"));
         }
     }
-    Ok((value, key.expect("validated attention role")))
+    Ok((value, key))
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -687,7 +746,9 @@ mod tests {
 
     #[test]
     fn generic_query_preserves_misses_and_table_error_precedence() {
-        let (_root, table) = table(&fixture());
+        let (root, table) = table(&fixture());
+        let mut invalid_role = attention();
+        invalid_role.role = "bogus".into();
         for (component, op) in [
             ("unknown", serde_json::to_value(linear()).unwrap()),
             (
@@ -698,7 +759,7 @@ mod tests {
                 "linear",
                 serde_json::json!({"k": 0, "n": 64, "quant_mode": "fp8_block"}),
             ),
-            ("attention", serde_json::json!({"role": "unknown"})),
+            ("attention", serde_json::to_value(&invalid_role).unwrap()),
         ] {
             assert!(
                 table
@@ -709,13 +770,19 @@ mod tests {
         }
         assert!(
             table
+                .query_typed(&invalid_role, 1, 0, 10, &|x| Ok(x))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            table
                 .query("linear", &0, 1, 0, 10, &|x| Ok(x))
                 .unwrap_err()
                 .to_string()
                 .contains("must be an object")
         );
-        std::fs::write(_root.path().join(BASENAME), b"corrupt").unwrap();
-        let corrupt = Dsv41Table::new(_root.path().to_owned());
+        std::fs::write(root.path().join(BASENAME), b"corrupt").unwrap();
+        let corrupt = Dsv41Table::new(root.path().to_owned());
         let typed_error = lookup(&corrupt, 10).unwrap_err().to_string();
         assert_eq!(
             corrupt
@@ -724,6 +791,38 @@ mod tests {
                 .to_string(),
             typed_error
         );
+        for result in [
+            corrupt.query("attention", &invalid_role, 1, 0, 10, &|x| Ok(x)),
+            corrupt.query_typed(&invalid_role, 1, 0, 10, &|x| Ok(x)),
+        ] {
+            assert_eq!(result.unwrap_err().to_string(), typed_error);
+        }
+    }
+
+    #[test]
+    fn invalid_stored_role_preserves_validation_order_and_repeated_errors() {
+        for (hidden_size, expected) in [
+            (5120, "invalid V41 CSA2 role"),
+            (0, "V41 geometry hidden_size must be positive"),
+        ] {
+            let mut op = attention();
+            op.role = "bogus".into();
+            op.compress_ratio = 3;
+            op.hidden_size = hidden_size;
+            let encoded = geometry(&op).unwrap();
+            assert!(matches!(
+                validate_geometry("attention", &format!(" {encoded}")),
+                Err(AicError::InvalidPerfData(message))
+                    if message == "V41 geometry must use canonical sorted JSON"
+            ));
+            let (_root, table) = table(&attention_fixture(&op, 0, "real_kv"));
+            for _ in 0..2 {
+                assert!(matches!(
+                    lookup(&table, 10),
+                    Err(AicError::InvalidPerfData(message)) if message.ends_with(expected)
+                ));
+            }
+        }
     }
 
     #[test]
