@@ -610,3 +610,29 @@ def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
     assert pq.read_table(out).num_rows == len(target_keys(plan))
     meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
     assert meta["tables"]["glm53_attention_module_perf"]["attempts"][1]["partial"]["failed_sets"] == [failed_set]
+
+
+def test_classified_failures_are_explicit_gaps(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    plan = build_plan(SMOKE_SWEEPS["validation-vllm"])
+    sets = [s["set_id"] for s in plan["sets"]]
+    first, _ = _attempt(tmp_path, only_sets=sets[:-1], name="a")
+    gap = [list(k) for k in target_keys({"sets": plan["sets"][-1:]})]
+    classified = tmp_path / "classified.json"
+    out = tmp_path / "c" / BASENAME
+    argv = ["x", "finalize", str(first), "--output", str(out), "--evidence", str(tmp_path / "e")]
+    entries = [{"deployment": "fp8-tp2", "key": k, "reason": "OOM", "evidence": ["job 1"]} for k in gap]
+    classified.write_text(json.dumps(entries))
+    monkeypatch.setattr("sys.argv", argv + ["--classified-failures", str(classified)])
+    contract.main()
+    meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
+    assert len(meta["tables"]["glm53_attention_module_perf"]["classified_failures"]) == len(gap)
+    classified.write_text(json.dumps([{**entries[0], "evidence": []}]))
+    with pytest.raises(ValueError, match="evidence"):
+        contract.main()
+    second, _ = _attempt(tmp_path, only_sets=sets[-1:], name="b")
+    classified.write_text(json.dumps(entries))
+    monkeypatch.setattr("sys.argv", argv[:3] + [str(second)] + argv[3:] + ["--classified-failures", str(classified)])
+    with pytest.raises(ValueError, match="were measured"):
+        contract.main()

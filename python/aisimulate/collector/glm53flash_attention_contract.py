@@ -720,8 +720,13 @@ def queued_plan(manifest: dict) -> dict:
     return {**plan, "sets": sets}
 
 
-def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
-    """Attempts of one deployment must cover its planned phases exactly once."""
+def check_split_closure(attempts: list[tuple[dict, list[dict]]], classified: list[dict] | None = None) -> None:
+    """Attempts of one deployment must cover its planned keys exactly once.
+
+    Planned keys are excluded only by an attempt's memory drops or by an
+    explicit classified failure (deployment, key, reason, evidence); a
+    classified key that was measured is a contradiction.
+    """
     by_deployment: dict[tuple, list[tuple[dict, list[dict]]]] = {}
     for manifest, rows in attempts:
         geometry = manifest["geometry"]
@@ -737,7 +742,16 @@ def check_split_closure(attempts: list[tuple[dict, list[dict]]]) -> None:
                 raise ValueError(f"{deployment} attempts measure a key twice")
             seen |= keys
         dropped = {tuple(d["key"]) for m, _ in group for d in m.get("memory_drops") or []}
-        wanted = [key for key in target_keys(group[0][0]["plan"]) if key not in dropped]
+        name = f"{deployment[0]}-tp{deployment[1]}"
+        failed = {tuple(c["key"]) for c in classified or [] if c["deployment"] == name}
+        planned = set(target_keys(group[0][0]["plan"]))
+        if not failed <= planned - dropped:
+            raise ValueError(f"{deployment} classified failures are not queued planned keys")
+        bodies = {geometry_key(attention_body(group[0][0]["geometry"], ph == "context")): ph for ph in PHASES}
+        measured = {(bodies[k[0]], k[1], k[2], k[3]) for k in seen}
+        if measured & failed:
+            raise ValueError(f"{deployment} classified failures were measured: {sorted(measured & failed)[:3]}")
+        wanted = [key for key in planned if key not in dropped and key not in failed]
         if len(seen) != len(wanted):
             raise ValueError(f"{deployment} attempts cover {len(seen)} of {len(wanted)} planned keys")
 
@@ -843,6 +857,9 @@ def main() -> None:
     finalize = sub.add_parser("finalize", help="merge admitted attempts into one backend/version table")
     finalize.add_argument("attempts", type=Path, nargs="*")
     finalize.add_argument(
+        "--classified-failures", type=Path, help="JSON list of {deployment, key, reason, evidence} planned keys"
+    )
+    finalize.add_argument(
         "--partial", type=Path, action="append", default=[], help="failed attempt: admit its completed sets only"
     )
     finalize.add_argument("--output", type=Path, required=True)
@@ -883,7 +900,11 @@ def main() -> None:
                 ),
             }
         )
-    check_split_closure(loaded)
+    classified = json.loads(args.classified_failures.read_text()) if args.classified_failures else []
+    for entry in classified:
+        if set(entry) != {"deployment", "key", "reason", "evidence"} or not entry["reason"] or not entry["evidence"]:
+            raise ValueError(f"classified failure needs deployment, key, reason and evidence: {entry}")
+    check_split_closure(loaded, classified)
     # Request token provenance (glm53flash_attention_tokens) must be one spec.
     input_specs = {canonical_json(m.get("input_tokens")) for m, _ in loaded}
     if len(input_specs) != 1 or None in (m.get("input_tokens") for m, _ in loaded):
@@ -920,6 +941,7 @@ def main() -> None:
                 # One execution mode per geometry (checkpoint, TP, phase).
                 "execution_mode": dict(sorted(_execution_modes(rows).items())),
                 "attempts": manifests,
+                **({"classified_failures": classified} if classified else {}),
             }
         },
     }
