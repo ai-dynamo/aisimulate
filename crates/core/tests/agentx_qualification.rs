@@ -53,6 +53,7 @@ fn run(
     let driver = WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::aggregated(1),
         engine: serde_json::to_value(ReplayEngineConfig {
             rank: EngineConfig {
@@ -309,6 +310,7 @@ fn g2_spec(disaggregated: bool, shared: bool, host_blocks: Option<usize>, h2d: f
         ..EngineConfig::for_backend(Backend::Vllm)
     };
     ReplaySpec {
+        encoder: None,
         version: 1,
         topology: if disaggregated {
             ReplayTopology::Disaggregated {

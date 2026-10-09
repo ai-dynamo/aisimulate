@@ -8,7 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 Attention/FFN disaggregation (AFD) and encoder/prefill/decode disaggregation
 (EPD) are estimated analytically. Neither runs request-by-request token replay
 for the disaggregated part. Their inputs and reports are therefore narrower
-than ordinary aggregated or P/D replay. AFD and EPD cannot be combined.
+than ordinary aggregated or P/D replay. AFD and EPD cannot be combined. An
+encoder pool with `mode: native` is the exception: it replays SGLang's encoder
+servers event by event; see [Native encoder pools](#native-encoder-pools).
 
 <a id="afd"></a>
 <a id="analytical-afd"></a>
@@ -126,7 +128,10 @@ A disaggregated variant is in
 | `engine.workers.encoder.replicas` | `1` | Scalar or `choices` | Positive. |
 | `engine.workers.encoder.batch_size` | `1` | Scalar or `choices` | 1 to 8. |
 | `engine.workers.encoder.latency_correction` | `1.0` | fixed | Positive multiplier on encoder latency. |
-| `engine.workers.encoder.rate_degradation` | `0.9` | fixed | In `(0, 1]`. Fraction of ideal encoder throughput that is usable. |
+| `engine.workers.encoder.rate_degradation` | `0.9` | fixed | In `(0, 1]`. Fraction of ideal encoder throughput that is usable. Unused by `mode: native`. |
+| `engine.workers.encoder.mode` | `analytical` | fixed | `analytical` adds the encoder batch latency to mean TTFT. `native` replays SGLang `--encoder-only` servers event by event and gates each request's admission to the language worker; `batch_size` is then the loop's cap (`SGLANG_ENCODER_MAX_BATCH_SIZE`, default 8) and must be a scalar. SGLang only. See [Native encoder pools](#native-encoder-pools). |
+| `engine.workers.encoder.host_profile` | Unset | fixed | `mode: native` only, required: `{path, frontend: python}`. The table's `process` stage prices the encoder's CPU preprocessing. |
+| `engine.workers.encoder.transfer.bandwidth_gb_per_second` | Unset | fixed | `mode: native` only, required. Encoder-to-language link; embeddings fan out to every tensor-parallel rank. |
 
 Visual tokens are computed from the image size and added to each request's
 text input once. Language replay then runs as usual. Afterwards, throughput is
@@ -144,3 +149,26 @@ whole-forward (FPM) timing, adapters, and `--capture-per-request`. Encoder CPU
 time and embedding transfer are not modeled, and no deployment artifacts are
 generated. The encoder model follows
 [AIC revision f8f2341](https://github.com/ai-dynamo/aiconfigurator/commit/f8f2341cb5761877bda694ab954cb6f5eff78fd4).
+
+<a id="native-encoder-pools"></a>
+
+### Native encoder pools
+
+`mode: native` replaces the overlay with an event-level replay of SGLang's
+encoder servers, as in
+[`examples/cli/vl-predict-epd-native.yaml`](../../../examples/cli/vl-predict-epd-native.yaml).
+Each replica runs one serial loop: it takes the queued requests up to
+`batch_size`, prices the image processor from the host table's `process`
+stage, one encoder forward over the batch with the canonical timing model, and
+the embedding transfer at `transfer.bandwidth_gb_per_second`. A request reaches
+the language worker once its last part arrived, and its TTFT counts the wait.
+The language worker runs `--language-only`: it rejects `vision`, `frontend`
+and `host_profile` but may run `host_loop`.
+
+Native pools lift the fixed-concurrency, aggregate-SLA, per-request, `op_level`
+and pixel-budget restrictions above; static worker pools and an aggregated or
+P/D SGLang language deployment remain required. The pool's GPUs count in
+`gpu_hours`, `encoder_gpus` and `total_gpus`; the report adds
+`encoder_latency_ms` and, per request, `encoder_ready_ms`. Mechanics and
+approximations are on
+[SGLang VL host loop](sglang-vl-host-loop.md#native-encoder-disaggregation).

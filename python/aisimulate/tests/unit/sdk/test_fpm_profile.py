@@ -373,6 +373,23 @@ def test_profile_compilation_rejects_op_level_controls_before_graph_construction
         )
 
 
+def test_direct_compilation_rejects_encoder_parallel(profile_dict, direct_compile):
+    with pytest.raises(ValueError, match="does not support encoder_parallel"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            encoder_parallel="tp",
+        )
+
+
 def test_direct_json_transport_preserves_all_identity_fields(profile_dict, direct_compile):
     profile_dict["deployments"][0].update(moe_backend="pinned_moe", attention_backend="pinned_attention")
     spec = direct_compile(json.dumps(profile_dict), fpm_interpolation="direct")

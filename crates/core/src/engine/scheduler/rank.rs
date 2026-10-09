@@ -203,9 +203,8 @@ impl RankEngine for SchedulerRank {
                 .lifecycle_events
                 .retain(|event| match *event {
                     LifecycleEvent::SourceHeld { request_id: id, .. }
-                    | LifecycleEvent::DestinationReserved { request_id: id, .. } => {
-                        id != request_id
-                    }
+                    | LifecycleEvent::DestinationReserved { request_id: id, .. }
+                    | LifecycleEvent::TtftMilestone { request_id: id, .. } => id != request_id,
                 });
             before != pending.effects.outputs.len()
         } else {
@@ -302,8 +301,12 @@ impl RankEngine for SchedulerRank {
         pending.effects.metrics = self.metrics();
         pending.effects.metrics.sglang_cache_hit_tokens = sglang_cache_hit_tokens;
         pending.effects.metrics.sglang_cache_total_tokens = sglang_cache_total_tokens;
-        pending.effects.forward_pass_metrics.duration_ms =
-            (end_ms - pending.started_at_ms).max(0.0);
+        // Under the SGLang host loop a pass ends when the scheduler thread returns
+        // to its loop, not when its forward does; FPM telemetry wants the forward.
+        pending.effects.forward_pass_metrics.duration_ms = self
+            .core
+            .last_forward_ms()
+            .unwrap_or((end_ms - pending.started_at_ms).max(0.0));
         for output in &pending.effects.outputs {
             if output.completed {
                 self.handoff_requests
@@ -465,6 +468,9 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             chunked_prefill_size: Some(config.sglang.chunked_prefill_size),
             clip_max_new_tokens: Some(config.sglang.clip_max_new_tokens),
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
+            vlm_cache_bytes: Some(config.sglang.vlm_cache_bytes),
+            host_loop: config.sglang.host_loop,
+            frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,
@@ -509,6 +515,7 @@ fn core_request(request: Request) -> DirectRequest {
         output_token_ids: request.output_token_ids,
         uuid: Some(request.request_id),
         arrival_timestamp_ms: None,
+        images: request.images,
     }
 }
 
@@ -577,6 +584,15 @@ fn map_lifecycle(event: CoreLifecycle) -> LifecycleEvent {
             handoff_id,
             request_id,
             transferable_prompt_tokens,
+        },
+        CoreLifecycle::TtftMilestone {
+            request_id,
+            stage,
+            at_ms,
+        } => LifecycleEvent::TtftMilestone {
+            request_id,
+            stage,
+            at_ms,
         },
     }
 }
@@ -766,6 +782,7 @@ mod tests {
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: 20,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -786,6 +803,7 @@ mod tests {
                     tokens: (10..22).collect(),
                     max_output_tokens: 1,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: first_end_ms,
@@ -925,6 +943,7 @@ mod tests {
                     tokens,
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms,
@@ -969,6 +988,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        images: Vec::new(),
                     },
                 },
                 CommandContext {
@@ -997,6 +1017,7 @@ mod tests {
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: output_token_ids.len(),
                     output_token_ids: Some(output_token_ids),
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -1114,6 +1135,7 @@ mod tests {
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1135,6 +1157,7 @@ mod tests {
                     tokens: vec![31, 32, 33, 34],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 0.5,
@@ -1192,6 +1215,7 @@ mod tests {
                     tokens: vec![41, 42, 43, 44],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 1.0,
@@ -1248,6 +1272,7 @@ mod tests {
                         tokens: tokens.clone(),
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        images: Vec::new(),
                     }),
                     CommandContext {
                         now_ms,
@@ -1285,6 +1310,7 @@ mod tests {
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1376,6 +1402,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
+                        images: Vec::new(),
                     },
                 },
                 CommandContext {
@@ -1444,6 +1471,7 @@ mod tests {
                         tokens,
                         max_output_tokens: 8,
                         output_token_ids: None,
+                        images: Vec::new(),
                     }),
                     CommandContext {
                         now_ms: 0.0,
@@ -1499,6 +1527,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
+                        images: Vec::new(),
                     },
                 },
                 CommandContext {
@@ -1587,6 +1616,7 @@ mod tests {
                 Command::ReserveDestination {
                     handoff_id: historical_handoff,
                     request: Request {
+                        images: Vec::new(),
                         request_id: history,
                         tokens: (1..=9).collect(),
                         max_output_tokens: 2,
@@ -1635,6 +1665,7 @@ mod tests {
                 Command::SubmitHandoffPrefill {
                     handoff_id: consumer_handoff,
                     request: Request {
+                        images: Vec::new(),
                         request_id: consumer,
                         tokens: (1..=9).collect(),
                         max_output_tokens: 1,

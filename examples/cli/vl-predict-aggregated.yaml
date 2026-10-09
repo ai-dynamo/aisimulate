@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Native SGLang VL prediction: images are encoded on the aggregated worker and the
+# frontend stages come from a host cost table measured on the serving host with
+#   python -m aisimulate.vl.collect --config vl-predict-aggregated.yaml --sglang-python <serving venv python>
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 32}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  mode: aggregated
+  workers:
+    aggregated:
+      parallelism: {tensor: 1, replicas: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      host_profile: {path: ./host-costs.json, frontend: python}
+      vision: {cache_mib: 100, encoder_parallel: tp}

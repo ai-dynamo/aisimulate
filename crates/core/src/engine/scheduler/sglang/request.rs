@@ -8,6 +8,7 @@ use crate::engine::scheduler::queue_metrics::{QueueStats, QueuedLength};
 
 use uuid::Uuid;
 
+use crate::engine::ImageSpec;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::DirectRequest;
@@ -25,6 +26,11 @@ pub(super) struct SglangRequest {
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
     pub(super) allocated_tokens: usize,
+    /// Prompt-order image placeholders; empty for text-only requests.
+    pub(super) images: Vec<ImageSpec>,
+    /// Finished in a batch whose result the host loop has not observed yet. The
+    /// request keeps its `running` slot until the next iteration starts.
+    pub(super) pending_terminal: bool,
 }
 
 impl SglangRequest {
@@ -53,6 +59,8 @@ impl SglangRequest {
             kv_lease,
             materialized_tokens: 0,
             allocated_tokens: 0,
+            images: req.images,
+            pending_terminal: false,
         }
     }
 
@@ -89,10 +97,6 @@ impl SglangRequest {
 
     pub(super) fn cached_tokens(&self) -> usize {
         self.kv_lease.cached_tokens()
-    }
-
-    pub(super) fn page_aligned_materialized_tokens(&self, block_size: usize) -> usize {
-        self.materialized_tokens / block_size * block_size
     }
 
     pub(super) fn sequence_tokens(&self) -> &[u32] {
@@ -141,6 +145,15 @@ impl SglangRequest {
     pub(super) fn append_final_output_token(&mut self, token: u32) {
         debug_assert_eq!(self.remaining_output_tokens(), 1);
         self.sequence_tokens.push(token);
+    }
+
+    /// Drop the last `count` output tokens: a forward sampled them, but the
+    /// scheduler will not process that result for this request (`is_retracted`).
+    pub(super) fn discard_output_tokens(&mut self, count: usize, block_size: usize) {
+        debug_assert!(count <= self.output_len());
+        let kept = self.sequence_tokens.len() - count;
+        self.sequence_tokens.truncate(kept);
+        self.kv_lease.truncate_page_hashes(kept / block_size);
     }
 
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {
@@ -279,6 +292,12 @@ impl WaitingQueue {
     ) -> std::collections::vec_deque::Drain<'_, SglangRequest> {
         self.stats = QueueStats::default();
         self.requests.drain(range)
+    }
+
+    /// Mutable walk that leaves every request's `queued_length` unchanged;
+    /// `stats` is not re-derived.
+    pub(super) fn iter_mut(&mut self) -> std::collections::vec_deque::IterMut<'_, SglangRequest> {
+        self.requests.iter_mut()
     }
 
     #[cfg(test)]

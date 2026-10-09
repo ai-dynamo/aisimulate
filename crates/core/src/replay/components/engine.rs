@@ -37,7 +37,6 @@ struct PendingPass {
     committed_request_index: OnceLock<BTreeSet<Uuid>>,
     pass_id: PassId,
     started_at_ms: f64,
-    end_ms: f64,
 }
 
 struct LogicalWorker {
@@ -851,7 +850,6 @@ where
                 committed_request_index: OnceLock::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
-                end_ms: started.end_ms,
             };
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
@@ -1195,6 +1193,7 @@ fn native_request(request: DirectRequest) -> Result<Request> {
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
+        images: request.images,
     })
 }
 
@@ -1207,7 +1206,6 @@ fn lower_completion<Observation: ReplayEngineObservation>(
     capture_artifact_kv_events: bool,
     effects: PassCompletionEffects,
 ) -> WorkerCompletionPayload<Observation::Batch> {
-    let wall_time_secs = (pass.end_ms - pass.started_at_ms).max(0.0) / 1_000.0;
     let completed_requests = effects
         .outputs
         .iter()
@@ -1253,17 +1251,15 @@ fn lower_completion<Observation: ReplayEngineObservation>(
             made_progress,
             had_raw_observations,
         },
-        fpm: Some(native_fpm(
-            dp_rank,
-            wall_time_secs,
-            effects.forward_pass_metrics,
-        )),
+        fpm: Some(native_fpm(dp_rank, effects.forward_pass_metrics)),
         accept_length_output_tokens,
         accept_length_decode_forwards,
     }
 }
 
-fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
+/// The forward-pass snapshot's wall time is the forward's own device time, which
+/// the engine already separates from the pass under the SGLang host loop.
+fn native_fpm(dp_rank: u32, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
     ForwardPassSnapshot {
         version: 0,
         worker_id: String::new(),
@@ -1282,16 +1278,33 @@ fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> For
         num_queued_decode: fpm.num_queued_decode,
         sum_queued_decode_kv_tokens: fpm.sum_queued_decode_kv_tokens,
         var_queued_decode_kv_tokens: fpm.var_queued_decode_kv_tokens,
-        wall_time_secs,
+        wall_time_secs: fpm.duration_ms / 1_000.0,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Backend, EngineConfig, KvEvent, SglangConfig, TimingModelConfig};
+    use crate::engine::{
+        Backend, EngineConfig, FrontendConfig, FrontendStage, KvEvent, SglangConfig,
+        TimingModelConfig,
+    };
     use crate::replay::components::AdmissionEvent;
     use crate::replay::{ReplayEngineConfig, ReplayEngineFactory, WorkerStage};
+
+    #[test]
+    fn fpm_snapshot_wall_time_is_the_forward_duration() {
+        // Under the host loop a 7 ms prefill is launched by a pass that returns at
+        // once; the snapshot must carry the forward's 7 ms, not the pass's 0.
+        let snapshot = native_fpm(
+            0,
+            ForwardPassMetrics {
+                duration_ms: 7.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(snapshot.wall_time_secs, 0.007);
+    }
 
     #[derive(Debug, Default)]
     struct KvEventBatch(Vec<KvEvent>);
@@ -1534,6 +1547,68 @@ mod tests {
         assert!(!component.process_internal_work(0.5).unwrap().made_progress);
         assert!(component.process_internal_work(1.0).unwrap().made_progress);
         assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
+    }
+
+    #[test]
+    fn frontend_stage_delivers_a_parked_request_at_its_deadline() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                sglang: SglangConfig {
+                    host_loop: true,
+                    ..SglangConfig::default()
+                },
+                frontend: Some(FrontendConfig {
+                    stages: vec![FrontendStage {
+                        workers: 1,
+                        service_ms: 4.0,
+                        concurrency_scale: Vec::new(),
+                    }],
+                }),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(Backend::Sglang)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            1,
+            None,
+        )
+        .unwrap();
+        let uuid = Uuid::from_u128(7);
+        component
+            .dispatch(
+                0,
+                DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 1,
+                    uuid: Some(uuid),
+                    ..Default::default()
+                },
+                0.0,
+            )
+            .unwrap();
+        // The request sits in the frontend pool: the scheduler has nothing to run
+        // and wakes through the pool's deadline rather than an effect-free pass.
+        assert!(component.drive_ready(0.0, None).unwrap().is_empty());
+        assert_eq!(component.next_internal_deadline_ms(), Some(4.0));
+        assert!(component.process_internal_work(4.0).unwrap().made_progress);
+        let admitted = component
+            .drive_ready(4.0, None)
+            .unwrap()
+            .admissions
+            .into_iter()
+            .map(|admission| admission.uuid)
+            .collect::<Vec<_>>();
+        assert_eq!(admitted, vec![uuid]);
     }
 
     #[test]

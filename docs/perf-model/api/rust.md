@@ -81,6 +81,13 @@ rather than hard-coding a number; the loader rejects mismatched bincode schemas
 before interpreting operation payloads. JSON defaults do not imply binary
 compatibility. Recompile saved engines when updating the paired runtime.
 
+Schema 27 adds an optional `vision` section to `EngineSpec`: the vision tower
+compiled under `ForwardPassPerfModelConfig::encoder_parallel`, priced by
+`ForwardPassPerfModel::vision_operations` and `predict_vision_ms` over
+`EncoderImageShape` groups (`sequences`, per-sequence `patch_tokens`,
+`transformer_tokens`, `output_tokens`, `images`). The section is absent when
+`encoder_parallel` is unset.
+
 The public exports are defined in
 [`perfmodel/mod.rs`](../../../crates/core/src/perfmodel/mod.rs).
 Python-backed construction and `estimate_kv_cache` are feature-gated; explicit

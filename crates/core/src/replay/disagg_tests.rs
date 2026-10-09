@@ -465,6 +465,7 @@ fn simultaneous_handoffs_follow_arrival_order_across_replays() {
                 0.0,
                 None,
                 None,
+                false,
                 &mut collector,
             )
             .unwrap();

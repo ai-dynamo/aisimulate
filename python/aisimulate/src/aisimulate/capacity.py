@@ -10,6 +10,7 @@ State sizing is re-exported from the shared estimator SDK.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 from typing import Any
 
@@ -28,6 +29,22 @@ _DEFAULT_AIC_SYSTEM = "h200_sxm"
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
+
+
+def _vision_cache_bytes(lowered: Mapping[str, Any]) -> int:
+    """The embedding cache a rank hosting the vision encoder deducts from its KV budget."""
+    cache = (lowered.get("sglang") or {}).get("vlm_cache_bytes")
+    if cache is None:
+        raise ValueError("rank.vision requires rank.sglang.vlm_cache_bytes")
+    return int(cache)
+
+
+def _vision_encoder_parallel(lowered: Mapping[str, Any]) -> str:
+    """The tower layout a rank hosting the vision encoder sizes its weights by."""
+    layout = ((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
+    if layout not in ("tp", "dp"):
+        raise ValueError("rank.vision requires timing_model.config.encoder_parallel (tp or dp)")
+    return layout
 
 
 def materialize_aic_num_gpu_blocks(
@@ -247,6 +264,9 @@ def materialize_aic_num_gpu_blocks(
             else {}
         ),
         **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
+        colocated_encoder=bool(lowered.get("vision", False)),
+        reserved_bytes=_vision_cache_bytes(lowered) if lowered.get("vision") else 0,
+        encoder_parallel=_vision_encoder_parallel(lowered) if lowered.get("vision") else None,
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -356,6 +376,9 @@ def estimate_num_gpu_blocks(
     fpm_profile: dict[str, Any] | None = None,
     worker_type: str = "aggregated",
     context_length: int | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -437,6 +460,9 @@ def estimate_num_gpu_blocks(
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
             **({"context_length": context_length} if context_length is not None else {}),
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )

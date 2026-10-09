@@ -940,6 +940,7 @@ mod trtllm {
             output_token_ids: None,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
     }
 

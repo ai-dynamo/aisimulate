@@ -171,7 +171,9 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
-- `requests.jsonl` contains one record per request when explicitly enabled.
+- `requests.jsonl` contains one record per request when explicitly enabled. SGLang workers with
+  `host_loop` add `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms` and
+  `prefill_complete_ms` to each record; a native encoder pool adds `encoder_ready_ms`.
 - `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
@@ -211,7 +213,13 @@ importing an installed plugin or inside an adapter occur after the known outputs
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. SGLang workers with
+`host_loop` add the mean time to first token split by stage: `mean_frontend_ms`,
+`mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`,
+`mean_result_observation_delay_ms` and `mean_handoff_to_first_token_ms`. The six spans sum to
+per-request TTFT for requests that reached every milestone; with a native encoder pool they start
+at the pool's delivery and `encoder_latency_ms` covers the wait. Encoder pools also report
+`encoder_gpus` and `total_gpus`. Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.

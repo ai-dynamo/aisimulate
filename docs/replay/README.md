@@ -48,6 +48,9 @@ Agentic results explicitly retain `functional_only` qualification.
   [P/D KV transfer](engine/kv-transfer.md),
   [speculative decoding](engine/speculation.md) and
   [analytical AFD/EPD](engine/analytical.md).
+- [SGLang VL host loop](engine/sglang-vl-host-loop.md): native vision-language
+  replay on SGLang: frontend stages, overlap-scheduler iterations, the vision
+  encoder and native encoder pools.
 - [Agentic quickstart](agentic/quickstart.md): run a reproducible Weka simulation.
 - [Dynamo integration](dynamo.md): install matching dependencies and enable Router/Planner.
 - [Python API](api/python.md) and [Rust API](api/rust.md): inputs, reports and execution contracts.

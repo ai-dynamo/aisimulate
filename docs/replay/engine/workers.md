@@ -46,6 +46,11 @@ engine:
 | `workers.<role>.scheduler.max_sequences` | `256`; `1` for `prefill` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; others: `{choices: [256, 512, 1024]}` | Positive. Maximum running requests on one attention-DP rank. |
 | `workers.<role>.scheduler.prefill_schedule_interval` | `1` | predict only | vLLM only. See [vLLM prefill schedule interval](#vllm-prefill-schedule-interval). |
 | `workers.<role>.scheduler.prefill_decode_interval` | `0` | predict only | SGLang only. See [SGLang prefill/decode interval](#sglang-prefilldecode-interval). |
+| `workers.{aggregated,prefill}.host_loop` | `false` | fixed | SGLang only; `aggregated` in aggregated mode, `prefill` in disaggregated mode. Each pass is one overlap-scheduler iteration. Implied by `frontend` and `host_profile`. See [SGLang host loop, frontend and vision](#sglang-host-loop-frontend-and-vision). |
+| `workers.{aggregated,prefill}.frontend` | Unset | fixed | Ordered `stages`, each `{workers, service_ms, concurrency_scale}`, plus optional `measured_for` (model, frontend, feature transport and image shape the stages were measured on). Exclusive with `host_profile`. |
+| `workers.{aggregated,prefill}.host_profile` | Unset | fixed | `{path, frontend}` with `frontend` `python` or `rust`. Frontend stages from a host cost table written by `python -m aisimulate.vl.collect`. |
+| `workers.{aggregated,prefill}.vision.cache_mib` | `100` | fixed | Positive MiB. SGLang multimodal embedding cache (`SGLANG_VLM_CACHE_SIZE_MB`) for images encoded on the worker. |
+| `workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | fixed | `tp` shards the vision tower over the tensor-parallel group; `dp` (`--mm-enable-dp-encoder`) replicates it and splits the images. Sets encoder timing, collectives and per-rank tower weights. |
 | `engine.enable_chunked_prefill` | Backend default (on) | fixed | Boolean. Applies to aggregated and prefill roles; `false` is rejected for SGLang and for AFD. |
 
 A backend-specific scheduler field set to a non-default value on another
@@ -123,7 +128,8 @@ you raise it.
 > **SGLang note.** The SGLang scheduler currently takes its per-pass prefill
 > budget from SGLang's default `chunked_prefill_size` (8192 tokens, divided by
 > `attention_data`), not from `max_batched_tokens`. Changing
-> `max_batched_tokens` does not change SGLang replay results.
+> `max_batched_tokens` does not change SGLang replay results, except with
+> `host_loop`, where it is the worker's `chunked_prefill_size`.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a
@@ -202,6 +208,55 @@ collective overhead, and idle sleeping. In speculative DP attention, SGLang can
 force a peer rank idle while another rank prefills; Replay still lets that peer
 decode in the same round. Behavior follows SGLang at commit
 [`20621aa`](https://github.com/sgl-project/sglang/blob/20621aa14bda7726a8a968f326198eac61717fef/python/sglang/srt/managers/scheduler.py#L1211).
+
+<a id="sglang-host-loop-frontend-and-vision"></a>
+
+### SGLang host loop, frontend and vision
+
+`host_loop: true` models each pass of an SGLang aggregated or prefill worker as
+one iteration of the overlap scheduler loop (`event_loop_overlap`): requests are
+received at iteration boundaries and a forward's outputs become visible one
+iteration later. `frontend` or `host_profile` adds the request path ahead of
+the scheduler as pools of black-box stages and implies `host_loop`; `vision`
+sizes the embedding cache and lays out the vision tower for images encoded on
+the worker. In disaggregated mode the fields go on `workers.prefill` and
+`workers.decode` stays a plain worker.
+
+```yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 32}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  workers:
+    aggregated:
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      host_profile: {path: ./host-costs.json, frontend: python}
+      vision: {cache_mib: 100, encoder_parallel: tp}
+```
+
+```bash
+python -m aisimulate.vl.collect --config prediction.yaml --sglang-python <serving venv python>
+aisimulate predict --stack engine --config prediction.yaml
+```
+
+`collect` times the real SGLang frontend objects on the serving host (no GPU
+needed) and adds one row, keyed by model, frontend, feature transport and image
+shape, to the table at `host_profile.path`; a prediction whose workload has no
+row fails and prints the `collect` command that adds it. Requires
+`backend: sglang`, `pipeline: 1` and `attention_data: 1`; images encoded on the
+worker also require default timing. Image traffic takes either this path or an
+encoder pool ([EPD](analytical.md#epd)), never both. The reported stage means
+and per-request milestones are listed in the
+[CLI reference](../../reference/cli.md#standard-output); mechanics and
+approximations are on [SGLang VL host loop](sglang-vl-host-loop.md).
 
 ### Backend scheduling differences
 

@@ -73,6 +73,7 @@ domains instead of the single values above; see
 | `engine.kv_transfer` | [P/D KV transfer](kv-transfer.md) |
 | `engine.speculation`, `engine.nextn`, `engine.nextn_accepted` | [Speculative decoding](speculation.md) |
 | `engine.afd`, `engine.workers.encoder` | [Analytical AFD and EPD](analytical.md) |
+| `engine.workers.{aggregated,prefill}.{host_loop, frontend, host_profile, vision}` | [Workers](workers.md#sglang-host-loop-frontend-and-vision); design on [SGLang VL host loop](sglang-vl-host-loop.md) |
 | `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Field tables on these pages use the following columns:
@@ -122,8 +123,8 @@ present follow `engine.mode`:
 Each role has the same sub-blocks (`parallelism`, `scheduler`, `kv_cache`,
 `timing`, plus `hardware` and `startup_seconds`), configured independently. In
 `recommend`, a mode domain may declare all three roles; each candidate keeps
-only the roles its mode uses. An optional `encoder` role adds an analytical
-EPD encoder pool; see [EPD](analytical.md#epd).
+only the roles its mode uses. An optional `encoder` role adds an analytical or
+native EPD encoder pool; see [EPD](analytical.md#epd).
 
 All roles share `model`, `backend` and `backend_version`;
 per-role overrides of these fields are rejected. Only disaggregated `prefill`

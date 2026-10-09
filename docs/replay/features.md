@@ -32,6 +32,8 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | Router and Planner | Optional Dynamo stack | Consumer-supported topologies/workloads | Separate installation, configuration ABI and downstream qualification |
 | Analytical AFD | vLLM, SGLang, TensorRT-LLM model paths | `afd` or `afd+pd`; fixed-length synthetic requests | No traces, random lengths, KV-relative load or native deployment renderer |
 | Analytical EPD | Offline engine analytical overlay | Encoder + aggregate or P/D language workers | Fixed synthetic lengths/images/concurrency; default op-level timing; aggregate means only, no adapters/per-request capture |
+| Native SGLang VL replay | SGLang; op-level timing for the vision tower | Aggregated worker or P/D prefill worker; fixed synthetic images; PP1, attention DP1 | Frontend stages from a host cost table per serving environment; no decode-side frontend, GPU image processor, video or output-side costs |
+| Native encoder pools | SGLang `--encoder-only` servers ahead of a `--language-only` worker | Encoder + aggregate or P/D SGLang language workers; fixed synthetic images; static pools | CPU preprocessing extrapolated from the host table; no adaptive local encoding, GPU-direct transfer or encoder prefix cache |
 
 ## Validation and evidence
 

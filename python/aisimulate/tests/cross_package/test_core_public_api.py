@@ -115,7 +115,8 @@ def test_stable_function_signatures() -> None:
         "strict_provenance: 'bool | None' = None, "
         "decode_workload_distribution: 'str | None' = None, "
         "prefill_graph_profile: 'str | None' = None, "
-        "fpm_parquet_path: 'str | None' = None) -> 'bytes'"
+        "fpm_parquet_path: 'str | None' = None, "
+        "encoder_parallel: 'str | None' = None) -> 'bytes'"
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
