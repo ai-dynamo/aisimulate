@@ -22,6 +22,7 @@ use crate::common::system_spec::{SystemSpec, quant_tc_flops};
 use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
+use crate::perf_database::dsv41::{AttentionRole, MeasuredGeometry};
 
 fn leaf(spec: &SystemSpec, flops: f64, bytes: f64, rate: f64) -> PerformanceResult {
     PerformanceResult::sol(SolComponents::new(
@@ -36,9 +37,8 @@ fn zero() -> PerformanceResult {
 
 /// Measured V41 modules use an exact physical identity. HYBRID falls back
 /// only on absent coverage; a malformed table remains a hard error.
-fn query_leaf<T: Serialize>(
+fn query_leaf<T: MeasuredGeometry>(
     db: &PerfDatabase,
-    component: &str,
     op: &T,
     batch_size: u32,
     prefix: u32,
@@ -51,16 +51,15 @@ fn query_leaf<T: Serialize>(
     if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
         return sol(f64::from(x));
     }
+    let component = T::COMPONENT;
     if db.database_mode == DatabaseMode::Empirical {
         return Err(AicError::EmpiricalNotImplemented(format!(
             "DeepSeek-V4.1 {component} has no empirical calibration"
         )));
     }
-    match db
-        .dsv41
-        .query(component, op, batch_size, prefix, x, &|point| {
-            sol(point).map(|result| result.latency_ms)
-        })? {
+    match db.dsv41.query_typed(op, batch_size, prefix, x, &|point| {
+        sol(point).map(|result| result.latency_ms)
+    })? {
         Some(measured) => Ok(PerformanceResult::with_energy(
             measured.latency,
             measured.energy,
@@ -137,13 +136,12 @@ pub struct Dsv41AttentionOp {
 
 impl Dsv41AttentionOp {
     fn validate_role(&self) -> Result<(), AicError> {
-        match self.role.as_str() {
-            "swa" | "full" | "reindex" | "reuse" => Ok(()),
-            _ => Err(AicError::ModelConfig(format!(
+        AttentionRole::parse(&self.role).map(|_| ()).ok_or_else(|| {
+            AicError::ModelConfig(format!(
                 "DeepSeek-V4.1 attention role must be swa, full, reindex, or reuse; got {:?}",
                 self.role
-            ))),
-        }
+            ))
+        })
     }
 
     pub fn weight_bytes(&self) -> f64 {
@@ -374,7 +372,6 @@ impl Dsv41AttentionOp {
         self.validate_role()?;
         query_leaf(
             db,
-            "attention",
             self,
             ctx.batch_size,
             if self.is_context { ctx.prefix } else { 0 },
@@ -431,9 +428,7 @@ impl Dsv41MhcOp {
         Ok(leaf(spec, ops, bytes, fp32))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        query_leaf(db, "mhc", self, 1, 0, tokens, &|x| {
-            self.sol(&db.system_spec, x)
-        })
+        query_leaf(db, self, 1, 0, tokens, &|x| self.sol(&db.system_spec, x))
     }
 }
 
@@ -485,9 +480,7 @@ impl Dsv41EngramOp {
         Ok(lookup.plus(projection).plus(gate))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        query_leaf(db, "engram", self, 1, 0, tokens, &|x| {
-            self.sol(&db.system_spec, x)
-        })
+        query_leaf(db, self, 1, 0, tokens, &|x| self.sol(&db.system_spec, x))
     }
 }
 
@@ -523,9 +516,7 @@ impl Dsv41LinearOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        query_leaf(db, "linear", self, 1, 0, tokens, &|x| {
-            self.sol(&db.system_spec, x)
-        })
+        query_leaf(db, self, 1, 0, tokens, &|x| self.sol(&db.system_spec, x))
     }
 }
 
@@ -1014,6 +1005,7 @@ mod tests {
     }
     #[test]
     fn deserialized_attention_roles_are_validated_before_empty_work() {
+        let db = test_db(DatabaseMode::Silicon);
         for role in ["ful", "", "FULL", "swa "] {
             let mut json = serde_json::to_value(attention("full", 2)).unwrap();
             json["role"] = serde_json::Value::String(role.into());
@@ -1023,6 +1015,12 @@ mod tests {
                     op.sol(&unit_spec(), batch, seq, 0.0),
                     Err(AicError::ModelConfig(_))
                 ));
+                let ctx = RuntimeContext {
+                    batch_size: batch as u32,
+                    s: seq as u32,
+                    ..RuntimeContext::default()
+                };
+                assert!(matches!(op.query(&db, &ctx), Err(AicError::ModelConfig(_))));
             }
         }
         for role in ["swa", "full", "reindex", "reuse"] {
