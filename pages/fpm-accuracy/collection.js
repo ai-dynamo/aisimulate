@@ -14,11 +14,11 @@
     const query = new URLSearchParams({branch:snapshot.branch, configuration:row.configuration_id, snapshot:row.snapshot_id, run:`${snapshot.run_id}-${snapshot.run_attempt}`});
     element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">Test set · ${escape(text)}</a>`;
   }
-  function histogram(data, title) {
+  function histogram(data, title, population) {
     if (!data?.count) return '<p class="workload-empty">Unavailable · No observed token counts.</p>';
     const max = Math.max(...data.bins.map(b=>b.count),1), width = 540/data.bins.length;
     const bars = data.bins.map((b,i)=>`<rect x="${50+i*width}" y="${210-160*b.count/max}" width="${Math.max(1,width-2)}" height="${160*b.count/max}" fill="var(--accent)" tabindex="0" aria-label="${escape(`${number(b.lower)}–${number(b.upper)} tokens: ${number(b.count)} requests`)}"><title>${escape(`${number(b.lower)}–${number(b.upper)} tokens · ${number(b.count)} requests`)}</title></rect>`).join('');
-    return `<p>${number(data.count)} requests · P50 ${number(data.p50)} · P90 ${number(data.p90)}</p><svg viewBox="0 0 640 260" role="group" aria-label="${escape(title)}"><path d="M50 40V210H590" fill="none" stroke="currentColor"/>${bars}<text x="50" y="235">${number(data.bins[0].lower)}</text><text x="590" y="235" text-anchor="end">${number(data.bins.at(-1).upper)}</text><text x="320" y="255" text-anchor="middle">Tokens (logarithmic bins)</text><text x="45" y="40" text-anchor="end">${number(max)}</text></svg>`;
+    return `<p>${number(data.count)} requests · ${number(population-data.count)} unavailable · P50 ${number(data.p50)} · P90 ${number(data.p90)}</p><svg viewBox="0 0 640 260" role="group" aria-label="${escape(title)}"><path d="M50 40V210H590" fill="none" stroke="currentColor"/>${bars}<text x="50" y="235">${number(data.bins[0].lower)}</text><text x="590" y="235" text-anchor="end">${number(data.bins.at(-1).upper)}</text><text x="320" y="255" text-anchor="middle">Tokens (logarithmic bins)</text><text x="45" y="40" text-anchor="end">${number(max)}</text></svg>`;
   }
   function series(data, title, unit) {
     if (!data?.count) return '<p class="workload-empty">Unavailable · No matching request timing measurements.</p>';
@@ -39,12 +39,16 @@
       const w = run.workload;
       const length = value => value?.mode === 'fixed' ? number(value.value) : label(value?.mode);
       const fields = [['Dataset',run.dataset.name],['Benchmark preset',run.benchmark_preset],['Replay mode',label(run.replay_mode)],['Collector',[run.collector.name,run.collector.version].filter(Boolean).join(' ') || null],['Serving layout',label(run.serving.layout)],['Concurrency',`${number(w.concurrency)} ${label(w.concurrency_unit)}`],['Input length',length(w.input_length)],['Output length',length(w.output_length)],['Duration',w.duration_s == null ? null : number(w.duration_s)+' s'],['Completed requests',number(w.completed_requests)]];
+      const settings = value => Object.entries(value).map(([key,item])=>`${label(key)}: ${typeof item === 'number' ? number(item) : label(item)}`).join(' · ');
+      for (const [key,value] of [['Dataset revision',run.dataset.revision],['Dataset selection',run.dataset.selection],['Dataset transformations',run.dataset.transformations?.join(' · ')],['Worker topology',run.serving.topology],['Worker roles',run.serving.worker_roles?.map(label).join(' · ')],['Warmup',w.warmup && settings(w.warmup)],['Seed',w.seed],['Requested requests',w.requested_requests],['Failed requests',w.failed_requests],['Cancelled requests',w.cancelled_requests]]) {
+        if (value != null && value !== '') fields.push([key, typeof value === 'number' ? number(value) : value]);
+      }
       const stages = run.charts?.stage_counts;
       const boundaries = w.stage_boundaries;
       const phaseNote = boundaries ? `Profiling: ${number(boundaries.profiling_start_s)}–${number(boundaries.profiling_end_s)} s from run start. ` : '';
       const sampleNote = stages ? `${number(stages.profiling || 0)} profiling requests; ${number((stages.warmup || 0)+(stages.drain || 0))} warmup/drain requests excluded from charts.` : '';
       target.querySelector('#collection-settings').innerHTML = `<p>${escape(phaseNote+sampleNote)}</p><dl class="workload-settings">${fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('')}</dl>`;
-      target.querySelector('#request-charts').innerHTML = Object.entries(titles).map(([key,title])=>`<section class="matrix-panel request-chart"><h4>${title}</h4>${run.availability !== 'available' ? `<p class="workload-empty">${run.availability === 'not_applicable' ? 'Not applicable' : 'Unavailable'} · ${escape(run.reason || 'Request metrics are unavailable.')}</p>` : key === 'input' || key === 'output' ? histogram(run.charts?.[key],title) : series(run.charts?.[key],title,key === 'ttft' ? 'seconds' : 'tokens/s/user')}</section>`).join('');
+      target.querySelector('#request-charts').innerHTML = Object.entries(titles).map(([key,title])=>`<section class="matrix-panel request-chart"><h4>${title}</h4>${run.availability !== 'available' ? `<p class="workload-empty">${run.availability === 'not_applicable' ? 'Not applicable' : 'Unavailable'} · ${escape(run.reason || 'Request metrics are unavailable.')}</p>` : key === 'input' || key === 'output' ? histogram(run.charts?.[key],title,run.charts.request_count) : series(run.charts?.[key],title,key === 'ttft' ? 'seconds' : 'tokens/s/user')}</section>`).join('');
     }
     target.querySelector('#collection-run').addEventListener('change', event=> {
       const run = runs.find(r=>r.id === event.target.value);

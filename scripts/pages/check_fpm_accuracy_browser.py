@@ -74,12 +74,15 @@ async def check_collection_provenance(page, url, data):
             "output_length": {"mode": "trace_defined", "value": None},
             "duration_s": 1200,
             "completed_requests": 2,
+            "seed": 42,
+            "warmup": {"ramp_s": 3, "settling_s": 30},
         },
-        serving={"layout": "pd_disaggregated"},
+        serving={"layout": "pd_disaggregated", "topology": "1P1D"},
         availability="available",
         reason=None,
         measurement_count=10,
         charts={
+            "request_count": 2,
             "input": {
                 "count": 2,
                 "bins": [{"lower": 0, "upper": 0, "count": 1}, {"lower": 10, "upper": 10, "count": 1}],
@@ -102,6 +105,9 @@ async def check_collection_provenance(page, url, data):
     await page.route("**/data/synthetic-details.json", lambda route: route.fulfill(json=details))
     await page.reload()
     await expect(page.locator("#request-charts svg")).to_have_count(4)
+    await expect(page.locator("#collection-settings")).to_contain_text("1P1D")
+    await expect(page.locator("#collection-settings")).to_contain_text("ramp s: 3")
+    await expect(page.locator("#request-charts")).not_to_contain_text("NaN")
     for width in (1400, 390):
         await page.set_viewport_size({"width": width, "height": 900})
         assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")

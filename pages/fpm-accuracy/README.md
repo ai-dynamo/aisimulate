@@ -67,6 +67,9 @@ Details and 3D Visualization are separate tabs with independent controls.
 - Details selects a contributing collection with `collection_run` in the URL.
   The default is the earliest run with request metrics, then the earliest known
   run; unknown dates use stable ID order. Supporting-only runs are not shown.
+  Recorded dataset transformations, worker topology, warmup settings, seed, and
+  request counts accompany the run. Each chart reports its contributing population
+  and unavailable measurements.
   Four request charts use generated JSON, so the browser needs no Parquet runtime:
   observed input/output token histograms, interactivity (`1000 / TPOT_ms`), and
   TTFT in seconds. Time is relative to the selected run's start. Histograms use
