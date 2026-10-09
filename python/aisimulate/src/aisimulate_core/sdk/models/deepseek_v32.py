@@ -361,7 +361,9 @@ class DeepSeekV32Model(BaseModel):
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
         extra_params.setdefault(
             "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(model_info.get("raw_config", {})),
+            attention_projection_exclusions(
+                model_info.get("raw_config", {}), precise_module_paths=backend_name == "vllm"
+            ),
         )
         if _shared_experts_excluded_from_quant(model_info.get("raw_config", {})):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
@@ -373,16 +375,16 @@ class DeepSeekV32Model(BaseModel):
         # the per-layer amortization weights real full vs skip counts, not the
         # 1/freq approximation (GLM-5.2: 21/78=0.2692, not 0.25 — under-counting
         # full made AIC predict too fast).
-        # The skip-indexer perf rows are produced ONLY by the sglang collector.
-        # On backends without a skip producer (e.g. trtllm) the per-layer
-        # amortization must run all-full (fraction 1.0): otherwise the consumer
-        # would weight in a skip table that was never collected for that backend.
-        # The model still HAS skip layers (index_topk_freq reflects that); we just
-        # cannot model their saving without data, so we count them as full.
+        # vLLM's layer rule matches this checkpoint pattern (deepseek_v2.py:
+        # 1080-1106, vLLM v0.25.1 @752a3a504485790a). Pass the
+        # physical layer fraction to the native operator; it only uses vLLM
+        # skip measurements when the loaded tables have the matching key and
+        # local head count. Older/full-only tables remain conservatively full.
+        # TRT-LLM has no qualified skip producer and retains all-full pricing.
         extra_params.setdefault(
             "dsa_full_layer_fraction",
             _dsa_full_layer_fraction(model_info.get("raw_config", {}), model_info["layers"])
-            if backend_name == "sglang"
+            if backend_name in {"sglang", "vllm"}
             else 1.0,
         )
         # Dense TP sharding is established for ordinary SGLang inference.

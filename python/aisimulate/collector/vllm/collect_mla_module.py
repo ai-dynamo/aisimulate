@@ -1130,7 +1130,7 @@ def run_mla_module(
     hf_text_config = vllm_config.model_config.hf_text_config
     reuse_pattern = getattr(hf_text_config, "index_topk_pattern", None)
     has_reuse = attn_type == "dsa" and (
-        "S" in reuse_pattern if reuse_pattern is not None else getattr(hf_text_config, "index_topk_freq", 1) > 1
+        "S" in reuse_pattern if reuse_pattern is not None else (getattr(hf_text_config, "index_topk_freq", 1) or 1) > 1
     )
     if has_reuse:
         if not hasattr(attn_module.mla_attn, "skip_topk"):
