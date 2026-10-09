@@ -19,11 +19,7 @@ SOURCE = COLLECTOR / "helper.py"
 
 
 def trace_benchmark(monkeypatch, *, source=SOURCE, failure=None, explicit=None, eager=False, fallback=False):
-    """Execute a helper source snapshot; retain graph references like a traceback.
-
-    Also used by the external differential oracle against the actual origin/main
-    and pre-isolation helper snapshots, without reconstructing either algorithm.
-    """
+    """Execute a helper source snapshot; retain graph references like a traceback."""
     events, graphs = [], []
     state = {"stream": "caller", "replays": 0, "fault_fired": False}
     error = RuntimeError(f"{failure} failed")
