@@ -856,8 +856,10 @@ jobs:
               current = os.environ["GITHUB_RUN_ID"]
               def get(url):
                   req = urllib.request.Request(url, headers={
-                      "Authorization": f"Bearer {token}",
                       "Accept": "application/vnd.github+json"})
+                  # Signed artifact URLs authenticate with their query string.
+                  # Forwarding the GitHub bearer token to storage causes HTTP 401.
+                  req.add_unredirected_header("Authorization", f"Bearer {token}")
                   return urllib.request.urlopen(req, timeout=30)
               with get(
                   f"https://api.github.com/repos/{repo}/actions/workflows/"
@@ -866,28 +868,34 @@ jobs:
               for run in runs.get("workflow_runs", []):
                   if str(run["id"]) == current:
                       continue
-                  with get(run["artifacts_url"]) as response:
-                      arts = json.load(response)
-                  for a in arts.get("artifacts", []):
-                      if "license" not in a["name"] or a.get("expired"):
-                          continue
-                      with get(a["archive_download_url"]) as response:
-                          data = response.read()
-                      with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                          for n in zf.namelist():
-                              if os.path.basename(n) == "deps.csv":
-                                  with io.TextIOWrapper(zf.open(n)) as stream:
-                                      reader = csv.DictReader(stream)
-                                      return {identity(r): r for r in reader}
+                  page = 1
+                  while True:
+                      with get(f"{run['artifacts_url']}?per_page=100&page={page}") as response:
+                          arts = json.load(response)
+                      artifacts = arts.get("artifacts", [])
+                      for a in artifacts:
+                          if a["name"] != "license-artifacts" or a.get("expired"):
+                              continue
+                          with get(a["archive_download_url"]) as response:
+                              data = response.read()
+                          with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                              for n in zf.namelist():
+                                  if os.path.basename(n) == "deps.csv":
+                                      with io.TextIOWrapper(zf.open(n)) as stream:
+                                          reader = csv.DictReader(stream)
+                                          return {identity(r): r for r in reader}
+                          raise RuntimeError("prior license-artifacts is missing deps.csv")
+                      if len(artifacts) < 100:
+                          break
+                      page += 1
               return None
 
-          try:
-              prior = prior_deps()
-          except Exception as exc:
-              print(f"::warning::prior-artifact lookup failed ({exc}); "
-                    "deps-diff.csv lists every dependency as added")
-              prior = None
-          prior = prior or {}
+          # A missing baseline is valid for the first run; lookup failures must
+          # fail this required job instead of inventing an all-added diff.
+          prior = prior_deps()
+          if prior is None:
+              print("No prior scheduled license evidence; using an empty baseline")
+              prior = {}
           current = {identity(r): r for r in rows}
           dfields = ["change"] + fields + ["prior_version", "prior_spdx_license"]
           drows = []

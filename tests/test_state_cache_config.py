@@ -170,13 +170,49 @@ def test_public_manual_cache_rejects_other_backends(backend):
         CorePredictionConfig.model_validate(raw)
 
 
-def test_public_manual_cache_rejects_pd():
-    raw = _public()
+def _public_pd(**cache_overrides):
+    raw = _public(**cache_overrides)
     worker = raw["engine"]["workers"]["aggregated"]
     raw["engine"]["mode"] = "disaggregated"
-    raw["engine"]["workers"] = {"prefill": worker, "decode": {}}
-    with pytest.raises(ValidationError, match="state_cache requires"):
+    raw["engine"]["workers"] = {"prefill": worker, "decode": json.loads(json.dumps(worker))}
+    return raw
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_public_pd_state_cache_requires_both_roles(role):
+    raw = _public_pd()
+    del raw["engine"]["workers"][role]["kv_cache"]["state_cache"]
+    with pytest.raises(ValidationError, match="both prefill and decode"):
         CorePredictionConfig.model_validate(raw)
+
+
+def test_native_pd_state_cache_requires_both_roles():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public_pd()))
+    decode = {key: value for key, value in spec.backend_deployment.decode_engine_args.items() if key != "state_cache"}
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, decode_engine_args=decode))
+    with pytest.raises(RuntimeError, match="both prefill and decode"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+def test_manual_pd_state_transfer_adds_one_state_to_ttft():
+    def ttft(state):
+        raw = _public_pd() if state else _public_pd(state_cache=None)
+        raw["traffic"]["source"]["output_tokens"] = 2
+        raw["engine"]["kv_transfer"] = {
+            "bytes_per_token": 16,
+            "bandwidth_gb_per_second": 1e-6,
+            "timing_mode": "full_prompt",
+        }
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+        if state:
+            for args in (spec.backend_deployment.prefill_engine_args, spec.backend_deployment.decode_engine_args):
+                assert args["state_cache"] == STATE
+        metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
+        assert metrics["completed_requests"] == 1
+        return metrics["mean_ttft_ms"]
+
+    # The 1500-byte state crosses a 1000 B/s link once, on top of the prompt KV.
+    assert ttft(True) - ttft(False) == pytest.approx(1500.0)
 
 
 def test_recommendation_rejects_manual_cache_instead_of_dropping_it():
@@ -218,10 +254,23 @@ def test_direct_engine_rejects_unsupported_overrides_before_estimating(forbid_es
         _materialize_engine_role("vllm", "", {}, {"rank": raw} if nested else raw, "aggregated")
 
 
-@pytest.mark.parametrize("backend,role", [("sglang", "aggregated"), ("vllm", "prefill"), ("vllm", "decode")])
-def test_direct_engine_rejects_unsupported_topologies_before_estimating(forbid_estimators, backend, role):
+@pytest.mark.parametrize("role", ["aggregated", "prefill"])
+def test_direct_engine_rejects_unsupported_topologies_before_estimating(forbid_estimators, role):
     with pytest.raises(ValueError, match="state_cache requires"):
-        _materialize_engine_role(backend, "", {}, {"state_cache": STATE}, role)
+        _materialize_engine_role("sglang", "", {}, {"state_cache": STATE}, role)
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_direct_engine_accepts_pd_roles_with_transfer_fields(forbid_estimators, role):
+    transfer = {
+        "kv_transfer_bytes_per_token": 16,
+        "kv_transfer_bandwidth": 50.0,
+        "kv_transfer_timing_mode": "destination_missing",
+        "timing_model": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+    }
+    engine = _materialize_engine_role("vllm", "", {}, {**RANK, **transfer}, role)
+    assert engine["rank"]["state_cache"] == STATE
+    assert engine["rank"]["kv_transfer_bandwidth"] == 50.0
 
 
 @pytest.mark.parametrize("field", ["num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"])
@@ -437,6 +486,27 @@ def test_auto_state_geometry_reaches_native_wire_and_fixed_budget(auto_k3_payloa
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     for field in ("block_size", "kv_cache_bytes_per_token", "num_gpu_blocks", "state_cache"):
         assert rank[field] == args[field]
+
+
+def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, forbid_estimators):
+    engine = auto_k3_payload["engine"]
+    prefill = engine["workers"].pop("aggregated")
+    decode = json.loads(json.dumps(prefill))
+    decode["parallelism"] = {"tensor": 4}
+    decode["kv_cache"]["capacity"] = {"type": "fixed", "blocks": 8}
+    engine.update(
+        mode="disaggregated",
+        workers={"prefill": prefill, "decode": decode},
+        kv_transfer={"bytes_per_token": "auto", "bandwidth_gb_per_second": 50},
+    )
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_k3_payload)).backend_deployment
+    prefill_args, decode_args = deployment.prefill_engine_args, deployment.decode_engine_args
+    assert (prefill_args["block_size"], prefill_args["state_cache"]) == (768, {"bytes_per_request": 61046784})
+    assert (decode_args["block_size"], decode_args["state_cache"]) == (1472, {"bytes_per_request": 117006336})
+    # MLA token bytes from the state estimate, not the naive all-layer estimate.
+    assert prefill_args["kv_transfer_bytes_per_token"] == decode_args["kv_transfer_bytes_per_token"] == 27648
+    for role in ("prefill", "decode"):
+        assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
 
 
 @pytest.mark.parametrize(

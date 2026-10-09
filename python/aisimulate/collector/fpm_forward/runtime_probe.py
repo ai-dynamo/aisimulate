@@ -23,7 +23,7 @@ from typing import Any
 from aisimulate.fpm_advisory import prefill_graph_advisory
 
 from . import runner
-from .config import FPM_WARMUP_ITERATIONS, FPMCollectionOptions, collection_phases
+from .config import FPM_WARMUP_ITERATIONS, FPMCollectionOptions, collection_phases, semantic_generator_overrides
 from .entry import _load_generator_overrides
 from .model_capability import ResolvedModelConfig, load_model_config
 from .planner import FPMCell, _backend_policies, _canonical_hash
@@ -81,6 +81,10 @@ class RuntimeProbePlan:
         return None
 
     @property
+    def runtime_backend_version(self) -> str:
+        return self.runtime_instrumentation.manifest["runtime"]["version"]
+
+    @property
     def runtime_launch(self) -> dict[str, Any]:
         return self.launch
 
@@ -96,7 +100,7 @@ def _required_mapping(payload: dict[str, Any], field: str) -> dict[str, Any]:
     return value
 
 
-def normalize_probe_launch(value: dict[str, Any]) -> dict[str, Any]:
+def normalize_probe_launch(value: dict[str, Any], *, allow_pending_version: bool = False) -> dict[str, Any]:
     """Freeze explicit stage-2 launch facts and documented sampling defaults."""
 
     launch = json.loads(json.dumps(value, allow_nan=False))
@@ -104,15 +108,21 @@ def normalize_probe_launch(value: dict[str, Any]) -> dict[str, Any]:
     identity = _required_mapping(launch, "identity")
     for name in ("model", "model_revision", "model_kind", "framework", "framework_version", "gpu", "interconnect"):
         item = identity.get(name)
+        if name == "framework_version" and item is None and allow_pending_version:
+            continue
         if not isinstance(item, str) or not item.strip() or item != item.strip() or any(ord(c) < 32 for c in item):
             raise ValueError(f"runtime probe requires identity.{name}")
     if identity["framework"] != "vllm" or identity["model_kind"] not in {"dense", "moe"}:
         raise ValueError("runtime probe requires framework=vllm and explicit model_kind=dense|moe")
-    if any(
-        identity[name].lower() in {"main", "master", "latest", "head"}
-        for name in ("model_revision", "framework_version")
+    if identity["model_revision"].lower() in {"main", "master", "latest", "head"}:
+        raise ValueError("runtime probe requires a pinned model revision")
+    runtime_version = identity.get("runtime_framework_version")
+    if runtime_version is not None and (
+        not isinstance(runtime_version, str)
+        or not runtime_version.strip()
+        or runtime_version != runtime_version.strip()
     ):
-        raise ValueError("runtime probe requires pinned model and framework revisions")
+        raise ValueError("runtime probe requires a nonempty identity.runtime_framework_version when provided")
     topology = _required_mapping(launch, "topology")
     for name in ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp"):
         if type(topology.get(name)) is not int or topology[name] < 1:
@@ -164,6 +174,9 @@ def normalize_probe_launch(value: dict[str, Any]) -> dict[str, Any]:
     for name, digest in sources.items():
         validate_sha256(digest, f"model configuration source {name}")
     deployment = _required_mapping(launch, "deployment")
+    # This declaration is retained in the onboarding/deployment input archive;
+    # it must not become a probe compatibility pin or alter resume identity.
+    deployment.pop("dynamo_version", None)
     deployment.setdefault("executor", "kubernetes")
     deployment.setdefault("container_mount", [])
     if deployment["executor"] not in {"kubernetes", "slurm"}:
@@ -237,7 +250,10 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
     identity, precision, collection, deployment = (
         launch[key] for key in ("identity", "precision", "collection", "deployment")
     )
-    if bundle.manifest["runtime"]["version"] != identity["framework_version"]:
+    if (
+        identity.get("runtime_framework_version") is not None
+        and bundle.manifest["runtime"]["version"] != identity["runtime_framework_version"]
+    ):
         raise ValueError("instrumentation runtime version does not match the requested pin")
     _model_config_bytes(launch["model_config"])
     model = load_model_config(identity["model"], explicit_config_path=launch["model_config"]["path"])
@@ -414,7 +430,7 @@ def validate_collection_probe_launch(
     if options.executor == "slurm":
         wanted.get("K8sConfig", {}).pop("k8s_image", None)
         actual.get("K8sConfig", {}).pop("k8s_image", None)
-    if runner.with_kv_warmup_defaults(wanted) != runner.with_kv_warmup_defaults(actual):
+    if semantic_generator_overrides(wanted) != semantic_generator_overrides(actual):
         raise ValueError("formal collection deployment settings differ from the accepted runtime probe")
 
 
@@ -833,7 +849,34 @@ def probe_runtime(
     if instrumentation is None:
         from .bundled_instrumentation import bundled_instrumentation
 
-        versions = {item.get("identity", {}).get("framework_version") for item in configurations.values()}
+        versions = set()
+        unresolved = []
+        for name, item in configurations.items():
+            identity = item.get("identity", {})
+            version = identity.get("runtime_framework_version")
+            if version is None and bundled_instrumentation(identity.get("framework_version")) is not None:
+                # Existing literal-version previews can still select their
+                # historical bundle; this is not a claim of runtime detection.
+                version = identity["framework_version"]
+            if version is None:
+                unresolved.append(name)
+            else:
+                versions.add(version)
+        if unresolved:
+            if execute:
+                raise ValueError("runtime probe requires target-container version detection before execution")
+            return {
+                "status": "pending_runtime_version",
+                "configurations": {
+                    name: {
+                        "status": "pending_runtime_version" if name in unresolved else "deferred",
+                        "message": "Detect the backend in the target container."
+                        if name in unresolved
+                        else "Preview is deferred until every selected runtime version is known.",
+                    }
+                    for name in configurations
+                },
+            }
         if len(versions) != 1:
             raise ValueError("bundled instrumentation selection requires one pinned runtime version")
         version = next(iter(versions))
@@ -987,6 +1030,7 @@ def probe_runtime(
                             plan_sha256=plan.sha256,
                             attempt_id=attempt_id,
                             expected_backend_version=plan.capability.aic_database_version,
+                            runtime_backend_version=plan.runtime_backend_version,
                         )
                         resource.execute(pods)
                         resource.collect(pods, require_benchmark=False)

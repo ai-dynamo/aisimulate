@@ -1401,6 +1401,7 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
     cell = _cell()
     plan = _plan(cell)
     if pending_memory:
+        plan.runtime_backend_version = "0.27.0"
         plan.fpm_profile = True
         plan.deployment_profile = lambda _cell: SimpleNamespace(
             backend_version="0.27.0", resources=SimpleNamespace(memory_source="pending")

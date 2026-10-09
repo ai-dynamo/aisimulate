@@ -4,7 +4,7 @@
 """Input schema for a Sweeper smart-search run.
 
 These Pydantic models are the single source of truth for the search inputs. See the repository's
-``docs/sweeper/architecture.md`` for the experimental design:
+``docs/sweeper/README.md`` for the experimental design:
 
 - :class:`SearchSpace`        — the knobs to sweep + pinned context, per component
 - :class:`Workload`           — the traffic every candidate is evaluated against
@@ -595,6 +595,7 @@ class SearchSpace(BaseModel):
     prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     prefill_fpm_parquet_path: str | None = None
     prefill_startup_time: float | None = None
+    prefill_context_length: int | None = Field(default=None, gt=0)
 
     # decode engine (disagg branch): scheduler batching capacity
     decode_max_num_batched_tokens: list[int] = [8192]
@@ -610,6 +611,7 @@ class SearchSpace(BaseModel):
     decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     decode_fpm_parquet_path: str | None = None
     decode_startup_time: float | None = None
+    decode_context_length: int | None = Field(default=None, gt=0)
 
     # agg engine (agg branch): scheduler batching capacity
     agg_max_num_batched_tokens: list[int] = [8192, 16384, 32768]

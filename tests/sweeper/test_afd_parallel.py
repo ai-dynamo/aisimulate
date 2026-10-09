@@ -20,7 +20,7 @@ from aisimulate.sweeper import (
     enumerate_afd_topologies,
 )
 
-_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "MIGRATION.md"
+_AFD_MIGRATION_GUIDE = Path(__file__).resolve().parents[2] / "docs" / "aic-backward-compatibility" / "migration.md"
 
 
 def _documented_afd_recommendation() -> dict:

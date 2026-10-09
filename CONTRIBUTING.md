@@ -13,7 +13,7 @@ instructions, see the [application README](python/aisimulate/README.md).
 
 ## Quick Links
 
-- [CI guide: workflows, code review, and required checks](docs/ci.md)
+- [CI guide: workflows, code review, and required checks](docs/ci/README.md)
 - [Good first issues](https://github.com/ai-dynamo/aisimulate/labels/good-first-issue)
 - [Help wanted](https://github.com/ai-dynamo/aisimulate/labels/help-wanted)
 - [Open an issue](https://github.com/ai-dynamo/aisimulate/issues/new)
@@ -97,4 +97,4 @@ git commit -s -m "Describe your change"
 ```
 
 By contributing, you agree that your contributions will be licensed under the
-[Apache 2.0 License](https://github.com/ai-dynamo/aisimulate/blob/main/LICENSE).
+[Apache 2.0 License](LICENSE).

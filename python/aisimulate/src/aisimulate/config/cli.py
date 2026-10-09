@@ -62,6 +62,7 @@ class CoreRecommendationConfig(StrictModel):
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CoreRecommendationConfig:
         _validate_epd(self.traffic, self.engine)
+        _validate_recommendation_context_lengths(self.traffic, self.engine)
         if self.engine.hardware == "auto" and self.optimization.hardware is None:
             raise ValueError("engine.hardware='auto' requires one optimization.hardware")
         source = self.traffic.source if self.traffic is not None else None
@@ -119,6 +120,24 @@ def _validate_epd(traffic, engine) -> None:
             raise ValueError("analytical EPD requires default op_level language timing")
         if worker.startup_seconds != 0:
             raise ValueError("analytical EPD requires static worker pools")
+
+
+def _validate_recommendation_context_lengths(traffic, engine) -> None:
+    source = traffic.source if traffic is not None else SyntheticSource()
+    if not isinstance(source, SyntheticSource):
+        return
+    isl = source.input_tokens
+    osl = source.output_tokens
+    limits = {
+        "prefill": isl + 1,
+        "decode": isl + osl,
+    }
+    for role, minimum in limits.items():
+        worker = getattr(engine.workers, role)
+        if worker is not None and worker.context_length is not None and worker.context_length < minimum:
+            raise ValueError(
+                f"engine.workers.{role}.context_length must be at least {minimum} for the configured workload"
+            )
 
 
 def prediction_mapping(

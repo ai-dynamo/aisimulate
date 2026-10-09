@@ -70,3 +70,16 @@ def test_package_readme_only_exposes_current_static_page_entrypoints():
     assert "[E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/)" in readme
     assert "release branches" not in readme
     assert "[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/)" in readme
+
+
+def test_support_matrix_pages_state_which_versions_the_cli_accepts():
+    # Both matrices list backend versions outside the queryable slots; a PASS
+    # there is not runnable from predict/recommend without saying so.
+    for page_dir in ("support-matrix", "fpe-support-matrix"):
+        page = (PAGES_ROOT / page_dir / "index.html").read_text()
+        assert "function CliVersionNotice()" in page
+        assert "<CliVersionNotice />" in page
+        assert "Versions the CLI accepts." in page
+        assert "<code>aisimulate predict</code> and <code>aisimulate recommend</code> accept only" in page
+        assert "python/aisimulate/src/aisimulate_core/systems/query_versions.yaml" in page
+        assert "<code>backend_version: current</code>" in page

@@ -172,14 +172,22 @@ def test_simulated_results_and_diagnostics_do_not_change_timing_verdict(wall, ex
     assert classify(value) == expected
 
 
+@pytest.mark.parametrize("plays", [1, 4])
 @pytest.mark.parametrize("status,settled", [("incomplete", None), ("completed", None), ("completed", 3.0)])
-def test_agentx_requires_complete_work(status, settled):
-    case = {**CASE, "trace_sha256": "fixture"}
+def test_agentx_requires_complete_work(plays, status, settled):
+    case = {**CASE, "expected_plays": plays, "expected_input_tokens": 10}
     value = response("head")
     value["case_hash"] = digest(case)
-    value["report"]["agentic_play_outcomes"] = [{"status": status, "settled_at_ms": settled}]
+    value["report"]["total_input_tokens"] = 10
+    value["report"]["agentic_play_outcomes"] = [{"status": status, "settled_at_ms": settled}] * plays
     if status == "completed" and settled is not None:
         validate(value, case, "head", "measure")
+        value["report"]["agentic_play_outcomes"].pop()
+        with pytest.raises(ValueError, match="AgentX"):
+            validate(value, case, "head", "measure")
+        value["report"]["total_input_tokens"] = 9
+        with pytest.raises(ValueError, match="input_tokens"):
+            validate(value, case, "head", "measure")
     else:
         with pytest.raises(ValueError, match="AgentX"):
             validate(value, case, "head", "measure")
@@ -200,9 +208,7 @@ def test_worker_malformed_input_returns_structured_error(monkeypatch, capsys, pa
     assert result["error"]["message"]
 
 
-@pytest.mark.parametrize(
-    "protocol,phase", [(2, "measure"), (3, "measure"), (4.0, "measure"), (4, "availability"), (4, "equivalence")]
-)
+@pytest.mark.parametrize("protocol,phase", [(4, "measure"), (5.0, "measure"), (5, "availability"), (5, "equivalence")])
 def test_worker_rejects_old_protocol_and_phase(protocol, phase):
     from tools.simulation_perf_gate.worker import run
 
@@ -212,21 +218,26 @@ def test_worker_rejects_old_protocol_and_phase(protocol, phase):
 
 def test_matrix_and_trace_are_complete_and_local():
     matrix = cases.expand_cases()
-    assert len({item["case_id"] for item in matrix}) == 12
-    trace = Path(cases.__file__).parent / "fixtures/agentx.jsonl"
-    assert hashlib.sha256(trace.read_bytes()).hexdigest() == cases.AGENTX_SHA256
-    play = json.loads(trace.read_text())
-    rows = [
-        row for entry in play["requests"] for row in (entry["requests"] if entry["type"] == "subagent" else [entry])
-    ]
-    assert len(rows) == 129
-    assert sum(entry["type"] == "subagent" for entry in play["requests"]) == 4
+    assert len({item["case_id"] for item in matrix}) == 10
     for item in matrix:
-        assert item["determinism"] == "canonical_v1"
+        assert item["determinism"] == ("random" if item["runner"] == "dynamo" else "canonical_v1")
         assert item["config"]["engine"]["estimation_mode"] == "op_level"
         assert item["config"]["engine"]["fallback_policy"] == "deny"
         assert "max_virtual_time_seconds" not in item["config"]["traffic"].get("stop", {})
-        if item.get("trace_sha256"):
+        if item.get("fixture"):
+            fixture = item["fixture"]
+            trace = Path(cases.__file__).parent / fixture["path"]
+            assert hashlib.sha256(trace.read_bytes()).hexdigest() == fixture["sha256"]
+            plays = [json.loads(line) for line in trace.read_text().splitlines()]
+            rows = [
+                r
+                for play in plays
+                for e in play["requests"]
+                for r in (e["requests"] if e["type"] == "subagent" else [e])
+            ]
+            assert item["expected_plays"] == len(plays) == len({play["id"] for play in plays})
+            assert item["expected_requests"] == len(rows)
+            assert item["expected_input_tokens"] == sum(row["in"] for row in rows)
             assert item["expected_output_tokens"] == sum(row["out"] for row in rows)
         else:
             traffic = item["config"]["traffic"]
@@ -237,13 +248,38 @@ def test_matrix_and_trace_are_complete_and_local():
     assert cases.expand_cases() == deepcopy(matrix)
 
 
+@pytest.mark.parametrize("runner,determinism", [("engine", "canonical_v1"), ("dynamo", "random")])
+def test_worker_selects_public_runner(monkeypatch, runner, determinism):
+    import sys
+    from types import SimpleNamespace
+
+    from tools.simulation_perf_gate.worker import runner_factory
+
+    calls = []
+
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return "runner"
+
+    module, name = (
+        ("aisimulate", "EngineReplayRunnerFactory")
+        if runner == "engine"
+        else ("dynamo.replay.simulation", "DynamoReplayRunnerFactory")
+    )
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace(**{name: factory}))
+    assert runner_factory({"runner": runner, "determinism": determinism}) == "runner"
+    assert calls == ([{"determinism": determinism}] if runner == "engine" else [{}])
+    with pytest.raises(ValueError, match="runner or determinism"):
+        runner_factory({"runner": runner, "determinism": "unsupported"})
+
+
 def test_qualification_requires_runtime_floor_and_budget():
     from tools.simulation_perf_gate.run import qualification_errors
 
-    raw = {"elapsed_seconds": 901, "cases": [CASE]}
+    raw = {"elapsed_seconds": 721, "cases": [CASE]}
     result = {"classification": "PASS", "base_median_ms": 1999, "head_median_ms": 2001}
     assert len(qualification_errors(raw, [result])) == 2
-    raw["elapsed_seconds"] = 899
+    raw["elapsed_seconds"] = 719
     result["base_median_ms"] = 2000
     assert qualification_errors(raw, [result]) == []
 

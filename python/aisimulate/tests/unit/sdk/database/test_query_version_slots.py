@@ -86,11 +86,35 @@ def test_aliases_resolve(systems_root):
 
 def test_slot_values_pass_and_unlisted_raise(systems_root):
     assert pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc20", systems_root) == "1.3.0rc20"
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root)
     assert (
         pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root, allow_unlisted=True) == "1.3.0rc10"
     )
+
+
+def test_unlisted_version_error_names_accepted_versions_and_fixes(systems_root, monkeypatch):
+    # A user copying a version from a support-matrix row must learn which
+    # versions are accepted and how to switch or opt in.
+    monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
+    with pytest.raises(pdb.UnlistedQueryVersionError) as excinfo:
+        pdb.resolve_query_version("h200_sxm", "trtllm", "1.3.0rc10", systems_root)
+    message = str(excinfo.value)
+    assert isinstance(excinfo.value, ValueError)
+    assert "trtllm version '1.3.0rc10' is not a queryable version on h200_sxm" in message
+    accepted = "Accepted versions for h200_sxm/trtllm: current = 1.3.0rc20, previous = 1.2.0rc5, next = 1.3.0rc23"
+    assert accepted in message
+    assert "`backend_version: current`" in message
+    assert "`--backend-version current`" in message
+    assert "Support-matrix rows at other versions" in message
+    assert "AIC_ALLOW_UNLISTED_VERSIONS=1" in message
+    assert "old-style" not in message
+
+
+def test_unlisted_version_error_lists_only_populated_slots(systems_root, monkeypatch):
+    monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
+    with pytest.raises(pdb.UnlistedQueryVersionError, match=r"a100_sxm/trtllm: current = 1\.0\.0\. Fix:"):
+        pdb.resolve_query_version("a100_sxm", "trtllm", "1.3.0rc15", systems_root)
 
 
 def test_missing_alias_raises_with_slots_listed(systems_root):
