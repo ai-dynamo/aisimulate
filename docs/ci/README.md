@@ -10,7 +10,7 @@ contracts. Review approval, passing checks, artifact publication, and prediction
 accuracy are separate outcomes.
 
 - [Release artifacts and qualification](release.md)
-- [Accuracy validation, dashboard publication, and daily reporting](accuracy.md)
+- [Accuracy validation, dashboard publication, and weekly reporting](accuracy.md)
 - [AIConfigurator synchronization and source provenance](aic-sync.md)
 - [Development setup](../../DEVELOPMENT.md) and [review policy](../../REVIEW.md)
 
@@ -551,3 +551,11 @@ entry in `scripts/readme/readme_commands.json`. Keep both in sync when editing
 examples. The manifest supplies profiles, dependencies, timeouts, and output
 assertions; the harness reads the commands from README and records per-block
 logs and results locally. See `--help` for the available profiles and options.
+
+## Weekly PR review digest
+
+`Slack weekly review digest` runs each Monday at 17:07 America/Los_Angeles.
+It counts PRs opened and merged in the preceding seven local calendar days,
+excluding the start boundary and including the current time. It also reports
+the current non-draft review queue and lists open PRs older than five days.
+Manual dispatch remains available with dry-run enabled by default.

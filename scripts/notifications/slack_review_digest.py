@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Send the daily PR digest; --dry-run prints messages without contacting Slack."""
+"""Send the weekly PR digest; --dry-run prints messages without contacting Slack."""
 
 import argparse
 import json
@@ -20,7 +20,7 @@ def timestamp(value):
 
 
 def pull_requests(repository, token, state, since=None):
-    """Page through PRs; updated order permits stopping at the day's boundary."""
+    """Page through PRs; updated order permits stopping at the reporting window's boundary."""
     page = 1
     while True:
         query = urlencode(dict(state=state, sort="updated", direction="desc", per_page=100, page=page))
@@ -44,22 +44,22 @@ def pull_requests(repository, token, state, since=None):
 
 def messages(repository, open_prs, recent_prs, now):
     local = now.astimezone(PACIFIC)
-    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = local - timedelta(days=7)
     ready = [pr for pr in open_prs if not pr["draft"]]
     stale = sorted(
         (pr for pr in ready if timestamp(pr["created_at"]) < now - timedelta(hours=120)),
         key=lambda pr: pr["created_at"],
     )
 
-    def today(value):
-        return value is not None and start <= timestamp(value) <= now
+    def in_window(value):
+        return value is not None and start < timestamp(value) <= now
 
-    merged = sum(today(pr["merged_at"]) for pr in recent_prs)
-    opened = sum(today(pr["created_at"]) for pr in recent_prs)
+    merged = sum(in_window(pr["merged_at"]) for pr in recent_prs)
+    opened = sum(in_window(pr["created_at"]) for pr in recent_prs)
     lines = [
-        f"AISimulate PR digest — {local:%Y-%m-%d, %I:%M %p %Z}",
-        f":merged-2472: PRs merged today: {merged}",
-        f":pr-opened: PRs opened today: {opened}",
+        f"AISimulate Weekly PR digest — {local:%Y-%m-%d, %I:%M %p %Z}",
+        f":merged-2472: PRs merged in the past 7 days: {merged}",
+        f":pr-opened: PRs opened in the past 7 days: {opened}",
         f":reminder-alarm: PRs waiting for review: {len(ready)}",
         "",
         f"Open non-draft PRs older than 5 days — {len(stale)}",
@@ -106,7 +106,7 @@ def main():
     if not args.dry_run and not webhook:
         raise ValueError("Set SLACK_REVIEW_DIGEST_WEBHOOK_URL before sending the digest")
     now = datetime.now(timezone.utc)
-    start = now.astimezone(PACIFIC).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = now.astimezone(PACIFIC) - timedelta(days=7)
     open_prs = list(pull_requests(repository, token, "open"))
     recent_prs = list(pull_requests(repository, token, "all", since=start))
     payload = messages(repository, open_prs, recent_prs, now)
