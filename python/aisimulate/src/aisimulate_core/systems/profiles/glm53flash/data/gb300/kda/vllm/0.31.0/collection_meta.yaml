@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: vllm
+  version: 0.31.0
+  image: vllm/vllm-openai:v0.31.0
+  image_digest: sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3
+  source_commit: db9527a46873454610df6dbedf79a36d6bf1a7f6
+tables:
+  kda_perf:
+    # GLM-5.3-Flash KDA, TP1 64-head, TP2 32-head and TP4 16-head shards; prefill = state gather + FlashKDA fwd + scatter,
+    # decode = causal_conv1d_update + fused_recurrent_kda; every context row carries a cached prefix; no verify rows (nextn=0).
+    # Infeasible observed TP1 cells (classified errors kept in the job's errors_vllm.kda.json): context B64 x S32768
+    # (CUDA OOM, 108 GiB allocation) and generation B1024 fused_recurrent_kda (grid z 1024*64 > 65535, Triton invalid argument).
+    # GB300 (SM103, ocijhb), 4 GPUs/node, stock image arm64 child sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971 (no overlay) run via pyxis; launcher audits/glm53flash-v031-recollect/opsmig/launcher; Slurm job(s) 896354.
+    # data_sha256: 6e8a4537da6b21eb50706d526048f5d79f184fa09b3141af6bd977b4c4b7a298
+    collector_ref: bdfc9eb527babc2d3c506ed65a42294e8e563f02
+    collector_hash: sha256:4d17b2d054676267b08b4668f4af7df53200bdf756555efd6e3743dcd6bc6d85
+    case_plan_hash: sha256:3ae236f25267adaa00caee88098a6fd966cd22c2aae0a5923b3bef60a227471d
+    collected_at: '2026-10-08'
+    rows: 760
+    status: complete

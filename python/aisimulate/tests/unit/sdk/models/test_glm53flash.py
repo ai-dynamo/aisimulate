@@ -269,11 +269,11 @@ def test_kda_kernels_match_collected_kda_rows():
     }
 
 
-def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint():
+@pytest.mark.parametrize(("backend", "version"), [("vllm", "0.31.0"), ("sglang", "0.5.20")])
+def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint(backend, version):
     # TP1 is an NVFP4-only deployment: the FP8 checkpoint's resident weights
     # exceed one GB300, so the native memory model leaves no KV budget and the
-    # deployment is rejected; NVFP4 TP1 keeps a positive KV budget. The shared
-    # memory model is exercised through the staged SGLang 0.5.20 GLM root.
+    # deployment is rejected; NVFP4 TP1 keeps a positive KV budget.
     from pathlib import Path
 
     import aisimulate_core
@@ -285,8 +285,8 @@ def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint():
         return estimate_kv_cache(
             path,
             "gb300",
-            "sglang",
-            "0.5.20",
+            backend,
+            version,
             max_num_tokens=8192,
             max_batch_size=32,
             memory_fraction_kind="of_total",
