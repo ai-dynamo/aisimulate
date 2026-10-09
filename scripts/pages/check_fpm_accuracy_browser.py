@@ -37,7 +37,7 @@ class QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 async def check_collection_provenance(page, url, data):
     await page.goto(url + "?branch=main")
-    await expect(page.locator(".collection-note").first).to_have_text("Test set")
+    await expect(page.locator(".collection-note").first).to_have_text("Dataset and workload")
     await expect(page.locator(".collection-note details")).to_have_count(0)
     await expect(page.locator(".collection-note a").first).to_have_attribute("href", re.compile("#dataset-workload$"))
     # Versioned metadata arrives with the evaluation; no HF request is needed.
@@ -53,7 +53,7 @@ async def check_collection_provenance(page, url, data):
     await page.route(pattern, lambda route: route.fulfill(json=normalized))
     await page.reload()
     await expect(page.locator(".collection-note").first).to_have_text(
-        "Test set · Trace replay · Recorded dataset · 2 collection runs"
+        "Trace replay · Recorded dataset · 2 collection runs"
     )
     await page.unroute(pattern)
     await page.goto(url + "evaluation-detail.html?branch=main")

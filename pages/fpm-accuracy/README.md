@@ -64,7 +64,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   and serving layout are independent recorded fields. Filenames never classify
   a workload. Metadata is bundled with its pinned evaluation; legacy evaluations
   keep missing metadata without fetching newer HF manifests. Overview and
-  Predictors summaries omit Unknown labels; Details retains the missing-data context.
+  Predictors summaries omit Unknown labels and the Test set prefix. When no summary
+  is available, the link reads Dataset and workload. Details retains the missing-data context.
 - Details selects a contributing collection with `collection_run` in the URL.
   The default is the earliest run with request metrics, then the earliest known
   run; unknown dates use stable ID order. Supporting-only runs are not shown.
