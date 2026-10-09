@@ -15,14 +15,15 @@ otherwise drop), the gated ViT FFN gate projection, and the assembled model
 graph.
 """
 
+import json
+
 import pytest
 
-from aisimulate.sdk import common
+from aisimulate.sdk import common, utils
 from aisimulate.sdk import config as sdk_config
 from aisimulate.sdk.backends.base_backend import BaseBackend
 from aisimulate.sdk.models import get_model, get_model_family
 from aisimulate.sdk.models.blocks.vit import build_encoder_ops
-from aisimulate.sdk.utils import _parse_hf_config_json
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +36,11 @@ def _raw_config():
     return {
         "architectures": ["Mistral3ForConditionalGeneration"],
         "model_type": "mistral3",
+        "quantization_config": {
+            "activation_scheme": "static",
+            "quant_method": "fp8",
+            "weight_block_size": None,
+        },
         "spatial_merge_size": 2,
         "vision_feature_layer": -1,
         "text_config": {
@@ -59,13 +65,21 @@ def _raw_config():
     }
 
 
+@pytest.fixture
+def local_model_path(tmp_path):
+    model_dir = tmp_path / "mistral3"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(_raw_config()))
+    return str(model_dir)
+
+
 class TestMistral3ConfigParsing:
     def test_architecture_maps_to_mistral3_family(self):
         assert common.ARCHITECTURE_TO_MODEL_FAMILY["Mistral3ForConditionalGeneration"] == "MISTRAL3"
         assert "MISTRAL3" in common.ModelFamily
 
     def test_text_decoder_fields_from_text_config(self):
-        result = _parse_hf_config_json(_raw_config())
+        result = utils._parse_hf_config_json(_raw_config())
         assert result["architecture"] == "Mistral3ForConditionalGeneration"
         assert result["layers"] == 88
         assert result["n"] == 96
@@ -76,7 +90,7 @@ class TestMistral3ConfigParsing:
         assert result["vocab"] == 131072
 
     def test_vision_encoder_config(self):
-        ep = _parse_hf_config_json(_raw_config())["extra_params"]
+        ep = utils._parse_hf_config_json(_raw_config())["extra_params"]
         assert isinstance(ep, common.VisionEncoderConfig)
         assert ep.depth == 48
         assert ep.hidden_size == 1664
@@ -94,7 +108,7 @@ class TestMistral3ConfigParsing:
         assert ep.partial_rotary_factor > 0
 
     def test_projector_dims_are_three_pixtral_gemms(self):
-        ep = _parse_hf_config_json(_raw_config())["extra_params"]
+        ep = utils._parse_hf_config_json(_raw_config())["extra_params"]
         # patch_merger (merger_dim -> vit_hidden), linear_1 (vit_hidden -> text),
         # linear_2 (text -> text). merger_dim = vit_hidden * spatial_merge_size**2.
         assert ep.projector_dims == ((1664 * 4, 1664), (1664, 12288), (12288, 12288))
@@ -107,34 +121,69 @@ class TestMistral3ConfigParsing:
         cfg = _raw_config()
         cfg["spatial_merge_size"] = bad
         with pytest.raises(ValueError, match="spatial_merge_size"):
-            _parse_hf_config_json(cfg)
+            utils._parse_hf_config_json(cfg)
 
     def test_missing_top_level_spatial_merge_raises(self):
         cfg = _raw_config()
         del cfg["spatial_merge_size"]
         with pytest.raises(ValueError, match="spatial_merge_size"):
-            _parse_hf_config_json(cfg)
+            utils._parse_hf_config_json(cfg)
 
     @pytest.mark.parametrize("bad", [{}, [], False, 0, "", [1]])
     def test_malformed_vision_config_raises(self, bad):
         cfg = _raw_config()
         cfg["vision_config"] = bad
         with pytest.raises(ValueError, match="Mistral3 vision_config must be a non-empty object"):
-            _parse_hf_config_json(cfg)
+            utils._parse_hf_config_json(cfg)
 
     @pytest.mark.parametrize("layer", [-2, 0, 12, [-1], None, True])
     def test_unsupported_vision_feature_layer_raises(self, layer):
         cfg = _raw_config()
         cfg["vision_feature_layer"] = layer
         with pytest.raises(ValueError, match="vision_feature_layer=-1"):
-            _parse_hf_config_json(cfg)
+            utils._parse_hf_config_json(cfg)
 
     @pytest.mark.parametrize("image_size", [None, 0, -1, True, 1540.0])
     def test_invalid_image_size_raises(self, image_size):
         cfg = _raw_config()
         cfg["vision_config"]["image_size"] = image_size
         with pytest.raises(ValueError, match="positive integer image_size"):
-            _parse_hf_config_json(cfg)
+            utils._parse_hf_config_json(cfg)
+
+    def test_zero_patch_size_raises(self):
+        cfg = _raw_config()
+        cfg["vision_config"]["patch_size"] = 0
+        with pytest.raises(ValueError, match="positive integer patch_size"):
+            utils._parse_hf_config_json(cfg)
+
+    def test_model_id_without_bundle_loads_config_from_hub(self, monkeypatch):
+        assert _MODEL_PATH not in common.DefaultHFModels
+        downloaded = []
+
+        def download_config(model_id):
+            downloaded.append(model_id)
+            return _raw_config()
+
+        monkeypatch.setattr(utils, "_download_hf_config", download_config)
+        monkeypatch.setattr(utils, "_download_hf_json", lambda *args, **kwargs: None)
+        utils.get_model_config_from_model_path.cache_clear()
+        utils._load_model_config_from_model_path.cache_clear()
+        try:
+            result = utils.get_model_config_from_model_path(_MODEL_PATH)
+        finally:
+            utils.get_model_config_from_model_path.cache_clear()
+            utils._load_model_config_from_model_path.cache_clear()
+
+        assert downloaded == [_MODEL_PATH]
+        assert result["architecture"] == "Mistral3ForConditionalGeneration"
+
+    def test_local_config_directory_loads_without_hub(self, local_model_path, monkeypatch):
+        def no_download(*args, **kwargs):
+            raise AssertionError("Hub download path reached for a local model directory")
+
+        monkeypatch.setattr(utils, "_download_hf_config", no_download)
+        result = utils.get_model_config_from_model_path(local_model_path)
+        assert result["architecture"] == "Mistral3ForConditionalGeneration"
 
 
 class TestMistral3Workload:
@@ -142,15 +191,15 @@ class TestMistral3Workload:
         ("height", "width", "patches", "embeddings", "context"),
         [(70, 70, 36, 9, 12), (70, 112, 48, 12, 15), (3080, 1540, 6160, 1540, 1595)],
     )
-    def test_image_geometry_reaches_prefill(self, height, width, patches, embeddings, context):
-        enc_cfg = _parse_hf_config_json(_raw_config())["extra_params"]
+    def test_image_geometry_reaches_prefill(self, local_model_path, height, width, patches, embeddings, context):
+        enc_cfg = utils._parse_hf_config_json(_raw_config())["extra_params"]
         runtime = sdk_config.RuntimeConfig(isl=100, image_height=height, image_width=width, num_images_per_request=2)
         workload = BaseBackend._encoder_workload_per_visual(runtime, enc_cfg)
         assert workload.patch_tokens_per_sequence == patches
         assert workload.transformer_tokens_per_sequence == patches
         assert workload.output_tokens_per_image == embeddings
         assert workload.context_tokens_per_image == context
-        assert BaseBackend.effective_prefill_isl(_MODEL_PATH, runtime) == 100 + 2 * context
+        assert BaseBackend.effective_prefill_isl(local_model_path, runtime) == 100 + 2 * context
 
     @pytest.mark.parametrize(
         "video",
@@ -160,16 +209,22 @@ class TestMistral3Workload:
             {"video_frames": 1},
         ],
     )
-    def test_runtime_rejects_video_before_geometry(self, video):
+    def test_runtime_rejects_video_before_geometry(self, local_model_path, video):
         with pytest.raises(ValueError, match="Video workloads are not modeled for the Pixtral"):
-            BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100, **video))
+            BaseBackend.effective_prefill_isl(local_model_path, sdk_config.RuntimeConfig(isl=100, **video))
 
-    def test_image_token_override_needs_dimensions(self):
+    def test_image_token_override_needs_dimensions(self, local_model_path):
         with pytest.raises(ValueError, match="Pixtral requires image_height and image_width"):
-            BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100, num_image_tokens=9))
+            BaseBackend.effective_prefill_isl(local_model_path, sdk_config.RuntimeConfig(isl=100, num_image_tokens=9))
 
-    def test_text_only_context_is_unchanged(self):
-        assert BaseBackend.effective_prefill_isl(_MODEL_PATH, sdk_config.RuntimeConfig(isl=100)) == 100
+    def test_image_count_without_geometry_or_token_override_is_rejected(self, local_model_path):
+        runtime = sdk_config.RuntimeConfig(isl=100, num_images_per_request=1)
+        with pytest.raises(ValueError, match="Pixtral image workloads require image dimensions or num_image_tokens"):
+            BaseBackend.effective_prefill_isl(local_model_path, runtime)
+
+    def test_text_only_context_is_unchanged(self, local_model_path):
+        runtime = sdk_config.RuntimeConfig(isl=100, num_images_per_request=0)
+        assert BaseBackend.effective_prefill_isl(local_model_path, runtime) == 100
 
 
 class TestGatedViTBuilder:
@@ -207,10 +262,10 @@ class TestGatedViTBuilder:
 
 
 class TestMistral3ModelGraph:
-    def test_builds_as_mistral3_model_with_encoder(self):
-        assert get_model_family(_MODEL_PATH) == "MISTRAL3"
+    def test_builds_as_mistral3_model_with_encoder(self, local_model_path):
+        assert get_model_family(local_model_path) == "MISTRAL3"
         model_config = sdk_config.ModelConfig(tp_size=1, attention_dp_size=1)
-        model = get_model(_MODEL_PATH, model_config, backend_name="trtllm")
+        model = get_model(local_model_path, model_config, backend_name="trtllm")
 
         assert model.model_family == "MISTRAL3"
         assert type(model).__name__ == "Mistral3Model"
@@ -228,9 +283,9 @@ class TestMistral3ModelGraph:
         assert "encoder_projector_fc1_act" in enc
         assert "encoder_projector_fc2_gemm" in enc
 
-    def test_patch_merger_stays_replicated_under_encoder_tp(self):
+    def test_patch_merger_stays_replicated_under_encoder_tp(self, local_model_path):
         model_config = sdk_config.ModelConfig(tp_size=4, attention_dp_size=1, enable_encoder_dp=False)
-        model = get_model(_MODEL_PATH, model_config, backend_name="vllm")
+        model = get_model(local_model_path, model_config, backend_name="vllm")
         ops_by_name = {op._name: op for op in model.encoder_ops}
 
         assert "encoder_dp_all_gather" not in ops_by_name
@@ -247,22 +302,24 @@ class TestMistral3ModelGraph:
             12288 // 4,
         )
 
-    def test_fp8_static_text_gemm_from_checkpoint(self):
+    def test_fp8_static_text_gemm_from_checkpoint(self, local_model_path):
         model_config = sdk_config.ModelConfig(tp_size=1, attention_dp_size=1)
-        get_model(_MODEL_PATH, model_config, backend_name="trtllm")
+        get_model(local_model_path, model_config, backend_name="trtllm")
         assert model_config.gemm_quant_mode == common.GEMMQuantMode.fp8_static
 
     @pytest.mark.parametrize(
         ("tp", "encoder_dp", "expected_bytes"),
         [(1, False, 511_104_000), (4, False, 213_734_400), (4, True, 511_104_000), (8, False, 195_148_800)],
     )
-    def test_encoder_memory_accounts_for_gated_swiglu_intermediate(self, tp, encoder_dp, expected_bytes):
+    def test_encoder_memory_accounts_for_gated_swiglu_intermediate(
+        self, local_model_path, tp, encoder_dp, expected_bytes
+    ):
         # A 1540x1540 image gives 12100 patches and 3025 merged embeddings.
         # BF16 residual: 1664 values/patch, replicated on every TP rank.
         # Gate+up: 16384 values/patch, sharded only in encoder TP mode.
         # Embeddings: 12288 values/token. At TP=8 the legacy 3*1664 floor wins.
         model = get_model(
-            _MODEL_PATH,
+            local_model_path,
             sdk_config.ModelConfig(tp_size=tp, attention_dp_size=1, enable_encoder_dp=encoder_dp),
             backend_name="sglang",
         )

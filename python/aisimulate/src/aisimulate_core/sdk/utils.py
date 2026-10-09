@@ -1504,6 +1504,9 @@ def _parse_hf_config_json(config: dict) -> dict:
             image_size = vision_cfg.get("image_size")
             if type(image_size) is not int or image_size <= 0:
                 raise ValueError("Mistral3 vision_config needs a positive integer image_size")
+            patch_size = vision_cfg.get("patch_size")
+            if type(patch_size) is not int or patch_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer patch_size")
             # spatial_merge_size sizes both the patch merger and the image-token
             # counts; a silent default would mispredict, so require a positive
             # integer (reject missing/None, bool, non-int, and <= 0).
@@ -1532,7 +1535,7 @@ def _parse_hf_config_json(config: dict) -> dict:
                 hidden_size=vit_hidden,
                 num_heads=vision_cfg["num_attention_heads"],
                 intermediate_size=vision_cfg["intermediate_size"],
-                patch_size=vision_cfg["patch_size"],
+                patch_size=patch_size,
                 temporal_patch_size=1,
                 spatial_merge_size=merge,
                 encoder_type="pixtral",

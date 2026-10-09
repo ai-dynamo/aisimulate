@@ -687,52 +687,6 @@ https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a
 The Apache License 2.0 terms are reproduced in this distribution's `LICENSE`
 file.
 
-## Mistral Medium 3.5 model configuration
-
-`src/aisimulate_core/model_configs/mistralai--Mistral-Medium-3.5-128B_config.json`
-is an unmodified, byte-for-byte copy of `config.json` from the Mistral AI model
-repository at immutable revision
-`c4be198050fb5789774a55b92ed697becfbf20ae`:
-
-https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/blob/c4be198050fb5789774a55b92ed697becfbf20ae/config.json
-
-Copyright owner: Mistral AI. The model is licensed under the Modified MIT
-License. The upstream license is available at:
-
-https://huggingface.co/mistralai/Mistral-Medium-3.5-128B/blob/c4be198050fb5789774a55b92ed697becfbf20ae/LICENSE
-
-```text
-Modified MIT License
-
-Attribution notice: 2026 - Mistral AI
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of the weights of this model and associated documentation files (the “Model”),
-to deal in the Model without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
-sell copies of the Model, and to permit persons to whom the Model is furnished
-to do so, subject to the following conditions:
-
-1. The above attribution notice and this permission notice shall be included in
-all copies or substantial portions of the Model.
-2. You are not authorized to exercise any rights under this license if the
-global consolidated monthly revenue of your company (or that of your employer)
-exceeds $20 million (or its equivalent in another currency) for the preceding
-month. This restriction in (b) applies to the Model and any derivatives,
-modifications, or combined works based on it, whether provided by Mistral AI or
-by a third party. You may contact Mistral AI (sales@mistral.ai) to request a
-commercial license, which Mistral AI may grant you at its sole discretion, or
-choose to use the Model on Mistral AI's hosted services available at
-https://mistral.ai/.
-
-THE MODEL IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-MISTRAL AI BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
-ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE MODEL OR THE USE OR OTHER DEALINGS IN THE MODEL.
-```
-
 ## Qwen3.8-Max model configuration files
 
 The following model configuration files are copied byte-for-byte from the

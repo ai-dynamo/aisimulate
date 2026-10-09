@@ -447,6 +447,11 @@ class BaseBackend:
         )
         if enc_cfg.encoder_type == "pixtral" and has_any_video_input:
             raise ValueError("Video workloads are not modeled for the Pixtral vision encoder.")
+        # RuntimeConfig defaults the image count to one. Do not let a declared
+        # Pixtral image workload fall through as a text-only request when its
+        # geometry and per-image token override are both absent.
+        if enc_cfg.encoder_type == "pixtral" and image_count > 0 and not (has_image_dims or has_image_override):
+            raise ValueError("Pixtral image workloads require image dimensions or num_image_tokens.")
         has_video_dims = video_frames > 0 and video_height > 0 and video_width > 0
         has_video_override = video_token_override > 0
         if has_any_video_input:
