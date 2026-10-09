@@ -35,8 +35,8 @@ prefix-seed producer (`glm53flash_prefix_scheduler.py`).
   so the measured shot starts on the grid. The measured step is the second
   pure decode step. The producer records every prefill chunk start from the
   native `SchedulerOutput` and fails on an unaligned start. Geometry moved to
-  satisfy this is executed geometry with reason `kpool_align4`. The consumer
-  still rejects unaligned cached-prefill queries on stock runtimes. Optional
+  satisfy this is executed geometry with reason `kpool_align4`. Align-4 is a
+  collection rule only: the consumer predicts any prefix length or total. Optional
   per-request decode contexts come from a frozen sidecar
   (`DYN_FPM_GLM53FLASH_DECODE_CONTEXTS`), because Dynamo's explicit decode
   points carry totals only.
@@ -87,11 +87,12 @@ producer, full-campaign and independent accuracy checks. The reference runtime
 is not a measured producer. Licensed patches and qualification commands remain in
 the [runtime qualification sources](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/README.md).
 
-The Rust FPM cached-prefill guard admits that exact reviewed tail version in
-parity with the Python native reader. Stock unaligned starts, unknown local
-suffixes and the quarantined KPool runtime remain rejected. This admits queries
-to existing calibration tables; it does not grant holdout coverage or accuracy
-acceptance, which still requires predictions for every original requested point.
+The Rust consumer does not refuse prediction queries because of their prefix
+alignment. Real workloads have arbitrary prefix lengths; the IndexPool start
+restriction applies to collection inputs and to the Python native reader of
+collected evidence. Tables from the quarantined KPool runtime remain rejected.
+Holdout coverage and accuracy acceptance still require predictions for every
+original requested point.
 
 The current tail runtime has passed the original nine-point producer qualification
 and strict prefill/decode readers in all four vLLM deployments, followed by the
