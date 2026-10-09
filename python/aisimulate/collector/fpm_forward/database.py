@@ -200,7 +200,15 @@ def aggregate_cell(
         expected_attempt_id=expected_attempt_id,
         expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
     )
-    backend_version = collection.backend_version
+    runtime_version = getattr(plan, "runtime_backend_version", None)
+    if runtime_version is not None and collection.backend_version != runtime_version:
+        raise ValueError("observed backend version differs from the frozen runtime version")
+    deployment = plan.deployment_profile(cell) if getattr(plan, "fpm_profile", None) is not None else None
+    backend_version = (
+        deployment.backend_version
+        if deployment is not None
+        else getattr(plan, "backend_version", None) or collection.backend_version
+    )
     capability = plan.capability
 
     selected = select_native_measurements(collection, cell_id=cell.cell_id)
@@ -280,6 +288,7 @@ def aggregate_cell(
                 "system": plan.system,
                 "backend": plan.backend,
                 "backend_version": backend_version,
+                "runtime_backend_version": collection.backend_version,
                 "weight_quantization": cell.weight_quantization,
                 "gemm_quant_mode": cell.gemm_quant_mode,
                 "moe_quant_mode": cell.moe_quant_mode,
@@ -664,10 +673,9 @@ def write_formal_database(
     if len(versions) != 1 or not next(iter(versions)):
         raise ValueError(f"FPM rows must contain one non-empty runtime backend_version, got {sorted(versions)!r}")
     version = next(iter(versions))
-    # backend_version comes from pod-reported provenance: reject anything that
-    # is not a plain version token before it becomes a path component.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
-        raise ValueError(f"pod-reported backend_version {version!r} is not a safe database directory name")
+    # A label may be custom text; preserve it exactly while preventing paths.
+    if version in {".", ".."} or any(c.isspace() for c in version) or any(c in version for c in ("/", "\\", "\x00")):
+        raise ValueError(f"backend_version {version!r} is not a safe database directory name")
     curated_root = systems_root is None
     if systems_root is None:
         systems_root = _curated_systems_root()
@@ -781,7 +789,12 @@ def write_formal_database(
         # as null instead.
         for row in merged:
             row.setdefault("kv_seed_regime", None)
-            for field in ("input_text_sha256", "input_token_ids_sha256", "input_tokenizer_revision"):
+            for field in (
+                "input_text_sha256",
+                "input_token_ids_sha256",
+                "input_tokenizer_revision",
+                "runtime_backend_version",
+            ):
                 row.setdefault(field, None)
         if any(row.get("state_protocol") for row in merged):
             for row in merged:

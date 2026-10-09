@@ -183,12 +183,18 @@ impl ReplayEngineConfig {
                 }
             }
             ReplayTopology::Disaggregated { .. } => {
-                for stage in [WorkerStage::Prefill, WorkerStage::Decode] {
-                    if self.role(stage).rank.g3_offload.is_some() {
-                        return Err(ReplayError::InvalidSpec(
-                            "g3_offload supports only aggregated replay".to_string(),
-                        ));
-                    }
+                let [prefill, decode] =
+                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage).rank);
+                if prefill.g3_offload.is_some() || decode.g3_offload.is_some() {
+                    return Err(ReplayError::InvalidSpec(
+                        "g3_offload supports only aggregated replay".to_string(),
+                    ));
+                }
+                // Decode resumes from the transferred state, so both roles model it.
+                if prefill.state_cache.is_some() != decode.state_cache.is_some() {
+                    return Err(ReplayError::InvalidSpec(
+                        "state_cache must be set on both prefill and decode roles".to_string(),
+                    ));
                 }
             }
         }
@@ -537,6 +543,43 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+#[cfg(test)]
+mod disaggregated_tests {
+    use super::*;
+
+    #[test]
+    fn disaggregated_state_cache_requires_both_roles() {
+        let state: EngineConfig = serde_json::from_value(serde_json::json!({
+            "num_gpu_blocks": 64, "kv_cache_bytes_per_token": 16, "block_size": 16,
+            "state_cache": {"bytes_per_request": 256}
+        }))
+        .unwrap();
+        let role = |rank: EngineConfig| {
+            Some(ReplayRoleConfig {
+                dp_size: 1,
+                tensor_parallel_size: 1,
+                num_gpu_blocks_is_explicit: None,
+                rank,
+            })
+        };
+        let topology: ReplayTopology = serde_json::from_value(serde_json::json!({
+            "kind": "disaggregated",
+            "prefill": {"initial_workers": 1},
+            "decode": {"initial_workers": 1}
+        }))
+        .unwrap();
+        let mut config = ReplayEngineConfig {
+            prefill: role(state.clone()),
+            decode: role(EngineConfig::default()),
+            ..Default::default()
+        };
+        let error = config.validate_topology(&topology).unwrap_err();
+        assert!(error.to_string().contains("both prefill and decode"));
+        config.decode = role(state);
+        config.validate_topology(&topology).unwrap();
+    }
 }
 
 #[cfg(test)]

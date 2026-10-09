@@ -2215,6 +2215,28 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
 }
 
 #[test]
+fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
+    let handoff_ms = |state: bool| {
+        let mut config = disagg_config_with_handoff_delay();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        if state {
+            for args in [&mut config.prefill_args, &mut config.decode_args] {
+                args.kv_cache_bytes_per_token = Some(1_000_000);
+                args.state_cache = Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 8_000_000,
+                });
+            }
+        }
+        let (_, stats) = run_trace_collect(&config, vec![request(1, 128, 2, 0.0)], None, 1.0);
+        stats.handoff_ms[&Uuid::from_u128(1)]
+    };
+    // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
+    let delta = handoff_ms(true) - handoff_ms(false);
+    assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
+}
+
+#[test]
 fn destination_missing_timing_uses_isolated_destination_cache_state() {
     for engine_type in [EngineType::Vllm, EngineType::Sglang] {
         for (seed_tokens, measured_tokens, expected_missing_ms) in [

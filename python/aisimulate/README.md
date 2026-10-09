@@ -13,7 +13,7 @@ generator SDK.
 
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [Repository](https://github.com/ai-dynamo/aisimulate) ·
-[CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/user-guide.md)
+[CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/reference/cli.md)
 
 ## Install
 
@@ -25,7 +25,7 @@ aisimulate --help
 ```
 
 The built-in engine runs without Dynamo. See the
-[installation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/installation.md)
+[installation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/getting-started/installation.md)
 for platform requirements, source builds, nightly artifacts, and compatible
 Dynamo installations. Documentation on `main` may describe features newer than
 the latest published wheel. The optional Dynamo Planner integration requires
@@ -91,18 +91,18 @@ This quickstart evaluates suggestions for the explicit 1,024-input/128-output-to
 
 Inspect `recommendation/recommendation.json` for search results and
 `recommendation/recommendations/` for concrete prediction YAML files to replay.
-The [CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/user-guide.md)
+The [CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/reference/cli.md)
 covers workload inputs, latency constraints, and detailed output. To create
 deployment manifests and launch scripts, use the bundled compatibility CLI or
 generator SDK; see the
-[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md#compatibility-only-workflows).
+[deployment generation guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/sweeper/deployment-generation.md).
 
 ## Documentation and coverage
 
-- [Replay](https://github.com/ai-dynamo/aisimulate/blob/main/crates/core/src/replay/README.md) and
-  [Sweeper](https://github.com/ai-dynamo/aisimulate/blob/main/docs/sweeper/overview.md)
+- [Replay](https://github.com/ai-dynamo/aisimulate/blob/main/docs/replay/README.md) and
+  [Sweeper](https://github.com/ai-dynamo/aisimulate/blob/main/docs/sweeper/README.md)
   — embed replay and configuration search through Python APIs.
-- [Core API](https://github.com/ai-dynamo/aisimulate/blob/main/docs/core-api.md)
+- [Core API](https://github.com/ai-dynamo/aisimulate/blob/main/docs/perf-model/api/python.md)
   — engine, performance-model, and memory contracts.
 - [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
   — forward-pass estimator coverage.
@@ -125,14 +125,14 @@ The wheel provides the legacy `aiconfigurator` command through AISimulate 0.13.0
 Removal is targeted for AISimulate 0.14.0, after every remaining workflow has a
 verified replacement in the unified CLI. Use `aisimulate` for new prediction and
 recommendation workflows. The
-[migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md)
+[migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md)
 explains replacements and remaining differences; the
-[legacy CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/cli/legacy-aic-user-guide.md)
+[legacy CLI guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/cli.md)
 documents retained commands.
 
 The canonical Python imports are `aisimulate` and `aisimulate_core`. AISimulate
 0.13.0 removes the `aiconfigurator` and `aiconfigurator_core` import namespaces;
-see the [Python source migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/MIGRATION.md#python-imports-and-resources)
+see the [Python source migration guide](https://github.com/ai-dynamo/aisimulate/blob/main/docs/aic-backward-compatibility/migration.md#python-imports-and-resources)
 for replacement imports. The legacy executable remains available as described above.
 
 When upgrading from standalone AIConfigurator, remove the old distributions first

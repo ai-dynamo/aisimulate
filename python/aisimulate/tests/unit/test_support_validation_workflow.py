@@ -60,6 +60,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, 
     replay_args, request, root, trace, replay_output = validation_case
     payload = request.model_dump(mode="json")
     payload["identity"]["framework_version"] = "0.27.0"
+    payload["identity"]["runtime_framework_version"] = "0.27.0"
     payload["fpm_profile"]["deployments"][0].update(backend_version="0.27.0", fmha_quant_mode="fp8")
     payload["collection"]["prefill_cudagraph_policy"] = "runtime"
     if worker_type is not None:
@@ -161,6 +162,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, 
         model_architecture=request.fpm_profile.architecture,
         model_config_path=str(model_config),
         fpm_profile=request.fpm_profile,
+        collector_config={"runtime_backend_version": request.identity.runtime_framework_version},
         generator_overrides=overrides,
         **runtime,
     )

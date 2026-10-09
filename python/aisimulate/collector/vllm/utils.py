@@ -6,11 +6,14 @@
 
 """Shared vLLM 0.24.0 collector test-harness utilities."""
 
+import atexit
 import functools
-import os
+import shutil
+import tempfile
 from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import wraps
+from pathlib import Path
 from typing import Optional, Union
 
 import torch
@@ -28,7 +31,11 @@ from vllm.config import (
 )
 from vllm.config.model import ModelDType
 from vllm.distributed import init_distributed_environment
-from vllm.distributed.parallel_state import ensure_model_parallel_initialized
+from vllm.distributed.parallel_state import (
+    destroy_distributed_environment,
+    destroy_model_parallel,
+    ensure_model_parallel_initialized,
+)
 from vllm.utils.math_utils import cdiv
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE, kv_cache_dtype_str_to_dtype
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -569,19 +576,49 @@ def enable_engine_fused_ops() -> None:
             raise RuntimeError(f"fused-op dispatch for {op.name} resolved to {selected}, expected vllm_c first")
 
 
-@functools.cache  # only run once per process
-def setup_distributed(device):
-    # Each process needs to use a different port.
-    device_idx = torch.device(device).index
-    port = 8889 + device_idx
-    print(device, device_idx, port)
+def _shutdown_distributed(rendezvous_dir):
+    # Native vLLM ee0da84ab9e04ac7610e28580af62c365e898389,
+    # vllm/distributed/parallel_state.py:2028-2100 closes model groups before
+    # WORLD and the default torch group. NCCL heartbeat threads may access the
+    # store during shutdown: removing it first can block their termination.
+    try:
+        destroy_model_parallel()
+        destroy_distributed_environment()
+    except Exception as error:
+        # No automatic TemporaryDirectory finalizer may remove a store still
+        # owned by native threads. atexit reports this error to stderr.
+        raise RuntimeError(f"Native distributed shutdown failed; preserving rendezvous at {rendezvous_dir}") from error
+    shutil.rmtree(rendezvous_dir)
 
-    os.environ["RANK"] = "0"
-    os.environ["WORLD_SIZE"] = "1"
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = str(port)
-    init_distributed_environment()
+
+@functools.cache  # reuse the process group across cases on this device
+def setup_distributed(device):
+    """Initialize the module collector's single-rank native process group."""
+    target_device = torch.device(device)
+    local_rank = target_device.index
+    if local_rank is None:
+        local_rank = torch.cuda.current_device() if target_device.type == "cuda" else 0
+
+    # Independent workers can all see cuda:0 on the same host. Use a fresh,
+    # initially nonexistent FileStore path instead of competing for a port.
+    # vLLM ee0da84ab9e04ac7610e28580af62c365e898389 (0.24.0),
+    # vllm/distributed/parallel_state.py:1536-1634 forwards this native init
+    # method to torch.distributed for both the NCCL and Gloo paths.
+    rendezvous_dir = tempfile.mkdtemp(prefix="aic-vllm-rendezvous-")
+    # Keep the store through native teardown, including partial init failure.
+    # An automatic directory finalizer would race NCCL's C++ destructors.
+    atexit.register(_shutdown_distributed, rendezvous_dir)
+    init_method = (Path(rendezvous_dir) / "store").as_uri()
+
+    # Keep ambient serving/launcher DP settings from changing this local
+    # module benchmark into a multi-rank group. Do not mutate launcher env.
     with set_current_vllm_config(VllmConfig()):
+        init_distributed_environment(
+            world_size=1,
+            rank=0,
+            local_rank=local_rank,
+            distributed_init_method=init_method,
+        )
         ensure_model_parallel_initialized(1, 1)
 
 

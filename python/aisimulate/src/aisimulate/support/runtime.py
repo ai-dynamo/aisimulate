@@ -115,7 +115,7 @@ def checkpoint_launch(
         values = dict(_object(payload.get(section, {}), f"draft_request.{section}"))
         for field in model.model_fields:
             if field in inputs:
-                if field in values and values[field] != inputs[field]:
+                if field in values and values[field] is not None and values[field] != inputs[field]:
                     raise ValueError(f"inputs.{field} conflicts with draft_request.{section}.{field}")
                 values[field] = inputs[field]
         payload[section] = values
@@ -142,6 +142,20 @@ def checkpoint_launch(
         "moe_ep": search.moe_expert_parallel or 1,
         "cp": 1,
     }
+    if profile is not None and identity.framework_version is not None:
+        # A checkpoint can retain its original version-pending profile while
+        # the target-image probe records the resolved identity in inputs.
+        profile = profile.model_copy(deep=True)
+        for item in profile.deployments:
+            if (
+                item.backend_version is None
+                and item.system == identity.gpu
+                and item.backend == identity.framework
+                and all(getattr(item, key) == value for key, value in topology.items())
+                and (item.worker_type or "aggregated") == (payload.get("worker_type") or "aggregated")
+            ):
+                item.backend_version = identity.framework_version
+        payload["fpm_profile"] = profile.model_dump(mode="json")
     precision = {}
     selected = (
         profile.select(
@@ -236,7 +250,8 @@ def checkpoint_launch(
                 **({"source_files": source_files} if source_files else {}),
             },
             "deployment": deployment,
-        }
+        },
+        allow_pending_version=True,
     )
     return payload, launch, resource_overrides
 
@@ -932,7 +947,7 @@ def import_observations(
 
 
 def run_runtime_command(args: argparse.Namespace) -> int:
-    from collector.fpm_forward.runtime_probe import probe_runtime
+    from collector.fpm_forward.runtime_probe import normalize_probe_launch, probe_runtime
 
     from .checkpoint import _load, _target, save_checkpoint
 
@@ -958,7 +973,20 @@ def run_runtime_command(args: argparse.Namespace) -> int:
                 resolve_cpu_defaults=not args.resume,
                 resume_output_dir=output if args.resume else None,
             )
+            if args.execute and launches[name]["identity"].get("runtime_framework_version") is None:
+                from .versioning import detect_runtime_versions
+
+                observed = detect_runtime_versions(FPMDeployment.model_validate(launches[name]["deployment"]))
+                actual = observed["backend_version"]
+                # Preserve old numeric launch identities when observation agrees.
+                # Custom labels carry a separate runtime pin into instrumentation.
+                if actual != launches[name]["identity"].get("framework_version"):
+                    launches[name]["identity"]["runtime_framework_version"] = actual
+                if launches[name]["identity"].get("framework_version") is None:
+                    launches[name]["identity"]["framework_version"] = actual
+                launches[name] = normalize_probe_launch(launches[name])
         except (ValueError, OSError) as exc:
+            launches.pop(name, None)
             failed[name] = {"status": "incomplete", "diagnostics": [str(exc)]}
     result = (
         probe_runtime(
@@ -967,12 +995,18 @@ def run_runtime_command(args: argparse.Namespace) -> int:
         if launches
         else {"status": "failed", "configurations": {}}
     )
+    pending_preview = result["status"] == "pending_runtime_version"
     result["configurations"].update(failed)
     if failed:
         result["status"] = "partial" if launches else "failed"
-    output.mkdir(parents=True, exist_ok=True)
-    path = output / f"onboarding-probe-{uuid.uuid4().hex}.json"
-    path.write_text(_json(result))
+    report_reference = {"output_dir": str(output)}
+    if not pending_preview:
+        output.mkdir(parents=True, exist_ok=True)
+        path = output / f"onboarding-probe-{uuid.uuid4().hex}.json"
+        path.write_text(_json(result))
+        report_reference.update(report=str(path), sha256=_hash(path))
+    # Pending previews have no executable probe plan yet. Record their result
+    # directly in the checkpoint without occupying the future probe directory.
     patches = {}
     for name in names:
         config = state.configurations[name]
@@ -981,14 +1015,22 @@ def run_runtime_command(args: argparse.Namespace) -> int:
                 *config.history,
                 {
                     "event": "runtime_probe",
-                    "report": str(path),
-                    "sha256": _hash(path),
+                    **report_reference,
                     "result": result["configurations"][name],
                 },
             ]
         }
         if name in launches:
             patch["inputs"] = {"collection_deployment": launches[name]["deployment"]}
+            label = launches[name]["identity"].get("framework_version")
+            declared_label = config.draft_request.get("identity", {}).get("framework_version") or _inputs(
+                state, config
+            ).get("framework_version")
+            if label is not None and declared_label is None:
+                patch["inputs"]["framework_version"] = label
+            actual = launches[name]["identity"].get("runtime_framework_version")
+            if actual is not None:
+                patch["inputs"]["runtime_framework_version"] = actual
         patches[name] = patch
     state, _ = save_checkpoint(
         checkpoint, patch={"configurations": patches}, expected_revision=state.revision, accept=[]

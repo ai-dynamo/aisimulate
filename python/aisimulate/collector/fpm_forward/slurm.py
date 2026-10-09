@@ -303,6 +303,7 @@ class SlurmCellRunner:
         plan_sha256: str,
         attempt_id: str,
         expected_backend_version: str | None = None,
+        runtime_backend_version: str | None = None,
     ) -> None:
         from .runner import REMOTE_WORKDIR, RUNTIME_ENV_FILENAME, _attempt_provenance_command
 
@@ -312,6 +313,7 @@ class SlurmCellRunner:
             attempt_id=attempt_id,
             expected_backend_version=expected_backend_version,
             backend=self.backend,
+            runtime_backend_version=runtime_backend_version,
         )
         for unit in pods:
             # Resolve the actual installed distribution through the same frozen

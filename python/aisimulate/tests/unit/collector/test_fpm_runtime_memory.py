@@ -794,7 +794,7 @@ def _pending_plan(version="0.27.0"):
         deployment["backend_version"] = version
         for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
             deployment["resources"].pop(key)
-    return _plan(profile)
+    return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -946,3 +946,20 @@ def test_historical_formal_publication_reports_unsupported_migration_without_cha
     with pytest.raises(ValueError, match="historical schema-6.*Automatic migration is unsupported"):
         database.validate_formal_database_commit(parquet, metadata, _pending_plan())
     assert (parquet.read_bytes(), metadata.read_bytes()) == original
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_custom_label_round_trips_independently_of_observed_memory_runtime():
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "local-vllm-branch"
+        for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            deployment["resources"].pop(key)
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.27.0"})
+    saved = runtime_memory.saved_plan_identity(plan.to_dict())
+    assert saved.backend_version == "local-vllm-branch"
+    assert saved.runtime_backend_version == "0.27.0"
+    assert runner._observe_runtime_memory(plan, plan.cells[0])
+    assert plan.to_dict()["runtime_memory_policy"]["selected_vllm_version"] == "0.27.0"
+    unknown = _plan(profile)
+    assert not runner._observe_runtime_memory(unknown, unknown.cells[0])

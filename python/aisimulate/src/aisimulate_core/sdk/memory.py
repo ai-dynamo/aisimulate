@@ -1301,6 +1301,10 @@ def estimate_kv_cache(
             or moe_kernel_source is not None
             or attention_backend is not None
         ):
+            if isinstance(exc, perf_database.UnlistedQueryVersionError):
+                # A version-slot rejection is a configuration error with its
+                # own fix; do not re-label it as an unsupported model.
+                raise
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "
                 f"model={model_path}, backend={backend}, gpu_sku={system}: {exc}"

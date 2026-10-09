@@ -214,13 +214,11 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
     scripted = tmp_path / "scripted.yaml"
     prompts = _terminal(
         monkeypatch,
-        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "nvswitch", "2"]
-        + ["16384"]
-        + [""] * 6,
+        ["example/unintegrated-model", "revision-123", "dense", "h200_sxm", "nvswitch", "2"] + ["16384"] + [""] * 6,
     )
 
     assert cli.main(["onboard", "init", "--interactive", "--output", str(guided)]) == 0
-    assert cli.main(_init_args(scripted, tensor_parallel=2, context_length=16384)) == 0
+    assert cli.main(_init_args(scripted, tensor_parallel=2, context_length=16384, framework_version=None)) == 0
 
     assert SupportRequest.from_yaml(guided) == SupportRequest.from_yaml(scripted)
     assert any("Runtime per-request context limit" in prompt for prompt in prompts)
@@ -498,6 +496,9 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     request_path = tmp_path / "request.yaml"
     output = tmp_path / "plan"
     assert cli.main(_init_args(request_path, tensor_parallel=2)) == 0
+    payload = yaml.safe_load(request_path.read_text())
+    payload["identity"]["runtime_framework_version"] = "0.24.0"
+    request_path.write_text(yaml.safe_dump(payload))
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(output)]) == 0
 
     assert (
@@ -526,7 +527,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     assert calls[0][calls[0].index("--limit") + 1] == "1"
 
 
-def _local_collection_command(tmp_path, *, with_profile=False, **changes):
+def _local_collection_command(tmp_path, *, with_profile=False, observed_version=None, runtime_observed=True, **changes):
     model = tmp_path / "model with spaces"
     model.mkdir()
     (model / "config.json").write_text(
@@ -562,6 +563,11 @@ def _local_collection_command(tmp_path, *, with_profile=False, **changes):
             )
         )
     assert cli.main(init) == 0
+    if runtime_observed:
+        # Execution tests supply synthetic observed facts; image preflight has separate coverage.
+        payload = yaml.safe_load(request_path.read_text())
+        payload["identity"]["runtime_framework_version"] = observed_version or payload["identity"]["framework_version"]
+        request_path.write_text(yaml.safe_dump(payload))
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     return ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
@@ -573,7 +579,7 @@ def test_plan_guides_both_collection_executors_without_launching_workers(tmp_pat
 
     monkeypatch.setattr(subprocess, "run", unexpected_launch)
     monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
-    command = _local_collection_command(tmp_path, with_profile=with_profile)
+    command = _local_collection_command(tmp_path, with_profile=with_profile, runtime_observed=False)
     request = SupportRequest.from_yaml(tmp_path / "request.yaml")
     assert (request.fpm_profile is not None) == with_profile
     plan = json.loads((tmp_path / "plan/support-plan.json").read_text())
@@ -645,6 +651,9 @@ def _synthetic_collector(monkeypatch, version):
             pass
 
         def prepare_attempt(self, _pods, **identity):
+            label = identity.pop("expected_backend_version", None)
+            if label is not None:
+                identity["backend_version"] = label
             (self.raw / "collector-provenance.json").write_text(
                 json.dumps(
                     {
@@ -724,6 +733,20 @@ def _synthetic_collector(monkeypatch, version):
     return executions
 
 
+def test_formal_collection_rejects_observed_runtime_drift_from_frozen_pin(tmp_path, monkeypatch, capsys, timing_ready):
+    _synthetic_collector(monkeypatch, "0.28.0")
+    command = _local_collection_command(tmp_path, framework_version="my-vllm-patch-3", observed_version="0.27.0")
+    root = tmp_path / "plan"
+    capsys.readouterr()
+
+    assert cli.main(command) != 0
+    assert "observed backend version differs from the frozen runtime version" in capsys.readouterr().err
+    assert not list((root / "systems/data").rglob("*.parquet"))
+    provenance = list((root / "fpm-artifacts").rglob("collector-provenance.json"))
+    assert provenance
+    assert {json.loads(path.read_text())["runtime"]["backend_version"] for path in provenance} == {"0.28.0"}
+
+
 @pytest.mark.parametrize("smoke", [False, True])
 @pytest.mark.parametrize(
     "declared,observed",
@@ -734,39 +757,34 @@ def _synthetic_collector(monkeypatch, version):
         ("0.25.1+cu128", "0.25.1+cu128"),
     ],
 )
-def test_formal_collection_checks_published_version_and_preserves_evidence_on_resume(
+def test_formal_collection_preserves_custom_version_and_runtime_evidence_on_resume(
     tmp_path, monkeypatch, capsys, smoke, declared, observed, timing_ready
 ):
     executions = _synthetic_collector(monkeypatch, observed)
-    command = _local_collection_command(tmp_path, framework_version=declared)
+    command = _local_collection_command(tmp_path, framework_version=declared, observed_version=observed)
     root = tmp_path / "plan"
     if declared != observed:
         command += ["--checkpoint-dir", str(root / "fpm-checkpoint/custom")]
     if smoke:
         command += ["--smoke", "--limit", "1"]
     capsys.readouterr()
-    expected = int(not smoke and declared != observed)
+    expected = 0
 
     assert cli.main(command) == expected
 
     stderr = capsys.readouterr().err
-    if expected:
-        assert f"pod-reported vllm version {observed!r}" in stderr
-        assert f"framework_version {declared!r}" in stderr
-        assert "preserved" in stderr
-        assert "new plan" in stderr
-        assert "Traceback" not in stderr
+    assert not stderr
     provenance = list((root / "fpm-artifacts").rglob("collector-provenance.json"))
     assert provenance
     assert {json.loads(path.read_text())["runtime"]["backend_version"] for path in provenance} == {observed}
-    metadata = root / "systems/data/h200_sxm/vllm" / observed / "fpm_forward_perf.metadata.json"
+    metadata = root / "systems/data/h200_sxm/vllm" / declared / "fpm_forward_perf.metadata.json"
     if smoke:
         assert not list((root / "systems/data").iterdir())
     else:
-        assert json.loads(metadata.read_text())["backend_version"] == observed
+        assert json.loads(metadata.read_text())["backend_version"] == declared
         if declared != observed:
-            # A stale matching directory must not hide this campaign's different runtime.
-            (root / "systems/data/h200_sxm/vllm" / declared).mkdir()
+            # The observed package version never redirects an explicitly labeled dataset.
+            assert not (root / "systems/data/h200_sxm/vllm" / observed).exists()
     readiness_path = root / "fpm-readiness.json"
     initial_readiness = json.loads(readiness_path.read_text())
     preserved = {
@@ -978,7 +996,7 @@ def test_executor_options_fail_before_collection_for_incompatible_inputs(tmp_pat
 @pytest.mark.parametrize(
     "option,value",
     [
-        ("--dynamo-version", "latest"),
+        ("--dynamo-version", " "),
         ("--image", "bad image"),
         ("--image", ""),
         ("--namespace", "invalid namespace"),
@@ -1047,6 +1065,13 @@ def test_deployment_resume_requires_the_same_frozen_identity(
     assert cli.main([*command, "--resume"]) == 0
     assert plans[0].sha256 == plans[1].sha256
     assert checkpoint.read_bytes() == saved
+
+    if option == "--dynamo-version":
+        # A provenance change preserves the frozen collection identity.
+        assert cli.main([*command, "--resume", option, changed]) == 0
+        assert plans[-1].sha256 == plans[0].sha256
+        assert checkpoint.read_bytes() == saved
+        return
 
     # The real collector must reject a changed identity before GPU execution.
     monkeypatch.setattr(runner, "run_collection", actual_run)
@@ -1117,6 +1142,9 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
     assert cli.main(_init_args(request_path)) == 0
+    payload = yaml.safe_load(request_path.read_text())
+    payload["identity"]["runtime_framework_version"] = "0.24.0"
+    request_path.write_text(yaml.safe_dump(payload))
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     capsys.readouterr()
 

@@ -85,6 +85,13 @@ PARALLEL_AXES = ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp")
 PARALLEL_PRESETS = ("auto", "tp", "tep", "dep", "pure_tp")
 
 
+def semantic_generator_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Freeze launch settings without treating declared versions as compatibility."""
+    normalized = with_kv_warmup_defaults(overrides)
+    normalized.pop("generator_dynamo_version", None)
+    return normalized
+
+
 def with_kv_warmup_defaults(overrides: dict[str, Any]) -> dict[str, Any]:
     """Resolve declared warm-up switches without replacing explicit choices."""
 
@@ -1157,14 +1164,24 @@ def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
         "--generated-config-version",
         dest="generated_config_version",
         default=None,
-        help="Rejected for FPM; the Collector resolves this from --dynamo-version.",
+        help="Rejected for FPM; collection uses the default benchmark templates.",
     )
     group.add_argument(
         "--dynamo-version",
         "--generator-dynamo-version",
         dest="generator_dynamo_version",
         default=None,
-        help="Target Dynamo release used to resolve the Generator template.",
+        help="Optional Dynamo version provenance; does not select images or templates.",
+    )
+    group.add_argument(
+        "--fpm-backend-version",
+        default=None,
+        help="Explicit backend data label; omitted labels use the observed runtime during publication.",
+    )
+    group.add_argument(
+        "--fpm-runtime-backend-version",
+        default=None,
+        help="Observed backend package version, separate from the profile's custom data label.",
     )
     group.add_argument("--namespace", default=None)
     group.add_argument("--model-cache", default=None, metavar="NAME[:MOUNT[:SUBPATH]]")
@@ -1246,6 +1263,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "generator_set",
         "generated_config_version",
         "generator_dynamo_version",
+        "fpm_runtime_backend_version",
+        "fpm_backend_version",
         "namespace",
         "model_cache",
         "transport",

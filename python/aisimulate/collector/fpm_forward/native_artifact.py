@@ -392,9 +392,15 @@ def _validate_collector_provenance(
             or not runtime["backend_version"]
         ):
             raise ValueError(f"Collector provenance has invalid runtime identity: {path}")
+        # Dynamo package/release strings are provenance only. Backend identity
+        # and every attempt binding still have to agree across all ranks.
+        comparable = {
+            **{key: value for key, value in payload.items() if key != "dynamo_version"},
+            "runtime": {key: value for key, value in runtime.items() if key != "dynamo_version"},
+        }
         if canonical is None:
-            canonical = payload
-        elif payload != canonical:
+            canonical = comparable
+        elif comparable != canonical:
             raise ValueError(f"Collector provenance differs across pods: {path}")
 
     assert canonical is not None

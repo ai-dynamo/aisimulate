@@ -19,6 +19,7 @@ from aisimulate.sweeper.parallel_enum import ParallelShape
 DEEPSEEK = "deepseek-ai/DeepSeek-V3"
 QWEN = "Qwen/Qwen3-32B"
 QWEN3_VL_MOE = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+MAVERICK = "meta-llama/Llama-4-Maverick-17B-128E-Instruct"  # 40 attention heads
 
 
 @pytest.mark.model(DEEPSEEK)
@@ -165,6 +166,43 @@ def test_max_seq_len_defaults_to_model_context(monkeypatch):
     assert seen["max_seq_len"] == 163840  # DeepSeek-V3 max context
 
 
+def test_none_role_max_seq_len_falls_back_to_default_context(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(
+        mh_mod,
+        "resolve_model_hardware",
+        lambda *args, **kwargs: ModelHardware(
+            model_name="model",
+            hardware_sku="hardware",
+            backend="vllm",
+            is_moe=False,
+            mla=False,
+            enable_wideep=False,
+            weight_bytes=1,
+            vram_per_gpu=80,
+            gpus_per_node=8,
+            max_context=2048,
+        ),
+    )
+    monkeypatch.setattr(
+        mh_mod,
+        "feasible_shape_tokens",
+        lambda shapes, **kwargs: (seen.update(kwargs) or dict.fromkeys(shapes, 4096)),
+    )
+
+    parallel_configs_for(
+        "model",
+        "hardware",
+        gpu_budget=2,
+        deployment_mode="agg",
+        backend="vllm",
+        role_max_seq_len={"agg": None},
+    )
+
+    assert seen["max_seq_len"] == 2048
+
+
 # --- KV-cache validity (the sole feasibility filter; no weight floor) ---
 
 
@@ -250,3 +288,22 @@ def test_kv_path_tiny_budget_raises():
             backend="trtllm",
             max_seq_len=8192,
         )
+
+
+@pytest.mark.model(MAVERICK)
+def test_tp_that_does_not_split_heads_is_skipped_not_fatal(caplog):
+    # 40 heads rule out tp=16 but not tp=8; a 16-GPU budget enumerates both.
+    caplog.set_level("WARNING", logger="aisimulate.sweeper.kv_estimate")
+    cfgs = parallel_configs_for(
+        MAVERICK,
+        "h100_sxm",
+        gpu_budget=16,
+        deployment_mode="agg",
+        backend="trtllm",
+        backend_version="1.3.0rc20",
+        max_seq_len=4096,
+    )
+    assert cfgs
+    assert {c.shape.tp for c in cfgs} <= {1, 2, 4, 8}
+    assert "num_heads 40 should be divisible by tp_size 16" in caplog.text
+    assert "tp=16 dp=1 moe_tp=1 moe_ep=16" in caplog.text

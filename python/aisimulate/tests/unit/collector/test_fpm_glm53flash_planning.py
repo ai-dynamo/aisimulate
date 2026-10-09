@@ -61,7 +61,9 @@ def plan(tmp_path, backend, model, collector_config=None):
     "backend, version", [("vllm", "0.30.0+unqualified"), ("sglang", "0.5.20+unqualified"), ("vllm", "")]
 )
 def test_explicit_unqualified_runtime_is_not_silently_relabelled(tmp_path, backend, version):
-    with pytest.raises(ValueError, match="unqualified GLM backend runtime"):
+    # main's planner rejects an empty label before the GLM runtime gate; both refuse it.
+    match = "unqualified GLM backend runtime|requires a resolved, path-safe backend_version"
+    with pytest.raises(ValueError, match=match):
         plan(tmp_path, backend, next(iter(MODEL_REVISIONS)), {"aic_database_version": version})
 
 

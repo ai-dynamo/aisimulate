@@ -87,6 +87,10 @@ def fpm_cli_args(
         str(root / "systems/data"),
     ]
     command.extend(runtime_arguments)
+    if request.identity.framework_version is not None:
+        command.extend(("--fpm-backend-version", request.identity.framework_version))
+    if request.identity.runtime_framework_version is not None:
+        command.extend(("--fpm-runtime-backend-version", request.identity.runtime_framework_version))
     if request.worker_type is not None:
         command.extend(("--fpm-worker-type", request.worker_type))
     if request.collection.cudagraph_mode is not None:
@@ -234,11 +238,43 @@ def run_fpm(
 
     from .plan import check_plan, plan_lock
 
+    if check_readiness and (execute or smoke or limit is not None or resume):
+        raise ValueError("--check-readiness is read-only and cannot use --execute, --smoke, --limit or --resume")
     root = Path(output_dir).expanduser().resolve()
+    from .runtime import runtime_probe_manifest
+    from .versioning import bound_runtime_request, resolve_runtime_request, runtime_deployment
+
+    deployment = runtime_deployment(deployment, root)
+    bound = bound_runtime_request(request, deployment, root)
+    if bound is not None:
+        request, root = bound
+    elif (
+        execute
+        and request.identity.runtime_framework_version is None
+        and runtime_probe_manifest(request) is None
+        and not any((root / "fpm-checkpoint").rglob("fpm_forward.json"))
+    ):
+        if checkpoint_dir is not None:
+            raise ValueError("resolve the runtime version before selecting a custom checkpoint directory")
+        request, root = resolve_runtime_request(request, deployment, root)
+        print(f"Resolved collection: --config {root / 'request.yaml'} --output-dir {root}")
+    if request.identity.framework_version is None:
+        check_plan(request, root)
+        print(
+            json.dumps(
+                {
+                    "status": "pending_runtime_version",
+                    "simulation_ready": False,
+                    "next": "Resolve the request's backend version before executing this existing campaign."
+                    if execute
+                    else "Use --execute --image IMAGE to detect the target runtime version.",
+                },
+                indent=2,
+            )
+        )
+        return 1 if check_readiness or execute else 0
     selected_checkpoint = _checkpoint_root(root, checkpoint_dir)
     if check_readiness:
-        if execute or smoke or limit is not None or resume:
-            raise ValueError("--check-readiness is read-only and cannot use --execute, --smoke, --limit or --resume")
         check_plan(request, root)
         from .collection_readiness import assess_readiness
 
@@ -322,7 +358,7 @@ def run_fpm(
                 expected = request.identity.framework_version
                 if observed != expected:
                     raise RuntimeError(
-                        f"pod-reported {request.identity.framework} version {observed!r} does not match "
+                        f"published {request.identity.framework} data version {observed!r} does not match "
                         f"framework_version {expected!r}; generated configs cannot use this publication. "
                         "Collected artifacts are preserved. Create a new plan in a new output directory "
                         "using a matching runtime or the observed framework_version."

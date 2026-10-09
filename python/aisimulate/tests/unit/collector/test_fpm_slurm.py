@@ -805,7 +805,11 @@ def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_pa
             ]
         )
     )
-    plan = _plan(profile, options=replace(options, parallel_presets=("tep",)))
+    plan = _plan(
+        profile,
+        options=replace(options, parallel_presets=("tep",)),
+        collector_config={"runtime_backend_version": "0.25.1"},
+    )
     commands = []
     executed = []
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
@@ -875,7 +879,7 @@ def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_pa
         assert executed == [] and "database" not in checkpoint
         for entry in checkpoint["cells"].values():
             failures = list(Path(entry["artifact_dir"]).glob("logs/transport-failures/*/stderr.log"))
-            assert len(failures) == 1 and "FPM profile runtime mismatch" in failures[0].read_text()
+            assert len(failures) == 1 and "FPM observed runtime changed" in failures[0].read_text()
     for cell in plan.cells:
         entry = checkpoint["cells"][cell.cell_id]
         provenance = json.loads((Path(entry["artifact_dir"]) / "raw/node0000/collector-provenance.json").read_text())
