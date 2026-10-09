@@ -4,7 +4,7 @@
 //!
 //! Geometry: Z.AI GLM-5.3-Flash config.json at eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
 //! (MIT, Copyright (c) 2026 Z.AI Co., Ltd). Execution boundaries: vllm-project/vllm
-//! ced6857afa0ea7b2e3f0846a62e1394e90f15607, vllm/models/glm5next/nvidia/{model,attention,kda}.py,
+//! db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0), vllm/models/glm5next/common/{model,attention,kda}.py,
 //! and sgl-project/sglang 94602c9c2b7cbdb8efd5c52802dac6a1c180089e,
 //! python/sglang/srt/models/glm5_next.py (Apache-2.0). See THIRD_PARTY_NOTICES.md.
 //! These are payload/roofline bounds, not allocator or kernel-launch predictions.
