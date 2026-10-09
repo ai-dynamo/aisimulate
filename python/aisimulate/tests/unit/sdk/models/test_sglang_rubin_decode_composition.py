@@ -271,8 +271,7 @@ def test_canonical_default_decode_retains_grid_and_skip_aware_extrapolation():
     # outside the collected reuse grid, whose last B16/B32 observations are
     # 0.0426/0.0463 ms. Reuse extrapolation no longer charges an unexecuted
     # indexer's growth. The independent constant-reuse oracle is Rust's
-    # reuse_decode_extrapolation_does_not_charge_full_indexer_growth; the
-    # before/after per-op ledger is docs/aic-2004-dsa-skip-sol.json. Every
+    # reuse_decode_extrapolation_does_not_charge_full_indexer_growth. Every
     # non-attention operation and the other 15 historical totals are unchanged.
     model = RustForwardPassPerfModel.best_available(canonical_config(None))
     cases = [
