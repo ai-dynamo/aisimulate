@@ -142,7 +142,7 @@
     }).join("") || `<tr><td colspan="${columns}" class="empty-cell">No measurements available</td></tr>`;
     const rows = new Map(summary.rows.map(row => [row.configuration_id, row]));
     body.querySelectorAll('.collection-note').forEach(element => {
-      window.fpmCollection.attach(element, rows.get(element.dataset.configuration), summary.snapshot);
+      window.fpmCollection.attach(element, rows.get(element.dataset.configuration));
     });
     body.querySelectorAll("[data-model]").forEach((button) => button.addEventListener("click", () => {
       const model = button.dataset.model;

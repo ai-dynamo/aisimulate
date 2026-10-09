@@ -19,11 +19,10 @@
     const count = [...units.values()].reduce((total, values)=>total+values.size,0);
     return count ? [`${count} concurrency setting${count === 1 ? '' : 's'}`, ...[...units].sort(([a],[b])=>a.localeCompare(b)).map(([unit,values])=>`${[...values].sort((a,b)=>a-b).map(number).join(' / ')} ${label(unit)}`)].join(' · ') : '';
   }
-  function attach(element, row, snapshot) {
+  function attach(element, row) {
     const value = row.collection;
     const parts = value?.run_count ? [...value.types.filter(type => type && type !== 'unknown').map(label), ...value.datasets, concurrencySummary(value.concurrency_settings) || `${value.run_count} collection runs`] : [];
-    const query = new URLSearchParams({branch:snapshot.branch, configuration:row.configuration_id, snapshot:row.snapshot_id, run:`${snapshot.run_id}-${snapshot.run_attempt}`});
-    element.innerHTML = `<a href="evaluation-detail.html?${escape(query)}#dataset-workload">${escape(parts.join(' · ') || 'Dataset and workload')}</a>`;
+    element.textContent = parts.join(' · ') || 'Dataset and workload';
   }
   function histogram(data, title, population) {
     if (!data?.count) return '<p class="workload-empty">Unavailable · No observed token counts.</p>';

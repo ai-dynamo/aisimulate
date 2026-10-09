@@ -39,7 +39,7 @@ async def check_collection_provenance(page, url, data):
     await page.goto(url + "?branch=main")
     await expect(page.locator(".collection-note").first).to_have_text("Dataset and workload")
     await expect(page.locator(".collection-note details")).to_have_count(0)
-    await expect(page.locator(".collection-note a").first).to_have_attribute("href", re.compile("#dataset-workload$"))
+    await expect(page.locator(".collection-note a")).to_have_count(0)
     # Versioned metadata arrives with the evaluation; no HF request is needed.
     normalized = copy.deepcopy(data)
     normalized["schema_version"] = 2

@@ -61,14 +61,15 @@ Details and 3D Visualization are separate tabs with independent controls.
   Each row shows a compact collection type, dataset, and distinct recorded concurrency
   settings (for example, `4 concurrency settings · 4 / 16 / 32 / 64 session trees`),
   falling back to the contributing run count when concurrency metadata is absent,
-  linked to **Dataset and workload** in Details. Collection types are
+  rendered as plain muted text. The separate Details link opens the configuration.
+  Collection types are
   `self_benchmark`, `static_serving`, `trace_replay`, and `unknown`.
   Benchmark preset (including `inferencex-agentx-mvp`), replay mode, dataset,
   and serving layout are independent recorded fields. Filenames never classify
   a workload. Metadata is bundled with its pinned evaluation; legacy evaluations
   keep missing metadata without fetching newer HF manifests. Overview and
   Predictors summaries omit Unknown labels and the Test set prefix. When no summary
-  is available, the link reads Dataset and workload. Details retains the missing-data context.
+  is available, the text reads Dataset and workload. Details retains the missing-data context.
 - Details selects a contributing collection with `collection_run` in the URL.
   The selector is labeled Concurrency setting when recorded values are available;
   options lead with concurrency and retain the collection type and capture date.
