@@ -887,11 +887,12 @@ def main() -> None:
         manifest, attempt_rows, attempt_evidence = load_attempt(attempt, partial=partial)
         superseded = 0
         if partial:
-            # A key also measured by a complete (fresh-process) attempt is
-            # taken from that attempt; the failed attempt's copy is dropped.
+            # A key also measured by a complete (fresh-process) attempt, or by
+            # a partial attempt listed earlier, is taken from that attempt.
             kept = [r for r in attempt_rows if physical_key(r) not in complete_keys]
             superseded = len(attempt_rows) - len(kept)
             keys = {physical_key(r) for r in kept}
+            complete_keys |= keys
             attempt_rows = kept
             attempt_evidence = [
                 e for e in attempt_evidence if (e["geometry"], e["batch_size"], e["prefix"], e["x"]) in keys
