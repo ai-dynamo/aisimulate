@@ -286,14 +286,26 @@ fn prefill_first_tokens(
         newly_completed.push(running.remove(idx));
     }
     newly_completed.reverse();
-    completed_requests.extend(newly_completed);
 
     // The rest need a slot for the first output token. Make room by evicting cached pages only.
+    // SGLang does this in the next decode pass, where the removal merges with that pass's
+    // queued removals; evicting before the stores below keeps it from becoming an extra event.
     let needed = decode_page_growth_needed(running, config.block_size, 1);
     let available = kv_manager.cache().available_tokens();
     if available < needed {
         kv_manager.evict(needed - available);
     }
+
+    // SGLang inserts every prefilled prompt right after the prefill forward. A continuing request
+    // goes through `cache_unfinished_req` whether or not its first slot fits, so a request
+    // retracted at the next decode step leaves its prompt cached. A finished one goes through
+    // `release_kv_cache`, and a disaggregated prefill source through `cache_unfinished_req` while
+    // its KV transfers. The first output token's KV is not computed yet and is not inserted.
+    for req in running.iter_mut().chain(newly_completed.iter_mut()) {
+        cache_materialized_prefix(req, kv_manager, config);
+    }
+    completed_requests.extend(newly_completed);
+
     let reserved_pages = needed / config.block_size;
     let Some(mut reservation) = kv_manager.reserve_decode_pages(reserved_pages) else {
         return DecodeResult {
@@ -311,7 +323,6 @@ fn prefill_first_tokens(
         }
         let token_id = req.next_output_token();
         req.append_output_token(token_id, config.block_size);
-        cache_materialized_prefix(req, kv_manager, config);
         req.debug_assert_invariants(config.block_size);
         output_signals.push(OutputSignal {
             uuid: req.uuid,
@@ -577,9 +588,8 @@ fn simulate_step(
                 completed_indices.push(idx);
                 break;
             }
-
-            cache_materialized_prefix(req, kv_manager, config);
-            req.debug_assert_invariants(config.block_size);
+            // Decoded tokens stay out of the radix tree until the request finishes:
+            // SGLang inserts them only when it releases a finished request (`release_kv_cache`).
         }
     }
 
