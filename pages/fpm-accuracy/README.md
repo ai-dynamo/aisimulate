@@ -80,7 +80,9 @@ Details and 3D Visualization are separate tabs with independent controls.
   visible. Missing values stay missing. TPOT derivation requires recorded timing
   compatibility and at least two output tokens. Self-benchmark runs show Not
   applicable and retain their existing workload heatmaps. Missing matching request
-  evidence shows Unavailable; percentiles and FPM iterations never stand in for
+  evidence shows one availability banner instead of four empty chart panels;
+  recorded workload settings remain visible. Missing collection metadata also
+  uses a single banner. Percentiles and FPM iterations never stand in for
   request traces. MAPE and evaluation membership remain unchanged.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`

@@ -8,6 +8,7 @@
   const label = value => value == null ? 'Unknown' : names[value] || String(value).replaceAll('_',' ');
   const number = value => value == null ? 'Unknown' : Number(value).toLocaleString('en-US', {maximumFractionDigits:2});
   const titles = {input:'Input sequence length distribution', output:'Output sequence length distribution', interactivity:'Interactivity over time', ttft:'TTFT over time'};
+  const banner = (title, reason) => `<div class="workload-banner" role="status"><strong>${escape(title)}</strong><span>${escape(reason)}</span></div>`;
   function attach(element, row, snapshot) {
     const value = row.collection;
     const text = value?.run_count ? [...value.types.map(label), ...value.datasets, `${value.run_count} collection runs`].join(' · ') : 'Unknown';
@@ -30,7 +31,7 @@
   }
   function render(target, collection) {
     const runs = collection?.runs || [];
-    if (!runs.length) { target.innerHTML = '<h3>Dataset and workload</h3><p>Unknown · Normalized collection metadata is unavailable for this evaluation.</p>'; return; }
+    if (!runs.length) { target.innerHTML = '<h3>Dataset and workload</h3>'+banner('Workload information unavailable', 'Unknown · Normalized collection metadata is unavailable for this evaluation.'); return; }
     const url = new URL(location.href);
     const current = runs.find(r=>r.id === url.searchParams.get('collection_run')) || runs.find(r=>r.availability === 'available') || runs[0];
     const runLabel = run => `${label(run.collection_type)} · ${number(run.workload.concurrency)} ${label(run.workload.concurrency_unit)}${run.started_at ? ' · '+run.started_at.slice(0,16).replace('T',' ')+' UTC' : ''}`;
@@ -39,16 +40,20 @@
       const w = run.workload;
       const length = value => value?.mode === 'fixed' ? number(value.value) : label(value?.mode);
       const fields = [['Dataset',run.dataset.name],['Benchmark preset',run.benchmark_preset],['Replay mode',label(run.replay_mode)],['Collector',[run.collector.name,run.collector.version].filter(Boolean).join(' ') || null],['Serving layout',label(run.serving.layout)],['Concurrency',`${number(w.concurrency)} ${label(w.concurrency_unit)}`],['Input length',length(w.input_length)],['Output length',length(w.output_length)],['Duration',w.duration_s == null ? null : number(w.duration_s)+' s'],['Completed requests',number(w.completed_requests)]];
-      const settings = value => Object.entries(value).map(([key,item])=>`${label(key)}: ${typeof item === 'number' ? number(item) : label(item)}`).join(' · ');
+      const settings = value => Array.isArray(value) ? value.map(settings).join(' · ') : value && typeof value === 'object' ? Object.entries(value).map(([key,item])=>`${label(key)}: ${settings(item)}`).join(' · ') : typeof value === 'number' ? number(value) : label(value);
       for (const [key,value] of [['Dataset revision',run.dataset.revision],['Dataset selection',run.dataset.selection],['Dataset transformations',run.dataset.transformations?.join(' · ')],['Worker topology',run.serving.topology],['Worker roles',run.serving.worker_roles?.map(label).join(' · ')],['Warmup',w.warmup && settings(w.warmup)],['Seed',w.seed],['Requested requests',w.requested_requests],['Failed requests',w.failed_requests],['Cancelled requests',w.cancelled_requests]]) {
-        if (value != null && value !== '') fields.push([key, typeof value === 'number' ? number(value) : value]);
+        if (value != null && value !== '') fields.push([key, settings(value)]);
       }
       const stages = run.charts?.stage_counts;
       const boundaries = w.stage_boundaries;
       const phaseNote = boundaries ? `Profiling: ${number(boundaries.profiling_start_s)}–${number(boundaries.profiling_end_s)} s from run start. ` : '';
       const sampleNote = stages ? `${number(stages.profiling || 0)} profiling requests; ${number((stages.warmup || 0)+(stages.drain || 0))} warmup/drain requests excluded from charts.` : '';
-      target.querySelector('#collection-settings').innerHTML = `<p>${escape(phaseNote+sampleNote)}</p><dl class="workload-settings">${fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('')}</dl>`;
-      target.querySelector('#request-charts').innerHTML = Object.entries(titles).map(([key,title])=>`<section class="matrix-panel request-chart"><h4>${title}</h4>${run.availability !== 'available' ? `<p class="workload-empty">${run.availability === 'not_applicable' ? 'Not applicable' : 'Unavailable'} · ${escape(run.reason || 'Request metrics are unavailable.')}</p>` : key === 'input' || key === 'output' ? histogram(run.charts?.[key],title,run.charts.request_count) : series(run.charts?.[key],title,key === 'ttft' ? 'seconds' : 'tokens/s/user')}</section>`).join('');
+      const hasSettings = fields.some(([,value])=>value != null && !/^unknown(?: unknown)*$/i.test(String(value)));
+      target.querySelector('#collection-settings').innerHTML = hasSettings ? `<p>${escape(phaseNote+sampleNote)}</p><dl class="workload-settings">${fields.map(([k,v])=>`<div><dt>${escape(k)}</dt><dd>${escape(v ?? 'Unknown')}</dd></div>`).join('')}</dl>` : '';
+      target.querySelector('#request-charts').innerHTML = run.availability !== 'available' ? banner(
+        run.availability === 'not_applicable' ? 'Request charts are not applicable' : 'Request charts unavailable',
+        run.reason || 'Matching request-level records are not included in this evaluation.'
+      ) : Object.entries(titles).map(([key,title])=>`<section class="matrix-panel request-chart"><h4>${title}</h4>${key === 'input' || key === 'output' ? histogram(run.charts?.[key],title,run.charts.request_count) : series(run.charts?.[key],title,key === 'ttft' ? 'seconds' : 'tokens/s/user')}</section>`).join('');
     }
     target.querySelector('#collection-run').addEventListener('change', event=> {
       const run = runs.find(r=>r.id === event.target.value);

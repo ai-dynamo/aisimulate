@@ -127,6 +127,8 @@
 .request-chart svg text { fill: currentColor; font-size: 12px; }
 .request-chart rect:focus { outline: 2px solid var(--text); }
 .workload-empty { padding: 1.5rem 0; }
+.workload-banner { grid-column: 1 / -1; display: grid; gap: .35rem; padding: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); }
+.workload-banner span { color: var(--muted); }
 @media (max-width: 700px) {
   .request-charts { grid-template-columns: 1fr; }
   .request-chart svg text { font-size: 22px; }

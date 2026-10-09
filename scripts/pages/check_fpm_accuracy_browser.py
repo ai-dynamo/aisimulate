@@ -58,6 +58,7 @@ async def check_collection_provenance(page, url, data):
     await page.unroute(pattern)
     await page.goto(url + "evaluation-detail.html?branch=main")
     await expect(page.locator("#dataset-workload")).to_contain_text("Unknown")
+    await expect(page.locator("#dataset-workload .workload-banner")).to_have_count(1)
     run = dict(
         id="run-a",
         collection_type="trace_replay",
@@ -66,7 +67,12 @@ async def check_collection_provenance(page, url, data):
         started_at="2026-09-17T12:00:00+00:00",
         collector={"name": "aiperf", "version": None},
         replay_mode="agentic_replay",
-        dataset={"name": "Recorded dataset", "revision": None, "selection": None, "transformations": []},
+        dataset={
+            "name": "Recorded dataset",
+            "revision": None,
+            "selection": [{"random_seed": 42}],
+            "transformations": [],
+        },
         workload={
             "concurrency": 4,
             "concurrency_unit": "session_trees",
@@ -98,7 +104,8 @@ async def check_collection_provenance(page, url, data):
     )
 
     other = dict(run, id="run-b", availability="unavailable", charts=None, reason="No matching request trace.")
-    collection = {"runs": [run, other], "unattributed_measurements": 0}
+    sweep = dict(run, id="run-c", availability="not_applicable", charts=None, reason="Self-benchmark point sweep.")
+    collection = {"runs": [run, other, sweep], "unattributed_measurements": 0}
     details = json.loads((ROOT / "tests/fpm_accuracy/fixtures/dashboard/synthetic-details.json").read_text())
     for row in details["rows"]:
         row["collection"] = collection
@@ -107,6 +114,7 @@ async def check_collection_provenance(page, url, data):
     await expect(page.locator("#request-charts svg")).to_have_count(4)
     await expect(page.locator("#collection-settings")).to_contain_text("1P1D")
     await expect(page.locator("#collection-settings")).to_contain_text("ramp s: 3")
+    await expect(page.locator("#collection-settings")).to_contain_text("random seed: 42")
     await expect(page.locator("#request-charts")).not_to_contain_text("NaN")
     for width in (1400, 390):
         await page.set_viewport_size({"width": width, "height": 900})
@@ -116,13 +124,20 @@ async def check_collection_provenance(page, url, data):
     await page.locator("#collection-run").select_option("run-b")
     assert "collection_run=run-b" in page.url
     await expect(page.locator("#request-charts")).to_contain_text("No matching request trace.")
+    await expect(page.locator("#request-charts .workload-banner")).to_have_count(1)
+    await expect(page.locator("#request-charts .request-chart")).to_have_count(0)
+    await expect(page.locator("#collection-settings")).to_contain_text("Recorded dataset")
     await page.reload()
     await expect(page.locator("#collection-run")).to_have_value("run-b")
     await page.locator("#collection-run").focus()
     await expect(page.locator("#collection-run")).to_be_focused()
+    await page.locator("#collection-run").select_option("run-c")
+    await expect(page.locator("#request-charts .workload-banner")).to_contain_text("not applicable")
+    await expect(page.locator("#request-charts .request-chart")).to_have_count(0)
     await page.locator("#collection-run").select_option("run-a")
     await expect(page.locator("#collection-run")).to_have_value("run-a")
     await expect(page.locator("#request-charts svg")).to_have_count(4)
+    await expect(page.locator("#request-charts .workload-banner")).to_have_count(0)
     await page.unroute("**/data/synthetic-details.json")
 
 
