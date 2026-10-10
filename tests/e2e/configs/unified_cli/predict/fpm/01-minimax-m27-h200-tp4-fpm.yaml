@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Whole-forward (FPM) timing from the bundled MiniMaxAI/MiniMax-M2.7 cell at h200_sxm/vllm/0.25.1.
-# That version sits outside the queryable slots, so the test that runs this file sets
-# AIC_ALLOW_UNLISTED_VERSIONS=1; the generic case matrix in predict/engine does not.
+# Supply the external parquet below and its adjacent reviewed-fpm.metadata.json.
+# The pair must cover MiniMaxAI/MiniMax-M2.7 on h200_sxm/vllm/0.25.1 at TP4.
+# Set AIC_ALLOW_UNLISTED_VERSIONS=1 for this version outside the queryable slots.
 engine:
   mode: aggregated
   model: MiniMaxAI/MiniMax-M2.7
@@ -16,7 +16,10 @@ engine:
       parallelism: {replicas: 1, tensor: 4, pipeline: 1, attention_data: 1, moe_tensor: 4, moe_expert: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 256}
       kv_cache: {block_size: 64, prefix_caching: false, capacity: {type: default}}
-      timing: {type: default, forward_model: fpm}
+      timing:
+        type: default
+        forward_model: fpm
+        fpm_parquet_path: /data/reviewed-fpm.parquet
 traffic:
   source: {type: synthetic, input_tokens: 1024, output_tokens: 32}
   load: {type: concurrency, concurrency: 4}

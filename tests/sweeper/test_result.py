@@ -9,6 +9,7 @@ import csv
 import io
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -171,6 +172,33 @@ def test_result_json_round_trip_is_lossless_and_schema_versioned():
     assert decoded["provenance"]["search_strategy"] == "exhaustive"
     assert SweepResult.from_json(payload) == result
     assert SweepResult.model_json_schema()["properties"]["schema_version"]["const"] == "1.1"
+
+
+@pytest.mark.parametrize("selection", ["scalar", "pareto", "empty"])
+def test_documented_sdk_example_prints_selected_ids(monkeypatch, capsys, selection):
+    root = Path(__file__).resolve().parents[2]
+    script = (root / "docs/sweeper/sdk.md").read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+    payload = _complete_result().model_dump(mode="python")
+    second = _record("candidate-000006", CandidateStatus.FEASIBLE).model_dump(mode="python")
+    second["score"] = second["metrics"]["output_throughput_tok_s"] = 200.0
+    payload["candidates"].append(second)
+    payload["counts"]["feasible"] += 1
+    payload["counts"]["evaluated"] += 1
+    selected = [] if selection == "empty" else ["candidate-000006", "candidate-000001"]
+    payload["views"] = {
+        "top_n": selected if selection == "scalar" else [],
+        "pareto_front": selected if selection == "pareto" else [],
+    }
+    result = SweepResult.model_validate(payload)
+    monkeypatch.chdir(root)
+    # Exercise the documented result consumer with real, nonempty result types;
+    # the expensive search itself is outside this example-contract check.
+    monkeypatch.setattr(Sweeper, "run", lambda self, config: result)
+
+    exec(compile(script, "docs/sweeper/sdk.md", "exec"), {"__name__": "__main__"})
+
+    expected = [] if selection == "empty" else ["candidate-000006 200.0 8", "candidate-000001 100.0 8"]
+    assert capsys.readouterr().out.splitlines() == expected
 
 
 def test_selected_prediction_configs_preserve_ids_and_canonicalize_artifacts():
@@ -552,7 +580,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -611,7 +639,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
     config_data = _config().model_dump(mode="python")
     config_data["goal"] = {
@@ -643,7 +671,7 @@ def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch)
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     result = Sweeper(
         runner_factory=_FailingRunnerFactory(),
@@ -669,7 +697,7 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     seen = {}
 
@@ -726,7 +754,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -798,7 +826,7 @@ def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(mo
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *a, **kw: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a, systems_paths=None: "1.0")
 
     class ResourceFactory(_RunnerFactory):
         def admit_wave(self, specs):

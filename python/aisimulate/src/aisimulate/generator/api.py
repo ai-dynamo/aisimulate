@@ -275,7 +275,7 @@ def generate_backend_artifacts(
         output_dir: Optional directory to save generated files
         backend_version: Optional version string for version-specific template selection
         deployment_target: Deployment platform ('dynamo-j2', 'dynamo-python', 'llm-d-helm',
-            'llm-d-kustomize', or 'fpm').
+            'llm-d-kustomize', 'fpm', or 'slurm').
             'dynamo-j2' uses typed Dynamo builders, 'dynamo-python' uses Dynamo's Python config modifiers,
             'llm-d-helm' generates Helm values for llm-d-modelservice chart, and 'llm-d-kustomize'
             generates Kustomize overlays for llm-d modelserver guides.
@@ -673,7 +673,7 @@ def generate_naive_config(
         generator_overrides: Optional generator config overrides from
             --generator-config and --generator-set.
         deployment_target: Deployment platform ('dynamo-j2', 'dynamo-python',
-            'llm-d-helm', 'llm-d-kustomize', or 'fpm').
+            'llm-d-helm', 'llm-d-kustomize', 'fpm', or 'slurm').
 
     Returns:
         Dictionary containing:
@@ -815,6 +815,19 @@ def generate_from_request(
     ``backend.dynamo_version``; otherwise the renderer uses its default templates.
     """
     from .request import to_legacy_params
+
+    if req.emit.deployment_target == "fpm":
+        # Collection records Dynamo releases as provenance only. Remove both
+        # typed and legacy inputs before lowering applies image/schema defaults.
+        from dataclasses import replace
+
+        raw = dict(req.overrides.raw)
+        raw.pop("generator_dynamo_version", None)
+        req = replace(
+            req,
+            backend=replace(req.backend, dynamo_version=None),
+            overrides=replace(req.overrides, raw=raw),
+        )
 
     params = to_legacy_params(req)
     backend = req.backend.name

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 /// Stable Agentic correlation data carried across replay-owned boundaries.
 ///
-/// The static M1 graph already owns request, play, and conversation identity.
+/// The static graph already owns request, play, and conversation identity.
 /// Later replay phases may populate lane, tree, parent, and cache identities
 /// without changing the placement or engine request contracts again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

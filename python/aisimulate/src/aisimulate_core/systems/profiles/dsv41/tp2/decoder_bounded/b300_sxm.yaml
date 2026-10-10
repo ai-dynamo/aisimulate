@@ -1,0 +1,27 @@
+data_dir: data/b300_sxm
+gpu:
+  fp32_flops: 75000000000000
+  mem_bw: 7750000000000
+  mem_bw_empirical_scaling_factor: 0.8
+  mem_empirical_constant_latency: 3.0e-06
+  mem_capacity: 288400343040
+  bfloat16_tc_flops: 2250000000000000
+  int8_tc_flops: 153500000000000
+  fp8_tc_flops: 4500000000000000
+  fp4_tc_flops: 14000000000000000
+  power: 1100
+  sm_version: 103
+node:
+  num_gpus_per_node: 8
+  inter_node_bw: 100000000000
+  intra_node_bw: 900000000000
+  pcie_bw: 128000000000
+  p2p_latency: 1.0e-05
+misc:
+  nccl_mem:
+    1: 0
+    2: 358612992
+    4: 411041792
+    8: 411041792
+  other_mem: 3758096384
+  nccl_version: 2.29.7

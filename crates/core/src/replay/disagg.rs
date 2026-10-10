@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use crate::engine::{Backend, Command, CommandResult, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
@@ -22,8 +23,8 @@ use super::core::NoEngineEvents;
 #[cfg(test)]
 use super::core::round_robin::PoolRoundRobinPlacement;
 use super::core::{
-    AdmissionSource as CoreAdmissionSource, Placement, PlacementDecision, PlacementPolicy,
-    ReadyArrival, WorkerTopology,
+    AdmissionSource as CoreAdmissionSource, EngineEventBatch, Placement, PlacementDecision,
+    PlacementPolicy, ReadyArrival, WorkerTopology,
 };
 use super::events::{SimulationEvent, SimulationWorkerStage, WorkerCompletionPayload};
 use super::evidence::{
@@ -35,7 +36,7 @@ use super::runtime_utils::{
     ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
     pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
     pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready,
+    push_transfer_complete, push_worker_completions, push_worker_ready, settle_internal_work,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -52,7 +53,9 @@ use crate::replay::handoff::{
 };
 #[cfg(test)]
 use crate::replay::loadgen::WorkloadDriver;
-use crate::replay::loadgen::{ReplayRequestHashes, ReplayRequestPayload};
+use crate::replay::loadgen::{
+    AgenticPreparationTransition, ReplayRequestHashes, ReplayRequestPayload,
+};
 use crate::replay::protocol::ForwardPassSnapshot;
 use crate::replay::protocol::{DirectRequest, OutputSignal};
 use crate::replay::{OfflineDisaggReplayConfig, ReplayTerminalStatus, TraceCollector};
@@ -948,6 +951,9 @@ where
     collect_fpm: bool,
     drive_started: bool,
     drive_finalized: bool,
+    profile_observers_started: bool,
+    profile_cancel_started: bool,
+    profile_canceled_requests: usize,
 }
 
 #[cfg(test)]
@@ -1008,12 +1014,16 @@ where
             Vec<WorkerTopology>,
         ) -> Result<(PlacementPolicyImpl, PlacementPolicyImpl)>,
     ) -> Result<Self> {
-        let prefill_factory = config.prefill_factory(Observation::capture_engine_kv_events(
+        let mut prefill_factory = config.prefill_factory(Observation::capture_engine_kv_events(
             crate::replay::WorkerStage::Prefill,
         ))?;
-        let decode_factory = config.decode_factory(Observation::capture_engine_kv_events(
+        let mut decode_factory = config.decode_factory(Observation::capture_engine_kv_events(
             crate::replay::WorkerStage::Decode,
         ))?;
+        // Both roles join one deployment-wide cluster-shared G2 pool.
+        let g2_registry = Arc::default();
+        prefill_factory.bind_g2_registry(&g2_registry);
+        decode_factory.bind_g2_registry(&g2_registry);
         let handoff_order = match (prefill_factory.backend(), decode_factory.backend()) {
             (Backend::Vllm, Backend::Vllm) => HandoffOrder::SourceFirst,
             (Backend::Sglang, Backend::Sglang) => HandoffOrder::DestinationFirst,
@@ -1085,6 +1095,9 @@ where
             collect_fpm: false,
             drive_started: false,
             drive_finalized: false,
+            profile_observers_started: false,
+            profile_cancel_started: false,
+            profile_canceled_requests: 0,
         })
     }
 
@@ -1858,7 +1871,9 @@ where
 
     fn finish_logical_request(&mut self, uuid: Uuid, remove_actions: bool) -> Result<()> {
         self.flow.prepare_logical_finish(uuid, remove_actions)?;
-        self.progress.inc_completed();
+        if !self.admission.knows_preparation_request(uuid) {
+            self.progress.inc_completed();
+        }
         #[cfg(test)]
         {
             self.stats
@@ -1900,6 +1915,9 @@ where
     /// so they do not
     /// keep the run alive — otherwise a recurring tick would never let `run()` exit.
     fn is_done(&self) -> bool {
+        if self.admission.agentic_profile_client_complete(self.now_ms) {
+            return true;
+        }
         self.only_idle_events_remain()
             && self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
@@ -1944,17 +1962,55 @@ where
     /// Return both the next event including telemetry and the canonical next
     /// timestamp that can advance replay semantics.
     fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
-        let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
+        let profile_deadline =
+            self.admission
+                .agentic_profile_deadlines()
+                .and_then(|(_, grace, cancel)| {
+                    let deadline = if self.profile_cancel_started {
+                        cancel
+                    } else {
+                        grace
+                    };
+                    (deadline > self.now_ms).then_some(deadline)
+                });
+        let next_arrival_ms = choose_next_timestamp(
+            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+            profile_deadline,
+        );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
             next_non_telemetry_event_ms(&mut self.events)
         } else {
             next_event_ms
         };
+        // Host transfers are engine-internal deadlines for either role.
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.prefill_engine.next_internal_deadline_ms(),
+            self.decode_engine.next_internal_deadline_ms(),
+        );
         (
-            choose_next_timestamp(next_arrival_ms, next_event_ms),
-            choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_event_ms),
+                next_internal_deadline_ms,
+            ),
+            choose_next_timestamp(
+                choose_next_timestamp(next_arrival_ms, next_canonical_event_ms),
+                next_internal_deadline_ms,
+            ),
         )
+    }
+
+    /// Settle due engine-internal work of both roles at the current instant.
+    fn apply_internal_work(&mut self) -> Result<bool> {
+        let prefill = self.prefill_engine.process_internal_work(self.now_ms)?;
+        if !EngineEventBatch::is_empty(&prefill.engine_events) {
+            self.apply_prefill_observations(prefill.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        let decode = self.decode_engine.process_internal_work(self.now_ms)?;
+        if !EngineEventBatch::is_empty(&decode.engine_events) {
+            self.apply_decode_observations(decode.engine_events, KvIngestBoundary::OffloadTick)?;
+        }
+        Ok(prefill.made_progress || decode.made_progress)
     }
 
     fn apply_prefill_observations(
@@ -2016,6 +2072,11 @@ where
 
     /// Process one prefill output signal, including router updates and decode handoff scheduling.
     fn process_prefill_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        if !self.admission.is_agentic_preparing()
+            && self.admission.knows_preparation_request(signal.uuid)
+        {
+            return Ok(());
+        }
         let disposition =
             self.flow
                 .inspect_prefill_signal(&signal, self.now_ms, &mut self.collector)?;
@@ -2042,6 +2103,11 @@ where
 
     /// Process one decode output signal, including decode router frees and request completion.
     fn process_decode_signal(&mut self, signal: OutputSignal) -> Result<()> {
+        if !self.admission.is_agentic_preparing()
+            && self.admission.knows_preparation_request(signal.uuid)
+        {
+            return Ok(());
+        }
         if let Some(token_id) = signal.token_id {
             self.admission.defer_output_token(signal.uuid, token_id)?;
             // Generalized-engine completion effects become visible at the
@@ -2214,13 +2280,15 @@ where
                 dispatched_at_ms,
                 session_id,
                 turn_index,
+                synthetic_session_id,
             } = ready;
             let session_metadata = session_id.clone().zip(turn_index);
+            let placement_session_id = session_id.filter(|_| !synthetic_session_id);
             let uuid = self.on_external_arrival(
                 request,
                 arrival_time_ms,
                 metadata.into_hashes(),
-                session_id,
+                placement_session_id,
             )?;
             if let Some((session_id, turn_index)) = session_metadata {
                 self.collector
@@ -2297,6 +2365,7 @@ where
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2312,6 +2381,7 @@ where
                 admission.uuid,
                 self.now_ms,
                 admission.reused_input_tokens,
+                admission.cache_tier_attribution,
             );
             self.evidence.record_pressure_readmission(
                 admission.uuid,
@@ -2484,13 +2554,33 @@ where
         {
             self.stats.semantic_drain_count += 1;
         }
+        let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = self.prune_stale_transfer_events();
-            changed |= self.apply_worker_completions()?;
+            let now_ms = self.now_ms;
+            let mut settle = |runtime: &mut Self| {
+                settle_internal_work(now_ms, &mut consecutive_internal_steps, || {
+                    runtime.apply_internal_work()
+                })
+            };
+            // Settle idle deadlines first, then any exposed by pass completion.
+            changed |= settle(self)?;
+            let completed = self.apply_worker_completions()?;
+            changed |= completed;
+            if completed {
+                changed |= settle(self)?;
+            }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;
             changed |= self.drive_pending_actions()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            changed |= self.finish_agentic_preparation()?;
+            changed |= self.admission.advance_agentic_profile(self.now_ms)?;
+            changed |= self.cancel_expired_agentic_profile()?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            if self.admission.agentic_profile_client_complete(self.now_ms) {
+                return Ok(());
+            }
             changed |= self.release_ready_arrivals()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
@@ -2702,6 +2792,105 @@ where
         result
     }
 
+    fn start_profile_observers(&mut self) -> Result<()> {
+        if !self.profile_observers_started {
+            self.seed_first_telemetry_tick()?;
+            self.seed_first_scaling_tick()?;
+            self.profile_observers_started = true;
+        }
+        Ok(())
+    }
+
+    fn cancel_expired_agentic_profile(&mut self) -> Result<bool> {
+        let Some((_, grace, _)) = self.admission.agentic_profile_deadlines() else {
+            return Ok(false);
+        };
+        if self.profile_cancel_started || self.now_ms < grace {
+            return Ok(false);
+        }
+        self.profile_cancel_started = true;
+        for uuid in self.admission.agentic_profile_pending_request_ids() {
+            let handoff_id = self.state(uuid)?.handoff_id;
+            self.flow.apply_handoff_fact(
+                uuid,
+                HandoffFact::Canceled { handoff_id },
+                self.now_ms,
+                &mut self.collector,
+            )?;
+            self.notify_causal_terminal(uuid)?;
+            self.profile_canceled_requests += 1;
+        }
+        // Execute available cleanup; actions behind committed batches retain
+        // their actual wakeup. Client completion does not fabricate settlement.
+        self.drive_pending_actions()?;
+        Ok(true)
+    }
+
+    fn finish_agentic_preparation(&mut self) -> Result<bool> {
+        if !self.admission.is_agentic_preparing()
+            || !self.prefill_engine.is_drained()
+            || !self.decode_engine.is_drained()
+            || self.cluster_in_flight() > 0
+        {
+            return Ok(false);
+        }
+        let Some(transition) =
+            self.admission
+                .finish_agentic_preparation(self.now_ms, &self.collector, || {
+                    self.prefill_engine.reset_timing_evidence()?;
+                    self.decode_engine.reset_timing_evidence()
+                })?
+        else {
+            return Ok(false);
+        };
+
+        // Source release and destination quiescence precede this boundary;
+        // retain both live KV pools and clear only the measurement windows.
+        // The profile evidence has its own ordinal and KV digest scope.
+        let next_evidence = ReplayEvidenceCollector::new(self.evidence.options());
+        self.collector
+            .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
+        self.collector.take_report(self.now_ms);
+        self.collector.set_agentic_phases(
+            self.admission
+                .agentic_phase_evidence()
+                .expect("a preparation transition retains its audit evidence"),
+        );
+        self.traffic.drain_planner(self.now_ms);
+        self.traffic.drain_telemetry(self.now_ms);
+        self.prefill_engine.take_telemetry_snapshot()?;
+        self.decode_engine.take_telemetry_snapshot()?;
+        self.prefill_fpm_buffer = LatestFpmBuffer::default();
+        self.decode_fpm_buffer = LatestFpmBuffer::default();
+        if self.collect_fpm {
+            for worker_id in self.prefill_engine.active_group_ids() {
+                self.prefill_fpm_buffer.activate_worker(
+                    worker_id,
+                    self.prefill_engine.dp_size(),
+                    self.now_ms,
+                );
+            }
+            for worker_id in self.decode_engine.active_group_ids() {
+                self.decode_fpm_buffer.activate_worker(
+                    worker_id,
+                    self.decode_engine.dp_size(),
+                    self.now_ms,
+                );
+            }
+        }
+        if transition == AgenticPreparationTransition::OpenProfile {
+            if let Some(cap_ms) = &mut self.max_sim_time_ms {
+                *cap_ms += self.now_ms;
+                anyhow::ensure!(
+                    cap_ms.is_finite(),
+                    "profile time limit overflows runtime clock"
+                );
+            }
+            self.start_profile_observers()?;
+        }
+        Ok(true)
+    }
+
     fn seed_first_telemetry_tick(&mut self) -> Result<()> {
         let Some(telemetry) = self.telemetry.as_mut() else {
             return Ok(());
@@ -2735,6 +2924,9 @@ where
     }
 
     fn publish_final_telemetry_sample(&mut self) -> Result<()> {
+        if !self.profile_observers_started {
+            return Ok(());
+        }
         let Some(telemetry) = self.telemetry.as_ref() else {
             return Ok(());
         };
@@ -2998,6 +3190,10 @@ where
             self.dispatch_prefill_placements(placements)?;
         }
         for &id in &removed {
+            // Canceled startups were never registered with placement.
+            if prefill_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.prefill_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
@@ -3077,6 +3273,9 @@ where
             self.dispatch_decode_placements(placements)?;
         }
         for &id in &removed {
+            if decode_starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.decode_placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
@@ -3266,14 +3465,18 @@ where
         if self.drive_started {
             return Ok(false);
         }
+        if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with max_sim_time_ms");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
             bail!("max_sim_time_ms must be a finite, non-negative value; got {cap_ms}");
         }
         self.drain_current_timestamp()?;
-        self.seed_first_telemetry_tick()?;
-        self.seed_first_scaling_tick()?;
+        if self.admission.agentic_phase_evidence().is_none() {
+            self.start_profile_observers()?;
+        }
         // Keep the baseline before the first scaling decision, but settle any
         // tick seeded at this instant before exposing a settled step boundary.
         if !self.is_done()
@@ -3320,6 +3523,7 @@ where
                 );
             };
             if let Some(cap_ms) = self.max_sim_time_ms
+                && !self.admission.is_agentic_preparing()
                 && canonical_timestamp_ms > cap_ms
             {
                 return Ok(ReplayStepOutcome::TimeLimitReached {
@@ -3359,7 +3563,11 @@ where
     /// timestamp would exceed that cap; in-flight requests at that point are
     /// reported as incomplete.
     pub(crate) fn run(mut self) -> Result<(TraceCollector, DisaggRuntimeStats)> {
-        self.collector.begin_batch_reporting();
+        if self.admission.is_agentic_preparing() {
+            self.collector.begin_batch_preparation_reporting();
+        } else {
+            self.collector.begin_batch_reporting();
+        }
         self.run_to_completion()?;
 
         self.progress.finish();
@@ -3370,6 +3578,18 @@ where
         if let Some(identity) = self.admission.agentic_graph_identity() {
             self.collector.set_agentic_graph(identity);
         }
+        if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
+            self.collector.set_agentic_snapshots(snapshots);
+        }
+        if let Some(phases) = self.admission.agentic_phase_evidence() {
+            self.collector.set_agentic_phases(phases);
+        }
+        if let Some(mut profile) = self.admission.agentic_profile_report() {
+            profile.finished_at_ms = Some(self.now_ms);
+            profile.canceled_requests = self.profile_canceled_requests;
+            profile.unsettled_server_requests = self.flow.requests_by_handoff.len();
+            self.collector.set_agentic_profile(profile);
+        }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
         }
@@ -3377,6 +3597,11 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        // Both roles reference the same deployment pool; report it once.
+        self.collector.g2_domains = match self.prefill_engine.g2_domains() {
+            domains if domains.is_empty() => self.decode_engine.g2_domains(),
+            domains => domains,
+        };
         self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }

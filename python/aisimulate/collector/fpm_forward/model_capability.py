@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aisimulate.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
 from aisimulate.sdk.memory import NaiveKVCacheEstimator
 from aisimulate.sdk.utils import (
     HuggingFaceDownloadError,
@@ -20,6 +21,7 @@ from aisimulate.sdk.utils import (
     _get_model_config_path,
     _parse_hf_config_json,
 )
+from aisimulate_core.sdk.fpm_model_metadata import attach_quantization_sidecar, inherit_decoder_precision
 
 _ATTENTION_SOURCE_OPS = {
     "dsa_module": frozenset({"dsa_context_module", "dsa_generation_module"}),
@@ -64,13 +66,26 @@ class ResolvedModelConfig:
 
     @property
     def effective_payload(self) -> dict[str, Any]:
-        """Return the text-model view while preserving top-level quant metadata."""
+        """Return decoder metadata, inheriting only identity and shared precision."""
 
         payload = self.payload
         text_config = payload.get("text_config")
         if isinstance(text_config, dict):
-            payload = {**payload, **text_config}
-        return payload
+            effective, _ = inherit_decoder_precision(payload, text_config)
+            if effective.get("architectures") is None and payload.get("architectures") is not None:
+                effective["architectures"] = payload["architectures"]
+        else:
+            effective = payload
+        sidecar = effective.get("hf_quant_config")
+        if sidecar is None and isinstance(text_config, dict) and isinstance(payload.get("hf_quant_config"), dict):
+            try:
+                return attach_quantization_sidecar(effective, payload["hf_quant_config"])
+            except ValueError:
+                # Inline wrapper precision can describe non-decoder components.
+                # Preserve decoder scope on a conflicting wrapper declaration;
+                # actual adjacent sidecars are checked before freezing the source.
+                return effective
+        return attach_quantization_sidecar(effective, sidecar) if isinstance(sidecar, dict) else effective
 
     def parsed_payload(self) -> dict[str, Any]:
         """Return the frozen payload in the SDK's parsed model-parameter shape.
@@ -83,8 +98,16 @@ class ResolvedModelConfig:
         """
 
         raw_config = _attach_inferred_quant_fields(self.effective_payload)
+        parser_config = raw_config
+        architecture = (raw_config.get("architectures") or [None])[0]
+        text_key = MULTIMODAL_TEXT_CONFIG_KEY.get(architecture)
+        source = self.payload
+        if text_key and isinstance(source.get(text_key), dict):
+            # Registered wrapper parsers require their original encoder and
+            # processor context, but read model geometry from the decoder.
+            parser_config = {**source, "architectures": [architecture], text_key: raw_config}
         try:
-            parsed = _parse_hf_config_json(raw_config)
+            parsed = _parse_hf_config_json(parser_config)
         except ValueError:
             # Bootstrap templates intentionally admit real HF architectures
             # that the native AIC parser does not know yet. Normalize their
@@ -131,6 +154,20 @@ def _load_json_mapping(path: Path, *, description: str) -> tuple[dict[str, Any],
     return payload, path
 
 
+def _attach_modelopt_sidecar(payload: dict[str, Any], sidecar: dict[str, Any]) -> dict[str, Any]:
+    text_config = payload.get("text_config")
+    if payload.get("hf_quant_config") is not None and payload["hf_quant_config"] != sidecar:
+        raise ValueError("conflicting inline hf_quant_config and adjacent hf_quant_config.json")
+    if isinstance(text_config, dict):
+        decoder, _ = inherit_decoder_precision(payload, text_config)
+        attach_quantization_sidecar(decoder, sidecar)  # Reject contradictory source declarations before planning.
+    else:
+        attach_quantization_sidecar(payload, sidecar)
+    # Preserve the established frozen source/hash for already supported inputs.
+    # Null handling and inferred scalar fields belong to the effective view.
+    return _attach_hf_quant_config(payload, sidecar)
+
+
 def _attach_sibling_quant_config(payload: dict[str, Any], config_path: Path, *, cached: bool) -> dict[str, Any]:
     suffix = "_hf_quant_config.json" if cached else "hf_quant_config.json"
     quant_path = (
@@ -141,7 +178,7 @@ def _attach_sibling_quant_config(payload: dict[str, Any], config_path: Path, *, 
     if not quant_path.is_file():
         return payload
     quant_config, _ = _load_json_mapping(quant_path, description="model quantization config")
-    return _attach_hf_quant_config(payload, quant_config)
+    return _attach_modelopt_sidecar(payload, quant_config)
 
 
 def _local_config_path(raw_path: str, *, explicit: bool) -> Path | None:
@@ -191,7 +228,7 @@ def _download_model_config(model_path: str) -> ResolvedModelConfig:
     if quant_config is not None:
         if not isinstance(quant_config, dict):
             raise TypeError(f"Hugging Face hf_quant_config.json must be a mapping for model {model_path!r}")
-        payload = _attach_hf_quant_config(payload, quant_config)
+        payload = _attach_modelopt_sidecar(payload, quant_config)
     return ResolvedModelConfig(
         payload,
         source_kind="huggingface",

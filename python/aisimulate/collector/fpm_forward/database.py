@@ -9,8 +9,8 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
-import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,8 +19,9 @@ from typing import Any
 import yaml
 
 from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
-from .native_artifact import validate_native_collection
+from .native_artifact import NativeCollection, _rank_artifacts, select_native_measurements, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ _ROW_KEY = (
     "attention_backend",
     "enable_wideep",
     "enable_eplb",
+    *EXECUTION_COLUMNS,
     "workload_kind",
     "batch_size",
     "total_prefill_tokens",
@@ -94,14 +96,123 @@ def _validate_backend_markers(cell: FPMCell, cell_dir: Path) -> None:
             raise ValueError(f"backend marker mismatch in {path}: {mismatches}")
 
 
+def _full_attention_group(group: object) -> bool:
+    if not isinstance(group, dict):
+        return False
+    if group.get("type") == "FullAttentionSpec":
+        # FullAttentionSpec also represents sliding/chunked attention when
+        # vLLM disables its hybrid allocator; the type name is insufficient.
+        # https://github.com/vllm-project/vllm/blob/4bdc8a788d2e2ce9165d552b3d4d8b72604626bf/vllm/v1/kv_cache_interface.py#L235
+        return (
+            "specs" not in group
+            and "sliding_window" in group
+            and group["sliding_window"] is None
+            and "attention_chunk_size" in group
+            and group["attention_chunk_size"] is None
+            and group.get("non_causal") is False
+        )
+    if group.get("type") == "UniformTypeKVCacheSpecs":
+        specs = group.get("specs")
+        return (
+            isinstance(specs, list)
+            and bool(specs)
+            and all(
+                isinstance(spec, dict) and spec.get("type") == "FullAttentionSpec" and _full_attention_group(spec)
+                for spec in specs
+            )
+        )
+    return False
+
+
+def _dense_synthetic_kv_eligible(
+    plan: FPMCollectionPlan, cell: FPMCell, raw_root: Path, collection: NativeCollection
+) -> bool:
+    """Corroborate the producer's deliberate dense skip with initialized cache evidence."""
+    meta = collection.kvwarm_meta or {}
+    if (
+        meta.get("enabled") is not True
+        or meta.get("warm_eligible") is not False
+        or meta.get("skip_reason") != "dense_model_content_insensitive"
+        or plan.capability.is_moe is not False
+        or plan.capability.attention_source != "dense_attention"
+        or plan.capability.model_config is None
+        or cell.parallel_strategy not in {"tp", "single"}
+        or any(getattr(cell.topology, name) != 1 for name in ("pp", "dp", "moe_tp", "moe_ep", "cp"))
+    ):
+        return False
+    source = plan.capability.model_config.payload
+    text = source.get("text_config")
+    # Dynamo checks both configs for experts before considering recurrent state:
+    # https://github.com/ai-dynamo/dynamo/blob/92cf45e2e6707ac32b1fee275f949270fdd61200/components/src/dynamo/vllm/instrumented_scheduler.py#L5585
+    # Its skip reason alone therefore does not establish dense full attention.
+    if any(
+        config.get(key)
+        for config in (source, text)
+        if isinstance(config, dict)
+        for key in ("num_local_experts", "num_experts", "n_routed_experts", "moe_num_experts")
+    ):
+        return False
+    model_type, architectures = source.get("model_type"), source.get("architectures")
+    if not isinstance(model_type, str) or not model_type or not isinstance(architectures, list) or not architectures:
+        return False
+    expected_parallel = {
+        "tensor_parallel_size": cell.topology.tp,
+        "pipeline_parallel_size": cell.topology.pp,
+        "data_parallel_size": cell.topology.dp,
+        "prefill_context_parallel_size": cell.topology.cp,
+        "decode_context_parallel_size": cell.topology.cp,
+        "enable_expert_parallel": False,
+    }
+    artifacts = _rank_artifacts(raw_root)
+    for _path, payload in artifacts:
+        engine = payload.get("engine")
+        if not isinstance(engine, dict) or engine.get("capture_error") is not None:
+            return False
+        model, parallel = engine.get("model"), engine.get("parallel")
+        versions, cache = engine.get("versions"), engine.get("kv_cache")
+        if not all(isinstance(block, dict) for block in (model, parallel, versions, cache)):
+            return False
+        if (
+            model.get("model_type") != model_type
+            or model.get("architectures") != architectures
+            or versions.get("vllm") != collection.backend_version
+            or any(
+                type(parallel.get(key)) is not type(value) or parallel.get(key) != value
+                for key, value in expected_parallel.items()
+            )
+            or parallel.get("data_parallel_rank") != payload["dp"]["rank"]
+        ):
+            return False
+        if model.get("model") != plan.model_path:
+            from .execution_evidence import _effective_launch
+
+            try:
+                launch_model = _effective_launch(plan, raw_root.parent).get("--model")
+            except (OSError, TypeError, ValueError, KeyError):
+                return False
+            if model.get("model") != launch_model:
+                return False
+        # Initialized group evidence, including vLLM's uniform-spec wrapper:
+        # https://github.com/ai-dynamo/dynamo/blob/92cf45e2e6707ac32b1fee275f949270fdd61200/components/src/dynamo/vllm/instrumented_scheduler.py#L291
+        groups = cache.get("groups")
+        if not isinstance(groups, list) or not groups or not all(_full_attention_group(group) for group in groups):
+            return False
+    return bool(artifacts)
+
+
 def aggregate_cell(
     plan: FPMCollectionPlan,
     cell: FPMCell,
     cell_dir: Path,
     *,
     expected_attempt_id: str,
+    dense_synthetic_kv: bool = True,
 ) -> list[dict[str, Any]]:
-    """Validate native rank artifacts and take max-rank latency per grid point."""
+    """Validate native rank artifacts and take max-rank latency per grid point.
+
+    Revalidating an existing publication uses its explicit dense-KV policy;
+    an older commit record retains the historical fake-fallback classification.
+    """
 
     if not expected_attempt_id:
         raise ValueError(f"cannot aggregate {cell.cell_id} without an expected Collector attempt identity")
@@ -112,48 +223,18 @@ def aggregate_cell(
         expected_plan_sha256=plan.sha256,
         expected_attempt_id=expected_attempt_id,
     )
-    backend_version = collection.backend_version
+    runtime_version = getattr(plan, "runtime_backend_version", None)
+    if runtime_version is not None and collection.backend_version != runtime_version:
+        raise ValueError("observed backend version differs from the frozen runtime version")
+    deployment = plan.deployment_profile(cell) if getattr(plan, "fpm_profile", None) is not None else None
+    backend_version = (
+        deployment.backend_version
+        if deployment is not None
+        else getattr(plan, "backend_version", None) or collection.backend_version
+    )
     capability = plan.capability
 
-    # The steady-state decode policy clamps every per-sequence context below
-    # the measurable minimum up to it, so several requested plan points can
-    # collapse onto one achieved physical coordinate (e.g. batch=3 with
-    # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
-    # one coordinate would violate the database's unique-key contract, so keep
-    # exactly one per coordinate: the native (unclamped) sample when present,
-    # otherwise the clamped sample with the lowest benchmark_id. Two native
-    # samples on one coordinate remain a hard error — the grid itself
-    # guarantees native coordinates are unique.
-    grouped: dict[tuple[str, int, int, int], list[Any]] = {}
-    for measurement in collection.points:
-        point = measurement.point
-        key = (
-            str(point["point_type"]),
-            int(point["batch_size"]),
-            int(point["total_prefill_tokens"]),
-            int(point["total_kv_read_tokens"]),
-        )
-        grouped.setdefault(key, []).append(measurement)
-    selected: list[Any] = []
-    dropped_clamped = 0
-    for key, measurements in grouped.items():
-        natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
-        if len(natives) > 1:
-            raise ValueError(
-                f"conflicting FPM measurements for physical coordinate {key} in "
-                f"{cell.cell_id}: {len(natives)} unclamped samples share one key"
-            )
-        if natives:
-            selected.append(natives[0])
-        else:
-            selected.append(min(measurements, key=lambda m: int(m.point["benchmark_id"])))
-        dropped_clamped += len(measurements) - 1
-    if dropped_clamped:
-        logger.info(
-            "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
-            cell.cell_id,
-            dropped_clamped,
-        )
+    selected = select_native_measurements(collection, cell_id=cell.cell_id)
 
     # KV seed regime (schema v6 additive column): a per-row RECORD of the
     # engine's measurement protocol for this point, consumed by the modeling
@@ -166,9 +247,16 @@ def aggregate_cell(
     # legitimate topology regime.
     kvwarm_meta = collection.kvwarm_meta
     approved_skip_reasons = {"moe_tp_balanced_by_construction"}
+    dense_synthetic = (
+        dense_synthetic_kv
+        and cell.workload_kind == "decode"
+        and kvwarm_meta is not None
+        and kvwarm_meta.get("skip_reason") == "dense_model_content_insensitive"
+        and _dense_synthetic_kv_eligible(plan, cell, cell_dir / "raw", collection)
+    )
 
     def _kv_seed_regime(point: dict[str, Any], phase: str) -> str:
-        if phase == "prefill":
+        if phase == "prefill" and (not cell.execution_identity[0] or int(point["total_kv_read_tokens"]) == 0):
             return "n/a"
         if kvwarm_meta is None:
             return "legacy"
@@ -181,6 +269,8 @@ def aggregate_cell(
                 raise ValueError(f"native point reports real KV under warm-up skip_reason={skip_reason!r}")
             return "real_kv"
         if "kvwarm_fake_fallback" in reasons:
+            if dense_synthetic:
+                return "skip:dense_model_content_insensitive"
             return "fake_fallback"
         if skip_reason:
             return "fake_fallback"
@@ -193,6 +283,12 @@ def aggregate_cell(
         batch = int(point["batch_size"])
         total_prefill = int(point["total_prefill_tokens"])
         total_kv = int(point["total_kv_read_tokens"])
+        if (
+            cell.execution_identity[0]
+            and (phase == "decode" or total_kv > 0)
+            and _kv_seed_regime(point, phase) != "real_kv"
+        ):
+            raise ValueError("DeepSeek-V4.1 cached prefill/decode publication requires real_kv measurements")
         rows.append(
             {
                 "cell_id": cell.cell_id,
@@ -200,6 +296,7 @@ def aggregate_cell(
                 "system": plan.system,
                 "backend": plan.backend,
                 "backend_version": backend_version,
+                "runtime_backend_version": collection.backend_version,
                 "weight_quantization": cell.weight_quantization,
                 "gemm_quant_mode": cell.gemm_quant_mode,
                 "moe_quant_mode": cell.moe_quant_mode,
@@ -215,6 +312,7 @@ def aggregate_cell(
                 "moe_ep": cell.topology.moe_ep,
                 "cp": cell.topology.cp,
                 **backend_identity_columns(cell.backend_policy),
+                **dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True)),
                 "workload_kind": phase,
                 "batch_size": batch,
                 "total_prefill_tokens": total_prefill,
@@ -234,6 +332,9 @@ def aggregate_cell(
                 "collector_attempt_id": collection.collector_attempt_id,
                 "runtime_run_id": collection.runtime_run_id,
                 "runtime_grid_digest": collection.runtime_grid_digest,
+                "input_text_sha256": (collection.input_provenance or {}).get("text_sha256"),
+                "input_token_ids_sha256": (collection.input_provenance or {}).get("token_ids_sha256"),
+                "input_tokenizer_revision": (collection.input_provenance or {}).get("tokenizer_revision"),
             }
         )
     return rows
@@ -264,12 +365,46 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def published_dense_synthetic_cells(metadata: dict[str, Any]) -> frozenset[str]:
+    """Read the explicit classification policy without upgrading historical rows."""
+    marker = metadata.get("kv_seed_classification")
+    if marker is None:
+        return frozenset()
+    if not isinstance(marker, dict) or marker.get("policy") != "dense_full_attention_v1":
+        raise ValueError("unsupported FPM KV seed classification policy")
+    cells = marker.get("cells")
+    if (
+        not isinstance(cells, list)
+        or not cells
+        or any(not isinstance(cell, str) or not cell for cell in cells)
+        or len(cells) != len(set(cells))
+    ):
+        raise ValueError("FPM KV seed classification requires distinct nonempty cell IDs")
+    return frozenset(cells)
+
+
+def _validate_kv_seed_classification(metadata: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    promoted = {row["cell_id"] for row in rows if row.get("kv_seed_regime") == "skip:dense_model_content_insensitive"}
+    if published_dense_synthetic_cells(metadata) != promoted:
+        raise ValueError("FPM KV seed classification policy differs from published rows")
+
+
 def validate_formal_database_commit(
     parquet_path: Path,
     metadata_path: Path,
     plan: FPMCollectionPlan,
+    *,
+    expected_attempt_ids: dict[str, str] | None = None,
+    reused_cell_ids: tuple[str, ...] = (),
+    expected_cell_rows: dict[str, str] | None = None,
+    required_cells: tuple[FPMCell, ...] | None = None,
 ) -> dict[str, Any]:
-    """Validate the committed formal database pair referenced by a checkpoint."""
+    """Validate the sealed table and requested cells, returning per-cell row hashes.
+
+    A terminal checkpoint supplies its published row hashes and attempt IDs.
+    First-publisher reuse may keep another plan/attempt only for explicitly
+    recorded reused cells; their identity and coordinate coverage still apply.
+    """
 
     if not parquet_path.is_file() or not metadata_path.is_file():
         raise ValueError(
@@ -279,9 +414,15 @@ def validate_formal_database_commit(
     payload = json.loads(metadata_path.read_text())
     if not isinstance(payload, dict):
         raise TypeError(f"FPM database commit record must be a mapping: {metadata_path}")
+    if payload.get("schema_name") == "aic_fpm_forward_perf" and payload.get("schema_version") == 6:
+        raise ValueError(
+            "historical schema-6 FPM publications cannot be finalized by this collector; schema 7 is required. "
+            "Preserve the existing artifacts. Automatic migration is unsupported; "
+            "use a fresh output directory for any new collection."
+        )
     expected = {
         "schema_name": "aic_fpm_forward_perf",
-        "schema_version": 6,
+        "schema_version": 7,
         "system": plan.system,
         "backend": plan.backend,
     }
@@ -303,14 +444,98 @@ def validate_formal_database_commit(
     required = {*_ROW_KEY, *_RUN_IDENTITY_FIELDS}
     missing = sorted(required - set(parquet.schema_arrow.names))
     if missing:
-        raise ValueError(f"committed FPM database is missing schema-v6 columns: {missing}")
+        raise ValueError(f"committed FPM database is missing schema-v7 columns: {missing}")
     row_count = payload.get("row_count")
     if not isinstance(row_count, int) or row_count < 1 or parquet.metadata.num_rows != row_count:
         raise ValueError(
             "FPM database row count does not match its commit record: "
             f"parquet={parquet.metadata.num_rows}, metadata={row_count!r}"
         )
-    return payload
+    rows = parquet.read().to_pylist()
+    _validate_kv_seed_classification(payload, rows)
+    identities = _run_identities_by_cell(rows, source="committed")
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(row["cell_id"], []).append(row)
+    cells = plan.cells if required_cells is None else required_cells
+    if expected_cell_rows is not None and not isinstance(expected_cell_rows, dict):
+        raise TypeError("FPM checkpoint cell row hashes must be a mapping")
+    required_ids = {cell.cell_id for cell in cells}
+    if set(reused_cell_ids) - required_ids:
+        raise ValueError("FPM first-publisher reuse names cells outside the frozen plan")
+    explicit_json = getattr(plan.options, "benchmark_points_json", None)
+    explicit = json.loads(explicit_json) if explicit_json is not None else None
+    cell_rows = {}
+    for cell in cells:
+        selected = grouped.get(cell.cell_id, [])
+        if not selected:
+            raise ValueError(f"committed FPM database does not cover required cell {cell.cell_id}")
+        expected_identity = {
+            "model_path": plan.model_path,
+            "system": plan.system,
+            "backend": plan.backend,
+            "backend_version": payload.get("backend_version"),
+            "weight_quantization": cell.weight_quantization,
+            "gemm_quant_mode": cell.gemm_quant_mode,
+            "moe_quant_mode": cell.moe_quant_mode,
+            "fmha_quant_mode": cell.fmha_quant_mode,
+            "comm_quant_mode": cell.comm_quant_mode,
+            "fmha_resolution": cell.fmha_resolution,
+            "kv_cache_dtype": cell.kv_cache_dtype,
+            "parallel_strategy": cell.parallel_strategy,
+            "workload_kind": cell.workload_kind,
+            "partition_policy": "balanced_v1",
+            **{name: getattr(cell.topology, name) for name in ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp")},
+            **backend_identity_columns(cell.backend_policy),
+            **dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True)),
+        }
+        if cell.input_text_sha256:
+            expected_identity["input_text_sha256"] = cell.input_text_sha256
+        for row in selected:
+            if any(row.get(key) != value for key, value in expected_identity.items()):
+                raise ValueError(f"committed FPM cell identity differs from frozen plan: {cell.cell_id}")
+            latency = row.get("latency_ms")
+            if (
+                isinstance(latency, bool)
+                or not isinstance(latency, int | float)
+                or not math.isfinite(latency)
+                or latency <= 0
+            ):
+                raise ValueError(f"committed FPM cell has an invalid latency: {cell.cell_id}")
+        if cell.cell_id not in reused_cell_ids:
+            if identities[cell.cell_id][0] != plan.sha256:
+                raise ValueError(f"committed FPM cell has a different source plan: {cell.cell_id}")
+            if expected_attempt_ids is not None and identities[cell.cell_id][1] != expected_attempt_ids.get(
+                cell.cell_id
+            ):
+                raise ValueError(f"committed FPM cell has a different Collector attempt: {cell.cell_id}")
+        coordinates = {
+            (row["batch_size"], row["total_prefill_tokens"], row["total_kv_read_tokens"]) for row in selected
+        }
+        if len(coordinates) != len(selected):
+            raise ValueError(f"committed FPM cell contains duplicate coordinates: {cell.cell_id}")
+        # New checkpoints bind the actually achieved native coordinates,
+        # including legal context clamping. Legacy explicit checkpoints and
+        # first-publisher reuse must prove requested coverage from the table.
+        if explicit is not None and (
+            cell.cell_id in reused_cell_ids or (expected_attempt_ids is not None and expected_cell_rows is None)
+        ):
+            requested = {
+                (point["batch_size"], point.get("total_prefill_tokens", 0), point["total_kv_read_tokens"])
+                for point in explicit[cell.workload_kind]
+            }
+            if not requested <= coordinates:
+                raise ValueError(f"committed FPM cell does not cover requested coordinates: {cell.cell_id}")
+        canonical_rows = sorted(
+            json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False) for row in selected
+        )
+        digest = hashlib.sha256("\n".join(canonical_rows).encode()).hexdigest()
+        if expected_cell_rows is not None and expected_cell_rows.get(cell.cell_id) != digest:
+            raise ValueError(f"committed FPM cell differs from its published checkpoint rows: {cell.cell_id}")
+        if expected_attempt_ids is not None and expected_cell_rows is None and explicit is None:
+            raise ValueError("terminal FPM checkpoint has no sealed cell coverage; raw artifacts must be revalidated")
+        cell_rows[cell.cell_id] = digest
+    return {**payload, "cell_rows": cell_rows}
 
 
 def _curated_systems_root() -> Path:
@@ -433,10 +658,9 @@ def write_formal_database(
     if len(versions) != 1 or not next(iter(versions)):
         raise ValueError(f"FPM rows must contain one non-empty runtime backend_version, got {sorted(versions)!r}")
     version = next(iter(versions))
-    # backend_version comes from pod-reported provenance: reject anything that
-    # is not a plain version token before it becomes a path component.
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", version):
-        raise ValueError(f"pod-reported backend_version {version!r} is not a safe database directory name")
+    # A label may be custom text; preserve it exactly while preventing paths.
+    if version in {".", ".."} or any(c.isspace() for c in version) or any(c in version for c in ("/", "\\", "\x00")):
+        raise ValueError(f"backend_version {version!r} is not a safe database directory name")
     curated_root = systems_root is None
     if systems_root is None:
         systems_root = _curated_systems_root()
@@ -482,13 +706,22 @@ def write_formal_database(
             # list turns schema drift into a bare KeyError instead of this
             # actionable error, and silently rots when _ROW_KEY grows.
             required = {*_ROW_KEY, *_RUN_IDENTITY_FIELDS}
+            if committed.get("schema_version") == 6:
+                required -= set(EXECUTION_COLUMNS)
+            elif committed.get("schema_version") != 7:
+                raise ValueError("existing FPM database has unsupported schema version")
             missing = sorted(required - set(table.column_names))
             if missing:
                 raise ValueError(
-                    "existing FPM database does not satisfy the attempt-bound schema-v6 row-key "
+                    "existing FPM database does not satisfy the attempt-bound schema-v7 row-key "
                     f"contract (missing columns: {missing}); publish to a clean destination: {parquet_path}"
                 )
-            merged.extend(table.to_pylist())
+            existing_rows = table.to_pylist()
+            _validate_kv_seed_classification(committed, existing_rows)
+            if committed.get("schema_version") == 6:
+                for row in existing_rows:
+                    row.update(zip(EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, strict=True))
+            merged.extend(existing_rows)
         existing_versions = {str(row.get("backend_version") or "") for row in merged}
         if existing_versions and existing_versions != {version}:
             raise ValueError(
@@ -538,6 +771,13 @@ def write_formal_database(
         # as null instead.
         for row in merged:
             row.setdefault("kv_seed_regime", None)
+            for field in (
+                "input_text_sha256",
+                "input_token_ids_sha256",
+                "input_tokenizer_revision",
+                "runtime_backend_version",
+            ):
+                row.setdefault(field, None)
 
         temporary = _temporary_path(parquet_path)
         temporary_metadata = _temporary_path(metadata_path)
@@ -545,7 +785,7 @@ def write_formal_database(
             pq.write_table(pa.Table.from_pylist(merged), temporary, compression="zstd")
             metadata = {
                 "schema_name": "aic_fpm_forward_perf",
-                "schema_version": 6,
+                "schema_version": 7,
                 "coordinate_system": "iteration_totals_balanced_v1",
                 "measurement_policy": "dynamo_native_single_sample_v1",
                 "warmup_repeats": 0,
@@ -562,6 +802,15 @@ def write_formal_database(
                 "backend": plan.backend,
                 "backend_version": version,
             }
+            dense_cells = sorted(
+                {
+                    row["cell_id"]
+                    for row in merged
+                    if row.get("kv_seed_regime") == "skip:dense_model_content_insensitive"
+                }
+            )
+            if dense_cells:
+                metadata["kv_seed_classification"] = {"policy": "dense_full_attention_v1", "cells": dense_cells}
             temporary_metadata.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
             os.replace(temporary, parquet_path)
             # Metadata is the commit record: readers must validate its parquet

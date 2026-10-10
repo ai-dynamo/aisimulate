@@ -162,7 +162,7 @@ pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{
-    POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
+    G2DomainStats, POWER_DATA_COVERAGE_THRESHOLD, PerRequestAdmissionRecord, PerRequestRecord,
     PerRequestRoutingRecord, ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics,
     ReplayPowerDiagnostics, ReplayReport, ReplayRequestPool, ReplayRoutingOutcome,
     ReplayTerminalStatus, ReplayTerminalStatus as RequestTerminalStatus, SlaThresholds,
@@ -170,6 +170,8 @@ pub use report::{
     TracePowerStats, TraceRequestCounts, TraceThroughputStats, TraceTrajectoryStats,
 };
 pub use scaling::{NoScaling, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot};
+#[cfg(test)]
+mod snapshot_tests;
 pub use spec::{
     CURRENT_REPLAY_SPEC_VERSION, ProviderSpec, ReplayAdapters, ReplayRequest,
     ReplayRoutingMetadata, ReplaySpec, ReplayTopology, WorkerPoolSpec, WorkerStage,

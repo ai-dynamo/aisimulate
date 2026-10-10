@@ -12,9 +12,31 @@
 //! root, so `crate::EngineConfig`, `crate::BackendKind`, ... resolve unchanged.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Validate an explicit FPM input before loading data or entering Python.
+pub(crate) fn validate_fpm_parquet_path(
+    path: Option<&Path>,
+    is_fpm: bool,
+) -> Result<Option<&str>, crate::AicError> {
+    let Some(path) = path else { return Ok(None) };
+    let path = path.to_str().ok_or_else(|| {
+        crate::AicError::InvalidEngineConfig("fpm_parquet_path must be valid UTF-8".into())
+    })?;
+    if path.is_empty() {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path cannot be empty".into(),
+        ));
+    }
+    if !is_fpm {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path requires forward_model='fpm' with exactly one FpmForward op per phase".into(),
+        ));
+    }
+    Ok(Some(path))
+}
 
 pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // bincode op payloads are positional, so a producer/consumer skew is only
@@ -83,7 +105,23 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+// - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+//   for selector diagnostics. This appends a positional field after the schema-19
+//   release; serde defaults support legacy JSON, not legacy bincode.
+// - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
+//   identity. Renumbered from the branch's concurrent v20 claim after the
+//   DeepSeek-V4.1 FPM layout landed first.
+// - 23 (DCP identity): ParallelMapping gained optional recorded dcp_size.
+//   JSON defaults preserve unrecorded DCP.
+// - 24 (typed FPM DCP): FpmForwardOp carries dcp_size separately from the
+//   base matching identity, so control flow never parses the string tuple.
+// - 25 (FPM decoupling): FpmForwardOp also carries the SOL/direct interpolation
+//   selector. The decoupling branch independently used 21 for this positional
+//   field; the combined layout differs from every prior schema, including 24.
+// - 26 (decode context parallelism): the context/generation attention, MLA,
+//   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
+//   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 27;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -118,9 +156,19 @@ pub struct EngineConfig {
     #[serde(default)]
     pub forward_model: Option<String>,
 
+    /// Optional external FPM parquet used when `forward_model == "fpm"`.
+    /// The required metadata sidecar is resolved by replacing the parquet
+    /// extension with `.metadata.json`.
+    #[serde(default)]
+    pub fpm_parquet_path: Option<PathBuf>,
+
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Exact collected MoE compute kernel-source lane.  Unlike
+    /// `moe_backend`, this selects one measured MoE table lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,
@@ -215,6 +263,14 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    /// Decode-context-parallel size (vLLM `-dcp` / SGLang `--dcp-size`): the
+    /// decode KV cache is striped by token position across ranks inside the
+    /// attention group. Part of the engine identity so dcp variants get
+    /// distinct compiled handles. `None`/1 means no DCP. Like `cp_size`, the
+    /// per-op math is carried on the ops themselves, not re-derived here.
+    /// Additive-optional: absent in older payloads.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field
@@ -226,6 +282,9 @@ pub struct QuantizationConfig {
     #[serde(default)]
     pub moe_dtype: Option<DataType>,
     pub activation_dtype: Option<DataType>,
+    /// FPM cell selector only; does not override model arithmetic or memory.
+    #[serde(default)]
+    pub fpm_fmha_dtype: Option<DataType>,
     pub kv_cache_dtype: Option<DataType>,
 }
 
@@ -294,6 +353,8 @@ pub enum DataType {
     // Append-only wire extension: keep existing bincode discriminants stable.
     #[serde(rename = "w4a16_nvfp4")]
     W4a16Nvfp4,
+    #[serde(rename = "w4a16_mxfp4_humming")]
+    W4a16Mxfp4Humming,
 }
 
 #[cfg(test)]

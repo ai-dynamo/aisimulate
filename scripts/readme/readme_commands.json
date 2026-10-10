@@ -1,0 +1,190 @@
+{
+  "release-install": {
+    "profiles": [
+      "release"
+    ],
+    "needs": [],
+    "timeout": 1800
+  },
+  "dynamo-install": {
+    "profiles": [
+      "dynamo"
+    ],
+    "needs": [],
+    "timeout": 1800
+  },
+  "release-upgrade": {
+    "profiles": [
+      "release"
+    ],
+    "needs": [
+      "release-install"
+    ],
+    "timeout": 180
+  },
+  "prediction-config": {
+    "file": "prediction.yaml"
+  },
+  "engine-predict": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "source-install"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-prediction/prediction.json"
+  },
+  "dynamo-predict": {
+    "profiles": [
+      "dynamo"
+    ],
+    "needs": [
+      "dynamo-install"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-dynamo-prediction/prediction.json"
+  },
+  "engine-options": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "engine-predict"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-prediction/prediction.json",
+    "completed_requests": 100,
+    "requests": "aisimulate-prediction/requests.jsonl",
+    "json_summary": "prediction-summary.json",
+    "metrics": {
+      "decode_gpus_per_worker": 2
+    }
+  },
+  "recommendation-config": {
+    "file": "recommendation.yaml"
+  },
+  "engine-recommend": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "source-install"
+    ],
+    "timeout": 1800,
+    "recommendations": "aisimulate-recommendation/recommendations"
+  },
+  "dynamo-recommend": {
+    "profiles": [
+      "dynamo"
+    ],
+    "needs": [
+      "dynamo-install"
+    ],
+    "timeout": 1800,
+    "recommendations": "aisimulate-dynamo-recommendation/recommendations"
+  },
+  "engine-roundtrip": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "source-install",
+      "engine-recommend"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-best-prediction/prediction.json"
+  },
+  "dynamo-roundtrip": {
+    "profiles": [
+      "dynamo"
+    ],
+    "needs": [
+      "dynamo-install",
+      "dynamo-recommend"
+    ],
+    "timeout": 180,
+    "prediction": "aisimulate-dynamo-best-prediction/prediction.json"
+  },
+  "legacy-cli": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "source-install"
+    ],
+    "timeout": 180,
+    "stdout_contains": [
+      "YES"
+    ]
+  },
+  "support-negative": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [
+      "source-install"
+    ],
+    "timeout": 180,
+    "stdout_contains": [
+      "NO"
+    ]
+  },
+  "source-install": {
+    "profiles": [
+      "source",
+      "macos",
+      "development"
+    ],
+    "needs": [],
+    "timeout": 1800
+  },
+  "test-install": {
+    "profiles": [
+      "development"
+    ],
+    "needs": [
+      "source-install"
+    ],
+    "timeout": 1800
+  },
+  "rust-tests": {
+    "profiles": [
+      "development"
+    ],
+    "needs": [
+      "test-install"
+    ],
+    "timeout": 7200
+  },
+  "root-tests": {
+    "profiles": [
+      "development"
+    ],
+    "needs": [
+      "test-install"
+    ],
+    "timeout": 7200
+  },
+  "package-tests": {
+    "profiles": [
+      "development"
+    ],
+    "needs": [
+      "test-install"
+    ],
+    "timeout": 7200
+  }
+}

@@ -16,6 +16,8 @@ import pytest
 
 import aisimulate.sdk.operations as ops
 from aisimulate.sdk import common, config, models
+from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.errors import InvalidEngineConfigurationError
 from aisimulate.sdk.models import (
     LLAMAModel,
     Qwen3VLModel,
@@ -25,6 +27,7 @@ from aisimulate.sdk.models import (
     get_model_family,
 )
 from aisimulate.sdk.performance_result import PerformanceResult
+from aisimulate.sdk.speculation import SpeculationConfig
 from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
@@ -47,6 +50,91 @@ def test_model_config_normalizes_kernel_backend_enums():
 def test_model_config_rejects_unknown_kernel_backend(field, value):
     with pytest.raises(ValueError, match=field):
         config.ModelConfig(**{field: value})
+
+
+def test_build_model_config_preserves_existing_positional_arguments():
+    speculation = SpeculationConfig(kind="mtp", params={"depth": 2})
+    model_config = build_model_config(
+        4,
+        2,
+        2,
+        2,
+        4,
+        "fp8",
+        "fp8",
+        "bfloat16",
+        "fp8",
+        "half",
+        "fpm",
+        False,
+        "fa3",
+        speculation,
+        "megamoe",
+        True,
+        64,
+    )
+
+    assert (model_config.tp_size, model_config.pp_size, model_config.attention_dp_size) == (4, 2, 2)
+    assert (model_config.moe_tp_size, model_config.moe_ep_size) == (2, 4)
+    assert model_config.gemm_quant_mode is common.GEMMQuantMode.fp8
+    assert model_config.kvcache_quant_mode is common.KVCacheQuantMode.fp8
+    assert model_config.fmha_quant_mode is common.FMHAQuantMode.bfloat16
+    assert model_config.moe_quant_mode is common.MoEQuantMode.fp8
+    assert model_config.comm_quant_mode is common.CommQuantMode.half
+    assert model_config.forward_model == "fpm"
+    assert model_config.enable_encoder_dp is False
+    assert model_config.attention_backend is common.AttentionBackend.fa3
+    assert model_config.speculation is speculation
+    assert model_config.moe_backend is common.MoEBackend.megamoe
+    assert model_config.enable_eplb is True
+    assert model_config.wideep_num_slots == 64
+    assert model_config.moe_kernel_source is None
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_build_model_config_preserves_exact_kernel_source_keyword(source):
+    model_config = build_model_config(4, 1, 1, 4, 1, moe_kernel_source=source)
+
+    assert model_config.moe_kernel_source == source
+
+
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_model_config_rejects_invalid_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        config.ModelConfig(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize(
+    ("model_path", "moe_backend", "message"),
+    [
+        ("Qwen/Qwen3-32B", None, "require an MoE model"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "megamoe", "MegaMoE"),
+    ],
+)
+def test_model_graph_rejects_moe_kernel_source_without_a_compatible_operator(model_path, moe_backend, message):
+    model_config = config.ModelConfig(
+        tp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        moe_backend=moe_backend,
+        moe_kernel_source="missing_source",
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match=message):
+        get_model(model_path, model_config, "sglang")
+
+
+def test_model_graph_rejects_source_when_layer_override_removes_all_moe_operators():
+    # Kimi-K3 has a dense first layer; its checkpoint metadata still declares MoE.
+    model_path = "moonshotai/Kimi-K3"
+    assert check_is_moe(model_path)
+    model_config = config.ModelConfig(
+        overwrite_num_layers=1, moe_tp_size=1, moe_ep_size=1, moe_kernel_source="missing_source"
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*no compatible MoE"):
+        get_model(model_path, model_config, "sglang")
 
 
 class TestSupportedModels:
@@ -1804,10 +1892,23 @@ class TestAttentionProjectionExclusions:
     """Per-projection exclusion parsing (V3.1/V3.2 exclude q/kv but not o_proj)."""
 
     @staticmethod
-    def _excl(patterns):
+    def _excl(patterns, *, precise_module_paths=True):
         from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
-        return attention_projection_exclusions({"quantization_config": {"ignore": patterns}})
+        return attention_projection_exclusions(
+            {"quantization_config": {"ignore": patterns}}, precise_module_paths=precise_module_paths
+        )
+
+    def test_existing_consumers_keep_their_projection_exclusion_interpretation(self):
+        from aisimulate.sdk.models.helpers import attention_projection_exclusions
+
+        # SGLang, TRT-LLM and ordinary MLA retain the default exclusion matching.
+        # vLLM DSA opts into precise projection paths.
+        raw = {"quantization_config": {"ignore": ["model.layers.0.self_attn.q_a_layernorm"]}}
+        assert attention_projection_exclusions(raw) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl(["model.layers.0.self_attn.indexers_proj"], precise_module_paths=False) == frozenset(
+            {"indexer"}
+        )
 
     def test_whole_block_glob_covers_all_groups(self):
         assert self._excl(["model.layers.3.self_attn*"]) == frozenset({"q", "kv", "o", "indexer"})
@@ -1827,6 +1928,89 @@ class TestAttentionProjectionExclusions:
 
     def test_empty(self):
         assert self._excl([]) == frozenset()
+
+    @pytest.mark.parametrize("anchor", ["", "$"])
+    @pytest.mark.parametrize(
+        "pattern,expected",
+        [
+            (r".*self_attn\..*", {"q", "kv", "o", "indexer"}),
+            (r".*self_attn\.(q_a_proj|kv_a_proj_with_mqa)", {"q", "kv"}),
+            (r".*self_attn\.indexer\.(wq_b|wk|weights_proj)", {"indexer"}),
+            (r".*self_attn\.(q_a_layernorm|kv_a_layernorm|indexer\.k_norm|indexers_proj)", set()),
+        ],
+    )
+    def test_regex_exclusions_match_projection_module_paths(self, pattern, expected, anchor):
+        assert self._excl([f"re:{pattern}{anchor}"]) == frozenset(expected)
+
+    def test_malformed_regex_is_an_actionable_configuration_error(self):
+        import re
+
+        from aisimulate.sdk.errors import is_expected_cli_error
+
+        with pytest.raises(ValueError) as caught:
+            self._excl(["re:["])
+        assert "re:[" in str(caught.value)
+        assert isinstance(caught.value.__cause__, re.error)
+        assert is_expected_cli_error(caught.value)
+
+    @pytest.mark.parametrize("suffix", ["", "*", ".*", r"\..*"])
+    def test_whole_block_suffixes(self, suffix):
+        assert self._excl([f"model.layers.0.self_attn{suffix}"]) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl([f"model.layers.0.self_attn.indexer{suffix}"]) == frozenset({"indexer"})
+
+    def test_norm_and_auxiliary_exclusions_do_not_reclassify_projection_groups(self):
+        assert (
+            self._excl(
+                [
+                    "model.layers.0.self_attn.q_a_layernorm",
+                    "model.layers.0.self_attn.kv_a_layernorm",
+                    "model.layers.0.self_attn.indexer.k_norm",
+                    "model.layers.0.self_attn.indexer.k_norm.bias",
+                    "model.layers.0.self_attn.indexers_proj",
+                ]
+            )
+            == frozenset()
+        )
+
+    @pytest.mark.parametrize("projection", ["wq_b", "wk", "weights_proj", "wk_weights_proj"])
+    def test_named_indexer_projection_exclusion(self, projection):
+        assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
+    def test_native_glm52_precision_correction_is_scoped_to_vllm_dsa(self, backend, phase, quant):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs. NVFP4 mixed exclusions have separate tests
+        # in TestDSV32NVFP4AttentionExclusion above.
+        from aisimulate.sdk import engine
+
+        model = models.get_model(
+            "zai-org/GLM-5.2-FP8",
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode[quant]),
+            backend_name=backend,
+        )
+        expected_exclusions = frozenset() if backend == "vllm" else frozenset({"q", "kv", "o", "indexer"})
+        assert model.extra_params["dsa_attn_quant_exclusions"] == expected_exclusions
+        specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
+        attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
+        assert attention["gemm_quant_mode"] == (quant if backend == "vllm" else "bfloat16")
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize(
+        "model_path,excluded",
+        [
+            ("nvidia/GLM-5.2-NVFP4", frozenset({"q", "kv", "o", "indexer"})),
+            ("nvidia/DeepSeek-V3.2-NVFP4", frozenset({"q", "kv", "indexer"})),
+        ],
+    )
+    def test_actual_checkpoint_projection_exclusions_are_preserved(self, backend, model_path, excluded):
+        model = models.get_model(
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode.nvfp4),
+            backend_name=backend,
+        )
+        assert model.extra_params["dsa_attn_quant_exclusions"] == excluded
 
 
 class TestBundledModelConfigsOffline:

@@ -188,33 +188,37 @@ def test_cli_default_build_subset(case: dict):
 @pytest.mark.parametrize("total_gpus", [4, 32])
 def test_v41_sol_default_accepts_automatic_moe_parallelism(total_gpus):
     """Exercise the actual default sweep: model construction alone missed this bug."""
-    completed = sp.run(
-        [
-            "aiconfigurator",
-            "cli",
-            "default",
-            "--model",
-            "deepseek-ai/DeepSeek-V4.1-Flash",
-            "--system",
-            "gb300",
-            "--backend",
-            "sglang",
-            "--total-gpus",
-            str(total_gpus),
-            "--serving-mode",
-            "agg",
-            "--database-mode",
-            "SOL",
-            "--isl",
-            "1024",
-            "--osl",
-            "128",
-            "--nextn",
-            "0",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = sp.run(
+            [
+                "aiconfigurator",
+                "cli",
+                "default",
+                "--model",
+                "deepseek-ai/DeepSeek-V4.1-Flash",
+                "--system",
+                "gb300",
+                "--backend",
+                "sglang",
+                "--total-gpus",
+                str(total_gpus),
+                "--serving-mode",
+                "agg",
+                "--database-mode",
+                "SOL",
+                "--isl",
+                "1024",
+                "--osl",
+                "128",
+                "--nextn",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except sp.TimeoutExpired as error:
+        pytest.fail(f"V4.1 sweep exceeded 90 seconds\nstdout: {error.stdout}\nstderr: {error.stderr}")
     output = f"{completed.stdout}\n{completed.stderr}"
     assert completed.returncode == 0, output
     # The CLI currently logs sweep failures without a nonzero exit code, so
@@ -223,5 +227,7 @@ def test_v41_sol_default_accepts_automatic_moe_parallelism(total_gpus):
     assert "Model: deepseek-ai/DeepSeek-V4.1-Flash (is_moe: True)" in output
     assert f"Total GPUs: {total_gpus}" in output
     assert "tp4pp1dp1etp1ep4" in output
+    # Rendered GPU accounting is total (used = replicas x GPUs per replica).
+    assert f"{total_gpus} ({total_gpus}={total_gpus // 4}x4)" in output
     assert "Parallelism width mismatch" not in output
     assert "No successful experiment runs" not in output

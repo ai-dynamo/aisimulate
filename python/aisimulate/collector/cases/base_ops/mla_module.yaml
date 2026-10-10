@@ -378,6 +378,20 @@ common_case_values:
         min_sm: 89
         phases: [context, generation]
         attention_types: [mla, dsa]
+      # Native tensor-scaled FP8 weights with dynamic activations; distinct
+      # from block-scaled FP8 and from the fp8_static GEMM contract.
+      - compute_dtype: bfloat16
+        kv_cache_dtype: bfloat16
+        gemm_type: fp8
+        min_sm: 89
+        phases: [context, generation]
+        attention_types: [mla, dsa]
+      - compute_dtype: bfloat16
+        kv_cache_dtype: fp8
+        gemm_type: fp8
+        min_sm: 90
+        phases: [context, generation]
+        attention_types: [mla, dsa]
       - compute_dtype: bfloat16
         kv_cache_dtype: fp8
         gemm_type: fp8_block

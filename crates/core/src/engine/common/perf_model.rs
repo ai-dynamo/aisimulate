@@ -42,10 +42,15 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
-    pub(crate) fn prefill_batch_validation_can_fail(&self) -> bool {
+    // Injected prediction can fail even when geometry validation accepts every
+    // batch, so admission stays transactional for such providers. Built-in
+    // closed-form models, which the engine also wraps as `External`, cannot.
+    pub(crate) fn prefill_pass_can_fail(&self) -> bool {
         match self {
             Self::Polynomial => false,
-            Self::External { timing } => timing.prefill_batch_validation_can_fail(),
+            Self::External { timing } => {
+                timing.prefill_batch_validation_can_fail() || timing.prefill_prediction_can_fail()
+            }
         }
     }
 
@@ -200,6 +205,32 @@ mod tests {
             _total_kv_tokens: usize,
         ) -> anyhow::Result<f64> {
             anyhow::bail!("missing decode point")
+        }
+    }
+
+    #[test]
+    fn only_injected_prefill_providers_make_admission_transactional() {
+        use crate::engine::timing::{TimingModelConfig, built_in_timing_model};
+
+        // The engine wraps built-in models as `External` too; they must not
+        // pay for an admission rollback image they can never restore.
+        for config in [
+            TimingModelConfig::Polynomial,
+            TimingModelConfig::Fixed {
+                prefill_ms: 2.0,
+                decode_ms: 1.0,
+            },
+        ] {
+            let model = PerfModel::External {
+                timing: built_in_timing_model(&config).unwrap(),
+            };
+            assert!(!model.prefill_pass_can_fail(), "{config:?}");
+        }
+        for timing in [
+            Arc::new(EchoBatchTiming) as Arc<dyn TimingModel>,
+            Arc::new(FailingTiming),
+        ] {
+            assert!(PerfModel::External { timing }.prefill_pass_can_fail());
         }
     }
 

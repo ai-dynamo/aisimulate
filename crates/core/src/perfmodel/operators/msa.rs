@@ -348,6 +348,7 @@ impl MsaModuleOp {
             // MSA borrows the FULL DSA layer (Python's probe never sets
             // skip_indexer).
             false,
+            db.dsa.reuse_sol_policy,
             flops,
         );
         let probe = self.dsa_probe(dims.index_topk);
@@ -375,6 +376,9 @@ impl MsaModuleOp {
             b as i64,
             s as i64,
             self.num_heads as i64,
+            1,
+            false,
+            db.dsa.reuse_sol_policy,
             flops,
         );
         let probe = self.dsa_probe(dims.index_topk);

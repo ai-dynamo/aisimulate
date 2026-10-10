@@ -454,7 +454,10 @@ def test_full_encoder_attention_profiles_combine_defaults_and_model_deltas(monke
         }
 
         assert default_keys <= keys
-        assert keys - default_keys == {(1, 64), (1, 72)}
+        # (1,64)/(1,72): TP=full shards of Qwen3-VL/Kimi ViTs down to one head.
+        # (*,104): Mistral-Medium-3.5 Pixtral ViT (head_dim=104 is absent from the
+        # base 64/72/80 grid), TP-sharded to num_heads {16,8,4,2,1}.
+        assert keys - default_keys == {(1, 64), (1, 72), (1, 104), (2, 104), (4, 104), (8, 104), (16, 104)}
 
 
 def test_targeted_encoder_attention_profile_is_model_exact(monkeypatch):
@@ -869,8 +872,9 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     xpu_cases = get_gemm_case_specs("vllm_xpu")
 
     # Base gemm sweep expansion, then model_case_values.gemm rows. Qwen3.8-Max
-    # adds two output widths across the base token-count grid.
-    # PR #219's DeepSeek-V4 shared-expert shapes add 74 default and 21 XPU cases.
+    # adds two output widths across the base token-count grid. DeepSeek-V4 Pro
+    # adds (n, k) = (7168, 384) for all 74 standard / 21 XPU token counts;
+    # its other shared-expert projections overlap the existing base shapes.
     assert len(cases) == 37518
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
@@ -880,6 +884,11 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
+
+    for backend_cases in (cases, xpu_cases):
+        keys = {(case.x, case.n, case.k) for case in backend_cases}
+        assert len(keys) == len(backend_cases)
+        assert {x for x, n, k in keys if (n, k) == (7168, 384)} == {x for x, _, _ in keys}
 
     compute_scale_cases = get_compute_scale_case_specs()
     assert len(compute_scale_cases) == 1628
@@ -1313,6 +1322,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "fp8", "bfloat16"),
         ("fp8", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
+        ("bfloat16", "bfloat16", "fp8"),
+        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("fp8", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
@@ -1342,6 +1353,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
+        ("bfloat16", "bfloat16", "fp8"),
+        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         # MSA-scoped combos (attention_types [msa]) at SM90: both KV dtypes
         # for the bf16 and fp8_block gemm tiers (fp8-KV has no SM floor for
@@ -1363,6 +1376,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "bfloat16", "bfloat16"),
         ("bfloat16", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
+        ("bfloat16", "bfloat16", "fp8"),
+        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
         ("bfloat16", "fp8", "nvfp4"),
@@ -1378,6 +1393,8 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         ("bfloat16", "fp8", "bfloat16"),
         ("fp8", "fp8", "bfloat16"),
         ("bfloat16", "bfloat16", "fp8_block"),
+        ("bfloat16", "bfloat16", "fp8"),
+        ("bfloat16", "fp8", "fp8"),
         ("bfloat16", "fp8", "fp8_block"),
         ("fp8", "fp8", "fp8_block"),
         ("bfloat16", "bfloat16", "nvfp4"),
@@ -1420,10 +1437,15 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
     assert {(spec.attention_type, spec.model_path, spec.architecture) for spec in vllm_specs} == {
         ("mla", "deepseek-ai/DeepSeek-V3", "DeepseekV3ForCausalLM"),
         ("dsa", "deepseek-ai/DeepSeek-V3.2", "DeepseekV32ForCausalLM"),
+        ("dsa", "zai-org/GLM-5.2", "GlmMoeDsaForCausalLM"),
+        ("msa", "MiniMaxAI/MiniMax-M3", "MiniMaxM3ForCausalLM"),
+    }
+    assert {(spec.attention_type, spec.model_path, spec.architecture) for spec in trtllm_specs} == {
+        ("mla", "deepseek-ai/DeepSeek-V3", "DeepseekV3ForCausalLM"),
+        ("dsa", "deepseek-ai/DeepSeek-V3.2", "DeepseekV32ForCausalLM"),
         ("dsa", "zai-org/GLM-5", "GlmMoeDsaForCausalLM"),
         ("msa", "MiniMaxAI/MiniMax-M3", "MiniMaxM3ForCausalLM"),
     }
-    assert trtllm_specs == vllm_specs
 
 
 def test_msa_precision_combos_match_declared_specs():
@@ -1496,10 +1518,37 @@ def test_mla_module_targeted_artifacts_keep_requested_checkpoint(monkeypatch):
         ("vllm", "moonshotai/Kimi-K2.5", "mla", "KimiK25ForConditionalGeneration"),
         ("vllm", "nvidia/Kimi-K2.5-NVFP4", "mla", "KimiK25ForConditionalGeneration"),
         ("vllm", "nvidia/GLM-5-NVFP4", "dsa", "GlmMoeDsaForCausalLM"),
+        ("vllm", "zai-org/GLM-5.2", "dsa", "GlmMoeDsaForCausalLM"),
+        ("vllm", "zai-org/GLM-5.2-FP8", "dsa", "GlmMoeDsaForCausalLM"),
     ):
         monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
         specs = get_mla_module_model_specs(attention_type=attention_type, backend=backend)
         assert [(spec.model_path, spec.architecture) for spec in specs] == [(model_path, architecture)]
+
+
+def test_vllm_dsa_reference_covers_native_full_and_reuse_without_duplicate_artifacts(monkeypatch):
+    from collector.case_generator import get_mla_module_model_specs
+
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    specs = get_mla_module_model_specs(attention_type="dsa", backend="vllm")
+    glm = [spec for spec in specs if spec.architecture == "GlmMoeDsaForCausalLM"]
+    assert [spec.model_path for spec in glm] == ["zai-org/GLM-5.2"]
+    config_path = REPO_ROOT / "src/aisimulate_core/model_configs/zai-org--GLM-5.2_config.json"
+    config = json.loads(config_path.read_text())
+    # The native layer-zero rule executes a full indexer, while this
+    # checkpoint declares reuse for later layers; both rows must be sampled.
+    assert config["index_topk_freq"] > 1
+    assert max(0 - config["index_skip_topk_offset"] + 1, 0) % config["index_topk_freq"] == 0
+    all_specs = get_mla_module_model_specs(attention_type="dsa", backend="vllm", apply_model_filter=False)
+    assert len(all_specs) == len(set(all_specs))
+    # GLM-5.3 inverted the 5.x naming: the un-suffixed 5.3 repo IS the FP8
+    # artifact and the -BF16 repo the bf16 one; no "-FP8" 5.3 repo exists
+    # (GlmMoeDsaForCausalLM_cases.yaml, owner decision 2026-09-24).
+    assert {s.model_path for s in all_specs if s.architecture == "GlmMoeDsaForCausalLM"} == {
+        f"{prefix}/GLM-{version}{suffix}"
+        for version in ("5", "5.1", "5.2")
+        for prefix, suffix in (("zai-org", ""), ("zai-org", "-FP8"), ("nvidia", "-NVFP4"))
+    } | {"zai-org/GLM-5.3", "zai-org/GLM-5.3-BF16", "nvidia/GLM-5.3-NVFP4"}
 
 
 def test_vllm_mla_module_artifacts_have_local_configs():
@@ -2019,7 +2068,7 @@ def test_qwen38_max_nvfp4_moe_cases_are_declared_with_correct_shape_and_runner(m
 
     base_sample = base_cases[0]
     assert get_sglang_moe_backend(base_sample, "bfloat16", 100) == "triton"
-    assert get_sglang_moe_backend(base_sample, "fp8_block", 100) == "triton"
+    assert get_sglang_moe_backend(base_sample, "fp8_block", 100) == "flashinfer_trtllm"
 
     assert moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "nvfp4")
     assert not moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "bfloat16")

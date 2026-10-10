@@ -7,7 +7,7 @@ description: Use when running long AIC/aiconfigurator GPU perf auto-collection f
 
 ## Start with the project playbook
 
-Read [`docs/perf_database/collector-upgrade-playbook.md`](../../../docs/perf_database/collector-upgrade-playbook.md)
+Read [`docs/perf-model/collector/upgrade.md`](../../../../../docs/perf-model/collector/upgrade.md)
 before changing collector code: it is the canonical upgrade/bring-up
 workflow. This skill is the run pipeline; the repository-owned policy in
 `.claude/rules/collector/` is authoritative over anything restated here.

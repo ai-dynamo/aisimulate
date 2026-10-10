@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import pkgutil
 
 from aisimulate_core.sdk import config
@@ -64,10 +65,23 @@ del _SKIP
 _FORWARD_MODELS = ("op_level", "fpm")
 
 
-def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
+def _uses_moe_kernel_source(spec, source: str) -> bool:
+    """Inspect native composite children as well as top-level MoE operators."""
+    if isinstance(spec, dict):
+        moe = spec.get("Moe")
+        if isinstance(moe, dict) and moe.get("moe_kernel_source") == source:
+            return True
+        return any(_uses_moe_kernel_source(child, source) for child in spec.values())
+    if isinstance(spec, list):
+        return any(_uses_moe_kernel_source(child, source) for child in spec)
+    return False
+
+
+def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> BaseModel:
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
+    from aisimulate_core.sdk.fpm_config import resolve_fpm_config
     from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS, FPMForwardOp
 
     if getattr(model.config, "decoder_replay", False) and "execution_profile" not in _CELL_MATCH_COLUMNS:
@@ -76,7 +90,7 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
         # bounded decoder tail from a full forward at the same coordinates.
         raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
-    if model.encoder_ops:
+    if model.encoder_ops and not resolve_fpm_config(model.config).options["text_only"]:
         raise NotImplementedError(
             f"forward_model='fpm' does not support encoder/multimodal models "
             f"(model_family={model.model_family!r} has encoder ops). Use forward_model='op_level'."
@@ -111,10 +125,28 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     draft_context_ops = [op for op in model.context_ops if op._name.startswith("draft_")]
     draft_generation_ops = [op for op in model.generation_ops if op._name.startswith("draft_")]
     weight_bytes = model.get_resident_weights_bytes()
-    prefill_op = FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
-    decode_op = FPMForwardOp(
-        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes
+    from aisimulate_core.sdk.fpm_identity import execution_identity
+
+    identity = execution_identity(
+        getattr(model, "raw_config", {}),
+        decoder_replay=getattr(model.config, "decoder_replay", False),
+        backend=backend_name,
+        # These are the SDK prediction assumptions; the producer separately
+        # verifies actual runtime residency and token-only requests.
+        engram_cpu_offload=False,
+        input_modality="text",
     )
+    prefill_op = FPMForwardOp(
+        "prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    decode_op = FPMForwardOp(
+        "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes, execution=identity
+    )
+    # Compiled text specs omit encoder ops; retain their resident weights there.
+    # Python memory accounting still sums encoder_ops separately.
+    resident_weights = weight_bytes + float(sum(op.get_weights() for op in model.encoder_ops))
+    prefill_op._resident_weight_bytes = resident_weights
+    decode_op._resident_weight_bytes = resident_weights
     if has_draft_scheme:
         decode_op._verify_width = int(model.verify_width)
     model.context_ops = [prefill_op, *draft_context_ops]
@@ -141,10 +173,27 @@ def get_model(
     rewrites each phase list to a single whole-model ``FPMForwardOp``.
     """
     forward_model = getattr(model_config, "forward_model", "op_level") or "op_level"
+    # Whole-forward DCP timing needs a measured vLLM cell (the recorded-DCP FPM
+    # identity); the op-level path prices the sharded attention itself and is
+    # gated per model class by ``supports_dcp`` below.
+    if (model_config.dcp_size or 1) > 1 and forward_model == "fpm" and backend_name != "vllm":
+        raise NotImplementedError("DCP timing requires measured vLLM FPM interpolation")
     if forward_model not in _FORWARD_MODELS:
         raise InvalidEngineConfigurationError(
             f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}"
         )
+    if model_config.moe_kernel_source is not None:
+        from aisimulate_core.sdk.config_builders import validate_moe_controls
+
+        if forward_model == "fpm":
+            raise InvalidEngineConfigurationError("moe_kernel_source is not supported with forward_model='fpm'")
+        validate_moe_controls(
+            model_path=model_path,
+            moe_backend=model_config.moe_backend,
+            moe_kernel_source=model_config.moe_kernel_source,
+        )
+    if getattr(model_config, "fpm_fmha_quant_mode", None) is not None and forward_model != "fpm":
+        raise InvalidEngineConfigurationError("fpm_fmha_quant_mode requires forward_model='fpm'")
 
     # Shallow-copy so mutations below don't poison the @cache'd original.
     model_info = dict(_get_model_info(model_path))
@@ -202,6 +251,18 @@ def get_model(
     else:
         model_config.cp_style = "none"
 
+    # Decode context parallelism is a separate modeling capability: the model
+    # class must price the KV-sharded decode attention (+ LSE merge comm) before
+    # dcp>1 can be estimated. Deployment policy (whether a role may combine
+    # prefill CP with DCP) is decided by the topology layer, not here; this only
+    # guards against silently wrong numbers.
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm" and not cls.supports_dcp(backend_name):
+        raise NotImplementedError(
+            f"Decode context parallelism (dcp_size={model_config.dcp_size}) is not supported for "
+            f"model_family={model_family!r} on backend={backend_name!r}. The model class "
+            f"must override ``supports_dcp`` and implement the KV-sharded decode path."
+        )
+
     # Resolve the speculative scheme BEFORE construction (an explicit mtp
     # scheme writes its depth back onto nextn, which model families read),
     # attach it after, and gate unsupported (model, backend) combinations.
@@ -216,11 +277,30 @@ def get_model(
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
     model = cls.create(model_info, model_config, backend_name)
+    # Backend-specific defaults below construction (e.g. the DCP merge
+    # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
+    # the model; families whose constructors do not record it get it here.
+    if getattr(model, "_backend_name", None) is None:
+        model._backend_name = backend_name
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
+    # Op-level decode CP: rewrite the decode attention (sharded KV stripe +
+    # merge collectives) after speculation materialized the draft ops. The
+    # whole-forward path prices DCP from the recorded-DCP measured cell instead
+    # (the per-rank KV stripe still enters memory via _cp_kv_memory_divisor).
+    if (model_config.dcp_size or 1) > 1 and forward_model != "fpm":
+        model._apply_decode_context_parallel()
+    if model_config.moe_kernel_source is not None:
+        for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
+            if not any(
+                _uses_moe_kernel_source(json.loads(op._spec_json()), model_config.moe_kernel_source) for op in phase_ops
+            ):
+                raise InvalidEngineConfigurationError(
+                    f"moe_kernel_source is not supported: {phase} graph has no compatible MoE operator"
+                )
     if forward_model == "fpm":
-        model = _apply_forward_model_fpm(model)
+        model = _apply_forward_model_fpm(model, backend_name)
     return model
 
 

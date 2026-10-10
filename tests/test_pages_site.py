@@ -19,13 +19,13 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-SCRIPT_PATH = ROOT / "scripts" / "build_pages_site.py"
+sys.path.insert(0, str(ROOT))
+SCRIPT_PATH = ROOT / "scripts/pages/build_pages_site.py"
 SPEC = importlib.util.spec_from_file_location("build_pages_site", SCRIPT_PATH)
 assert SPEC and SPEC.loader
 PAGES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PAGES)
-FPE_SPEC = importlib.util.spec_from_file_location("prepare_fpe_pages", ROOT / "scripts" / "prepare_fpe_pages.py")
+FPE_SPEC = importlib.util.spec_from_file_location("prepare_fpe_pages", ROOT / "scripts/pages/prepare_fpe_pages.py")
 assert FPE_SPEC and FPE_SPEC.loader
 FPE = importlib.util.module_from_spec(FPE_SPEC)
 FPE_SPEC.loader.exec_module(FPE)
@@ -33,10 +33,18 @@ FPE_SPEC.loader.exec_module(FPE)
 NEW_SHA = "a" * 40
 OLD_SHA = "b" * 40
 REPOSITORY = "ai-dynamo/aisimulate"
+LEGACY_FPE_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 
 
 def qualified_archive(
-    sha=NEW_SHA, *, report_updates=None, row_updates=None, missing=None, index_files=None, overrides=None
+    sha=NEW_SHA,
+    *,
+    report_updates=None,
+    row_updates=None,
+    missing=None,
+    index_files=None,
+    overrides=None,
+    data_prefix=FPE.DATA_PREFIX,
 ):
     report = {
         "schema_version": 1,
@@ -64,8 +72,8 @@ def qualified_archive(
     writer.writerow(row)
     files = {
         "fpe-qualification.json": json.dumps(report),
-        FPE.DATA_PREFIX + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
-        FPE.DATA_PREFIX + "b200_sxm.csv": csv_output.getvalue(),
+        data_prefix + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
+        data_prefix + "b200_sxm.csv": csv_output.getvalue(),
         "pages/fpe-support-matrix/index.html": "untrusted artifact HTML",
         "../../escape.py": "untrusted artifact code",
     }
@@ -157,6 +165,47 @@ class FpePagesTest(unittest.TestCase):
             {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
         )
         self.assertEqual(snapshot["artifact_id"], 10)
+
+    def test_legacy_package_artifact_is_published_at_the_current_url(self):
+        snapshot, output = self.prepare(
+            [artifact(1)], {1: run()}, {1: qualified_archive(data_prefix=LEGACY_FPE_PREFIX)}
+        )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            self.assertEqual(
+                (site / "data/fpe-support-matrix/b200_sxm.csv").read_bytes(), (output / "b200_sxm.csv").read_bytes()
+            )
+            self.assertNotIn("untrusted artifact", (site / "fpe-support-matrix/index.html").read_text())
+
+    def test_legacy_artifact_preserves_qualification_and_row_checks(self):
+        for changes in (
+            {"report_updates": {"source_sha": OLD_SHA}},
+            {"report_updates": {"shard_count": 2}},
+            {"row_updates": {"SourceSHA": OLD_SHA}},
+            {"row_updates": {"Status": "UNKNOWN"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(data_prefix=LEGACY_FPE_PREFIX, **changes), NEW_SHA)
+
+    def test_missing_or_ambiguous_archive_layout_is_rejected(self):
+        for changes in (
+            {"missing": FPE.DATA_PREFIX + "index.json"},
+            {"overrides": {LEGACY_FPE_PREFIX + "index.json": '{"files": ["b200_sxm.csv"]}'}},
+        ):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "dataset layout"):
+                FPE.qualified_files(qualified_archive(**changes), NEW_SHA)
+
+    def test_csv_files_cannot_be_borrowed_from_another_archive_layout(self):
+        with self.assertRaises(KeyError):
+            FPE.qualified_files(
+                qualified_archive(
+                    missing=FPE.DATA_PREFIX + "b200_sxm.csv",
+                    overrides={LEGACY_FPE_PREFIX + "b200_sxm.csv": "untrusted alternate CSV"},
+                ),
+                NEW_SHA,
+            )
 
     def test_main_dispatch_publishes_the_qualified_target_commit(self):
         snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(OLD_SHA)})
@@ -1085,6 +1134,17 @@ def test_malformed_accuracy_data_fails_publication() -> None:
             PAGES._accuracy_summary(value)
 
 
+def test_local_research_snapshot_cannot_be_published() -> None:
+    summary = json.loads((ROOT / PAGES.PAGES_ROOT / "e2e-accuracy/summary.json").read_text())
+    summary["snapshot"]["research_preview"] = {
+        "source_commit": "a" * 40,
+        "estimated_points": 1,
+        "estimated_successes": 1,
+    }
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "research previews are local-only"):
+        PAGES._accuracy_summary(json.dumps(summary))
+
+
 def test_incomplete_branch_summary_cannot_replace_public_site() -> None:
     from copy import deepcopy
 
@@ -1177,3 +1237,22 @@ def test_evaluated_snapshot_requires_legacy_cli_provenance() -> None:
         PAGES._accuracy_summary(json.dumps(summary))
     del summary["snapshot"]["evaluated_revision"]
     assert PAGES._accuracy_summary(json.dumps(summary)) == summary
+
+
+def test_accuracy_update_status_must_be_an_object(tmp_path):
+    artifacts = tmp_path / "artifacts"
+    status = artifacts / "status/updates.json"
+    status.parent.mkdir(parents=True)
+    status.write_text("[]")
+    with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "expected an object"):
+        PAGES._build_accuracy_catalog(ROOT, tmp_path / "site", False, artifacts)
+
+
+def test_accuracy_gpu_count_is_validated_without_multinode_flag():
+    summary = json.loads((ROOT / "pages/e2e-accuracy/summary.json").read_text())
+    topology = summary["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]
+    topology.pop("is_multinode", None)
+    for value in ("<img>", 0, -1, 1.5, None, True):
+        topology["total_gpus"] = value
+        with unittest.TestCase().assertRaisesRegex(PAGES.PagesBuildError, "GPU count"):
+            PAGES._accuracy_summary(json.dumps(summary))

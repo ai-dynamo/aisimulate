@@ -1,9 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# Dense/decode composition and exclusion matching adapt (with modifications) SGLang:
+# https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+# The vLLM copyright is retained from SGLang's deepseek_v2.py, which cites:
+# https://github.com/vllm-project/vllm/blob/fb6af8bc086328ca6659e72d11ffd4309ce4de22/vllm/model_executor/models/deepseek_v2.py
 
 from __future__ import annotations
 
 import logging
+import re
+from collections import Counter
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
@@ -106,6 +114,52 @@ def _dsa_shared_expert_quant_mode(extra_params: object, fallback: common.GEMMQua
     return fallback
 
 
+def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQuantMode) -> list:
+    """Dense-prefix layer counts grouped by gate/up and down projection dtype."""
+    count = raw_config.get("first_k_dense_replace")
+    if count is None:
+        count = 0
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or not 0 <= count <= raw_config.get("num_hidden_layers", num_layers)
+    ):
+        raise ValueError("first_k_dense_replace must be an integer between zero and num_hidden_layers")
+    count = min(count, num_layers)
+    if not count:
+        return []
+    if raw_config.get("moe_layer_freq", 1) != 1:
+        raise ValueError("DSA dense-prefix composition requires moe_layer_freq=1")
+    if raw_config.get("hidden_act", "silu") != "silu":
+        raise ValueError("DSA dense-prefix composition requires the silu activation")
+    patterns = [str(pattern) for pattern in quant_exclude_patterns(raw_config)]
+
+    def quant_mode(layer: int, projection: str) -> common.GEMMQuantMode:
+        name = f"model.layers.{layer}.mlp.{projection}"
+        shards = ("gate_proj", "up_proj") if projection == "gate_up_proj" else (projection,)
+        # Native selection checks literal module paths on the unpacked shards
+        # first. Wildcards are only applied to the packed runtime module after
+        # the shard-consistency check, even if a packed wildcard would match.
+        skipped = [
+            any(f".{pattern.rstrip('.')}." in f".model.layers.{layer}.mlp.{shard}." for pattern in patterns)
+            for shard in shards
+        ]
+        if any(skipped) != all(skipped):
+            raise ValueError("DSA dense gate_proj and up_proj must use the same quantization for their fused GEMM")
+        if all(skipped):
+            return common.GEMMQuantMode.bfloat16
+        for pattern in patterns:
+            expression = pattern.replace(".", r"\.").replace("*", ".*")
+            if any(re.fullmatch(expression, candidate) for candidate in (name, *name.split("."))):
+                return common.GEMMQuantMode.bfloat16
+        return fallback
+
+    groups: Counter = Counter()
+    for layer in range(count):
+        groups[(quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj"))] += 1
+    return [(count, gate, down) for (gate, down), count in groups.items()]
+
+
 @register_model("DEEPSEEKV32")
 class DeepSeekV32Model(BaseModel):
     """
@@ -123,6 +177,41 @@ class DeepSeekV32Model(BaseModel):
         # DSA-specific MoE comm, NOT via the dense _cp_attn_comm_ops /
         # seq_split skeleton.
         return backend_name == "sglang"
+
+    @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # Sparse-MLA (DSA) decode CP: vLLM `flashmla_sparse` / `flashinfer_mla_sparse`
+        # + DCP-aware indexer. SGLang's NSA backend has no DCP path yet (the
+        # DSA-family DCP PRs, #39330 / #36990 / #39117, are open), so it is not
+        # claimed. The GenerationDSAModule op prices the gathered heads over
+        # the per-rank KV stripe with the sparse attention over the rank's
+        # ceil(topk / dcp) owned slots; BaseModel._apply_decode_context_parallel
+        # adds the merge collectives and the indexer top-k gather.
+        return backend_name == "vllm"
+
+    def _validate_dcp_topology(self) -> None:
+        super()._validate_dcp_topology()
+        # vLLM's FlashMLA sparse backend (the default DSA decode kernel unless
+        # FLASHINFER_MLA_SPARSE is selected, `attention_backend="flashinfer"`
+        # here) only serves DCP with the `ag_rs` merge and the fp8_ds_mla
+        # mixed-batch KV path (`flashmla_sparse.py`: NotImplementedError
+        # otherwise). Do not price a configuration vLLM refuses to launch.
+        backend = getattr(self, "_backend_name", None)
+        attention_backend = str(getattr(self.config, "attention_backend", None) or "").lower()
+        if backend != "vllm" or "flashinfer" in attention_backend:
+            return
+        if self._dcp_comm_style() != "ag_rs":
+            raise ValueError(
+                f"{self.architecture} decode context parallelism on vLLM's FlashMLA sparse backend only runs "
+                f"with dcp_comm='ag_rs' (got {self.config.dcp_comm!r}); select attention_backend='flashinfer' "
+                "(FLASHINFER_MLA_SPARSE) for the a2a merges."
+            )
+        if self.config.kvcache_quant_mode.value.memory != 1:
+            raise ValueError(
+                f"{self.architecture} decode context parallelism on vLLM's FlashMLA sparse backend requires an "
+                f"fp8 KV cache (got kvcache_quant_mode={self.config.kvcache_quant_mode.name}); the bf16 sparse "
+                "path returns no LSE for the DCP merge."
+            )
 
     @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
@@ -151,7 +240,9 @@ class DeepSeekV32Model(BaseModel):
         # quantizes o_proj; GLM-5 NVFP4 excludes the whole self_attn block.
         extra_params.setdefault(
             "dsa_attn_quant_exclusions",
-            attention_projection_exclusions(model_info.get("raw_config", {})),
+            attention_projection_exclusions(
+                model_info.get("raw_config", {}), precise_module_paths=backend_name == "vllm"
+            ),
         )
         if _shared_experts_excluded_from_quant(model_info.get("raw_config", {})):
             extra_params.setdefault("dsa_shared_expert_quant_mode", common.GEMMQuantMode.bfloat16)
@@ -163,18 +254,31 @@ class DeepSeekV32Model(BaseModel):
         # the per-layer amortization weights real full vs skip counts, not the
         # 1/freq approximation (GLM-5.2: 21/78=0.2692, not 0.25 — under-counting
         # full made AIC predict too fast).
-        # The skip-indexer perf rows are produced ONLY by the sglang collector.
-        # On backends without a skip producer (e.g. trtllm) the per-layer
-        # amortization must run all-full (fraction 1.0): otherwise the consumer
-        # would weight in a skip table that was never collected for that backend.
-        # The model still HAS skip layers (index_topk_freq reflects that); we just
-        # cannot model their saving without data, so we count them as full.
+        # vLLM's layer rule matches this checkpoint pattern (deepseek_v2.py:
+        # 1080-1106, vLLM v0.25.1 @752a3a504485790a). Pass the
+        # physical layer fraction to the native operator; it only uses vLLM
+        # skip measurements when the loaded tables have the matching key and
+        # local head count. Older/full-only tables remain conservatively full.
+        # TRT-LLM has no qualified skip producer and retains all-full pricing.
         extra_params.setdefault(
             "dsa_full_layer_fraction",
             _dsa_full_layer_fraction(model_info.get("raw_config", {}), model_info["layers"])
-            if backend_name == "sglang"
+            if backend_name in {"sglang", "vllm"}
             else 1.0,
         )
+        # Dense TP sharding is established for ordinary SGLang inference.
+        # Other regimes retain their existing all-MoE approximation: dense
+        # distribution under CP/ADP/large EP and draft-layer quantization need
+        # separate modeling, as does stage ownership for pipeline parallelism.
+        if (
+            backend_name == "sglang"
+            and model_config.pp_size == model_config.cp_size == model_config.attention_dp_size == 1
+            and not model_config.moe_comm_backend
+            and not model_config.nextn
+        ):
+            extra_params["dsa_dense_mlp_groups"] = _dense_mlp_groups(
+                model_info.get("raw_config", {}), model_info["layers"], model_config.gemm_quant_mode
+            )
 
         # One class for both regimes: ``__init__`` branches on
         # ``model_config.moe_comm_backend`` (set by the enumerator) for large EP.
@@ -215,6 +319,27 @@ class DeepSeekV32Model(BaseModel):
             shared_gemm_quant_mode=shared_gemm_quant_mode,
         )
 
+    def _dense_mlp_ops(self, phase: str) -> list:
+        groups = self.extra_params.get("dsa_dense_mlp_groups", [])
+        result = []
+        for index, (count, gate_quant, down_quant) in enumerate(groups):
+            prefix = f"{phase}_dense" if len(groups) == 1 else f"{phase}_dense_{index}"
+            inter = self._inter_size // self.config.tp_size
+            result.extend(
+                [
+                    # DSA module timings stop before prepare_mlp's reduction;
+                    # MoE pre-dispatch accounts for it only on the MoE layers.
+                    ops.CustomAllReduce(f"{prefix}_attn_ar", count, self._hidden_size, self.config.tp_size),
+                    ops.GEMM(f"{prefix}_gate_up_gemm", count, 2 * inter, self._hidden_size, gate_quant),
+                    ops.ElementWise(f"{prefix}_act_gate", count, 2 * inter, inter, 0.8),
+                    ops.GEMM(
+                        f"{prefix}_down_gemm", count, self._hidden_size, inter, down_quant, low_precision_input=True
+                    ),
+                    ops.CustomAllReduce(f"{prefix}_ffn_ar", count, self._hidden_size, self.config.tp_size),
+                ]
+            )
+        return result
+
     def __init__(self, topk: int, num_experts: int, moe_inter_size: int, *args, backend_name: str = "") -> None:
         super().__init__(*args)
 
@@ -241,6 +366,10 @@ class DeepSeekV32Model(BaseModel):
         self._moe_inter_size = moe_inter_size
         self._mtp_scale_factor = mtp_scale_factor(self._nextn, self._num_layers)
         self._power_law_alpha = 1.01
+        num_dense_layers = sum(count for count, _, _ in self.extra_params.get("dsa_dense_mlp_groups", []))
+        self._num_moe_layers = self._num_layers - num_dense_layers
+        if num_dense_layers and (self._inter_size <= 0 or self._inter_size % self.config.tp_size):
+            raise ValueError("Dense intermediate_size must be positive and divisible by tp_size")
 
         h = self._hidden_size
         tp_size = self.config.tp_size
@@ -446,39 +575,40 @@ class DeepSeekV32Model(BaseModel):
                 ops.ElementWise("context_add_norm_2", self._num_layers, 2 * h, 2 * h, 0.8, scale_num_tokens=cp_size),
             ]
         )
+        self.context_ops.extend(self._dense_mlp_ops("context"))
 
         fused_context_moe_ops = [
             ops.GEMM(
                 "context_shared_gate_up_gemm",
-                self._num_layers,
+                self._num_moe_layers,
                 2 * self._moe_inter_size // moe_tp_size,
                 h,
                 _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
             ),
             ops.ElementWise(
                 "context_shared_act_gate",
-                self._num_layers,
+                self._num_moe_layers,
                 2 * self._moe_inter_size // moe_tp_size,
                 self._moe_inter_size // moe_tp_size,
                 0.8,
             ),
             ops.GEMM(
                 "context_shared_ffn2_gemm",
-                self._num_layers,
+                self._num_moe_layers,
                 h,
                 self._moe_inter_size // moe_tp_size,
                 _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
             ),
             ops.GEMM(
                 "context_router_gemm",
-                self._num_layers,
+                self._num_moe_layers,
                 self._num_experts,
                 h,
                 common.GEMMQuantMode.bfloat16,
             ),
             ops.MoEDispatch(
                 "context_moe_pre_dispatch",
-                self._num_layers,
+                self._num_moe_layers,
                 h,
                 self._topk,
                 self._num_experts,
@@ -492,7 +622,7 @@ class DeepSeekV32Model(BaseModel):
             ),
             ops.MoE(
                 "context_moe",
-                self._num_layers,
+                self._num_moe_layers,
                 h,
                 self._moe_inter_size,
                 self._topk,
@@ -502,10 +632,11 @@ class DeepSeekV32Model(BaseModel):
                 moe_quant_mode,
                 workload_distribution,
                 attention_dp_size,
+                moe_kernel_source=self.config.moe_kernel_source,
             ),
             ops.MoEDispatch(
                 "context_moe_post_dispatch",
-                self._num_layers,
+                self._num_moe_layers,
                 h,
                 self._topk,
                 self._num_experts,
@@ -522,7 +653,7 @@ class DeepSeekV32Model(BaseModel):
             # Large EP on a framework without its own attention stack (see the
             # generation site below).
             self.context_ops.extend(self._large_ep_moe_ops("context", moe_shape, self._num_layers))
-        else:
+        elif self._num_moe_layers:
             self.context_ops.extend(fused_context_moe_ops)
         self.context_ops.append(
             ops.GEMM(
@@ -564,6 +695,7 @@ class DeepSeekV32Model(BaseModel):
                 ),
             ]
         )
+        self.generation_ops.extend(self._dense_mlp_ops("generation"))
 
         if self._is_large_ep:
             # Large EP on a framework without its own attention stack (the
@@ -571,25 +703,25 @@ class DeepSeekV32Model(BaseModel):
             self.generation_ops.extend(
                 self._large_ep_moe_ops("generation", moe_shape, self._num_layers * self._mtp_scale_factor)
             )
-        else:
+        elif self._num_moe_layers:
             gen_shared_ops = [
                 ops.GEMM(
                     "generation_shared_gate_up_gemm",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     2 * self._moe_inter_size // moe_tp_size,
                     h,
                     _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
                 ),
                 ops.ElementWise(
                     "generation_shared_act_gate",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     2 * self._moe_inter_size // moe_tp_size,
                     self._moe_inter_size // moe_tp_size,
                     0.8,
                 ),
                 ops.GEMM(
                     "generation_shared_ffn2_gemm",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     h,
                     self._moe_inter_size // moe_tp_size,
                     _dsa_shared_expert_quant_mode(self.extra_params, gemm_quant_mode),
@@ -599,14 +731,14 @@ class DeepSeekV32Model(BaseModel):
             gen_routed_ops = [
                 ops.GEMM(
                     "generation_router_gemm",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     self._num_experts,
                     h,
                     common.GEMMQuantMode.bfloat16,
                 ),
                 ops.MoEDispatch(
                     "generation_moe_pre_dispatch",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     h,
                     self._topk,
                     self._num_experts,
@@ -621,7 +753,7 @@ class DeepSeekV32Model(BaseModel):
                 ),
                 ops.MoE(
                     "generation_moe",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     h,
                     self._moe_inter_size,
                     self._topk,
@@ -631,10 +763,11 @@ class DeepSeekV32Model(BaseModel):
                     moe_quant_mode,
                     workload_distribution,
                     attention_dp_size,
+                    moe_kernel_source=self.config.moe_kernel_source,
                 ),
                 ops.MoEDispatch(
                     "generation_moe_post_dispatch",
-                    self._num_layers * self._mtp_scale_factor,
+                    self._num_moe_layers * self._mtp_scale_factor,
                     h,
                     self._topk,
                     self._num_experts,

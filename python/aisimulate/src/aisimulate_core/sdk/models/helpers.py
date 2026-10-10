@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
 import warnings
 from functools import cache
 from typing import TYPE_CHECKING, Optional
@@ -84,22 +85,66 @@ _PROJECTION_GROUP_MARKERS = {
     "o": ("o_proj",),
     "indexer": ("indexer",),
 }
+_PRECISE_PROJECTION_GROUP_MARKERS = {
+    **_PROJECTION_GROUP_MARKERS,
+    "indexer": ("indexer.wq_b", "indexer.wk", "indexer.weights_proj"),
+}
+_PROJECTION_MODULE_PATHS = {
+    **_PRECISE_PROJECTION_GROUP_MARKERS,
+    "kv": (*_PROJECTION_GROUP_MARKERS["kv"], "kv_a_proj_with_mqa"),
+    "indexer": (*_PRECISE_PROJECTION_GROUP_MARKERS["indexer"], "indexer.wk_weights_proj"),
+}
 
 
-def attention_projection_exclusions(raw_config: dict) -> frozenset:
+def attention_projection_exclusions(raw_config: dict, *, precise_module_paths: bool = False) -> frozenset:
     """Which attention projection groups the checkpoint keeps unquantized.
 
     Returns a subset of :data:`ATTENTION_PROJECTION_GROUPS`. A pattern naming
     the whole block (``self_attn*`` / ``re:.*self_attn.*``) covers every
     group; otherwise groups are matched per projection name.
+
+    vLLM DSA opts into precise module paths: norm and auxiliary exclusions
+    do not exclude projection GEMMs. Other consumers retain their existing
+    interpretation until their precision/data correction is qualified.
     """
+    markers_by_group = _PRECISE_PROJECTION_GROUP_MARKERS if precise_module_paths else _PROJECTION_GROUP_MARKERS
     excluded: set = set()
     for pattern in quant_exclude_patterns(raw_config):
         p = str(pattern)
-        if "self_attn" in p and not any(m in p for markers in _PROJECTION_GROUP_MARKERS.values() for m in markers):
-            # whole-block glob (e.g. "model.layers.N.self_attn*", "re:.*self_attn.*")
+        if precise_module_paths and p.startswith("re:"):
+            # Compressed-tensors regexes match native module paths, including
+            # anchors and escaped dots; projection-name substrings are not
+            # sufficient (e.g. a norm-only regex must not exclude a GEMM).
+            try:
+                regex = re.compile(p[3:])
+            except re.error as error:
+                raise ValueError(f"Invalid attention quantization exclusion {p!r}: {error}") from error
+            for group, modules in _PROJECTION_MODULE_PATHS.items():
+                if any(
+                    regex.match(f"model.layers.{layer}.self_attn.{module}")
+                    for layer in range(int(raw_config.get("num_hidden_layers", 1)))
+                    for module in modules
+                ):
+                    excluded.add(group)
+            continue
+        if not precise_module_paths:
+            if "self_attn" in p and not any(m in p for markers in markers_by_group.values() for m in markers):
+                return frozenset(ATTENTION_PROJECTION_GROUPS)
+            for group, markers in markers_by_group.items():
+                if any(m in p for m in markers):
+                    excluded.add(group)
+            continue
+        # A named child such as q_a_layernorm is not an exclusion of the
+        # entire attention block. Native GLM FP8 configs exclude many such
+        # norms while retaining FP8 attention projections.
+        block_suffixes = {"", "*", ".*", r"\..*"}
+        if "self_attn" in p and p.rsplit("self_attn", 1)[1] in block_suffixes:
             return frozenset(ATTENTION_PROJECTION_GROUPS)
-        for group, markers in _PROJECTION_GROUP_MARKERS.items():
+        # Preserve an explicit indexer block exclusion, but not its k_norm or
+        # the separate indexers_proj module. Neither excludes wq_b/wk GEMMs.
+        if "indexer" in p and p.rsplit("indexer", 1)[1] in block_suffixes:
+            excluded.add("indexer")
+        for group, markers in markers_by_group.items():
             if any(m in p for m in markers):
                 excluded.add(group)
     return frozenset(excluded)
@@ -645,7 +690,8 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
 
     if (
         architecture == "DeepseekV41ForCausalLM"
-        and str(raw_config.get("quantization_config", {}).get("expert_dtype", "")).lower() == "fp4"
+        and str((_get_language_quantization_config(raw_config) or {}).get("expert_dtype", "")).lower() == "fp4"
+        and overrides.get("moe_quant_mode") != common.MoEQuantMode.nvfp4
     ):
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
@@ -653,7 +699,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     # TODO: support fp4 kv cache
     if kv_cache_algo == "fp8":
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
-    elif kv_cache_algo == "bfloat16":
+    elif kv_cache_algo in ("bfloat16", "none"):
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.bfloat16
     elif kv_cache_algo is not None:
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
@@ -663,7 +709,12 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
     # FMHA quant mode
-    if quant_algo is not None and (quant_algo in ("fp8", "fp8_block", "nvfp4") or kv_cache_algo in ("fp8",)):
+    if kv_cache_algo == "none" and overrides["kvcache_quant_mode"] == common.KVCacheQuantMode.bfloat16:
+        # An explicit unquantized KV declaration uses the full-precision SDK
+        # default independently of weight quantization. Preserve native cache
+        # requirements applied above; missing/null metadata keeps legacy defaults.
+        overrides["fmha_quant_mode"] = common.FMHAQuantMode.bfloat16
+    elif quant_algo is not None and (quant_algo in ("fp8", "fp8_block", "nvfp4") or kv_cache_algo in ("fp8",)):
         overrides["fmha_quant_mode"] = common.FMHAQuantMode.fp8
         if kv_cache_algo is None or kv_cache_algo != "fp8":
             overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
@@ -804,7 +855,9 @@ def _is_dsv4_fp4_expert_model(model_path: str) -> bool:
         return False
     raw_config = info.get("raw_config", {})
     expert_config = (
-        raw_config.get("quantization_config", {}) if architecture == "DeepseekV41ForCausalLM" else raw_config
+        (_get_language_quantization_config(raw_config) or {})
+        if architecture == "DeepseekV41ForCausalLM"
+        else raw_config
     )
     if str(expert_config.get("expert_dtype") or "").lower() != "fp4":
         return False

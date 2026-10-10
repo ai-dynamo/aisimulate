@@ -5,6 +5,9 @@ mod arrival;
 mod driver;
 mod dynamo;
 mod generated;
+mod phase;
+mod profile;
+mod snapshot;
 mod steppable;
 mod trace;
 mod types;
@@ -20,6 +23,16 @@ pub use driver::{
 };
 pub use dynamo::DynamoRequestTrace;
 pub use generated::GeneratedRequests;
+pub use phase::{
+    AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
+    AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
+};
+pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
+pub use snapshot::{
+    AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
+    AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
+    PreparedAgenticSnapshots,
+};
 pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};
 #[doc(hidden)]
@@ -56,3 +69,9 @@ pub(super) fn planned_output_token_ids(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
+mod dynamo_snapshot_tests;

@@ -15,6 +15,7 @@ use crate::engine::common::protocols::{
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
+use crate::engine::host_offload::G2Binding;
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
     HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
@@ -69,14 +70,21 @@ impl SchedulerRank {
         timing: Arc<dyn TimingModel>,
         seed_offset: u64,
     ) -> Result<Self> {
+        Self::new_with_g2(identity, config, timing, seed_offset, None)
+    }
+
+    /// `g2` binds a cluster-shared G2 configuration to its deployment pool.
+    pub(crate) fn new_with_g2(
+        identity: RankIdentity,
+        config: &EngineConfig,
+        timing: Arc<dyn TimingModel>,
+        seed_offset: u64,
+        g2: Option<&G2Binding>,
+    ) -> Result<Self> {
         config.validate()?;
         ensure!(
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
-        );
-        ensure!(
-            config.native_host_offload.is_none() || identity.dp_size.get() == 1,
-            "native_host_offload supports only dp_size=1 in the initial implementation"
         );
         let mut args = core_args(config, timing);
         if config.backend == Backend::Sglang {
@@ -90,7 +98,8 @@ impl SchedulerRank {
                 identity.dp_rank,
                 seed_offset,
                 capture_kv_events,
-            )),
+                g2,
+            )?),
             Backend::Sglang => EngineCore::Sglang(SglangCore::new_with_worker_rank(
                 args,
                 identity.worker_id,
@@ -429,7 +438,11 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
-        native_host_offload: config.native_host_offload,
+        kv_cache_groups: config.kv_cache_groups.clone(),
+        kv_cache_capacity_bytes: config.kv_cache_capacity_bytes,
+        native_host_offload: config.native_host_offload.clone(),
+        state_cache: config.state_cache,
+        prefix_match_unit: config.prefix_match_unit,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
             TransferTimingMode::FullPrompt => KvTransferTimingMode::FullPrompt,
@@ -574,6 +587,8 @@ fn map_metrics(metrics: MockerMetrics) -> Metrics {
         active_blocks: metrics.active_decode_blocks,
         inactive_blocks: metrics.inactive_decode_blocks,
         total_blocks: metrics.total_blocks,
+        kv_cache_used_bytes: metrics.kv_cache_used_bytes,
+        kv_cache_capacity_bytes: metrics.kv_cache_capacity_bytes,
         cache_usage: metrics.gpu_cache_usage_perc,
         physical_cache_usage: metrics.physical_gpu_cache_usage_perc,
         running_requests: metrics.running_requests,
@@ -592,6 +607,7 @@ fn split_pass(
     PassCompletionEffects,
 )> {
     let EnginePassResult {
+        committed_requests,
         same_timestamp_retry,
         output_signals,
         admissions,
@@ -608,6 +624,7 @@ fn split_pass(
         KvEventVisibility::PassEnd => (Vec::new(), kv_events),
     };
     let start = PassStartEffects {
+        committed_requests,
         admissions: admissions
             .into_iter()
             .map(|admission| Admission {
@@ -668,6 +685,25 @@ mod tests {
         HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
         TimingModelConfig,
     };
+
+    #[test]
+    fn state_cache_parameters_reach_rank_local_args() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "num_gpu_blocks":8,"block_size":64,"kv_cache_bytes_per_token":16,
+            "state_cache": {"bytes_per_request":1500}
+        }))
+        .unwrap();
+        let args = core_args(&config, config.built_in_timing_model().unwrap());
+        assert_eq!(args.state_cache, config.state_cache);
+        assert_eq!(args.num_gpu_blocks, 8);
+        assert_eq!(args.block_size, 64);
+
+        let legacy = EngineConfig::default();
+        let args = core_args(&legacy, legacy.built_in_timing_model().unwrap());
+        assert!(args.state_cache.is_none());
+        assert_eq!(args.num_gpu_blocks, legacy.num_gpu_blocks);
+        assert_eq!(args.block_size, legacy.block_size);
+    }
 
     #[test]
     fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {
@@ -1484,5 +1520,180 @@ mod tests {
                 .any(|output| output.request_id == request_id && output.completed)
         );
         assert!(!rank.handoff_requests.contains_key(&handoff_id));
+    }
+
+    #[test]
+    fn cold_prefill_restores_decode_owned_g2_without_a_handoff_to_the_consumer() {
+        use crate::engine::host_offload::G2Binding;
+
+        for (shared, h2d_bandwidth_gbps) in [(false, 1.0), (true, 1.0), (true, 0.01)] {
+            let binding = G2Binding {
+                registry: Arc::default(),
+                tensor_parallel_size: 1,
+            };
+            let build = |worker_type, worker_id| {
+                let host = NativeHostOffloadConfig::new(8).with_bandwidths(1.0, h2d_bandwidth_gbps);
+                let config = EngineConfig {
+                    worker_type,
+                    num_gpu_blocks: 4,
+                    block_size: 4,
+                    max_num_seqs: 1,
+                    max_num_batched_tokens: 16,
+                    kv_cache_bytes_per_token: Some(250_000),
+                    native_host_offload: Some(if shared {
+                        host.cluster_shared("cross-role-tp1")
+                    } else {
+                        host
+                    }),
+                    timing_model: TimingModelConfig::Fixed {
+                        prefill_ms: 2.0,
+                        decode_ms: 1.0,
+                    },
+                    ..EngineConfig::default()
+                };
+                SchedulerRank::new_with_g2(
+                    RankIdentity {
+                        worker_id,
+                        dp_rank: 0,
+                        dp_size: NonZeroU32::MIN,
+                    },
+                    &config,
+                    config.built_in_timing_model().unwrap(),
+                    0,
+                    Some(&binding),
+                )
+                .unwrap()
+            };
+            // Exactly one P rank and one D rank. Seed only D through the typed
+            // native destination handshake, representing historical incoming
+            // prompt KV. P has never computed or received any of these tokens.
+            let mut prefill = build(WorkerType::Prefill, 0);
+            let mut decode = build(WorkerType::Decode, 1);
+            let history = Uuid::from_u128(95_001);
+            let historical_handoff = HandoffId::from(Uuid::from_u128(95_002));
+            let command = |rank: &mut SchedulerRank, command, now_ms| {
+                rank.apply_command_effects(
+                    command,
+                    CommandContext {
+                        now_ms,
+                        pass_in_flight: false,
+                    },
+                    None,
+                )
+                .unwrap()
+            };
+            command(
+                &mut decode,
+                Command::ReserveDestination {
+                    handoff_id: historical_handoff,
+                    request: Request {
+                        request_id: history,
+                        tokens: (1..=9).collect(),
+                        max_output_tokens: 2,
+                        output_token_ids: None,
+                    },
+                },
+                0.0,
+            );
+            command(
+                &mut decode,
+                Command::ActivateDestination {
+                    handoff_id: historical_handoff,
+                },
+                0.0,
+            );
+            let mut now_ms = 0.0;
+            let mut completed = false;
+            for _ in 0..8 {
+                let pass = decode.execute_pass(now_ms).unwrap();
+                now_ms = pass.end_ms;
+                let effects = decode.complete_pass(pass.pending, now_ms).unwrap();
+                completed |= effects
+                    .outputs
+                    .iter()
+                    .any(|output| output.request_id == history && output.completed);
+                if completed {
+                    break;
+                }
+            }
+            assert!(completed, "historical decode must finish");
+            while let Some(deadline) = decode.next_internal_deadline_ms() {
+                now_ms = now_ms.max(deadline);
+                decode.process_internal_work(now_ms, false).unwrap();
+            }
+            assert!(prefill.core.is_drained());
+            if shared {
+                assert_eq!(binding.registry.occupancy(), Some((8, 2, 2)));
+            }
+
+            // The consumer enters P as a new source request, not a destination
+            // activation. Its only possible reuse is D's completed host copy.
+            let consumer = Uuid::from_u128(95_003);
+            let consumer_handoff = HandoffId::from(Uuid::from_u128(95_004));
+            command(
+                &mut prefill,
+                Command::SubmitHandoffPrefill {
+                    handoff_id: consumer_handoff,
+                    request: Request {
+                        request_id: consumer,
+                        tokens: (1..=9).collect(),
+                        max_output_tokens: 1,
+                        output_token_ids: None,
+                    },
+                },
+                now_ms,
+            );
+            let submitted_at_ms = now_ms;
+            let mut admission = None;
+            let mut admitted_at_ms = None;
+            for _ in 0..8 {
+                let pass = prefill.execute_pass(now_ms).unwrap();
+                admission = pass
+                    .start_effects
+                    .admissions
+                    .iter()
+                    .find(|admission| admission.request_id == consumer)
+                    .copied()
+                    .or(admission);
+                if admission.is_some() {
+                    admitted_at_ms = Some(now_ms);
+                }
+                now_ms = pass.end_ms;
+                prefill.complete_pass(pass.pending, now_ms).unwrap();
+                if admission.is_some() {
+                    break;
+                }
+                if let Some(deadline) = prefill.next_internal_deadline_ms() {
+                    now_ms = now_ms.max(deadline);
+                    prefill.process_internal_work(now_ms, false).unwrap();
+                }
+            }
+            let attribution = admission.unwrap().cache_tier_attribution.unwrap();
+            assert_eq!(attribution.g1_reused_input_tokens, 0);
+            assert_eq!(
+                attribution.host_reused_input_tokens,
+                if shared { 8 } else { 0 }
+            );
+            // Two 1 MB blocks must finish H2D before admission. Observe the
+            // start of the admitted pass, excluding its fixed 2 ms computation.
+            // The slow-link case rules out an unrelated scheduler wait.
+            let expected_wait_ms = if shared {
+                2.0 / h2d_bandwidth_gbps
+            } else {
+                0.0
+            };
+            let actual_wait_ms = admitted_at_ms.unwrap() - submitted_at_ms;
+            assert!(
+                (actual_wait_ms - expected_wait_ms).abs() < 1e-9,
+                "shared={shared}, H2D={h2d_bandwidth_gbps} GB/s: admission wait {actual_wait_ms} ms, expected {expected_wait_ms} ms"
+            );
+            command(
+                &mut prefill,
+                Command::ReleaseSource {
+                    handoff_id: consumer_handoff,
+                },
+                now_ms,
+            );
+        }
     }
 }

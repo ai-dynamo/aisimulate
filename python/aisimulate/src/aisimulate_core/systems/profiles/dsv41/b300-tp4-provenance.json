@@ -1,0 +1,147 @@
+{
+  "attention_dp_size": 1,
+  "backend": "sglang",
+  "backend_version": "dev-c4ca651192e5",
+  "coverage": {
+    "accuracy_validation": "not performed; native admission and exact database lookup are not heldout accuracy results",
+    "admitted_tp_sizes": [
+      4
+    ],
+    "tp2": "pending; no accepted calibration rows in this publication"
+  },
+  "evidence_bindings": {
+    "campaign_sha256": "11eb718e0635d640e2e9cf9a509510cb2dbf31444269485926f835b443e8a417",
+    "checkpoint_receipt_sha256": "f0d2fa5999acaf1d9b3d9c68689a33223b93fca0cdc4a20a1569381dfea45921",
+    "config_sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+    "driver_gate_sha256": "67de4d20ace14904edcb1cd310a69ef911bc7209d2938ad53971a2cfca8811d5",
+    "hardware_receipt_sha256": "1321829543c6d0ce067860db9eb920fd45c7f903833404dee7dba689cbb015c7",
+    "native_reader_commit": "63ea2f306d088d984944981eefa41d74ef4d8a55",
+    "native_reader_sha256": "80d462f229e6c7f3503b5aed81962c36557da40505707be906b05ded82f65acd",
+    "source_manifest_sha256": "d50217d8f78e4bd173774c36713650bbf44b058c9575ac8babba208a5c5173a2",
+    "terminal_archive_sha256": "ba853df37008125bc74d2f292a24d7b70f2313a249d01af957db971b328ae31e"
+  },
+  "hardware": {
+    "allocated_gpus": 8,
+    "driver_version": "610.57.04",
+    "gpu_model": "NVIDIA B300 SXM6 AC",
+    "gpus_used": 4,
+    "nodes": 1
+  },
+  "measurement": {
+    "aggregation": "median of maximum across four TP ranks for each physical invocation, within each cell only",
+    "baseline_measured_iterations": 5,
+    "baseline_warmup": 2,
+    "cuda_graphs": false,
+    "custom_allreduce": false,
+    "dataset_role": "calibration",
+    "flashinfer_allreduce_fusion": false,
+    "latency_unit": "ms",
+    "module_measured_iterations_per_workload": 5,
+    "module_warmup": 1,
+    "moe_routing": "seeded uniform expert routing",
+    "nccl_message_size_unit": "elements",
+    "nccl_wire_dtype": "bfloat16",
+    "scope": "eager local module compute plus separately measured native GEMM/MoE/NCCL baselines",
+    "shared_experts_fusion": false,
+    "shared_physical_keys_across_workloads": "all observed physical invocations retained in within-cell median and sample_count"
+  },
+  "model": {
+    "path": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "revision": "fb2764a5cf321eaa5070ca8f9e892818f477c16d"
+  },
+  "moe_ep_size": 1,
+  "moe_tp_size": 4,
+  "pp_size": 1,
+  "producer_commit": "638c99ed3e9a9c5381b698d0fb2deba77a0d89cc",
+  "profiles": {
+    "decoder_bounded": {
+      "base_launch_source_sha256": "dc5b2dde75ae976342e3ef3c764d4019129877e99ec738353593f9967d21671d",
+      "base_payload_inventory_sha256": "a26e80b6ee001ad0e6073b1b01a277045f44708de2c6571708b4e43507ce4c9f",
+      "binding_sha256": "02f5ab519db8675ecbb30e4035b980cf88661a161355ea5bf821e4a73757589b",
+      "decoder_replay": true,
+      "exact_native_lookup_counts": {
+        "dsv41": 1029,
+        "gemm": 46,
+        "moe": 23,
+        "nccl": 46
+      },
+      "files": {
+        "b300_sxm.yaml": "1b46526ebec20b518f73215b01d46e70354ccb316ca173fa67611892ac99ee97",
+        "data/b300_sxm/comm/nccl/2.29.7/collection_meta.yaml": "0c8d757536806f7fc5ddc4dc6ac6d0590b6dab879b51344fb09977ab3dcfbc7d",
+        "data/b300_sxm/comm/nccl/2.29.7/nccl_perf.parquet": "6d0552f572ccadf1e6a664491aa4246e1082bf736013a77c74f68affd0dec64f",
+        "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5/collection_meta.yaml": "794abd832f030da73859ea5ca426ce827ad409c734c863f084471231812e6c4a",
+        "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5/dsv41_module_perf.parquet": "be4d139dfcbe340efc1761236607b9a3f405acb21b9c5a8c0db181b9b5dce3e1",
+        "data/b300_sxm/gemm/sglang/dev-c4ca651192e5/collection_meta.yaml": "ec18dc2a7acd38efef2918c7ee270bcdd59144b85c42fd8c9117f4298414c9a4",
+        "data/b300_sxm/gemm/sglang/dev-c4ca651192e5/gemm_perf.parquet": "ad2c0c8edce177e1ec4636e0742f5ced3b573dff0f5c84acf621e45c874ea3e5",
+        "data/b300_sxm/moe/sglang/dev-c4ca651192e5/collection_meta.yaml": "013491e19461681614d928492a577a2bb7646ee2adea47f2e37c53b77481b054",
+        "data/b300_sxm/moe/sglang/dev-c4ca651192e5/moe_perf.parquet": "d3f7391e383181f48e9dca919eec56f37256876762ac58341afd6daca783aedb"
+      },
+      "phase_workloads": {
+        "context": 117,
+        "generation": 37
+      },
+      "publication_receipt_sha256": "7de0bffb47b75d3c2ee9fb70d1ae553cd9a9f6af671a9d290036f6dac60f2088",
+      "raw_admission_sha256": "dddff0b98b1b823756073d0533aed35141fcef3d99cbd6451b0f9012b1e406d3",
+      "workload_count": 154
+    },
+    "full": {
+      "base_launch_source_sha256": "dc5b2dde75ae976342e3ef3c764d4019129877e99ec738353593f9967d21671d",
+      "base_payload_inventory_sha256": "a26e80b6ee001ad0e6073b1b01a277045f44708de2c6571708b4e43507ce4c9f",
+      "binding_sha256": "19d2cc9e522eb16fe02fb3c14a768570d0b053470d85346365204bc0533d86ee",
+      "decoder_replay": false,
+      "exact_native_lookup_counts": {
+        "dsv41": 985,
+        "gemm": 46,
+        "moe": 23,
+        "nccl": 46
+      },
+      "files": {
+        "b300_sxm.yaml": "1b46526ebec20b518f73215b01d46e70354ccb316ca173fa67611892ac99ee97",
+        "data/b300_sxm/comm/nccl/2.29.7/collection_meta.yaml": "889fd39f4c4660c727b0d8dca575f45f0664f756fe5a293d3968f3095a49721b",
+        "data/b300_sxm/comm/nccl/2.29.7/nccl_perf.parquet": "351a194a0b93a742c2b1916034df4bdee7ea06b46511e4f849847f76f6611f10",
+        "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5/collection_meta.yaml": "846591543cf18f62b4a51bb2c0df35395d3d62b477981f41867d5a3cfedc5242",
+        "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5/dsv41_module_perf.parquet": "e8d392db16593f98e9eccb05225baea3d6184bae921ba00ca1610d7b92122523",
+        "data/b300_sxm/gemm/sglang/dev-c4ca651192e5/collection_meta.yaml": "a0526f514fb4b33d3007a8de828aed095085c4ec2dc71ca05231b6fbdbd1103a",
+        "data/b300_sxm/gemm/sglang/dev-c4ca651192e5/gemm_perf.parquet": "2a4c5bea6eb19d3e7bfe89309691d83ab14d41c6cea8e88cf6f19deed351438d",
+        "data/b300_sxm/moe/sglang/dev-c4ca651192e5/collection_meta.yaml": "09d7ce29204da0cded5e89f860722737e81c19eb5047b8bc13e02d965a63d00d",
+        "data/b300_sxm/moe/sglang/dev-c4ca651192e5/moe_perf.parquet": "a78428db565165c5e7445912d257f0731254f9f4edf0d8e145e3bffda6e2338d"
+      },
+      "phase_workloads": {
+        "context": 108,
+        "generation": 37
+      },
+      "publication_receipt_sha256": "e29c1ef41de45ad43f1f085344740e21ec8691aa4a05c3882b536d2e78c58167",
+      "raw_admission_sha256": "4fa30938ce4995bae847be03bd87dd9f7dd6afb068ff141d8b6b36da09f83168",
+      "workload_count": 145
+    }
+  },
+  "runtime": {
+    "base_qualification": "immutable image, exact approved source inventory and original completed launch with read-only payload/model mounts",
+    "build_commit": "unknown",
+    "direct_post_load_loader_witness_observed": false,
+    "image_architecture": "amd64",
+    "image_manifest_digest": "sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5",
+    "image_squashfs_sha256": "48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17",
+    "loader_variant": "base",
+    "nccl_version": "2.29.7",
+    "package_version": "0.0.0.dev0"
+  },
+  "schema_version": 1,
+  "source_reference": {
+    "copyright": "Copyright 2023-2024 SGLang Team and SGLang contributors",
+    "license": "Apache-2.0",
+    "modified": true,
+    "paths": [
+      "python/sglang/srt/models/deepseek_v4.py",
+      "python/sglang/srt/models/deepseek_v2.py",
+      "python/sglang/srt/layers/engram.py",
+      "python/sglang/srt/layers/attention/dsv4/compressor.py",
+      "python/sglang/srt/layers/attention/dsv4/dsv41_sparse.py"
+    ],
+    "repository": "https://github.com/sgl-project/sglang",
+    "revision": "1aa0e962b206102b7c439a4a0c4981cfec6e87bc",
+    "role": "adapted serving geometry reference; not asserted to be the image build commit"
+  },
+  "system": "b300_sxm",
+  "tp_size": 4
+}

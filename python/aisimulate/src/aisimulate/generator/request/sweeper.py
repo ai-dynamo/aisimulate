@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
+from ..context_parallel import ContextParallelUnsupportedError, context_parallel_params
 from .schema import (
     BackendSpec,
     EmitTargets,
@@ -111,7 +112,14 @@ def _flatten_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
     return raw
 
 
-def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple[RoleSizing, int]:
+def _role_sizing(
+    config: Mapping[str, Any],
+    role: str,
+    *,
+    backend: str,
+    backend_version: str,
+    architecture: str | None = None,
+) -> tuple[RoleSizing, int]:
     prefix = "" if role == "agg" else f"{role}_"
 
     tp = _positive_int(config.get(f"{prefix}tp"), path=f"candidate.config.{prefix}tp")
@@ -128,6 +136,10 @@ def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple
         config.get(f"{prefix}moe_ep"),
         path=f"candidate.config.{prefix}moe_ep",
     )
+    # Context-parallel knobs are optional columns: prefill CP (``cp``) adds
+    # attention ranks, decode CP (``dcp``) stripes KV inside the TP group.
+    cp = _positive_int(config.get(f"{prefix}cp", 1), path=f"candidate.config.{prefix}cp")
+    dcp = _positive_int(config.get(f"{prefix}dcp", 1), path=f"candidate.config.{prefix}dcp")
     workers_key = "replicas" if role == "agg" else f"{role}_replicas"
     workers = _positive_int(config.get(workers_key), path=f"candidate.config.{workers_key}")
 
@@ -150,11 +162,24 @@ def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple
     if memory_value is not None and blocks_value is not None:
         raise SweeperCandidateError(f"{memory_path} and {blocks_path} are mutually exclusive")
 
+    try:
+        cp_params = context_parallel_params(
+            backend=backend,
+            backend_version=backend_version,
+            context_parallel_size=cp,
+            decode_context_parallel_size=dcp,
+            architecture=architecture,
+        )
+    except ContextParallelUnsupportedError as exc:
+        raise SweeperCandidateError(f"candidate.config.{prefix}cp/dcp: {exc}") from exc
+
     extra: dict[str, Any] = {
-        "gpus_per_worker": tp * pp * dp,
+        # Prefill CP ranks are extra GPUs; decode CP reuses the TP ranks.
+        "gpus_per_worker": tp * pp * dp * cp,
         "max_num_tokens": max_num_tokens,
         "tokens_per_block": tokens_per_block,
         "disable_prefix_cache": not bool(config.get(f"{role}_enable_prefix_caching")),
+        **cp_params,
     }
     if blocks_value is not None:
         num_gpu_blocks = _positive_int(blocks_value, path=blocks_path)
@@ -172,9 +197,12 @@ def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple
         if memory_fraction > 1:
             raise SweeperCandidateError(f"{memory_path} must be at most 1")
         extra["kv_cache_free_gpu_memory_fraction"] = memory_fraction
-    context_length = config.get("context_length")
+    context_key = "context_length" if role == "agg" else f"{role}_context_length"
+    role_context_length = config.get(context_key)
+    selected_context_key = context_key if role_context_length is not None else "context_length"
+    context_length = role_context_length if role_context_length is not None else config.get("context_length")
     if context_length is not None:
-        extra["max_seq_len"] = _positive_int(context_length, path="candidate.config.context_length")
+        extra["max_seq_len"] = _positive_int(context_length, path=f"candidate.config.{selected_context_key}")
 
     return (
         RoleSizing(
@@ -302,12 +330,22 @@ def from_sweeper_candidate(
             )
         hardware_sku = role_hardware["prefill"]
 
+    # Resolved before role sizing: SGLang's prefill-CP layout (--cp-strategy)
+    # depends on the model architecture.
+    resolved_model_facts = model_facts or _resolve_model_facts(model_path, config)
+
     active_roles = ("agg",) if mode == "agg" else ("prefill", "decode")
     roles: dict[str, RoleSizing] = {}
     workers: dict[str, int] = {}
     expected_gpus = 0
     for role in active_roles:
-        sizing, count = _role_sizing(config, role, backend=backend)
+        sizing, count = _role_sizing(
+            config,
+            role,
+            backend=backend,
+            backend_version=backend_version,
+            architecture=resolved_model_facts.architecture,
+        )
         roles[role] = sizing
         workers[role] = count
         expected_gpus += count * int(sizing.extra["gpus_per_worker"])
@@ -356,7 +394,6 @@ def from_sweeper_candidate(
         raw["BenchConfig.estimated_concurrency"] = _positive_int(concurrency, path="candidate.config.concurrency")
     _map_adapters(config, raw)
 
-    resolved_model_facts = model_facts or _resolve_model_facts(model_path, config)
     candidate_nextn = config.get("aic_nextn")
     if candidate_nextn is not None and resolved_model_facts.nextn != candidate_nextn:
         resolved_model_facts = ModelFacts(

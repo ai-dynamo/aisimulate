@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+deployment.json: |-
+  {
+    "backend": "vllm",
+    "mode": "disagg",
+    "gpus": 4,
+    "port": 8000,
+    "model": "test-model",
+    "frontend": [
+      "python3",
+      "-m",
+      "dynamo.frontend",
+      "--http-port",
+      "8000"
+    ],
+    "workers": [
+      {
+        "name": "prefill-0",
+        "argv": [
+          "python3",
+          "-m",
+          "dynamo.vllm",
+          "--model",
+          "/models/Qwen 3",
+          "--served-model-name",
+          "test-model",
+          "--tensor-parallel-size",
+          "2",
+          "--pipeline-parallel-size",
+          "1",
+          "--data-parallel-size",
+          "1",
+          "--max-num-seqs",
+          "8",
+          "--max-num-batched-tokens",
+          "1628",
+          "--disaggregation-mode",
+          "prefill",
+          "--kv-transfer-config",
+          "{\"kv_connector\": \"NixlConnector\", \"kv_role\": \"kv_both\"}"
+        ],
+        "env": {
+          "VLLM_DP_SIZE": "1",
+          "VLLM_DP_RANK": "0",
+          "VLLM_DP_RANK_LOCAL": "0",
+          "VLLM_DP_MASTER_IP": "127.0.0.1",
+          "VLLM_DP_MASTER_PORT": "0",
+          "DYN_VLLM_DISAGGREGATION_MODE": null,
+          "DYN_VLLM_IS_PREFILL_WORKER": null,
+          "DYN_VLLM_IS_DECODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_ENCODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_DECODE_WORKER": null
+        },
+        "gpu_offset": 0,
+        "gpu_count": 2
+      },
+      {
+        "name": "decode-0",
+        "argv": [
+          "python3",
+          "-m",
+          "dynamo.vllm",
+          "--model",
+          "/models/Qwen 3",
+          "--served-model-name",
+          "test-model",
+          "--tensor-parallel-size",
+          "2",
+          "--pipeline-parallel-size",
+          "1",
+          "--data-parallel-size",
+          "1",
+          "--max-num-seqs",
+          "512",
+          "--max-num-batched-tokens",
+          "512",
+          "--disaggregation-mode",
+          "decode",
+          "--kv-transfer-config",
+          "{\"kv_connector\": \"NixlConnector\", \"kv_role\": \"kv_both\"}"
+        ],
+        "env": {
+          "VLLM_DP_SIZE": "1",
+          "VLLM_DP_RANK": "0",
+          "VLLM_DP_RANK_LOCAL": "0",
+          "VLLM_DP_MASTER_IP": "127.0.0.1",
+          "VLLM_DP_MASTER_PORT": "0",
+          "DYN_VLLM_DISAGGREGATION_MODE": null,
+          "DYN_VLLM_IS_PREFILL_WORKER": null,
+          "DYN_VLLM_IS_DECODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_ENCODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_DECODE_WORKER": null
+        },
+        "gpu_offset": 2,
+        "gpu_count": 2
+      }
+    ],
+    "env": {
+      "HF_HUB_OFFLINE": "1"
+    },
+    "startup_timeout": 1800,
+    "benchmark_timeout": 1800,
+    "benchmark_concurrency": [
+      1,
+      4
+    ],
+    "benchmark_rounds": 20
+  }

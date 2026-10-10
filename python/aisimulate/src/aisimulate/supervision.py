@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import difflib
+import importlib.metadata
 import json
 import multiprocessing.spawn
 import os
@@ -14,14 +16,19 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import psutil
 
-from .config.common import ResourceConfig
+from .config.common import (
+    CONFIG_ADAPTER_ENTRY_POINT_GROUP,
+    PREDICTION_CORE_SECTIONS,
+    RECOMMENDATION_CORE_SECTIONS,
+    ResourceConfig,
+)
 from .resources import ResourceLimitError, discover_host, resolve_budget
 
 _CONTEXT = "_AISIMULATE_SUPERVISED_BUDGET"
@@ -335,13 +342,65 @@ def _save_report(output: str, filename: str, report: dict[str, Any], *, overwrit
         target.write("\n")
 
 
+# Mirrors stack.py and output_adapter.py without importing runner or result modules here.
+_BUILTIN_STACKS = frozenset({"engine"})
+_STACK_GROUP = "aisimulate.runner_factories"
+_OUTPUT_ADAPTER_GROUP = "aisimulate.output_adapters"
+
+
+def _installed_names(group: str) -> list[str]:
+    """List entry-point names without importing any provider."""
+    return [entry.name for entry in importlib.metadata.entry_points().select(group=group)]
+
+
+def _require_output_adapters(names: Iterable[str]) -> None:
+    installed = _installed_names(_OUTPUT_ADAPTER_GROUP)
+    for name in names:
+        if installed.count(name) > 1:
+            raise ValueError(f"output adapter {name!r} has multiple installed providers")
+        if name not in installed:
+            available = ", ".join(sorted(set(installed))) or "<none>"
+            raise ValueError(f"output adapter {name!r} is unavailable; installed adapters: {available}")
+
+
+def _require_known_sections(raw: dict[str, Any], *, command: str, stack: str) -> None:
+    """Reject top-level sections that no installed config adapter owns."""
+    core = PREDICTION_CORE_SECTIONS if command == "predict" else RECOMMENDATION_CORE_SECTIONS
+    installed = _installed_names(CONFIG_ADAPTER_ENTRY_POINT_GROUP)
+    for section in raw:
+        # split_config_sections reports malformed keys and predict-only restrictions.
+        if not isinstance(section, str) or not section or "." in section:
+            continue
+        if section in RECOMMENDATION_CORE_SECTIONS:
+            continue
+        name = f"{stack}.{section}"
+        if installed.count(name) > 1:
+            raise ValueError(f"config adapter {name!r} has multiple installed providers")
+        if name not in installed:
+            known = sorted(core | {entry.split(".", 1)[1] for entry in installed if entry.startswith(f"{stack}.")})
+            match = difflib.get_close_matches(section, known, n=1)
+            hint = f" (did you mean {match[0]!r}?)" if match else ""
+            raise ValueError(
+                f"unknown top-level section {section!r}{hint}; known sections for --stack {stack}: {', '.join(known)}"
+            )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    from .cli_args import _apply_overrides, _load_mapping, build_parser
+    from .cli_args import _apply_overrides, _extract_output_configs, _load_mapping, build_parser
     from .output import prepare_output_directory
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(arguments)
+    if args.command == "onboard":
+        from .support.cli import run_support_command
+
+        try:
+            return run_support_command(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     raw = None
     try:
         raw = _load_mapping(args.config)
@@ -351,6 +410,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # The child retains stack/schema error ordering under conservative limits.
         raw = None
         policy = ResourceConfig()
+    if raw is not None and args.stack not in _BUILTIN_STACKS and _installed_names(_STACK_GROUP).count(args.stack) != 1:
+        # The child reports stack errors first; skipping preparation keeps outputs intact.
+        raw = None
     if raw is not None:
         # Validate the lightweight core envelope before --overwrite removes outputs.
         # Native imports, adapter preparation, and replay stay inside supervision.
@@ -358,7 +420,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .config.cli import CorePredictionConfig, CoreRecommendationConfig
             from .config.common import split_config_sections
 
-            core_raw, adapter_raw = split_config_sections(raw, command=args.command)
+            validation_raw = dict(raw)
+            if args.command == "recommend":
+                validation_raw, output_configs = _extract_output_configs(raw, args.outputs, stack=args.stack)
+                _require_output_adapters(output_configs)
+            _require_known_sections(validation_raw, command=args.command, stack=args.stack)
+            core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
             if config.engine.workers.encoder is not None:

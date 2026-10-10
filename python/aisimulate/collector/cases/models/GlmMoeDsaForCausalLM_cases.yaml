@@ -216,6 +216,20 @@ model_case_values:
       attention_type: dsa
       native_num_heads: 64
 
+framework_specific_model_case_values:
+  vllm:
+    mla_module:
+      # New architecture-level reference. Native vLLM layer 0 executes the
+      # full path, and index_topk_freq=4 enables separate reuse observations
+      # (deepseek_v2.py:1080-1162 @752a3a504485790a2e8491cacbb35c137339ad34).
+      # GLM-5 has matching projection/indexer dimensions but a different
+      # RoPE theta (1M vs 8M) and maximum position (202752 vs 1048576).
+      # This selects one new reference, not checkpoint-value equivalence.
+      - model_path: zai-org/GLM-5.2
+        architecture: GlmMoeDsaForCausalLM
+        attention_type: dsa
+        native_num_heads: 64
+
 all_frameworks_op_cases:
   gemm:
     cases: all

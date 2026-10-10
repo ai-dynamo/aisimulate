@@ -2553,7 +2553,9 @@ class TestRustEngineStepFpmParity:
         ctx_op = spec["context_ops"][0]["FpmForward"]
         assert ctx_op["phase"] == "prefill"
         assert spec["generation_ops"][0]["FpmForward"]["phase"] == "decode"
-        assert len(ctx_op["match_identity"]) == 15
+        assert len(ctx_op["match_identity"]) == 19
+        assert ctx_op["match_identity"][-4:] == ["", "full", "none", "text"]
+        assert spec["generation_ops"][0]["FpmForward"]["match_identity"] == ctx_op["match_identity"]
         assert ctx_op["sol_ops"], "sol_ops must carry the original granular list"
 
     @pytest.mark.parametrize(

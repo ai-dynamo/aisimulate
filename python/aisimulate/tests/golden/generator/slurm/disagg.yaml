@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+deploy.sbatch: |-
+  #!/bin/bash
+  #SBATCH --job-name=aic-dynamo-serve
+  #SBATCH --account=test-account
+  #SBATCH --partition=batch
+  #SBATCH --nodes=1
+  #SBATCH --ntasks=1
+  #SBATCH --gres=gpu:4
+  #SBATCH --cpus-per-task=16
+  #SBATCH --mem=64G
+  #SBATCH --time=01:00:00
+  #SBATCH --no-requeue
+  #SBATCH --signal=B:TERM@30
+
+  set -euo pipefail
+  cd "${SLURM_SUBMIT_DIR:?Submit from the generated bundle directory}"
+  source ./environment.sh
+  bundle_dir=$PWD
+  scontrol show job "${SLURM_JOB_ID}" > "allocation-${SLURM_JOB_ID}.txt"
+  export ENROOT_CACHE_PATH="$bundle_dir/enroot/cache"
+  export ENROOT_DATA_PATH="$bundle_dir/enroot/data"
+  export ENROOT_TEMP_PATH="$bundle_dir/enroot/tmp"
+  mkdir -p "$ENROOT_CACHE_PATH" "$ENROOT_DATA_PATH" "$ENROOT_TEMP_PATH"
+  mounts="$bundle_dir:/work${AIC_SLURM_MOUNTS:+,$AIC_SLURM_MOUNTS}"
+  srun --ntasks=1 --gpus-per-task=4 --kill-on-bad-exit=1 \
+      --container-image="$AIC_SLURM_IMAGE" --container-mounts="$mounts" \
+      --container-workdir=/work --no-container-mount-home --no-container-entrypoint \
+      python3 /work/slurm_runtime.py serve &
+  step_pid=$!
+  trap 'kill -TERM "$step_pid" 2>/dev/null || true; wait "$step_pid" || true' TERM INT
+  wait "$step_pid"
+benchmark.sbatch: |-
+  #!/bin/bash
+  #SBATCH --job-name=aic-dynamo-benchmark
+  #SBATCH --account=test-account
+  #SBATCH --partition=batch
+  #SBATCH --nodes=1
+  #SBATCH --ntasks=1
+  #SBATCH --gres=gpu:4
+  #SBATCH --cpus-per-task=16
+  #SBATCH --mem=64G
+  #SBATCH --time=01:00:00
+  #SBATCH --no-requeue
+  #SBATCH --signal=B:TERM@30
+
+  set -euo pipefail
+  cd "${SLURM_SUBMIT_DIR:?Submit from the generated bundle directory}"
+  source ./environment.sh
+  bundle_dir=$PWD
+  scontrol show job "${SLURM_JOB_ID}" > "allocation-${SLURM_JOB_ID}.txt"
+  export ENROOT_CACHE_PATH="$bundle_dir/enroot/cache"
+  export ENROOT_DATA_PATH="$bundle_dir/enroot/data"
+  export ENROOT_TEMP_PATH="$bundle_dir/enroot/tmp"
+  mkdir -p "$ENROOT_CACHE_PATH" "$ENROOT_DATA_PATH" "$ENROOT_TEMP_PATH"
+  mounts="$bundle_dir:/work${AIC_SLURM_MOUNTS:+,$AIC_SLURM_MOUNTS}"
+  srun --ntasks=1 --gpus-per-task=4 --kill-on-bad-exit=1 \
+      --container-image="$AIC_SLURM_IMAGE" --container-mounts="$mounts" \
+      --container-workdir=/work --no-container-mount-home --no-container-entrypoint \
+      python3 /work/slurm_runtime.py benchmark &
+  step_pid=$!
+  trap 'kill -TERM "$step_pid" 2>/dev/null || true; wait "$step_pid" || true' TERM INT
+  wait "$step_pid"

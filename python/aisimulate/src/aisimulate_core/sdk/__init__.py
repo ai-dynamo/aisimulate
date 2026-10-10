@@ -29,6 +29,7 @@ __all__ = [
     "compile_engine",
     "estimate_kv_cache",
     "estimate_num_gpu_blocks",
+    "estimate_state_cache",
 ]
 
 _PUBLIC_EXPORTS = {
@@ -51,6 +52,7 @@ _PUBLIC_EXPORTS = {
     ),
     "compile_engine": ("aisimulate_core.sdk.engine", "compile_engine"),
     "estimate_kv_cache": ("aisimulate_core.sdk.memory", "estimate_kv_cache"),
+    "estimate_state_cache": ("aisimulate_core.sdk.memory", "estimate_state_cache"),
     "estimate_num_gpu_blocks": (
         "aisimulate_core.sdk.memory",
         "estimate_num_gpu_blocks",
@@ -77,7 +79,7 @@ if TYPE_CHECKING:
     from aisimulate_core.sdk.common import AttentionBackend, MoEBackend
     from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
     from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-    from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+    from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
     from aisimulate_core.sdk.rust_engine_step import (
         ForwardPassPerfModelConfig,
         ForwardPassPerfOptions,

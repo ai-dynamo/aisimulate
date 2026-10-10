@@ -61,6 +61,9 @@ def test_executor_binds_every_declared_table_to_the_producer():
         _torch = MagicMock()
         _torch.AcceleratorError = type("AcceleratorError", (Exception,), {})
         sys.modules["torch"] = _torch
+    collector_dir = str(Path(__file__).resolve().parents[3] / "collector")
+    if collector_dir not in sys.path:
+        sys.path.insert(0, collector_dir)
     import collect
 
     collection = {"name": "vllm", "type": "compute_scale", "module": "collector.vllm.collect_computescale",

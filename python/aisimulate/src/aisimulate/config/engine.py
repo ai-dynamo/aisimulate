@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Typed engine input for prediction and recommendation."""
@@ -7,7 +8,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_serializer, model_validator
+
+from aisimulate.fpm_profile import FpmModelProfile
 
 from .common import (
     ENGINE_MODEL_CONTROL_FIELDS,
@@ -15,11 +18,15 @@ from .common import (
     IntegerRange,
     NumericRange,
     StrictModel,
+    SystemsPath,
+    SystemsRoot,
     is_active_engine_model_control,
+    requested_backend_version,
 )
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -30,6 +37,11 @@ KvBytesPerToken = PositiveInt | Literal["auto"]
 AFDPhase = Literal["prefill", "decode", "both"]
 AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
 AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
+
+
+def resolve_block_size(backend: str, configured: int | None) -> int:
+    """Resolve the same backend cache geometry for prediction and search."""
+    return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
 
 
 class AFDTopologyPredictionConfig(StrictModel):
@@ -70,13 +82,27 @@ class AFDSearchRecommendationConfig(StrictModel):
     max_candidates: PositiveInt = 10_000
 
 
-class ParallelismPredictionConfig(StrictModel):
+class ParallelismPresetConfig(StrictModel):
     replicas: PositiveInt = 1
     tensor: PositiveInt = 1
     pipeline: PositiveInt = 1
     attention_data: PositiveInt = 1
     moe_tensor: PositiveInt = 1
     moe_expert: PositiveInt = 1
+    # Prefill context parallelism (SGLang ``--attn-cp-size`` / vLLM ``-pcp``):
+    # splits prefill tokens across extra attention ranks; decode stays replicated
+    # on them. Widens the worker like attention_data does. ``None`` (not
+    # requested) means 1 and keeps default dumps free of the CP knobs.
+    prefill_context: Annotated[int, Field(strict=True, gt=0)] | None = None
+
+
+class ParallelismPredictionConfig(ParallelismPresetConfig):
+    # Decode context parallelism (vLLM ``-dcp`` / SGLang ``--dcp-size``): stripes the
+    # decode KV cache across ranks that already belong to the attention group, so it
+    # adds no GPUs. ``None`` (not requested) is priced as 1 but keeps the FPM cell
+    # identity on unrecorded-DCP profiles; an explicit 1 selects recorded-DCP1
+    # profiles. Aggregated workers accept at most one of the two knobs above 1.
+    decode_context: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
 class SchedulerPredictionConfig(StrictModel):
@@ -98,26 +124,54 @@ class KvCapacityPredictionConfig(StrictModel):
     type: Literal["default", "fixed"] = "default"
     memory_fraction: Fraction | None = None
     blocks: PositiveInt | None = None
+    bytes: PositiveU64 | None = None
     cuda_graph_reserved_bytes: CudaGraphReservedBytes = 0
 
     @model_validator(mode="after")
     def _validate_capacity(self) -> KvCapacityPredictionConfig:
         if self.type == "fixed":
-            if self.blocks is None:
-                raise ValueError("fixed KV capacity requires blocks")
+            if self.blocks is None and self.bytes is None:
+                raise ValueError("fixed KV capacity requires blocks or bytes")
+            if self.blocks is not None and self.bytes is not None:
+                raise ValueError("fixed KV capacity accepts only one of blocks or bytes")
             if self.memory_fraction is not None:
                 raise ValueError("fixed KV capacity rejects memory_fraction")
             if self.cuda_graph_reserved_bytes != 0:
                 raise ValueError("fixed KV capacity rejects cuda_graph_reserved_bytes")
-        elif self.blocks is not None:
-            raise ValueError("default KV capacity rejects blocks")
+        elif self.blocks is not None or self.bytes is not None:
+            raise ValueError("default KV capacity rejects blocks or bytes")
         return self
 
 
 class HostOffloadConfig(StrictModel):
+    """Native G2. ``dp_rank_local`` gives each DP rank its own cache; ``cluster_shared``
+    is one deployment-wide pool whose ``num_host_blocks`` is the pool total."""
+
+    scope: Literal["dp_rank_local", "cluster_shared"] = "dp_rank_local"
     num_host_blocks: PositiveInt
     d2h_bandwidth_gbps: NonNegativeFloat = 32.0
     h2d_bandwidth_gbps: NonNegativeFloat = 32.0
+    shared_d2h_bandwidth_gbps: NonNegativeFloat = 80.0
+    shared_h2d_bandwidth_gbps: NonNegativeFloat = 80.0
+    latency_to_first_byte_ms: NonNegativeFloat = 0.0
+
+    @field_validator("scope", mode="before")
+    @classmethod
+    def _redirect_g3_scope(cls, value: Any) -> Any:
+        if value == "worker_local":
+            raise ValueError(
+                "host_offload.scope `worker_local` is a G3 scope; use `dp_rank_local` for per-DP-rank G2 caches"
+            )
+        return value
+
+    @model_serializer(mode="wrap")
+    def _omit_default_scope_controls(self, handler: Any) -> dict[str, Any]:
+        # Keep the pre-scope descriptor shape unless these controls are used.
+        payload = handler(self)
+        for name in ("scope", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps", "latency_to_first_byte_ms"):
+            if payload.get(name) == type(self).model_fields[name].default:
+                payload.pop(name)
+        return payload
 
 
 class G3OffloadConfig(StrictModel):
@@ -130,18 +184,101 @@ class G3OffloadConfig(StrictModel):
     shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
 
 
+def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> int:
+    """Validate explicit byte geometry without invoking model inference."""
+    for name, value in (("block_size", block_size), ("bytes_per_token", bytes_per_token)):
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"manual KV capacity requires explicit positive {name} within u64")
+    block_bytes = block_size * bytes_per_token
+    if block_bytes > (1 << 64) - 1:
+        raise ValueError("KV block byte size overflows an unsigned 64-bit integer")
+    return block_bytes
+
+
+class StateCacheConfig(StrictModel):
+    """One complete state copy per rank; token pool geometry lives on kv_cache."""
+
+    bytes_per_request: PositiveU64
+
+    def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
+        block_bytes = manual_block_bytes(block_size, bytes_per_token)
+        if block_size < 2:
+            raise ValueError("state_cache requires block_size at least two for vLLM")
+        return (self.bytes_per_request - 1) // block_bytes + 1
+
+
+# Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
+MambaCacheDtype = Literal["auto", "float16", "float32"]
+# Accepted values adapted from vLLM's indexer_kv_dtype (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/vllm/config/attention.py
+IndexerCacheDtype = Literal["auto", "fp8", "mxfp4"]
+
+
+class StateCachePredictionConfig(StrictModel):
+    """Sizing input; only resolved bytes cross the native engine boundary."""
+
+    bytes_per_request: PositiveU64 | None = None
+    mamba_cache_dtype: MambaCacheDtype = "auto"
+    indexer_cache_dtype: IndexerCacheDtype = "auto"
+
+    def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
+        if self.bytes_per_request is None:
+            raise ValueError("state_cache size must be resolved before block rounding")
+        return StateCacheConfig(bytes_per_request=self.bytes_per_request).state_blocks(block_size, bytes_per_token)
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
+    prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
+    state_cache: StateCachePredictionConfig | None = None
+
+    @field_validator("state_cache", mode="before")
+    @classmethod
+    def _accept_resolved_state_config(cls, value: Any) -> Any:
+        if isinstance(value, StateCacheConfig):
+            return value.model_dump()
+        return value
 
     @model_validator(mode="after")
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_manual_geometry(self) -> KvCachePredictionConfig:
+        infer_state = self.state_cache is not None and self.state_cache.bytes_per_request is None
+        if self.prefix_match_unit is not None:
+            if self.state_cache is None:
+                raise ValueError("prefix_match_unit currently requires state_cache")
+            if not infer_state and (self.block_size is None or self.block_size % self.prefix_match_unit):
+                raise ValueError("prefix_match_unit must be a positive divisor of block_size")
+        if self.state_cache is not None:
+            if self.capacity.type != "fixed":
+                raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
+            if self.host_offload is not None:
+                raise ValueError("state_cache supports G1 only; host_offload is not supported")
+            if self.g3_offload is not None:
+                raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+        if infer_state:
+            # Capacity and prefix alignment use the backend's resolved block size.
+            return self
+        if self.capacity.bytes is not None or self.state_cache is not None:
+            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
+            blocks = self.capacity.blocks if self.capacity.blocks is not None else self.capacity.bytes // block_bytes
+            if not 0 < blocks <= (1 << 64) - 1:
+                raise ValueError("fixed KV capacity must fit at least one block within u64")
+            if self.state_cache is not None:
+                if self.block_size < 2:
+                    raise ValueError("state_cache requires block_size at least two for vLLM")
+                if blocks < self.state_cache.state_blocks(self.block_size, self.bytes_per_token) + 1:
+                    raise ValueError("state_cache capacity must fit one token block and one request state")
         return self
 
 
@@ -164,12 +301,19 @@ class NgramSpeculationConfig(StrictModel):
 
 
 class TimingConfig(StrictModel):
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+    attention_backend: str | None = None
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
+    fpm_parquet_path: str | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
-    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
     transfer_policy: str | list[str] | None = None
 
@@ -194,6 +338,18 @@ class TimingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.type != "default" and any(
+            getattr(self, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError("quantization and backend identity require default timing")
         if self.estimation_mode == "fpm_interpolation":
             self.forward_model = "fpm"
         elif self.estimation_mode == "op_level":
@@ -209,11 +365,17 @@ class TimingConfig(StrictModel):
                 f"{self.type} timing rejects forward_model={self.forward_model!r}; "
                 "forward_model applies to default timing only"
             )
+        if self.fpm_parquet_path is not None:
+            if not self.fpm_parquet_path:
+                raise ValueError("fpm_parquet_path cannot be empty")
+            if self.type != "default" or self.forward_model != "fpm":
+                raise ValueError("fpm_parquet_path requires default timing with forward_model='fpm'")
         return self
 
 
 class WorkerPredictionConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
     scheduler: SchedulerPredictionConfig = Field(default_factory=SchedulerPredictionConfig)
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
@@ -267,6 +429,7 @@ class EstimatorPolicyConfig(StrictModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: PositiveInt | None = None
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -299,24 +462,24 @@ class EstimatorPolicyConfig(StrictModel):
 
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
-    systems_paths: list[str] | None = None
+    systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
+    systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _migrate_systems_path(self):
+        if self.systems_path is not None:
+            if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
+                raise ValueError("systems_path conflicts with systems_paths")
+            self.systems_paths = [self.systems_path]
+        return self
 
     @field_validator("database_mode", mode="before")
     @classmethod
     def _normalize_database_mode(cls, value):
         return value.upper() if isinstance(value, str) else value
-
-    @field_validator("systems_paths")
-    @classmethod
-    def _nonempty_system_roots(cls, value):
-        if value is None:
-            return value
-        if not value or any(not path.strip() for path in value):
-            raise ValueError("systems_paths must contain at least one nonempty root")
-        return value
 
     @model_validator(mode="after")
     def _supported_estimator_policies(self):
@@ -326,13 +489,18 @@ class EstimatorPolicyConfig(StrictModel):
         custom_policy = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
+            or getattr(self, "decoder_replay", False)
+            or getattr(self, "enable_shared_layer", None) is not None
+            or getattr(self, "strict_provenance", None) is not None
         )
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        if self.systems_paths not in (None, ["default"]) and unsupported_provider:
+            unsupported = "AFD" if "afd" in modes else "analytical encoder pools"
+            raise ValueError(f"engine.systems_paths does not support {unsupported}")
         if unsupported_provider and any(
             worker is not None
             and (
@@ -375,6 +543,7 @@ class EstimatorPolicyConfig(StrictModel):
 class EnginePredictionConfig(EstimatorPolicyConfig):
     mode: EngineMode = "aggregated"
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
@@ -403,6 +572,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        _validate_fpm_profile(self, {self.mode}, {self.backend})
         if self.decoder_replay:
             # Keep the pre-supervision configuration path lightweight. Import
             # the canonical model identity only when this runtime feature is
@@ -423,6 +593,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
                 has_transfer=self.kv_transfer is not None,
             )
         _validate_prediction_host_offload(self)
+        _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
@@ -433,7 +604,7 @@ ParallelDomain = PositiveInt | Choices[PositiveInt] | IntegerRange
 
 
 class ParallelismRecommendationConfig(StrictModel):
-    preset: Literal["default", False] | list[ParallelismPredictionConfig] | dict[str, Any] = "default"
+    preset: Literal["default", False] | list[ParallelismPresetConfig] | dict[str, Any] = "default"
     replicas: ParallelDomain | None = None
     tensor: ParallelDomain | None = None
     pipeline: ParallelDomain | None = None
@@ -457,13 +628,17 @@ class ParallelismRecommendationConfig(StrictModel):
             "moe_tensor",
             "moe_expert",
         }
+        # The context-parallel knobs are not searched by recommend, but a
+        # ParallelismPredictionConfig round-tripped through model_dump carries
+        # them; accept them here and let recommend reject values above 1.
+        optional = {"prefill_context", "decode_context"}
         if not preset:
             raise ValueError("parallelism preset list must be nonempty")
         for index, entry in enumerate(preset):
             if not isinstance(entry, dict):
                 raise ValueError(f"parallelism preset entry {index} must be a mapping")
             missing = required - set(entry)
-            unknown = set(entry) - required
+            unknown = set(entry) - required - optional
             if missing or unknown:
                 raise ValueError(
                     "parallelism preset entries must cover exactly all knobs; "
@@ -527,14 +702,41 @@ class KvCacheRecommendationConfig(StrictModel):
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
     host_offload: HostOffloadConfig | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("state_cache") is not None:
+            raise ValueError("state_cache currently supports prediction only; recommendation is not supported")
+        return value
+
 
 class WorkerRecommendationConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
     scheduler: SchedulerRecommendationConfig = Field(default_factory=SchedulerRecommendationConfig)
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _reject_timing_identity_overrides(self):
+        if any(
+            getattr(self.timing, field) is not None
+            for field in (
+                "gemm_quant_mode",
+                "moe_quant_mode",
+                "fmha_quant_mode",
+                "kvcache_quant_mode",
+                "comm_quant_mode",
+                "attention_backend",
+            )
+        ):
+            raise ValueError(
+                "explicit timing quantization/backend identity is prediction-only; "
+                "recommendation preflight does not support these overrides"
+            )
+        return self
 
 
 class EncoderRecommendationConfig(StrictModel):
@@ -563,6 +765,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         default_factory=lambda: Choices[EngineMode](choices=["aggregated", "disaggregated"])
     )
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | dict[str, str] | None = None
@@ -582,6 +785,10 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
+        backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        _validate_fpm_profile(self, modes, backends)
+        if self.workers.aggregated is not None and self.workers.aggregated.context_length is not None:
+            raise ValueError("workers.aggregated.context_length must be set as engine.context_length")
         _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
             if modes != {"afd"}:
@@ -604,6 +811,70 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
+    profile = engine.fpm_profile
+    if profile is None:
+        return
+    if engine.model != profile.model:
+        raise ValueError("engine.model must match engine.fpm_profile.model")
+    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError("FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders")
+    backend_version = requested_backend_version(engine.backend_version, "vllm")
+    if (
+        backend_version is None
+        or not backend_version.strip()
+        or backend_version.strip() in {"current", "previous", "next"}
+    ):
+        raise ValueError("engine.fpm_profile requires a literal engine.backend_version for vllm")
+    backend_version = backend_version.strip()
+    if isinstance(engine.backend_version, dict):
+        engine.backend_version = {**engine.backend_version, "vllm": backend_version}
+    else:
+        engine.backend_version = backend_version
+    if not any(deployment.backend_version == backend_version for deployment in profile.deployments):
+        raise ValueError("engine.backend_version does not match any FPM profile deployment")
+    if isinstance(engine.context_length, int) and engine.context_length > profile.context_length:
+        raise ValueError("engine.context_length exceeds the FPM profile context_length")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.timing.type != "default":
+            raise ValueError("engine.fpm_profile requires default timing for every worker")
+        if isinstance(worker, WorkerPredictionConfig):
+            parallel = worker.parallelism
+            deployment = profile.select(
+                model=engine.model,
+                system=worker.hardware or engine.hardware,
+                backend=engine.backend,
+                backend_version=backend_version,
+                worker_type=role,
+                tp_size=parallel.tensor,
+                pp_size=parallel.pipeline,
+                attention_dp_size=parallel.attention_data,
+                moe_tp_size=parallel.moe_tensor,
+                moe_ep_size=parallel.moe_expert,
+            )
+            deployment.resources.validate_envelope(
+                max_num_tokens=worker.scheduler.max_batched_tokens,
+                max_batch_size=worker.scheduler.max_sequences,
+            )
+            if deployment.resources.cache_layout == "grouped":
+                if role != "aggregated" or engine.nextn or engine.speculation is not None:
+                    raise ValueError("grouped FPM cache supports only aggregated vLLM without speculative decoding")
+                cache = worker.kv_cache
+                if cache.prefix_caching:
+                    raise ValueError("grouped FPM cache requires kv_cache.prefix_caching=false for cold replay")
+                if cache.host_offload is not None or cache.g3_offload is not None:
+                    raise ValueError("grouped FPM cache supports only HBM; host and G3 offload are unsupported")
+                if cache.capacity.type == "fixed" or cache.bytes_per_token != "auto":
+                    raise ValueError(
+                        "grouped FPM cache uses profile groups and a byte budget, not fixed blocks or bytes_per_token"
+                    )
+        # Recommendation topology domains and the GPU budget are resolved by
+        # lowering to SearchSpace, which validates reachable grouped workers.
 
 
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
@@ -709,31 +980,90 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
-        raise ValueError("host_offload is supported only for the aggregated worker")
+    if engine.mode == "afd":
+        raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":
         raise ValueError("host_offload is supported only for backend=vllm")
-    worker = configured[0][1]
-    if not worker.kv_cache.prefix_caching:
-        raise ValueError("host_offload requires prefix_caching=true")
-    if worker.parallelism.attention_data != 1:
-        raise ValueError("host_offload requires attention_data=1")
+    for role, worker in configured:
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("host_offload requires prefix_caching=true")
+        if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
+            raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
+
+
+def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
+    roles = []
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.state_cache is None:
+            continue
+        roles.append(role)
+        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
+            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
+        supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
+        if engine.backend != "vllm" or not supported:
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+    # Both roles run the same hybrid model, and decode resumes from the transferred state.
+    if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
+        raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")
 
 
 def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode != "aggregated" or [role for role, _ in configured] != ["aggregated"]:
-        raise ValueError("host_offload recommendation requires concrete mode=aggregated")
+    if engine.mode not in ("aggregated", "disaggregated"):
+        raise ValueError("host_offload recommendation requires concrete mode=aggregated or mode=disaggregated")
     if engine.backend != "vllm":
         raise ValueError("host_offload recommendation requires concrete backend=vllm")
-    worker = configured[0][1]
-    if not worker.kv_cache.prefix_caching:
-        raise ValueError("host_offload requires prefix_caching=true")
-    parallel = worker.parallelism
-    if parallel.preset not in (False, {}) or parallel.attention_data != 1:
-        raise ValueError("host_offload recommendation requires fixed parallelism with attention_data=1")
+    for _, worker in configured:
+        if not worker.kv_cache.prefix_caching:
+            raise ValueError("host_offload requires prefix_caching=true")
+    shared = [worker for _, worker in configured if worker.kv_cache.host_offload.scope == "cluster_shared"]
+    if len(shared) == 2:
+        # Both roles join one pool: its layout must not vary across candidates.
+        prefill, decode = shared
+
+        def layout(worker):
+            parallel, cache = worker.parallelism, worker.kv_cache
+            return (parallel.tensor, parallel.pipeline, cache.block_size, cache.bytes_per_token)
+
+        # An omitted tensor or pipeline is searched per role, so it is not fixed.
+        if any(worker.parallelism.preset not in (False, {}) for worker in shared) or any(
+            type(value) is not int
+            for worker in shared
+            for value in (worker.parallelism.tensor, worker.parallelism.pipeline)
+        ):
+            raise ValueError(
+                "cluster_shared host_offload on both roles requires explicit integer tensor and pipeline "
+                "with parallelism.preset: false"
+            )
+        if any(
+            not isinstance(value, (int, str, type(None)))
+            for worker in shared
+            for value in (worker.kv_cache.block_size, worker.kv_cache.bytes_per_token)
+        ):
+            raise ValueError("cluster_shared host_offload on both roles requires fixed KV block geometry")
+        if layout(prefill) != layout(decode):
+            raise ValueError(
+                "cluster_shared host_offload roles require matching tensor, pipeline and KV block geometry"
+            )
+        # Only default timing adds the model identity to the runtime kv_layout_id;
+        # fixed and polynomial timing derive the same geometry-only identity.
+        if (prefill.timing.type == "default") != (decode.timing.type == "default"):
+            raise ValueError(
+                "cluster_shared host_offload roles require default timing on both roles or neither: "
+                f"prefill={prefill.timing.type!r}, decode={decode.timing.type!r}"
+            )
+        # The pool's capacity and shared links are single deployment values.
+        for field in ("num_host_blocks", "shared_d2h_bandwidth_gbps", "shared_h2d_bandwidth_gbps"):
+            prefill_value = getattr(prefill.kv_cache.host_offload, field)
+            decode_value = getattr(decode.kv_cache.host_offload, field)
+            if prefill_value != decode_value:
+                raise ValueError(
+                    f"cluster_shared host_offload roles require matching host_offload.{field}: "
+                    f"prefill={prefill_value!r}, decode={decode_value!r}"
+                )
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

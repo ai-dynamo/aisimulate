@@ -147,6 +147,81 @@ def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, fai
         assert "invalid --set" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "name,section,error",
+    [
+        ("traffic", {}, "collides"),
+        ("placement", {}, "collides"),
+        ("bad.name", {}, "invalid --output name"),
+        ("missing", {}, "requires a top-level"),
+        ("artifact", [], "must be a mapping"),
+    ],
+)
+def test_recommend_output_validation_preserves_outputs(tmp_path, name, section, error):
+    import os
+    import subprocess
+
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "example/model",
+            "hardware": "h200_sxm",
+            "context_length": 4096,
+            "workers": {"aggregated": {}},
+        },
+        "optimization": {
+            "target": "throughput",
+            "constraints": {"max_candidate_gpus": 1},
+        },
+    }
+    if name != "missing":
+        raw[name] = section
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    # Metadata discovery must reject this collision without loading its provider.
+    metadata = tmp_path / "test_config_adapter-1.0.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text("Metadata-Version: 2.1\nName: test-config-adapter\nVersion: 1.0\n")
+    (metadata / "entry_points.txt").write_text(
+        "[aisimulate.config_adapters]\nengine.placement = nonexistent_adapter:factory\n"
+    )
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    original = {
+        "recommendation.json": "old result",
+        "recommendation.csv": "old candidates",
+        "recommendations/0001.yaml": "old config",
+        "resource-runtime.json": "old diagnostics",
+        "keep.txt": "unrelated file",
+    }
+    for filename, contents in original.items():
+        (output / filename).write_text(contents)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(tmp_path), env.get("PYTHONPATH"))))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output",
+            name,
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert error in result.stderr
+    assert {str(path.relative_to(output)): path.read_text() for path in output.rglob("*") if path.is_file()} == original
+
+
 def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
@@ -315,6 +390,82 @@ def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path
     assert runtime["peak_observed_rss_bytes"] > 0
     events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
     assert any(event["event"] == "resource_plan" for event in events)
+
+
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
+def test_public_cli_profile_uses_unqualified_supervised_resource_plan(tmp_path, profile):
+    import subprocess
+
+    trace = tmp_path / "play.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "models": ["model"],
+                "block_size": 4,
+                "hash_id_scope": "local",
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}],
+            }
+        )
+    )
+    config = tmp_path / "profile.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {
+                        "aggregated": {
+                            "kv_cache": {"block_size": 4, "capacity": {"type": "fixed", "blocks": 128}},
+                            "timing": {"type": "fixed", "prefill_ms": 600000, "decode_ms": 1},
+                        }
+                    },
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+                    "load": {
+                        "type": "trace_timestamps",
+                        "agentic_lanes": 1,
+                        "agentic_snapshot": {"seed": 42},
+                        "agentic_profile": profile,
+                    },
+                },
+            }
+        )
+    )
+    output = tmp_path / "output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "predict",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    runtime = json.loads((output / "resource-runtime.json").read_text())
+    assert runtime["status"] == "completed"
+    assert runtime["peak_observed_rss_bytes"] > 0
+    events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
+    plan = next(event["value"] for event in events if event["event"] == "resource_plan")
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert plan["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+    report = json.loads((output / "prediction.json").read_text())["agentic_profile"]
+    assert report["options"]["duration_seconds"] == profile.get("duration_seconds", 3600)
+    assert report["plays_started"] > 1
+    assert report["successful_responses"] > 0
 
 
 def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
@@ -516,12 +667,158 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
         [
             sys.executable,
             "-c",
-            (
-                "import sys; import aisimulate.supervision, aisimulate.cli_args, aisimulate.output; "
-                "assert not any(name in sys.modules for name in "
-                "('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aisimulate_core'))"
-            ),
+            """
+import sys
+import aisimulate.supervision, aisimulate.cli_args, aisimulate.output
+aisimulate.cli_args._extract_output_configs({'artifact': {}}, ['artifact'], stack='engine')
+
+runtime = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas')
+assert not any(name == root or name.startswith(root + '.') for name in sys.modules for root in runtime)
+# Profile validation needs only lightweight metadata before resource admission.
+allowed_core = {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}
+loaded_core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+assert loaded_core <= allowed_core, loaded_core - allowed_core
+""",
         ],
         check=True,
         timeout=15,
     )
+
+
+_TINY_MODEL = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/tiny-model"
+
+
+def _small_cli_config(tmp_path, command):
+    raw = {
+        "engine": {
+            "mode": "aggregated",
+            "model": str(_TINY_MODEL),
+            "hardware": "h200_sxm",
+            "context_length": 1024,
+            "workers": {
+                "aggregated": {
+                    "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+    }
+    if command == "recommend":
+        raw["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+        raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 1}
+    config = tmp_path / f"{command}.yaml"
+    config.write_text(yaml.safe_dump(raw))
+    return config
+
+
+def _output_bytes(output):
+    return {str(path.relative_to(output)): path.read_bytes() for path in output.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(
+    "extra,error",
+    [
+        (["--set", "foo.bar=1"], "unknown top-level section 'foo'"),
+        (["--set", "foo=1"], "unknown top-level section 'foo'"),
+        (["--set", "trafic.stop.requests=2"], "unknown top-level section 'trafic' (did you mean 'traffic'?)"),
+        (["--stack", "missing-stack"], "missing-stack"),
+    ],
+)
+def test_invalid_rerun_with_overwrite_keeps_previous_results_byte_identical(tmp_path, command, extra, error):
+    import subprocess
+
+    config = _small_cli_config(tmp_path, command)
+    output = tmp_path / "output"
+    base = [sys.executable, "-m", "aisimulate", command, "--config", str(config), "--output-dir", str(output)]
+    first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    (output / "notes.txt").write_text("unrelated file")
+    before = _output_bytes(output)
+    expected = "prediction.json" if command == "predict" else "recommendations/0001.yaml"
+    assert expected in before
+    assert "execution-events.jsonl" in before
+
+    rerun = subprocess.run([*base, *extra, "--overwrite"], capture_output=True, text=True, timeout=60)
+    assert rerun.returncode == 2, rerun.stderr
+    assert _output_bytes(output) == before
+    assert error in rerun.stderr
+
+
+def test_invalid_predict_rerun_with_recommendation_section_keeps_previous_results(tmp_path):
+    # _require_known_sections skips recommendation-only sections and leaves the
+    # predict restriction to split_config_sections, which must still run before the clear.
+    import subprocess
+
+    config = _small_cli_config(tmp_path, "predict")
+    output = tmp_path / "output"
+    base = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config), "--output-dir", str(output)]
+    first = subprocess.run([*base, "--format", "json"], capture_output=True, text=True, timeout=60)
+    assert first.returncode == 0, first.stderr
+    before = _output_bytes(output)
+    assert "prediction.json" in before
+
+    raw = yaml.safe_load(config.read_text())
+    raw["optimization"] = {"target": "throughput"}
+    config.write_text(yaml.safe_dump(raw))
+
+    rerun = subprocess.run([*base, "--overwrite"], capture_output=True, text=True, timeout=60)
+    assert rerun.returncode == 2, rerun.stderr
+    assert _output_bytes(output) == before
+    assert "predict does not accept ['optimization']" in rerun.stderr
+
+
+def test_unavailable_output_adapter_with_overwrite_keeps_previous_results(tmp_path):
+    import subprocess
+
+    config = tmp_path / "recommend.yaml"
+    raw = yaml.safe_load(_small_cli_config(tmp_path, "recommend").read_text())
+    raw["artifact"] = {"name": "example"}
+    config.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    original = {
+        "recommendation.json": b"old result",
+        "recommendation.csv": b"old candidates",
+        "execution-events.jsonl": b"old events\n",
+        "recommendations/0001.yaml": b"old config",
+    }
+    for filename, contents in original.items():
+        (output / filename).write_bytes(contents)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(config),
+            "--output",
+            "artifact",
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "output adapter 'artifact' is unavailable" in result.stderr
+    assert _output_bytes(output) == original
+
+
+def test_supervisor_entry_point_groups_match_their_resolvers():
+    from aisimulate import supervision
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_ENTRY_POINT_GROUP
+    from aisimulate.stack import RUNNER_FACTORY_ENTRY_POINT_GROUP, resolve_runner_factory
+
+    assert supervision._STACK_GROUP == RUNNER_FACTORY_ENTRY_POINT_GROUP
+    assert supervision._OUTPUT_ADAPTER_GROUP == OUTPUT_ADAPTER_ENTRY_POINT_GROUP
+    for stack in supervision._BUILTIN_STACKS:
+        resolve_runner_factory(stack, entry_points=[])

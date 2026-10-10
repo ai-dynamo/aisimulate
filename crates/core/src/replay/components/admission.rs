@@ -11,8 +11,9 @@ use super::ReplayMode;
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::core::{AdmissionSource as CoreAdmissionSource, ReadyArrival};
 use crate::replay::loadgen::{
-    AgenticOutputFeedback, AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests,
-    ReplayRequestHashes, ReplayRequestPayload, WorkloadDriver,
+    AgenticOutputFeedback, AgenticPhaseEvidence, AgenticPreparationTransition,
+    AgenticRuntimeFeedback, AgenticTerminalFeedback, GeneratedRequests, ReplayRequestHashes,
+    ReplayRequestPayload, WorkloadDriver,
 };
 use crate::replay::protocol::DirectRequest;
 
@@ -58,6 +59,7 @@ pub(crate) struct ReplayReadyArrival<Metadata> {
     pub(crate) replay_hashes: Option<ReplayRequestHashes>,
     pub(crate) session_id: Option<String>,
     pub(crate) turn_index: Option<usize>,
+    pub(crate) synthetic_session_id: bool,
 }
 
 impl<Metadata> ReplayReadyArrival<Metadata> {
@@ -71,6 +73,7 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
             dispatched_at_ms: self.dispatched_at_ms,
             session_id: self.session_id,
             turn_index: self.turn_index,
+            synthetic_session_id: self.synthetic_session_id,
         }
     }
 }
@@ -246,6 +249,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes: None,
                         session_id,
                         turn_index,
+                        synthetic_session_id: false,
                     }));
                 }
                 Ok(ready)
@@ -273,6 +277,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes,
                         session_id,
                         turn_index,
+                        synthetic_session_id: ready.synthetic_session_id,
                     })
                 })
                 .collect()),
@@ -324,6 +329,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             replay_hashes,
                             session_id,
                             turn_index,
+                            synthetic_session_id: ready.synthetic_session_id,
                         })
                     })
                     .collect())
@@ -361,6 +367,7 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 replay_hashes: None,
                 session_id,
                 turn_index,
+                synthetic_session_id: false,
             }));
             simulated_in_flight += 1;
         }
@@ -522,6 +529,90 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         Ok(true)
     }
 
+    pub(crate) fn is_agentic_preparing(&self) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.is_agentic_preparing())
+    }
+
+    pub(crate) fn knows_preparation_request(&self, uuid: Uuid) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. } if driver.knows_preparation_request(uuid))
+    }
+
+    pub(crate) fn agentic_phase_evidence(&self) -> Option<AgenticPhaseEvidence> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_phase_evidence()
+    }
+
+    pub(crate) fn advance_agentic_profile(&mut self, now_ms: f64) -> Result<bool> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(false);
+        };
+        driver.advance_agentic_profile(now_ms)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enable_agentic_profile(
+        &mut self,
+        options: crate::replay::loadgen::AgenticProfileOptions,
+    ) -> Result<()> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            anyhow::bail!("agentic profile requires a workload driver");
+        };
+        driver.enable_agentic_profile(options)
+    }
+
+    pub(crate) fn agentic_profile_deadlines(&self) -> Option<(f64, f64, f64)> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_deadlines()
+    }
+
+    pub(crate) fn agentic_profile_pending_request_ids(&self) -> Vec<Uuid> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return Vec::new();
+        };
+        driver.agentic_profile_pending_request_ids()
+    }
+
+    pub(crate) fn agentic_profile_client_complete(&self, now_ms: f64) -> bool {
+        matches!(&self.source, AdmissionSource::Workload { driver, .. }
+            if driver.agentic_profile_client_complete(now_ms))
+    }
+
+    pub(crate) fn agentic_profile_report(
+        &self,
+    ) -> Option<crate::replay::loadgen::AgenticProfileReport> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_profile_report()
+    }
+
+    /// Preserve actual first-admission reuse before the runtime discards the
+    /// preparation measurement epoch. The runtime separately requires native
+    /// engine quiescence before opening the saved profile suffix.
+    pub(crate) fn finish_agentic_preparation(
+        &mut self,
+        now_ms: f64,
+        collector: &crate::replay::TraceCollector,
+        reset_measurements: impl FnOnce() -> Result<()>,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            return Ok(None);
+        };
+        if !driver.is_agentic_preparing() {
+            return Ok(None);
+        }
+        for uuid in driver.preparation_request_ids() {
+            if let Some((at_ms, reused_tokens)) = collector.request_admission(uuid) {
+                driver.record_preparation_admission(uuid, at_ms, reused_tokens)?;
+            }
+        }
+        driver.finish_agentic_preparation_with(now_ms, reset_measurements)
+    }
+
     pub(crate) fn is_drained(&self) -> bool {
         match &self.source {
             AdmissionSource::Requests(pending) => pending.is_empty(),
@@ -559,6 +650,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return None;
         };
         driver.agentic_graph_identity()
+    }
+
+    pub(crate) fn agentic_snapshot_evidence(
+        &self,
+    ) -> Option<Vec<crate::replay::loadgen::AgenticSnapshotEvidence>> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_snapshot_evidence().map(<[_]>::to_vec)
     }
 
     pub(crate) fn agentic_lifecycle_transcript(

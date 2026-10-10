@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from aisimulate_core.sdk import (
@@ -14,6 +16,7 @@ from aisimulate_core.sdk import (
     RustForwardPassPerfModel,
 )
 
+from ..estimator_readiness import unready_estimator_message
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
@@ -57,6 +60,10 @@ class ForwardPassEstimatorResolver:
         prefix = _role_prefix(role)
         moe_tp = int(sample[f"{prefix}moe_tp"])
         moe_ep = int(sample[f"{prefix}moe_ep"])
+        # Context-parallel knobs are optional columns (the compiler spells them
+        # out only when != 1); keep 1 out of the identity so pre-CP candidates
+        # resolve to the same estimator as before.
+        cp_size = int(sample.get(f"{prefix}cp") or 1)
         block_size = sample[f"{role}_block_size"]
         if block_size is None:
             block_size = _DEFAULT_BLOCK_SIZE[backend]
@@ -67,8 +74,16 @@ class ForwardPassEstimatorResolver:
         nextn = sample.get("aic_nextn")
         if nextn is None:
             nextn = self._search_space.aic_nextn
+        estimator_config = deepcopy(controls.get("estimator_config", self._search_space.estimator_config))
+        path = sample.get(f"{role}_fpm_parquet_path")
+        if path is not None:
+            interpolation = estimator_config.setdefault("fpm_interpolation", {})
+            if interpolation.get("fpm_parquet_path", path) != path:
+                raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+            interpolation["fpm_parquet_path"] = path
         return ForwardPassPerfModelConfig(
             model=self._search_space.model_name,
+            fpm_profile=self._search_space.fpm_profile,
             system=_role_hardware_sku(sample, role),
             backend=backend,
             worker_type="aggregated" if role == "agg" else role,
@@ -76,8 +91,10 @@ class ForwardPassEstimatorResolver:
             tp=int(sample[f"{prefix}tp"]),
             pp=int(sample[f"{prefix}pp"]),
             attention_dp=int(sample[f"{prefix}attention_dp"]),
+            dcp=sample.get(f"{prefix}dcp"),
             moe_tp_size=moe_tp if moe_tp * moe_ep > 1 else None,
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
+            cp_size=cp_size if cp_size != 1 else None,
             nextn=int(nextn or 0),
             **{name: getattr(self._search_space, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=self._search_space.speculation.cost_config()
@@ -89,18 +106,29 @@ class ForwardPassEstimatorResolver:
             transfer_policy=controls.get("transfer_policy", transfer_policy),
             systems_paths=resolve_systems_paths(self._search_space.systems_paths_for(role)),
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
-            estimator_config=controls.get("estimator_config", self._search_space.estimator_config),
+            estimator_config=estimator_config,
         )
 
     def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:
-        request_payload = vars(request)
-        cache_key = json.dumps(request.to_dict(), sort_keys=True)
-        cached = self._resolved.get(cache_key)
-        if cached is not None:
-            return deepcopy(cached)
-
+        # Bind an external file before caching so identical relative spellings
+        # from different working directories cannot reuse another pair.
+        interpolation = request.estimator_config.get("fpm_interpolation", {})
+        path = interpolation.get("fpm_parquet_path")
+        if isinstance(path, str) and path and not Path(path).is_absolute():
+            estimator_config = deepcopy(request.estimator_config)
+            estimator_config["fpm_interpolation"]["fpm_parquet_path"] = str(Path(path).absolute())
+            request = replace(request, estimator_config=estimator_config)
         model: RustForwardPassPerfModel | None = None
         try:
+            request_payload = RustForwardPassPerfModel.normalize_config(request)
+            if request_payload.get("fpm_profile") is not None:
+                from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
+
+                _require_forward_pass_profile_memory(request_payload)
+            cache_key = json.dumps(request_payload, sort_keys=True)
+            cached = self._resolved.get(cache_key)
+            if cached is not None:
+                return deepcopy(cached)
             model = RustForwardPassPerfModel.best_available(request)
             diagnostics = model.diagnostics()
         except Exception as exc:
@@ -123,7 +151,7 @@ class ForwardPassEstimatorResolver:
         resolved_config = dict(provenance["config"])
         if diagnostics.get("readiness") != "ready":
             raise ForwardPassEstimatorResolutionError(
-                f"estimator for {role} is not ready; regression requires training observations"
+                f"estimator for {role} is not ready: {unready_estimator_message(diagnostics)}"
             )
         if not resolved_config.get("backend_version"):
             raise ForwardPassEstimatorResolutionError(
@@ -137,11 +165,13 @@ class ForwardPassEstimatorResolver:
             )
         for field in (
             "model",
+            "fpm_profile",
             "system",
             "backend",
             "tp",
             "pp",
             "attention_dp",
+            "dcp",
             "moe_tp_size",
             "moe_ep_size",
             "nextn",

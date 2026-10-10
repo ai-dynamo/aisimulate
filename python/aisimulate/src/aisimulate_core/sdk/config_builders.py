@@ -21,6 +21,7 @@ from aisimulate_core.sdk.common import (
     MoEQuantMode,
 )
 from aisimulate_core.sdk.config import ModelConfig
+from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -43,18 +44,31 @@ def build_model_config(
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
+    *,
+    moe_kernel_source: str | None = None,
+    cp_size: int = 1,
+    dcp_size: int | None = None,
+    fpm_fmha_quant_mode: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
-    validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
+    validate_moe_controls(
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
+        moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
+    )
     return ModelConfig(
         tp_size=tp_size,
         pp_size=pp_size,
         attention_dp_size=attention_dp_size,
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
+        cp_size=cp_size,
+        dcp_size=dcp_size,
         gemm_quant_mode=GEMMQuantMode[gemm_quant_mode] if gemm_quant_mode else None,
         kvcache_quant_mode=KVCacheQuantMode[kvcache_quant_mode] if kvcache_quant_mode else None,
         fmha_quant_mode=FMHAQuantMode[fmha_quant_mode] if fmha_quant_mode else None,
+        fpm_fmha_quant_mode=FMHAQuantMode[fpm_fmha_quant_mode] if fpm_fmha_quant_mode else None,
         moe_quant_mode=MoEQuantMode[moe_quant_mode] if moe_quant_mode else None,
         comm_quant_mode=CommQuantMode[comm_quant_mode] if comm_quant_mode else None,
         forward_model=forward_model or "op_level",
@@ -63,6 +77,7 @@ def build_model_config(
         moe_backend=None if moe_backend == "default" else moe_backend,
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
+        moe_kernel_source=moe_kernel_source,
         speculation=speculation,
     )
 
@@ -72,6 +87,7 @@ def validate_moe_controls(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     moe_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     model_path: str | None = None,
 ) -> None:
     """Reject invalid MoE identity before model construction or fallback."""
@@ -79,11 +95,18 @@ def validate_moe_controls(
         raise ValueError("enable_eplb must be a boolean")
     if wideep_num_slots is not None and (type(wideep_num_slots) is not int or wideep_num_slots <= 0):
         raise ValueError("wideep_num_slots must be a positive integer")
-    if model_path is not None and (enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default")):
+    if moe_kernel_source is not None and moe_backend == "megamoe":
+        raise InvalidEngineConfigurationError("moe_kernel_source is not supported by the MegaMoE module")
+    if model_path is not None and (
+        enable_eplb
+        or wideep_num_slots is not None
+        or moe_backend not in (None, "default")
+        or moe_kernel_source is not None
+    ):
         from aisimulate_core.sdk.models import check_is_moe
 
         if not check_is_moe(model_path):
-            raise ValueError("EPLB, slots and moe_backend require an MoE model")
+            raise InvalidEngineConfigurationError("EPLB, slots, moe_backend and moe_kernel_source require an MoE model")
 
 
 def validate_nextn(nextn: int | None) -> int:

@@ -1,0 +1,13 @@
+schema_version: 1
+runtime:
+  framework: sglang
+  image: lmsysorg/sglang
+  image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+  version: 0.0.0.dev0
+tables:
+  moe_perf:
+    status: complete
+    rows: 23
+    data_sha256: d3f7391e383181f48e9dca919eec56f37256876762ac58341afd6daca783aedb
+    provenance_admission_sha256: dddff0b98b1b823756073d0533aed35141fcef3d99cbd6451b0f9012b1e406d3
+    measurement_kind: native_gpu_measurement

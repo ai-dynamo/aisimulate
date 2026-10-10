@@ -11,7 +11,7 @@ from typing import Any
 
 
 class PerfFile(str, Enum):
-    """Canonical output filenames for collector operations.
+    """Canonical output filenames and legacy worker selectors for collectors.
 
     Inherits from ``str`` so values pass directly to ``open()`` / ``log_perf()``
     without ``.value``.
@@ -68,6 +68,7 @@ class PerfFile(str, Enum):
     MSA_CONTEXT_MODULE = "msa_context_module_perf.txt"
     MSA_GENERATION_MODULE = "msa_generation_module_perf.txt"
     MHC_MODULE = "mhc_module_perf.txt"
+    DSV41_MODULE = "dsv41_module_perf.txt"
     # DeepSeek-V4 module-level data — one OpEntry per (attn_kind, mode) pair,
     # mirroring the existing aic_dev "1 OpEntry = 1 file" convention.
     DSV4_CSA_CONTEXT_MODULE = "dsv4_csa_context_module_perf.txt"
@@ -110,6 +111,11 @@ class OpEntry:
 
     Exactly one of ``module`` (unversioned) or ``versions`` (versioned) must be
     provided.  This invariant is validated at construction time.
+
+    ``perf_filename`` is the physical output table. Ops that share one
+    run_func and one table in different modes select the mode with
+    ``run_kwargs`` (sglang dsa_*_module_skip_indexer); multi-table producers
+    name their extra tables in ``extra_perf_filenames``.
     """
 
     op: str

@@ -36,6 +36,7 @@ _AGG_PINNED = (
     "agg_num_gpu_blocks",
     "agg_timing_model",
     "agg_forward_model",
+    "agg_fpm_parquet_path",
     "agg_startup_time",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
@@ -48,7 +49,9 @@ _PREFILL_PINNED = (
     "prefill_num_gpu_blocks",
     "prefill_timing_model",
     "prefill_forward_model",
+    "prefill_fpm_parquet_path",
     "prefill_startup_time",
+    "prefill_context_length",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (
@@ -60,7 +63,9 @@ _DECODE_PINNED = (
     "decode_num_gpu_blocks",
     "decode_timing_model",
     "decode_forward_model",
+    "decode_fpm_parquet_path",
     "decode_startup_time",
+    "decode_context_length",
 )
 
 
@@ -133,6 +138,10 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
+    if search_space.systems_paths is not None:
+        sample["systems_paths"] = search_space.systems_paths
+    if search_space.fpm_profile is not None:
+        sample["fpm_profile"] = search_space.fpm_profile
 
     if mode == "disagg":
         sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")

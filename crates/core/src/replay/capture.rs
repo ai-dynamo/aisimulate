@@ -11,7 +11,8 @@ pub const CANONICAL_SELECTOR_SEED: u64 = 0xd1a0_5eed;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayDeterminism {
-    /// Preserve normal runtime randomness.
+    /// Preserve normal runtime randomness: fresh random request IDs, so synthetic
+    /// outputs vary between runs, and no canonical selector seed.
     #[default]
     Random,
     /// Use ordinal request UUIDs and the canonical selector seed.
