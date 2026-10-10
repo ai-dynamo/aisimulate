@@ -587,8 +587,6 @@ methods, including an explicit `auto`. An omitted field does not override a
 saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
 explicitly supplied to that legacy options object, including explicit defaults.
 
-The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
-
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`
 is retained as a legacy migration value type; new construction has one complete

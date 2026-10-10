@@ -96,28 +96,3 @@ breakdowns carry explicit reasons. The [FPE matrix](../support-matrix.md)
 tests strict native coverage; it does not certify the HYBRID ladder or silicon
 accuracy. See [DSA CP](context-parallel-dsa.md), [DeepEP-LL](deepep-ll.md),
 and [execution limitations](../limitations.md) for specialized boundaries.
-
-## Qualified graph-prefill profile
-
-`estimator_config.op_level.prefill_graph_profile:
-sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1` selects an exact measured graph-prefill
-composition for `nvidia/GLM-5.2-NVFP4` on `vr_nvl72`, SGLang
-`0.5.18+nvinternal.rubin.0.8full.66997102`, TP4/EP1, NVFP4 experts, BF16
-projections, and FP8 KV. This is a scoped four-GPU profile, not whole-rack
-qualification. Use the canonical name and save the resolved immutable profile
-hash in estimator provenance.
-
-This profile serves `predict_prefill_latency(bs, isl, prefix)` only. `isl` is
-full input length including prefix; the admitted `(bs, isl, prefix)` points are
-`(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`,
-`(1,16384,0)`, and `(1,32768,16384)`. Inputs are nonnegative u32-compatible
-ordinary integers, and overflowing products fail before lookup. There is no
-interpolation or borrowing of another profile's rows.
-
-Aggregate telemetry lacks the exact per-request new/past lengths required here,
-so this profile rejects generic forward-step estimation, tuning, static
-energy/SOL diagnostics, and Replay-provider construction. There is no CLI
-scheduler selection for it. Decode uses a separate ordinary op-level estimator
-with no prefill graph profile; selecting this profile does not qualify decode.
-See the [collector and provenance](../../../python/aisimulate/collector/sglang_rubin/README.md)
-and [accuracy evidence](../../../benchmarks/evidence/accuracy/).
