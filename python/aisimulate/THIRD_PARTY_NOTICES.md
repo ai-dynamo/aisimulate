@@ -1098,6 +1098,39 @@ the license is included at the repository root as `LICENSE` and in the Python
 distribution. Upstream license:
 https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
 
+## GLM-5.3-Flash configurations and analytical model
+
+Unmodified configurations are included at
+`src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json`,
+`nvidia--GLM-5.3-Flash-NVFP4_config.json`, and
+`nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json` in the same directory.
+Sources are Z.AI's `config.json` at
+https://huggingface.co/zai-org/GLM-5.3-Flash/tree/eb9eb208eb0d988989d07a6a12d0fdeb5f52574a
+and NVIDIA's `config.json` / `hf_quant_config.json` at
+https://huggingface.co/nvidia/GLM-5.3-Flash-NVFP4/tree/09b04e5e74bca08ca8549fc736d4cdd8624bfde3.
+Copyright (c) 2026 Z.AI Co., Ltd. MIT license; the full license is preserved
+in the adjacent distributed `GLM53FLASH_PROVENANCE.md`.
+
+The geometry in `src/aisimulate_core/sdk/glm53flash.py`,
+`src/aisimulate_core/sdk/models/glm53flash.py`, repository-root
+`crates/core/src/perfmodel/operators/glm53flash.rs`, and their GLM tests is a
+modified analytical adaptation of those configurations. Execution boundaries
+and precision partitions are independently expressed adaptations of
+`vllm/models/glm5next/common/{model,attention,kda}.py` and
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`,
+`vllm/model_executor/layers/logits_processor.py`, and
+`vllm/platforms/interface.py` from vLLM at
+https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0)
+(Copyright vLLM contributors, Apache-2.0), and
+`python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
+`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
+`python/sglang/srt/layers/communicator_mhc.py` and
+`python/sglang/srt/layers/logits_processor.py` from SGLang at
+https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+(Copyright SGLang contributors, Apache-2.0). No serving implementation is
+vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
+the repository Apache-2.0 license text applies to these adaptations.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
