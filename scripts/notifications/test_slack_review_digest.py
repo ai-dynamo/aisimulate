@@ -47,27 +47,28 @@ class DigestTests(unittest.TestCase):
         self.assertNotIn("• #4 ", text)
         self.assertIn("<queue> & counters", text)
 
-    def test_pacific_day_includes_closed_and_draft_new_prs(self):
+    def test_week_includes_closed_and_draft_new_prs(self):
         recent = [
-            self.pr(created_at="2026-09-29T07:00:00Z", merged_at="2026-09-30T00:00:00Z"),
-            self.pr(created_at="2026-09-29T06:59:59Z", merged_at="2026-09-29T06:59:59Z"),
+            self.pr(created_at="2026-09-23T00:07:01Z", merged_at="2026-09-30T00:00:00Z"),
+            self.pr(created_at="2026-09-23T00:07:00Z", merged_at="2026-09-23T00:07:00Z"),
             self.pr(created_at="2026-09-29T12:00:00Z", draft=True, state="closed"),
             self.pr(created_at="2026-09-30T01:00:00Z"),
         ]
         text = "".join(messages("ai-dynamo/aisimulate", [], recent, self.now).values())
-        self.assertIn(":merged-2472: PRs merged today: 1", text)
-        self.assertIn(":pr-opened: PRs opened today: 2", text)
+        self.assertIn(":merged-2472: PRs merged in the past 7 days: 1", text)
+        self.assertIn(":pr-opened: PRs opened in the past 7 days: 2", text)
         self.assertIn("2026-09-29, 05:07 PM PDT", text)
 
-    def test_dst_day_uses_midnight_offset(self):
-        now = datetime(2026, 11, 2, 1, 7, tzinfo=timezone.utc)
-        self.assertEqual(
-            now.astimezone(PACIFIC).replace(hour=0, minute=0).utcoffset(),
-            timedelta(hours=-7),
-        )
-        recent = [self.pr(created_at="2026-11-01T07:30:00Z")]
-        text = "".join(messages("ai-dynamo/aisimulate", [], recent, now).values())
-        self.assertIn(":pr-opened: PRs opened today: 1", text)
+    def test_dst_week_uses_local_calendar_boundary(self):
+        now = datetime(2026, 11, 3, 1, 7, tzinfo=timezone.utc)
+        start = now.astimezone(PACIFIC) - timedelta(days=7)
+        self.assertEqual(start.utcoffset(), timedelta(hours=-7))
+        recent = [
+            self.pr(created_at="2026-10-27T00:07:00Z"),
+            self.pr(created_at="2026-10-27T00:07:01Z"),
+        ]
+        text = messages("ai-dynamo/aisimulate", [], recent, now)["message"]
+        self.assertIn("PRs opened in the past 7 days: 1", text)
         self.assertIn("05:07 PM PST", text)
 
     def test_large_queue_retains_all_prs(self):

@@ -78,9 +78,13 @@ def test_main_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert run(clean_old, broken_new) == 1  # OK -> INVALID blocks
 
     no_harness_old = tmp_path / "o-empty"
+    assert run(no_harness_old, clean_new) == 2  # missing snapshot is not proof of an old harness
     no_harness_old.mkdir()
-    assert run(no_harness_old, clean_new) == 0  # degraded: old side predates harness
+    assert run(no_harness_old, clean_new) == 2
+    (no_harness_old / "NO_HARNESS.txt").touch()
+    assert run(no_harness_old, clean_new) == 0  # the collection job confirmed the harness is absent
     assert "no snapshot" in (tmp_path / "rep" / "summary.md").read_text()
+    assert run(no_harness_old, tmp_path / "missing-new") == 2
 
 
 def _write_silicon(path: Path, rows: list[dict]) -> Path:

@@ -210,6 +210,9 @@ class StateCacheConfig(StrictModel):
 # Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
 # https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
 MambaCacheDtype = Literal["auto", "float16", "float32"]
+# Accepted values adapted from vLLM's indexer_kv_dtype (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/vllm/config/attention.py
+IndexerCacheDtype = Literal["auto", "fp8", "mxfp4"]
 
 
 class StateCachePredictionConfig(StrictModel):
@@ -217,6 +220,7 @@ class StateCachePredictionConfig(StrictModel):
 
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
+    indexer_cache_dtype: IndexerCacheDtype = "auto"
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:

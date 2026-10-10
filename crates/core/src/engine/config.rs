@@ -1013,6 +1013,16 @@ impl EngineConfig {
                 .is_none_or(|bandwidth| bandwidth.is_finite() && bandwidth >= 0.0),
             "kv_transfer_bandwidth must be finite and non-negative"
         );
+        // Only the prefill source prices the handoff, so a positive bandwidth
+        // needs payload bytes rather than the topology's fallback latency.
+        ensure!(
+            self.worker_type != WorkerType::Prefill
+                || self
+                    .kv_transfer_bandwidth
+                    .is_none_or(|bandwidth| bandwidth <= 0.0)
+                || self.kv_transfer_bytes_per_token.is_some(),
+            "kv_transfer_bandwidth requires kv_transfer_bytes_per_token on prefill workers"
+        );
         match &self.timing_model {
             TimingModelConfig::Polynomial => {}
             TimingModelConfig::Fixed {
@@ -1263,6 +1273,35 @@ mod tests {
                 serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
             assert_eq!(config, roundtrip);
         }
+    }
+
+    #[test]
+    fn prefill_bandwidth_requires_transfer_bytes() {
+        let config = |worker_type: &str, bandwidth: f64, bytes: Option<usize>| {
+            let mut input = serde_json::json!({
+                "worker_type": worker_type,
+                "kv_transfer_bandwidth": bandwidth,
+            });
+            if let Some(bytes) = bytes {
+                input["kv_transfer_bytes_per_token"] = serde_json::json!(bytes);
+            }
+            serde_json::from_value::<EngineConfig>(input)
+                .unwrap()
+                .validate()
+        };
+        let error = config("prefill", 50.0, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+            "{error}"
+        );
+        // Zero bandwidth keeps its legacy "disabled" meaning; only the prefill
+        // source prices the transfer.
+        config("prefill", 0.0, None).unwrap();
+        config("prefill", 50.0, Some(16)).unwrap();
+        config("decode", 50.0, None).unwrap();
+        config("aggregated", 50.0, None).unwrap();
     }
 
     #[test]

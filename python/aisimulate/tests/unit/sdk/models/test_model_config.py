@@ -1892,10 +1892,23 @@ class TestAttentionProjectionExclusions:
     """Per-projection exclusion parsing (V3.1/V3.2 exclude q/kv but not o_proj)."""
 
     @staticmethod
-    def _excl(patterns):
+    def _excl(patterns, *, precise_module_paths=True):
         from aisimulate.sdk.models.helpers import attention_projection_exclusions
 
-        return attention_projection_exclusions({"quantization_config": {"ignore": patterns}})
+        return attention_projection_exclusions(
+            {"quantization_config": {"ignore": patterns}}, precise_module_paths=precise_module_paths
+        )
+
+    def test_existing_consumers_keep_their_projection_exclusion_interpretation(self):
+        from aisimulate.sdk.models.helpers import attention_projection_exclusions
+
+        # SGLang, TRT-LLM and ordinary MLA retain the default exclusion matching.
+        # vLLM DSA opts into precise projection paths.
+        raw = {"quantization_config": {"ignore": ["model.layers.0.self_attn.q_a_layernorm"]}}
+        assert attention_projection_exclusions(raw) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl(["model.layers.0.self_attn.indexers_proj"], precise_module_paths=False) == frozenset(
+            {"indexer"}
+        )
 
     def test_whole_block_glob_covers_all_groups(self):
         assert self._excl(["model.layers.3.self_attn*"]) == frozenset({"q", "kv", "o", "indexer"})
@@ -1915,6 +1928,89 @@ class TestAttentionProjectionExclusions:
 
     def test_empty(self):
         assert self._excl([]) == frozenset()
+
+    @pytest.mark.parametrize("anchor", ["", "$"])
+    @pytest.mark.parametrize(
+        "pattern,expected",
+        [
+            (r".*self_attn\..*", {"q", "kv", "o", "indexer"}),
+            (r".*self_attn\.(q_a_proj|kv_a_proj_with_mqa)", {"q", "kv"}),
+            (r".*self_attn\.indexer\.(wq_b|wk|weights_proj)", {"indexer"}),
+            (r".*self_attn\.(q_a_layernorm|kv_a_layernorm|indexer\.k_norm|indexers_proj)", set()),
+        ],
+    )
+    def test_regex_exclusions_match_projection_module_paths(self, pattern, expected, anchor):
+        assert self._excl([f"re:{pattern}{anchor}"]) == frozenset(expected)
+
+    def test_malformed_regex_is_an_actionable_configuration_error(self):
+        import re
+
+        from aisimulate.sdk.errors import is_expected_cli_error
+
+        with pytest.raises(ValueError) as caught:
+            self._excl(["re:["])
+        assert "re:[" in str(caught.value)
+        assert isinstance(caught.value.__cause__, re.error)
+        assert is_expected_cli_error(caught.value)
+
+    @pytest.mark.parametrize("suffix", ["", "*", ".*", r"\..*"])
+    def test_whole_block_suffixes(self, suffix):
+        assert self._excl([f"model.layers.0.self_attn{suffix}"]) == frozenset({"q", "kv", "o", "indexer"})
+        assert self._excl([f"model.layers.0.self_attn.indexer{suffix}"]) == frozenset({"indexer"})
+
+    def test_norm_and_auxiliary_exclusions_do_not_reclassify_projection_groups(self):
+        assert (
+            self._excl(
+                [
+                    "model.layers.0.self_attn.q_a_layernorm",
+                    "model.layers.0.self_attn.kv_a_layernorm",
+                    "model.layers.0.self_attn.indexer.k_norm",
+                    "model.layers.0.self_attn.indexer.k_norm.bias",
+                    "model.layers.0.self_attn.indexers_proj",
+                ]
+            )
+            == frozenset()
+        )
+
+    @pytest.mark.parametrize("projection", ["wq_b", "wk", "weights_proj", "wk_weights_proj"])
+    def test_named_indexer_projection_exclusion(self, projection):
+        assert self._excl([f"model.layers.0.self_attn.indexer.{projection}"]) == frozenset({"indexer"})
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize("phase", ["context", "generation"])
+    @pytest.mark.parametrize("quant", ["fp8", "fp8_block", "nvfp4"])
+    def test_native_glm52_precision_correction_is_scoped_to_vllm_dsa(self, backend, phase, quant):
+        # The real checkpoint excludes layernorms and indexers_proj, not the
+        # q/kv/o projection GEMMs. NVFP4 mixed exclusions have separate tests
+        # in TestDSV32NVFP4AttentionExclusion above.
+        from aisimulate.sdk import engine
+
+        model = models.get_model(
+            "zai-org/GLM-5.2-FP8",
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode[quant]),
+            backend_name=backend,
+        )
+        expected_exclusions = frozenset() if backend == "vllm" else frozenset({"q", "kv", "o", "indexer"})
+        assert model.extra_params["dsa_attn_quant_exclusions"] == expected_exclusions
+        specs = json.loads(engine._ops_json(getattr(model, f"{phase}_ops")))
+        attention = next(fields for spec in specs for tag, fields in spec.items() if tag == f"Dsa{phase.capitalize()}")
+        assert attention["gemm_quant_mode"] == (quant if backend == "vllm" else "bfloat16")
+
+    @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+    @pytest.mark.parametrize(
+        "model_path,excluded",
+        [
+            ("nvidia/GLM-5.2-NVFP4", frozenset({"q", "kv", "o", "indexer"})),
+            ("nvidia/DeepSeek-V3.2-NVFP4", frozenset({"q", "kv", "indexer"})),
+        ],
+    )
+    def test_actual_checkpoint_projection_exclusions_are_preserved(self, backend, model_path, excluded):
+        model = models.get_model(
+            model_path,
+            config.ModelConfig(tp_size=8, moe_tp_size=1, moe_ep_size=8, gemm_quant_mode=common.GEMMQuantMode.nvfp4),
+            backend_name=backend,
+        )
+        assert model.extra_params["dsa_attn_quant_exclusions"] == excluded
 
 
 class TestBundledModelConfigsOffline:

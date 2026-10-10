@@ -69,15 +69,16 @@ snapshot until that release has a qualified campaign. See the
 [accuracy campaign contract](../../pages/e2e-accuracy/README.md)
 for pinned scheduler settings, measurement selection, and provenance.
 
-### Daily accuracy Slack report
+### Weekly accuracy Slack report
 
-[Accuracy Slack Daily](../../.github/workflows/accuracy-digest.yml) combines the day's
+[Accuracy Slack Weekly](../../.github/workflows/accuracy-digest.yml) combines the day's
 scheduled E2E and FPM results in one message in **#swdl-dynamo-aisim-daily**.
 Failures and comparable regressions appear in that message; separate per-model
 and per-GPU E2E tables appear in the main message; FPM coverage and comparison
-details remain in its thread. Delivery waits for both pipelines,
-with a 09:00 America/Los_Angeles fallback. It is opt-in and has a default dry-run
-mode plus an explicit test-send mode. See [setup, comparisons, and testing](#daily-accuracy-report).
+details remain in its thread. Delivery runs on Mondays at 09:00
+America/Los_Angeles using that day's results. E2E and FPM evaluations stay daily.
+It is opt-in and has a default dry-run mode plus an explicit test-send mode.
+See [setup, comparisons, and testing](#weekly-accuracy-report).
 
 
 ## FPM accuracy
@@ -315,14 +316,14 @@ and malformed metadata, calendar-date boundaries, and unchanged matrix rows.
 Use `--browser-executable /path/to/chrome` to reuse an installed browser, or
 `--screenshot /path/to/preview.png` to capture the real page before test fixtures.
 
-## Daily accuracy report
+## Weekly accuracy report
 
-`Accuracy Slack Daily` posts one daily top-level message to
+`Accuracy Slack Weekly` posts one weekly top-level message to
 **#swdl-dynamo-aisim-daily** (`C0BULBSTXJ6`). Alerts and results share that message;
 E2E per-model and per-GPU tables are included in the main message. No mentions are
 sent. The bot does not accept commands or start evaluations.
 
-The message title is `:rainbow: *Accuracy Daily · YYYY-MM-DD*`, with a rainbow
+The message title is `:rainbow: *Accuracy Weekly · YYYY-MM-DD*`, with a rainbow
 emoji and bold text, without a timezone suffix. Immediately below it, a quote
 block shows run links with duration and attempt, overview links, and short
 alert/recovery summaries. The alert count and comparison-note count appear at
@@ -333,21 +334,22 @@ the end of the main message.
 - Select today's scheduled E2E and FPM runs by their creation date in
   `America/Los_Angeles`. A rerun uses its latest attempt; successful branch
   artifacts retained from an earlier attempt are validated against that attempt.
-- Send when both runs finish, including failures/cancellations. Completion of
-  either producer wakes the notifier. A scheduled fallback checks at 09:00 local
-  time (UTC 16:00 in summer, 17:00 in winter) and reports missing/unfinished runs.
-  GitHub schedules can be delayed; 09:00 is the intended cutoff, not a wall-clock SLA.
+- Send on Mondays at 09:00 America/Los_Angeles, including failures/cancellations
+  and missing/unfinished runs. Producer completion no longer triggers the
+  notifier on other days. GitHub schedules can be delayed; 09:00 is the intended
+  time, not a wall-clock SLA.
 - Each main message includes both pipeline links. An unstarted pipeline links to
   its workflow. Failed jobs include their job links and failing step names.
 - Include every branch evaluated in those runs. Do not substitute yesterday's
-  data for a missing branch. Manual campaigns never enter production daily reports.
+  data for a missing branch. Manual campaigns never enter production weekly reports.
 - After delivery, late completions do not update the frozen report or create
-  another daily message. Subsequent daily reports can announce recovery.
+  another message that day. Subsequent weekly reports can announce recovery.
 - Serialize notifier runs. Identify production messages using Slack metadata
   keyed by repository and local date. Persist the frozen report before posting;
   on retry, restore it and send only missing thread parts. Rechecks at 30-minute
-  intervals through 18:30 UTC can resume an interrupted delivery. Do not delete
-  the bot's messages or its retained report artifacts; they are delivery records.
+  intervals through Monday 11:30 America/Los_Angeles can resume an interrupted
+  delivery. Do not delete the bot's messages or its retained report artifacts;
+  they are delivery records.
 - History/thread reads use GET query parameters and omit empty pagination cursors.
 - Slack timeouts and `ok:false` fail the notification job. An uncertain POST is
   not blindly retried: the next run checks Slack history/thread metadata first.
@@ -387,7 +389,7 @@ For each branch:
   separately, even if total coverage is unchanged because other points improved.
 - Keep the pre-alert baseline while the regression persists. Do not silently
   accept yesterday's regression as today's normal. Successful comparable results
-  against that baseline can be marked recovered in a later daily message.
+  against that baseline can be marked recovered in a later weekly message.
 - Initial prediction failures are shown as attention notes; without prior evidence
   they are not labeled new regressions. A green pipeline does not imply every
   prediction succeeded.
@@ -436,7 +438,7 @@ monospaced tables, and named links. This is not GitHub-flavored Markdown; tables
 are rendered inside code blocks rather than as Markdown table syntax.
 
 Both test and production use this same channel. Test messages are labeled
-`[TEST]` and use separate metadata, so they do not consume the daily production
+`[TEST]` and use separate metadata, so they do not consume the weekly production
 slot or update its baseline. Automatic delivery is disabled unless explicitly
 enabled. GitHub permissions are read-only (`contents:read`, `actions:read`).
 The notifier checks out its own trusted workflow revision; it never executes
@@ -445,7 +447,7 @@ preview/test alone permits same-repository producer runs from a non-main branch.
 
 ## Dry run and one real Slack test
 
-Open **Actions → Accuracy Slack Daily → Run workflow**. Choose `dry-run`
+Open **Actions → Accuracy Slack Weekly → Run workflow**. Choose `dry-run`
 (the default), and provide completed `e2e_run_id` and `fpm_run_id` values. Manual
 accuracy runs are allowed here. For example:
 
@@ -478,7 +480,7 @@ This sends a real `[TEST]` parent message plus its detail thread to the daily
 channel. Check desktop/mobile table readability, links, and per-model/per-GPU
 sections, then set `SLACK_ACCURACY_ENABLED=true`. Test sending is restricted to
 `main`; a branch dry run receives no Slack token. No manual mode sends a
-production daily report.
+production weekly report.
 
 A workflow dry run does not rerun predictors. Use the deterministic tests in
 `tests/fpm_accuracy/test_digest.py` to exercise regressions, coverage losses,

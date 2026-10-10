@@ -8,8 +8,20 @@ runtime:
   version: 0.24.0
 tables:
   dsa_context_module_perf:
+    collector_ref: fe0102c4e5b4cc60f959dc4f2d4a3ef2bbfbf46e
+    collector_hash: sha256:139ade6ead774891a028d64a41f02c5948cb3c91ed65bb85e7f108c28f953f8c
+    case_plan_hash: sha256:cc5c977f0295c0d6373c8830c370a8b26c0b1debd04a7d2835af529217bd8f19
+    collected_at: '2026-10-09T11:18:16.487059+00:00'
+    rows: 33036
+    classified_failures: 0
     status: complete
   dsa_generation_module_perf:
+    collector_ref: fe0102c4e5b4cc60f959dc4f2d4a3ef2bbfbf46e
+    collector_hash: sha256:139ade6ead774891a028d64a41f02c5948cb3c91ed65bb85e7f108c28f953f8c
+    case_plan_hash: sha256:183b762852844a5c172d34f4655077f72fc51d58ff243762f9cf73f399161985
+    collected_at: '2026-10-09T11:50:33.826391+00:00'
+    rows: 26910
+    classified_failures: 0
     status: complete
   dsv4_csa_context_module_perf:
     status: complete
@@ -23,3 +35,8 @@ tables:
     status: complete
   dsv4_paged_mqa_logits_module_perf:
     status: complete
+# Mixed v1 directory: six existing DSV4 entries and shared runtime remain unchanged.
+# Replacement DSA runtime: vLLM ee0da84ab9e04ac7610e28580af62c365e898389;
+# Torch 2.11.0+cu130, CUDA 13.0, FlashInfer 0.6.12.
+# DSA image: sha256:f9de5cd9fa907fbf6dbba691eb7db095d48ad58ea283e3eba7142f9a91e186e8
+# Collection results: https://github.com/ai-dynamo/aisimulate/pull/409
