@@ -1,0 +1,195 @@
+{
+  "backend": "vllm",
+  "deployment": "fp8-tp2",
+  "evaluator_report_original_sha256": "bf774d0261fe8127c6e80a61f381682442753afc942a71c545be289b51fd82a2",
+  "fidelity_fpm_over_clean_truth": {
+    "decode": {
+      "max": 1.1106338029079552,
+      "median": 1.0351723514843818,
+      "min": 0.9768993434459572,
+      "n": 77,
+      "p10": 1.0048425235538332,
+      "p90": 1.0728676386548084
+    },
+    "prefill": {
+      "max": 1.2660380205492097,
+      "median": 1.001542992808659,
+      "min": 0.8682006583315715,
+      "n": 144,
+      "p10": 0.9168484307370427,
+      "p90": 1.1198257346040057
+    }
+  },
+  "gate": "holdout FPM MAPE <= 10% per phase",
+  "notes": [
+    "fpm_holdout scores predictions against the held-out native FPM measurements.",
+    "clean_truth scores the same predictions against the vLLM 0.31.0 stock-server clean truth (null until that deployment's truth holdout is available).",
+    "independent counts only holdout points whose geometry is absent from calibration."
+  ],
+  "path_note": "Paths beginning with <glm53flash-v031-fpm> are relative to the local FPM working root and <glm53flash-v031-truth> to the clean-truth working root. source-*.json files are evaluator reports with only those root prefixes rewritten; evaluator_report_original_sha256 is the digest of the unrewritten report.",
+  "per_point_report": "source-evaluation.json",
+  "per_point_report_sha256": "a473453db0f7b7dde02ac56af6ca12a3328227bebbee2758e77194cdc61fec0e",
+  "phases": {
+    "decode": {
+      "clean_truth": {
+        "128K": {
+          "n": 0
+        },
+        "1K-32K": {
+          "mape_pct": 3.613908705242123,
+          "max_ape_pct": 9.96754440753373,
+          "n": 53,
+          "p95_ape_pct": 9.381067353214473,
+          "wape_pct": 3.738661110960812
+        },
+        "64K": {
+          "mape_pct": 4.364942901083169,
+          "max_ape_pct": 10.760697090655908,
+          "n": 12,
+          "p95_ape_pct": 10.760697090655908,
+          "wape_pct": 4.563998188626693
+        },
+        "ALL": {
+          "mape_pct": 3.9129685220004844,
+          "max_ape_pct": 10.760697090655908,
+          "n": 77,
+          "p95_ape_pct": 9.381067353214473,
+          "wape_pct": 4.065368156279641
+        },
+        "below1K": {
+          "mape_pct": 4.781841666933896,
+          "max_ape_pct": 8.110543166059319,
+          "n": 12,
+          "p95_ape_pct": 8.110543166059319,
+          "wape_pct": 5.011972583816378
+        }
+      },
+      "fpm_holdout": {
+        "128K": {
+          "n": 0
+        },
+        "1K-32K": {
+          "mape_pct": 2.0971644920860464,
+          "max_ape_pct": 6.819875728235685,
+          "n": 53,
+          "p95_ape_pct": 5.194200527373521,
+          "wape_pct": 2.1388089441537805
+        },
+        "64K": {
+          "mape_pct": 2.2019117430975137,
+          "max_ape_pct": 4.987800766521908,
+          "n": 12,
+          "p95_ape_pct": 4.987800766521908,
+          "wape_pct": 2.22792737474889
+        },
+        "ALL": {
+          "mape_pct": 1.9874130824585161,
+          "max_ape_pct": 6.819875728235685,
+          "n": 77,
+          "p95_ape_pct": 4.987800766521908,
+          "wape_pct": 2.0350572589541702
+        },
+        "below1K": {
+          "mape_pct": 1.2881790292979276,
+          "max_ape_pct": 2.4506534919653746,
+          "n": 12,
+          "p95_ape_pct": 2.4506534919653746,
+          "wape_pct": 1.4066777566294018
+        }
+      },
+      "gate_fpm_mape_le_10": true,
+      "independent": {
+        "mape_pct": 1.9874130824585161,
+        "max_ape_pct": 6.819875728235685,
+        "n": 77,
+        "p95_ape_pct": 4.987800766521908,
+        "wape_pct": 2.0350572589541702
+      },
+      "missing_measurement": 0,
+      "unpredicted": 0
+    },
+    "prefill": {
+      "clean_truth": {
+        "128K": {
+          "n": 0
+        },
+        "1K-32K": {
+          "mape_pct": 3.7666452324333957,
+          "max_ape_pct": 19.115829572283662,
+          "n": 72,
+          "p95_ape_pct": 10.812342777840216,
+          "wape_pct": 4.04316667885102
+        },
+        "64K": {
+          "mape_pct": 11.716856715921487,
+          "max_ape_pct": 27.88733469727891,
+          "n": 24,
+          "p95_ape_pct": 26.753193007142528,
+          "wape_pct": 15.083771707279915
+        },
+        "ALL": {
+          "mape_pct": 4.467820982576496,
+          "max_ape_pct": 27.88733469727891,
+          "n": 144,
+          "p95_ape_pct": 17.376344354218727,
+          "wape_pct": 5.884960990995933
+        },
+        "below1K": {
+          "mape_pct": 1.8950667411186508,
+          "max_ape_pct": 9.856689733661735,
+          "n": 48,
+          "p95_ape_pct": 7.5705341721109844,
+          "wape_pct": 1.1187996882123197
+        }
+      },
+      "fpm_holdout": {
+        "128K": {
+          "n": 0
+        },
+        "1K-32K": {
+          "mape_pct": 2.7069826458153416,
+          "max_ape_pct": 8.603364104747381,
+          "n": 72,
+          "p95_ape_pct": 7.634334978826046,
+          "wape_pct": 1.830962146456898
+        },
+        "64K": {
+          "mape_pct": 2.689299433997261,
+          "max_ape_pct": 8.15516901963423,
+          "n": 24,
+          "p95_ape_pct": 7.068131163872761,
+          "wape_pct": 2.439461898630016
+        },
+        "ALL": {
+          "mape_pct": 2.158366393301672,
+          "max_ape_pct": 8.603364104747381,
+          "n": 144,
+          "p95_ape_pct": 6.751276699694196,
+          "wape_pct": 1.6609168092038251
+        },
+        "below1K": {
+          "mape_pct": 1.0699754941833735,
+          "max_ape_pct": 5.458033915234401,
+          "n": 48,
+          "p95_ape_pct": 3.4399652118072375,
+          "wape_pct": 0.7017198832958624
+        }
+      },
+      "gate_fpm_mape_le_10": true,
+      "independent": {
+        "mape_pct": 2.066674294112022,
+        "max_ape_pct": 8.230143944587821,
+        "n": 125,
+        "p95_ape_pct": 6.517904414464537,
+        "wape_pct": 1.6684155678483168
+      },
+      "missing_measurement": 0,
+      "unpredicted": 0
+    }
+  },
+  "schema": "glm53flash_native_fpm_evaluation_summary_v1",
+  "table": {
+    "rows": 360,
+    "sha256": "c590d709a0ddc7d0b432f4fc607a6f97a902756d955555ed8e45921e02a9804c"
+  }
+}

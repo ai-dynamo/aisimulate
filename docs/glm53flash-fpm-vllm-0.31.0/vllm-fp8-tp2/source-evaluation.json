@@ -1,0 +1,3556 @@
+{
+ "backend": "vllm",
+ "deployment": "fp8-tp2",
+ "backend_version": "0.31.0",
+ "table": {
+  "rows": 360,
+  "parquet_sha256": "c590d709a0ddc7d0b432f4fc607a6f97a902756d955555ed8e45921e02a9804c",
+  "path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet"
+ },
+ "runs": {
+  "calibration": {
+   "prefill": {
+    "job": "898822",
+    "points_sha256": "a3db07baeeaa7f10a6c5c15cae7b98d2e6573ee942f241e6ed08416f51eba5df",
+    "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e",
+    "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+    "checked_prefill_chunks": 47879,
+    "dir": "<glm53flash-v031-fpm>/runs/vllm-fp8-tp2-calibration-prefill/898822"
+   },
+   "decode": {
+    "job": "899326",
+    "points_sha256": "66ff59a6e57a206763f78d83f35c43ebbad8af24be3dea9809c4e3d932a57af8",
+    "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e",
+    "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+    "checked_prefill_chunks": 31060,
+    "dir": "<glm53flash-v031-fpm>/runs/vllm-fp8-tp2-calibration-decode/899326"
+   }
+  },
+  "holdout": {
+   "prefill": {
+    "job": "898940",
+    "points_sha256": "91caa0369176ceaaeb268995af6f9e66b462549eff562965c933d85b6a02e0dd",
+    "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e",
+    "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+    "checked_prefill_chunks": 29574,
+    "dir": "<glm53flash-v031-fpm>/runs/vllm-fp8-tp2-holdout-prefill/898940"
+   },
+   "decode": {
+    "job": "899620",
+    "points_sha256": "8b71e921e9863f526eb25e86316cc0cad5d27102ceea82d20afc9b5114d2819e",
+    "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e",
+    "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+    "checked_prefill_chunks": 16765,
+    "dir": "<glm53flash-v031-fpm>/runs/vllm-fp8-tp2-holdout-decode/899620"
+   }
+  }
+ },
+ "manifest_source": {
+  "path": "<glm53flash-v031-truth>/points/holdout-fp8-tp2.json",
+  "sha256": "b19009b4216a8fe82173ffac892e9b5c3b115f11268709a715d730a050765f67"
+ },
+ "prediction_config": {
+  "attention_dp": 1,
+  "backend": "vllm",
+  "backend_version": "0.31.0",
+  "database_mode": "SILICON",
+  "decoder_replay": false,
+  "enable_eplb": false,
+  "enable_shared_layer": false,
+  "estimation_mode": "fpm_interpolation",
+  "fallback_policy": "deny",
+  "fpm_fmha_quant_mode": "fp8",
+  "kvcache_quant_mode": "fp8",
+  "model": "zai-org/GLM-5.3-Flash",
+  "moe_ep_size": 1,
+  "moe_tp_size": 2,
+  "nextn": 0,
+  "pp": 1,
+  "strict_provenance": true,
+  "system": "gb300",
+  "tp": 2,
+  "worker_type": "aggregated"
+ },
+ "phases": {
+  "prefill": {
+   "fpm_holdout": {
+    "ALL": {
+     "n": 144,
+     "mape_pct": 2.158366393301672,
+     "wape_pct": 1.6609168092038251,
+     "p95_ape_pct": 6.751276699694196,
+     "max_ape_pct": 8.603364104747381
+    },
+    "below1K": {
+     "n": 48,
+     "mape_pct": 1.0699754941833735,
+     "wape_pct": 0.7017198832958624,
+     "p95_ape_pct": 3.4399652118072375,
+     "max_ape_pct": 5.458033915234401
+    },
+    "1K-32K": {
+     "n": 72,
+     "mape_pct": 2.7069826458153416,
+     "wape_pct": 1.830962146456898,
+     "p95_ape_pct": 7.634334978826046,
+     "max_ape_pct": 8.603364104747381
+    },
+    "64K": {
+     "n": 24,
+     "mape_pct": 2.689299433997261,
+     "wape_pct": 2.439461898630016,
+     "p95_ape_pct": 7.068131163872761,
+     "max_ape_pct": 8.15516901963423
+    },
+    "128K": {
+     "n": 0
+    }
+   },
+   "fpm_holdout_independent_geometry": {
+    "n": 125,
+    "mape_pct": 2.066674294112022,
+    "wape_pct": 1.6684155678483168,
+    "p95_ape_pct": 6.517904414464537,
+    "max_ape_pct": 8.230143944587821
+   },
+   "clean_truth": {
+    "ALL": {
+     "n": 144,
+     "mape_pct": 4.467820982576496,
+     "wape_pct": 5.884960990995933,
+     "p95_ape_pct": 17.376344354218727,
+     "max_ape_pct": 27.88733469727891
+    },
+    "below1K": {
+     "n": 48,
+     "mape_pct": 1.8950667411186508,
+     "wape_pct": 1.1187996882123197,
+     "p95_ape_pct": 7.5705341721109844,
+     "max_ape_pct": 9.856689733661735
+    },
+    "1K-32K": {
+     "n": 72,
+     "mape_pct": 3.7666452324333957,
+     "wape_pct": 4.04316667885102,
+     "p95_ape_pct": 10.812342777840216,
+     "max_ape_pct": 19.115829572283662
+    },
+    "64K": {
+     "n": 24,
+     "mape_pct": 11.716856715921487,
+     "wape_pct": 15.083771707279915,
+     "p95_ape_pct": 26.753193007142528,
+     "max_ape_pct": 27.88733469727891
+    },
+    "128K": {
+     "n": 0
+    }
+   },
+   "gate_fpm_mape_le_10": true,
+   "unpredicted": [],
+   "missing_measurement": [],
+   "consumer_diagnostics": {
+    "source": "aic",
+    "readiness": "ready",
+    "retained_observations": 0,
+    "correction_ready_buckets": 0,
+    "last_warning": null,
+    "provenance": {
+     "config": {
+      "model": "zai-org/GLM-5.3-Flash",
+      "system": "gb300",
+      "backend": "vllm",
+      "worker_type": "aggregated",
+      "backend_version": "0.31.0",
+      "fpm_profile": null,
+      "tp": 2,
+      "pp": 1,
+      "attention_dp": 1,
+      "dcp": null,
+      "moe_tp_size": 2,
+      "moe_ep_size": 1,
+      "gemm_quant_mode": null,
+      "moe_quant_mode": null,
+      "fmha_quant_mode": null,
+      "fpm_fmha_quant_mode": "fp8",
+      "kvcache_quant_mode": "fp8",
+      "comm_quant_mode": null,
+      "nextn": 0,
+      "speculation": null,
+      "kv_block_size": null,
+      "decoder_replay": false,
+      "estimation_mode": "fpm_interpolation",
+      "database_mode": "SILICON",
+      "transfer_policy": [
+       "xshape",
+       "xquant",
+       "xprofile",
+       "xop"
+      ],
+      "systems_paths": [
+       "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems"
+      ],
+      "fallback_policy": "deny",
+      "estimator_config": {
+       "features": {
+        "attention_kv_weight": 1.0,
+        "prefill_attention_pair_weight": 1.0,
+        "ffn_token_weight": 1.0
+       },
+       "op_level": {},
+       "fpm_interpolation": {
+        "method": "sol"
+       },
+       "fpm_regression": {
+        "sampling": {
+         "bins_per_axis": [
+          4,
+          4
+         ],
+         "max_observations": 64
+        },
+        "min_observations": 5,
+        "fit": {
+         "kind": "standardized_nnls",
+         "singular_ridge_scale": 1e-09,
+         "rebuild_interval": null
+        }
+       },
+       "correction": {
+        "enabled": true,
+        "feature_space": "legacy_workload",
+        "sampling": {
+         "bins_per_axis": [
+          4,
+          4
+         ],
+         "max_observations": 64
+        },
+        "min_observations": 5,
+        "factor_bounds": {
+         "min": 0.5,
+         "max": 2.0
+        },
+        "max_num_tokens": 8192,
+        "max_batch_size": 512,
+        "max_kv_tokens": 2000000
+       }
+      },
+      "attention_backend": null,
+      "moe_kernel_source": null,
+      "moe_backend": null,
+      "enable_eplb": false,
+      "wideep_num_slots": null,
+      "enable_shared_layer": false,
+      "strict_provenance": true
+     },
+     "selected_systems_root": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems",
+     "requested_estimation_mode": "fpm_interpolation",
+     "selected_estimation_mode": "fpm_interpolation",
+     "selection_failures": []
+    }
+   },
+   "points": [
+    {
+     "benchmark_id": 1,
+     "group": "below1K",
+     "geometry": [
+      1,
+      32,
+      120
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 32.864431999769295,
+     "clean_truth_ms": 35.845,
+     "prediction_ms": 33.2944740075618
+    },
+    {
+     "benchmark_id": 2,
+     "group": "below1K",
+     "geometry": [
+      1,
+      32,
+      124
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 32.42249600134528,
+     "clean_truth_ms": 37.205,
+     "prediction_ms": 33.53781858459115
+    },
+    {
+     "benchmark_id": 3,
+     "group": "below1K",
+     "geometry": [
+      1,
+      32,
+      132
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 32.72798399939347,
+     "clean_truth_ms": 36.075,
+     "prediction_ms": 33.343929797410965
+    },
+    {
+     "benchmark_id": 4,
+     "group": "below1K",
+     "geometry": [
+      1,
+      32,
+      132
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      3
+     ],
+     "measured_ms": 32.72798399939347,
+     "clean_truth_ms": 36.075,
+     "prediction_ms": 33.343929797410965
+    },
+    {
+     "benchmark_id": 5,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      1504
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.95807999893441,
+     "clean_truth_ms": 36.239999999999995,
+     "prediction_ms": 33.802573479458836
+    },
+    {
+     "benchmark_id": 6,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      3040
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.192704000815866,
+     "clean_truth_ms": 38.165,
+     "prediction_ms": 34.85935595090906
+    },
+    {
+     "benchmark_id": 7,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      4352
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 32.96992000014143,
+     "clean_truth_ms": 37.230000000000004,
+     "prediction_ms": 34.981629345566034
+    },
+    {
+     "benchmark_id": 8,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      4352
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      7
+     ],
+     "measured_ms": 32.96992000014143,
+     "clean_truth_ms": 37.230000000000004,
+     "prediction_ms": 34.981629345566034
+    },
+    {
+     "benchmark_id": 9,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      4356
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 34.19929599931493,
+     "clean_truth_ms": 38.535,
+     "prediction_ms": 37.141585955396295
+    },
+    {
+     "benchmark_id": 10,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      4356
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      9
+     ],
+     "measured_ms": 34.19929599931493,
+     "clean_truth_ms": 38.535,
+     "prediction_ms": 37.141585955396295
+    },
+    {
+     "benchmark_id": 11,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      6112
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.41255999950954,
+     "clean_truth_ms": 38.46,
+     "prediction_ms": 36.63952829181415
+    },
+    {
+     "benchmark_id": 12,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      12256
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 35.149392000676016,
+     "clean_truth_ms": 39.155,
+     "prediction_ms": 37.83281432902831
+    },
+    {
+     "benchmark_id": 13,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      32,
+      24544
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.35031999965577,
+     "clean_truth_ms": 39.54,
+     "prediction_ms": 39.34200365994573
+    },
+    {
+     "benchmark_id": 14,
+     "group": "64K",
+     "geometry": [
+      1,
+      32,
+      49120
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 39.032831999975315,
+     "clean_truth_ms": 42.17,
+     "prediction_ms": 42.21602542272318
+    },
+    {
+     "benchmark_id": 15,
+     "group": "64K",
+     "geometry": [
+      1,
+      32,
+      98272
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 43.84361600023112,
+     "clean_truth_ms": 47.215,
+     "prediction_ms": 46.94254028611216
+    },
+    {
+     "benchmark_id": 16,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      256,
+      1280
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.63742399981129,
+     "clean_truth_ms": 34.975,
+     "prediction_ms": 35.28087925568364
+    },
+    {
+     "benchmark_id": 17,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      256,
+      2816
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.68116799922427,
+     "clean_truth_ms": 37.31,
+     "prediction_ms": 37.24957151316233
+    },
+    {
+     "benchmark_id": 18,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      256,
+      5888
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.9986560004254,
+     "clean_truth_ms": 37.745000000000005,
+     "prediction_ms": 37.36151210818824
+    },
+    {
+     "benchmark_id": 19,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      256,
+      12032
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 35.71108799951617,
+     "clean_truth_ms": 39.19,
+     "prediction_ms": 37.31045142206131
+    },
+    {
+     "benchmark_id": 20,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      256,
+      24320
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.97617600028025,
+     "clean_truth_ms": 39.245,
+     "prediction_ms": 38.436379941192165
+    },
+    {
+     "benchmark_id": 21,
+     "group": "64K",
+     "geometry": [
+      1,
+      256,
+      48896
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 39.53259199988679,
+     "clean_truth_ms": 42.115,
+     "prediction_ms": 40.300822271274335
+    },
+    {
+     "benchmark_id": 22,
+     "group": "64K",
+     "geometry": [
+      1,
+      256,
+      98048
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 44.61385600006906,
+     "clean_truth_ms": 46.519999999999996,
+     "prediction_ms": 45.065685721816195
+    },
+    {
+     "benchmark_id": 23,
+     "group": "below1K",
+     "geometry": [
+      1,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 33.35996800069552,
+     "clean_truth_ms": 34.2,
+     "prediction_ms": 35.18076636828482
+    },
+    {
+     "benchmark_id": 24,
+     "group": "below1K",
+     "geometry": [
+      1,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 53.63831999966351,
+     "clean_truth_ms": 53.985,
+     "prediction_ms": 54.76142026440013
+    },
+    {
+     "benchmark_id": 25,
+     "group": "below1K",
+     "geometry": [
+      1,
+      2040,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 71.4698239999052,
+     "clean_truth_ms": 71.50999999999999,
+     "prediction_ms": 71.47132745012641
+    },
+    {
+     "benchmark_id": 26,
+     "group": "below1K",
+     "geometry": [
+      1,
+      2044,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 71.48559999950521,
+     "clean_truth_ms": 71.48,
+     "prediction_ms": 71.47192023694515
+    },
+    {
+     "benchmark_id": 27,
+     "group": "below1K",
+     "geometry": [
+      1,
+      2052,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 77.45361599972966,
+     "clean_truth_ms": 77.31,
+     "prediction_ms": 77.39502098411322
+    },
+    {
+     "benchmark_id": 28,
+     "group": "below1K",
+     "geometry": [
+      1,
+      2052,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      27
+     ],
+     "measured_ms": 77.45361599972966,
+     "clean_truth_ms": 77.31,
+     "prediction_ms": 77.39502098411322
+    },
+    {
+     "benchmark_id": 29,
+     "group": "below1K",
+     "geometry": [
+      1,
+      4352,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 132.21919999978127,
+     "clean_truth_ms": 131.95,
+     "prediction_ms": 132.0983914192766
+    },
+    {
+     "benchmark_id": 30,
+     "group": "below1K",
+     "geometry": [
+      1,
+      4352,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      29
+     ],
+     "measured_ms": 132.21919999978127,
+     "clean_truth_ms": 131.95,
+     "prediction_ms": 132.0983914192766
+    },
+    {
+     "benchmark_id": 31,
+     "group": "below1K",
+     "geometry": [
+      1,
+      4352,
+      0
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      29
+     ],
+     "measured_ms": 132.21919999978127,
+     "clean_truth_ms": 131.95,
+     "prediction_ms": 132.0983914192766
+    },
+    {
+     "benchmark_id": 32,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      64,
+      3008
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.535008000195376,
+     "clean_truth_ms": 35.835,
+     "prediction_ms": 33.40377686493184
+    },
+    {
+     "benchmark_id": 33,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      64,
+      6080
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.544047999588656,
+     "clean_truth_ms": 37.545,
+     "prediction_ms": 35.13205601621454
+    },
+    {
+     "benchmark_id": 34,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      64,
+      12224
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 35.22296000028291,
+     "clean_truth_ms": 38.32,
+     "prediction_ms": 35.914705130910086
+    },
+    {
+     "benchmark_id": 35,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      64,
+      24512
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.480656000094314,
+     "clean_truth_ms": 38.765,
+     "prediction_ms": 37.39180067421582
+    },
+    {
+     "benchmark_id": 36,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      64,
+      49088
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 39.30990400021983,
+     "clean_truth_ms": 42.065,
+     "prediction_ms": 40.27583190496002
+    },
+    {
+     "benchmark_id": 37,
+     "group": "64K",
+     "geometry": [
+      2,
+      64,
+      98240
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 45.54272000041237,
+     "clean_truth_ms": 45.19,
+     "prediction_ms": 45.87484755011972
+    },
+    {
+     "benchmark_id": 38,
+     "group": "64K",
+     "geometry": [
+      2,
+      64,
+      196544
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 54.25787199965271,
+     "clean_truth_ms": 53.945,
+     "prediction_ms": 55.91175434630048
+    },
+    {
+     "benchmark_id": 39,
+     "group": "below1K",
+     "geometry": [
+      2,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 33.33372799988865,
+     "clean_truth_ms": 34.004999999999995,
+     "prediction_ms": 34.44238903466612
+    },
+    {
+     "benchmark_id": 40,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      512,
+      2560
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 40.2295520007101,
+     "clean_truth_ms": 41.465,
+     "prediction_ms": 40.81365978806414
+    },
+    {
+     "benchmark_id": 41,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      512,
+      5632
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 41.27147199869796,
+     "clean_truth_ms": 42.025000000000006,
+     "prediction_ms": 41.43837153727669
+    },
+    {
+     "benchmark_id": 42,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      512,
+      11776
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 41.79161599950021,
+     "clean_truth_ms": 42.455,
+     "prediction_ms": 42.05241169894153
+    },
+    {
+     "benchmark_id": 43,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      512,
+      24064
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 43.05550400113134,
+     "clean_truth_ms": 43.864999999999995,
+     "prediction_ms": 43.38339491227832
+    },
+    {
+     "benchmark_id": 44,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      512,
+      48640
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 44.80670400062081,
+     "clean_truth_ms": 44.845,
+     "prediction_ms": 45.49438767166221
+    },
+    {
+     "benchmark_id": 45,
+     "group": "64K",
+     "geometry": [
+      2,
+      512,
+      97792
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 49.363328000254114,
+     "clean_truth_ms": 48.165,
+     "prediction_ms": 49.59968039396917
+    },
+    {
+     "benchmark_id": 46,
+     "group": "64K",
+     "geometry": [
+      2,
+      512,
+      196096
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 58.88238399984402,
+     "clean_truth_ms": 54.995000000000005,
+     "prediction_ms": 58.389714562390864
+    },
+    {
+     "benchmark_id": 47,
+     "group": "below1K",
+     "geometry": [
+      2,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 52.521616000376525,
+     "clean_truth_ms": 53.2,
+     "prediction_ms": 53.28847165219486
+    },
+    {
+     "benchmark_id": 48,
+     "group": "below1K",
+     "geometry": [
+      2,
+      5120,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 142.04942400101572,
+     "clean_truth_ms": 141.82,
+     "prediction_ms": 142.367670457665
+    },
+    {
+     "benchmark_id": 49,
+     "group": "below1K",
+     "geometry": [
+      4,
+      128,
+      488
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.91870399971231,
+     "clean_truth_ms": 35.825,
+     "prediction_ms": 33.271397201552105
+    },
+    {
+     "benchmark_id": 50,
+     "group": "below1K",
+     "geometry": [
+      4,
+      128,
+      500
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.677375999810465,
+     "clean_truth_ms": 35.59,
+     "prediction_ms": 33.19883245472136
+    },
+    {
+     "benchmark_id": 51,
+     "group": "below1K",
+     "geometry": [
+      4,
+      128,
+      524
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.84438399987266,
+     "clean_truth_ms": 35.69,
+     "prediction_ms": 33.24983469803503
+    },
+    {
+     "benchmark_id": 52,
+     "group": "below1K",
+     "geometry": [
+      4,
+      128,
+      536
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 32.981520000248565,
+     "clean_truth_ms": 35.93,
+     "prediction_ms": 33.19892913258037
+    },
+    {
+     "benchmark_id": 53,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      6016
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 33.2453600003646,
+     "clean_truth_ms": 36.055,
+     "prediction_ms": 34.426333871769934
+    },
+    {
+     "benchmark_id": 54,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      12160
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 35.61355200054095,
+     "clean_truth_ms": 39.44499999999999,
+     "prediction_ms": 37.817082320440264
+    },
+    {
+     "benchmark_id": 55,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      17408
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 34.97215999959735,
+     "clean_truth_ms": 37.349999999999994,
+     "prediction_ms": 37.25328389555216
+    },
+    {
+     "benchmark_id": 56,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      17408
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      55
+     ],
+     "measured_ms": 34.97215999959735,
+     "clean_truth_ms": 37.349999999999994,
+     "prediction_ms": 37.25328389555216
+    },
+    {
+     "benchmark_id": 57,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      17420
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.25297599955957,
+     "clean_truth_ms": 38.865,
+     "prediction_ms": 38.300224673856896
+    },
+    {
+     "benchmark_id": 58,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      17432
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.29819199977646,
+     "clean_truth_ms": 38.989999999999995,
+     "prediction_ms": 38.39082811197842
+    },
+    {
+     "benchmark_id": 59,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      24448
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 36.91115199944761,
+     "clean_truth_ms": 39.575,
+     "prediction_ms": 38.80366218608633
+    },
+    {
+     "benchmark_id": 60,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      49024
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 41.17227200003981,
+     "clean_truth_ms": 41.15,
+     "prediction_ms": 42.50102802554212
+    },
+    {
+     "benchmark_id": 61,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      128,
+      98176
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 46.44291200020234,
+     "clean_truth_ms": 45.915,
+     "prediction_ms": 48.209986995521874
+    },
+    {
+     "benchmark_id": 62,
+     "group": "64K",
+     "geometry": [
+      4,
+      128,
+      196480
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 56.5844160009874,
+     "clean_truth_ms": 54.85,
+     "prediction_ms": 60.27253414941474
+    },
+    {
+     "benchmark_id": 63,
+     "group": "64K",
+     "geometry": [
+      4,
+      128,
+      393088
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 77.93427199976577,
+     "clean_truth_ms": 69.595,
+     "prediction_ms": 80.82666192369682
+    },
+    {
+     "benchmark_id": 64,
+     "group": "below1K",
+     "geometry": [
+      4,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 34.56964799988782,
+     "clean_truth_ms": 34.980000000000004,
+     "prediction_ms": 35.39805579930544
+    },
+    {
+     "benchmark_id": 65,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      1024,
+      5120
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 52.19129599936423,
+     "clean_truth_ms": 53.175,
+     "prediction_ms": 52.93813458067103
+    },
+    {
+     "benchmark_id": 66,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      1024,
+      11264
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 52.93449599957967,
+     "clean_truth_ms": 53.69,
+     "prediction_ms": 53.57648681648988
+    },
+    {
+     "benchmark_id": 67,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      1024,
+      23552
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 53.73385600069014,
+     "clean_truth_ms": 54.375,
+     "prediction_ms": 54.6200790803316
+    },
+    {
+     "benchmark_id": 68,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      1024,
+      48128
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 55.95572800029913,
+     "clean_truth_ms": 56.04,
+     "prediction_ms": 57.34510338248982
+    },
+    {
+     "benchmark_id": 69,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      1024,
+      97280
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 60.31144000007771,
+     "clean_truth_ms": 59.435,
+     "prediction_ms": 61.88885966184564
+    },
+    {
+     "benchmark_id": 70,
+     "group": "64K",
+     "geometry": [
+      4,
+      1024,
+      195584
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 69.20251199971972,
+     "clean_truth_ms": 65.78,
+     "prediction_ms": 70.41280623036202
+    },
+    {
+     "benchmark_id": 71,
+     "group": "64K",
+     "geometry": [
+      4,
+      1024,
+      392192
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 88.23470400056976,
+     "clean_truth_ms": 78.13,
+     "prediction_ms": 88.12962579632627
+    },
+    {
+     "benchmark_id": 72,
+     "group": "below1K",
+     "geometry": [
+      4,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 52.614768000239565,
+     "clean_truth_ms": 53.269999999999996,
+     "prediction_ms": 54.69404202811221
+    },
+    {
+     "benchmark_id": 73,
+     "group": "below1K",
+     "geometry": [
+      4,
+      2024,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 69.3267040005594,
+     "clean_truth_ms": 69.27000000000001,
+     "prediction_ms": 69.42979875020683
+    },
+    {
+     "benchmark_id": 74,
+     "group": "below1K",
+     "geometry": [
+      4,
+      2036,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 69.23193599959632,
+     "clean_truth_ms": 69.35499999999999,
+     "prediction_ms": 69.37228702008724
+    },
+    {
+     "benchmark_id": 75,
+     "group": "below1K",
+     "geometry": [
+      4,
+      2060,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 74.14153599984274,
+     "clean_truth_ms": 74.05000000000001,
+     "prediction_ms": 74.28737042937428
+    },
+    {
+     "benchmark_id": 76,
+     "group": "below1K",
+     "geometry": [
+      4,
+      2072,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 74.19625600050495,
+     "clean_truth_ms": 74.05,
+     "prediction_ms": 74.3513946654275
+    },
+    {
+     "benchmark_id": 77,
+     "group": "below1K",
+     "geometry": [
+      4,
+      5120,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 135.92417600011686,
+     "clean_truth_ms": 135.79500000000002,
+     "prediction_ms": 137.19993026461452
+    },
+    {
+     "benchmark_id": 78,
+     "group": "below1K",
+     "geometry": [
+      4,
+      8168,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 200.60747200113838,
+     "clean_truth_ms": 199.46499999999997,
+     "prediction_ms": 200.07629820611328
+    },
+    {
+     "benchmark_id": 79,
+     "group": "below1K",
+     "geometry": [
+      4,
+      8180,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 200.1105439994717,
+     "clean_truth_ms": 199.70999999999998,
+     "prediction_ms": 200.20506682340056
+    },
+    {
+     "benchmark_id": 80,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      256,
+      12032
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 39.566752000609995,
+     "clean_truth_ms": 39.325,
+     "prediction_ms": 39.75804486668477
+    },
+    {
+     "benchmark_id": 81,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      256,
+      24320
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 40.95929599952797,
+     "clean_truth_ms": 40.695,
+     "prediction_ms": 40.69829367498778
+    },
+    {
+     "benchmark_id": 82,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      256,
+      48896
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 42.906415999823366,
+     "clean_truth_ms": 41.894999999999996,
+     "prediction_ms": 43.37946315122806
+    },
+    {
+     "benchmark_id": 83,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      256,
+      98048
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 47.3721119997208,
+     "clean_truth_ms": 44.675,
+     "prediction_ms": 48.43264938657704
+    },
+    {
+     "benchmark_id": 84,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      256,
+      196352
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 56.50315199909528,
+     "clean_truth_ms": 53.315,
+     "prediction_ms": 59.853974616935005
+    },
+    {
+     "benchmark_id": 85,
+     "group": "64K",
+     "geometry": [
+      8,
+      256,
+      392960
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 80.01966400024685,
+     "clean_truth_ms": 71.32,
+     "prediction_ms": 82.11855011492916
+    },
+    {
+     "benchmark_id": 86,
+     "group": "64K",
+     "geometry": [
+      8,
+      256,
+      786176
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 123.2092800000828,
+     "clean_truth_ms": 102.16,
+     "prediction_ms": 121.79760983597761
+    },
+    {
+     "benchmark_id": 87,
+     "group": "below1K",
+     "geometry": [
+      8,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 35.904223999750684,
+     "clean_truth_ms": 36.235,
+     "prediction_ms": 36.750045022927225
+    },
+    {
+     "benchmark_id": 88,
+     "group": "below1K",
+     "geometry": [
+      8,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 53.45907200080546,
+     "clean_truth_ms": 53.865,
+     "prediction_ms": 54.67575101647526
+    },
+    {
+     "benchmark_id": 89,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      2048,
+      10240
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 81.58022400039044,
+     "clean_truth_ms": 81.49000000000001,
+     "prediction_ms": 81.69720262511426
+    },
+    {
+     "benchmark_id": 90,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      2048,
+      22528
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 82.27758400062157,
+     "clean_truth_ms": 81.87,
+     "prediction_ms": 82.54352466085395
+    },
+    {
+     "benchmark_id": 91,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      2048,
+      47104
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 84.55299199977162,
+     "clean_truth_ms": 83.325,
+     "prediction_ms": 84.89530935364604
+    },
+    {
+     "benchmark_id": 92,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      2048,
+      96256
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 88.91923199917073,
+     "clean_truth_ms": 87.05,
+     "prediction_ms": 89.76613826862133
+    },
+    {
+     "benchmark_id": 93,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      2048,
+      194560
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 97.50755200002459,
+     "clean_truth_ms": 92.60499999999999,
+     "prediction_ms": 99.06141119265938
+    },
+    {
+     "benchmark_id": 94,
+     "group": "64K",
+     "geometry": [
+      8,
+      2048,
+      391168
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 115.64889599958406,
+     "clean_truth_ms": 104.92500000000001,
+     "prediction_ms": 116.19830585704905
+    },
+    {
+     "benchmark_id": 95,
+     "group": "64K",
+     "geometry": [
+      8,
+      2048,
+      784384
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 151.10048000042298,
+     "clean_truth_ms": 128.425,
+     "prediction_ms": 150.16845723020703
+    },
+    {
+     "benchmark_id": 96,
+     "group": "below1K",
+     "geometry": [
+      8,
+      5120,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 134.7815039989655,
+     "clean_truth_ms": 134.565,
+     "prediction_ms": 132.75263051036745
+    },
+    {
+     "benchmark_id": 97,
+     "group": "below1K",
+     "geometry": [
+      16,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 37.71931200026302,
+     "clean_truth_ms": 37.955,
+     "prediction_ms": 37.33267914503813
+    },
+    {
+     "benchmark_id": 98,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      512,
+      24064
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 56.465552000190655,
+     "clean_truth_ms": 55.86,
+     "prediction_ms": 56.82748044387043
+    },
+    {
+     "benchmark_id": 99,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      512,
+      48640
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 59.05366400020284,
+     "clean_truth_ms": 58.215,
+     "prediction_ms": 59.01005791940448
+    },
+    {
+     "benchmark_id": 100,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      512,
+      97792
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 63.46385599954374,
+     "clean_truth_ms": 60.635,
+     "prediction_ms": 64.28765002472545
+    },
+    {
+     "benchmark_id": 101,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      512,
+      196096
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 71.75206399915623,
+     "clean_truth_ms": 66.815,
+     "prediction_ms": 73.90682206131743
+    },
+    {
+     "benchmark_id": 102,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      512,
+      392704
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 90.74780799983273,
+     "clean_truth_ms": 78.305,
+     "prediction_ms": 93.27365034657673
+    },
+    {
+     "benchmark_id": 103,
+     "group": "64K",
+     "geometry": [
+      16,
+      512,
+      785920
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 126.48991999958525,
+     "clean_truth_ms": 104.32,
+     "prediction_ms": 133.41206755620135
+    },
+    {
+     "benchmark_id": 104,
+     "group": "64K",
+     "geometry": [
+      16,
+      512,
+      1572352
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 221.17051199984417,
+     "clean_truth_ms": 174.695,
+     "prediction_ms": 211.19879907331986
+    },
+    {
+     "benchmark_id": 105,
+     "group": "below1K",
+     "geometry": [
+      16,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 55.94135999945138,
+     "clean_truth_ms": 55.72,
+     "prediction_ms": 56.55758990906179
+    },
+    {
+     "benchmark_id": 106,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      4096,
+      20480
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 141.53886399981275,
+     "clean_truth_ms": 140.725,
+     "prediction_ms": 141.0855708636015
+    },
+    {
+     "benchmark_id": 107,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      4096,
+      45056
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 143.14238400038448,
+     "clean_truth_ms": 141.7,
+     "prediction_ms": 143.16601770707342
+    },
+    {
+     "benchmark_id": 108,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      4096,
+      94208
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 147.5970560004498,
+     "clean_truth_ms": 144.96,
+     "prediction_ms": 148.2174855342639
+    },
+    {
+     "benchmark_id": 109,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      4096,
+      192512
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 157.16728000006697,
+     "clean_truth_ms": 151.995,
+     "prediction_ms": 158.24188155720265
+    },
+    {
+     "benchmark_id": 110,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      4096,
+      389120
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 175.75867200048378,
+     "clean_truth_ms": 164.115,
+     "prediction_ms": 178.57954122916885
+    },
+    {
+     "benchmark_id": 111,
+     "group": "64K",
+     "geometry": [
+      16,
+      4096,
+      782336
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 212.8941599994505,
+     "clean_truth_ms": 188.06,
+     "prediction_ms": 209.77554137727034
+    },
+    {
+     "benchmark_id": 112,
+     "group": "64K",
+     "geometry": [
+      16,
+      4096,
+      1568768
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 292.3060799994346,
+     "clean_truth_ms": 244.63,
+     "prediction_ms": 283.5541799976211
+    },
+    {
+     "benchmark_id": 113,
+     "group": "below1K",
+     "geometry": [
+      16,
+      5120,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 136.0807040000509,
+     "clean_truth_ms": 135.88,
+     "prediction_ms": 133.8578115683049
+    },
+    {
+     "benchmark_id": 114,
+     "group": "below1K",
+     "geometry": [
+      32,
+      320,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 42.07958400093048,
+     "clean_truth_ms": 41.525,
+     "prediction_ms": 41.17002417333424
+    },
+    {
+     "benchmark_id": 115,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1024,
+      3904
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 84.15433599930111,
+     "clean_truth_ms": 83.625,
+     "prediction_ms": 84.1665958728521
+    },
+    {
+     "benchmark_id": 116,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1024,
+      4000
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 84.09257600033015,
+     "clean_truth_ms": 83.46000000000001,
+     "prediction_ms": 84.22632481441372
+    },
+    {
+     "benchmark_id": 117,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1024,
+      4192
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 84.14172799984954,
+     "clean_truth_ms": 83.71000000000001,
+     "prediction_ms": 84.2256129242378
+    },
+    {
+     "benchmark_id": 118,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1024,
+      4288
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 84.12475199929759,
+     "clean_truth_ms": 83.51,
+     "prediction_ms": 84.19435440316245
+    },
+    {
+     "benchmark_id": 119,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      48128
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 89.04095999878336,
+     "clean_truth_ms": 87.83500000000001,
+     "prediction_ms": 90.00610743669792
+    },
+    {
+     "benchmark_id": 120,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      97280
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 94.84271999917837,
+     "clean_truth_ms": 92.375,
+     "prediction_ms": 94.89729291211748
+    },
+    {
+     "benchmark_id": 121,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      139264
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": null,
+     "measured_ms": 67.78243200005818,
+     "clean_truth_ms": 66.775,
+     "prediction_ms": 68.14028625376523
+    },
+    {
+     "benchmark_id": 122,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      139264
+     ],
+     "in_calibration_geometry": true,
+     "duplicate_of": [
+      "prefill",
+      121
+     ],
+     "measured_ms": 67.78243200005818,
+     "clean_truth_ms": 66.775,
+     "prediction_ms": 68.14028625376523
+    },
+    {
+     "benchmark_id": 123,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      139360
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 90.66377599992848,
+     "clean_truth_ms": 88.41999999999999,
+     "prediction_ms": 86.12707536889825
+    },
+    {
+     "benchmark_id": 124,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      139456
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 98.9880320003067,
+     "clean_truth_ms": 96.42,
+     "prediction_ms": 99.17318772071928
+    },
+    {
+     "benchmark_id": 125,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      195584
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 104.02161599904503,
+     "clean_truth_ms": 100.03,
+     "prediction_ms": 102.36665385663528
+    },
+    {
+     "benchmark_id": 126,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      392192
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 122.36718400072277,
+     "clean_truth_ms": 113.015,
+     "prediction_ms": 125.23456919037612
+    },
+    {
+     "benchmark_id": 127,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      1024,
+      785408
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 158.90667199983,
+     "clean_truth_ms": 139.54,
+     "prediction_ms": 163.7869509118768
+    },
+    {
+     "benchmark_id": 128,
+     "group": "64K",
+     "geometry": [
+      32,
+      1024,
+      1571840
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 234.46731200056092,
+     "clean_truth_ms": 192.67,
+     "prediction_ms": 244.2153769668615
+    },
+    {
+     "benchmark_id": 129,
+     "group": "64K",
+     "geometry": [
+      32,
+      1024,
+      3144704
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 426.31950399936613,
+     "clean_truth_ms": 348.04999999999995,
+     "prediction_ms": 411.87239635999083
+    },
+    {
+     "benchmark_id": 130,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1280,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 59.69046399968647,
+     "clean_truth_ms": 59.885000000000005,
+     "prediction_ms": 60.290714958682656
+    },
+    {
+     "benchmark_id": 131,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1856,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 74.69547199980298,
+     "clean_truth_ms": 74.57,
+     "prediction_ms": 72.96239410061389
+    },
+    {
+     "benchmark_id": 132,
+     "group": "below1K",
+     "geometry": [
+      32,
+      1952,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 75.01311999931204,
+     "clean_truth_ms": 75.205,
+     "prediction_ms": 75.24362986441702
+    },
+    {
+     "benchmark_id": 133,
+     "group": "below1K",
+     "geometry": [
+      32,
+      2144,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 79.58508800038544,
+     "clean_truth_ms": 79.655,
+     "prediction_ms": 79.83721315395087
+    },
+    {
+     "benchmark_id": 134,
+     "group": "below1K",
+     "geometry": [
+      32,
+      2240,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 80.37979199980327,
+     "clean_truth_ms": 80.745,
+     "prediction_ms": 80.39731020107865
+    },
+    {
+     "benchmark_id": 135,
+     "group": "below1K",
+     "geometry": [
+      32,
+      5120,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 139.09131199943658,
+     "clean_truth_ms": 138.595,
+     "prediction_ms": 139.47445119265467
+    },
+    {
+     "benchmark_id": 136,
+     "group": "below1K",
+     "geometry": [
+      32,
+      8000,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 199.0996800004723,
+     "clean_truth_ms": 198.435,
+     "prediction_ms": 198.7585126189515
+    },
+    {
+     "benchmark_id": 137,
+     "group": "below1K",
+     "geometry": [
+      32,
+      8096,
+      0
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 199.30636800017965,
+     "clean_truth_ms": 198.625,
+     "prediction_ms": 199.13160963915288
+    },
+    {
+     "benchmark_id": 138,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      8192,
+      40960
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 253.56372799979,
+     "clean_truth_ms": 252.155,
+     "prediction_ms": 252.64324456754977
+    },
+    {
+     "benchmark_id": 139,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      8192,
+      90112
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 258.2168319995617,
+     "clean_truth_ms": 255.025,
+     "prediction_ms": 257.7052702831491
+    },
+    {
+     "benchmark_id": 140,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      8192,
+      188416
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 267.1053120002398,
+     "clean_truth_ms": 263.02,
+     "prediction_ms": 268.2944634272441
+    },
+    {
+     "benchmark_id": 141,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      8192,
+      385024
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 286.1743200001001,
+     "clean_truth_ms": 276.155,
+     "prediction_ms": 288.81078411321596
+    },
+    {
+     "benchmark_id": 142,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      8192,
+      778240
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 323.591999999735,
+     "clean_truth_ms": 302.46000000000004,
+     "prediction_ms": 328.1556481964067
+    },
+    {
+     "benchmark_id": 143,
+     "group": "64K",
+     "geometry": [
+      32,
+      8192,
+      1564672
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 402.7834879989314,
+     "clean_truth_ms": 357.875,
+     "prediction_ms": 400.51547408845107
+    },
+    {
+     "benchmark_id": 144,
+     "group": "64K",
+     "geometry": [
+      32,
+      8192,
+      3137536
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 568.9289120000467,
+     "clean_truth_ms": 475.16999999999996,
+     "prediction_ms": 558.8953836401704
+    }
+   ]
+  },
+  "decode": {
+   "fpm_holdout": {
+    "ALL": {
+     "n": 77,
+     "mape_pct": 1.9874130824585161,
+     "wape_pct": 2.0350572589541702,
+     "p95_ape_pct": 4.987800766521908,
+     "max_ape_pct": 6.819875728235685
+    },
+    "below1K": {
+     "n": 12,
+     "mape_pct": 1.2881790292979276,
+     "wape_pct": 1.4066777566294018,
+     "p95_ape_pct": 2.4506534919653746,
+     "max_ape_pct": 2.4506534919653746
+    },
+    "1K-32K": {
+     "n": 53,
+     "mape_pct": 2.0971644920860464,
+     "wape_pct": 2.1388089441537805,
+     "p95_ape_pct": 5.194200527373521,
+     "max_ape_pct": 6.819875728235685
+    },
+    "64K": {
+     "n": 12,
+     "mape_pct": 2.2019117430975137,
+     "wape_pct": 2.22792737474889,
+     "p95_ape_pct": 4.987800766521908,
+     "max_ape_pct": 4.987800766521908
+    },
+    "128K": {
+     "n": 0
+    }
+   },
+   "fpm_holdout_independent_geometry": {
+    "n": 77,
+    "mape_pct": 1.9874130824585161,
+    "wape_pct": 2.0350572589541702,
+    "p95_ape_pct": 4.987800766521908,
+    "max_ape_pct": 6.819875728235685
+   },
+   "clean_truth": {
+    "ALL": {
+     "n": 77,
+     "mape_pct": 3.9129685220004844,
+     "wape_pct": 4.065368156279641,
+     "p95_ape_pct": 9.381067353214473,
+     "max_ape_pct": 10.760697090655908
+    },
+    "below1K": {
+     "n": 12,
+     "mape_pct": 4.781841666933896,
+     "wape_pct": 5.011972583816378,
+     "p95_ape_pct": 8.110543166059319,
+     "max_ape_pct": 8.110543166059319
+    },
+    "1K-32K": {
+     "n": 53,
+     "mape_pct": 3.613908705242123,
+     "wape_pct": 3.738661110960812,
+     "p95_ape_pct": 9.381067353214473,
+     "max_ape_pct": 9.96754440753373
+    },
+    "64K": {
+     "n": 12,
+     "mape_pct": 4.364942901083169,
+     "wape_pct": 4.563998188626693,
+     "p95_ape_pct": 10.760697090655908,
+     "max_ape_pct": 10.760697090655908
+    },
+    "128K": {
+     "n": 0
+    }
+   },
+   "gate_fpm_mape_le_10": true,
+   "unpredicted": [],
+   "missing_measurement": [],
+   "consumer_diagnostics": {
+    "source": "aic",
+    "readiness": "ready",
+    "retained_observations": 0,
+    "correction_ready_buckets": 0,
+    "last_warning": null,
+    "provenance": {
+     "config": {
+      "model": "zai-org/GLM-5.3-Flash",
+      "system": "gb300",
+      "backend": "vllm",
+      "worker_type": "aggregated",
+      "backend_version": "0.31.0",
+      "fpm_profile": null,
+      "tp": 2,
+      "pp": 1,
+      "attention_dp": 1,
+      "dcp": null,
+      "moe_tp_size": 2,
+      "moe_ep_size": 1,
+      "gemm_quant_mode": null,
+      "moe_quant_mode": null,
+      "fmha_quant_mode": null,
+      "fpm_fmha_quant_mode": "fp8",
+      "kvcache_quant_mode": "fp8",
+      "comm_quant_mode": null,
+      "nextn": 0,
+      "speculation": null,
+      "kv_block_size": null,
+      "decoder_replay": false,
+      "estimation_mode": "fpm_interpolation",
+      "database_mode": "SILICON",
+      "transfer_policy": [
+       "xshape",
+       "xquant",
+       "xprofile",
+       "xop"
+      ],
+      "systems_paths": [
+       "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems"
+      ],
+      "fallback_policy": "deny",
+      "estimator_config": {
+       "features": {
+        "attention_kv_weight": 1.0,
+        "prefill_attention_pair_weight": 1.0,
+        "ffn_token_weight": 1.0
+       },
+       "op_level": {},
+       "fpm_interpolation": {
+        "method": "sol"
+       },
+       "fpm_regression": {
+        "sampling": {
+         "bins_per_axis": [
+          4,
+          4
+         ],
+         "max_observations": 64
+        },
+        "min_observations": 5,
+        "fit": {
+         "kind": "standardized_nnls",
+         "singular_ridge_scale": 1e-09,
+         "rebuild_interval": null
+        }
+       },
+       "correction": {
+        "enabled": true,
+        "feature_space": "legacy_workload",
+        "sampling": {
+         "bins_per_axis": [
+          4,
+          4
+         ],
+         "max_observations": 64
+        },
+        "min_observations": 5,
+        "factor_bounds": {
+         "min": 0.5,
+         "max": 2.0
+        },
+        "max_num_tokens": 8192,
+        "max_batch_size": 512,
+        "max_kv_tokens": 2000000
+       }
+      },
+      "attention_backend": null,
+      "moe_kernel_source": null,
+      "moe_backend": null,
+      "enable_eplb": false,
+      "wideep_num_slots": null,
+      "enable_shared_layer": false,
+      "strict_provenance": true
+     },
+     "selected_systems_root": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems",
+     "requested_estimation_mode": "fpm_interpolation",
+     "selected_estimation_mode": "fpm_interpolation",
+     "selection_failures": []
+    }
+   },
+   "points": [
+    {
+     "benchmark_id": 1,
+     "group": "below1K",
+     "geometry": [
+      1,
+      0,
+      122
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 7.923786004539579,
+     "clean_truth_ms": 7.65,
+     "prediction_ms": 8.085021593918404
+    },
+    {
+     "benchmark_id": 2,
+     "group": "below1K",
+     "geometry": [
+      1,
+      0,
+      125
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.015306491870433,
+     "clean_truth_ms": 7.725,
+     "prediction_ms": 8.025253308005631
+    },
+    {
+     "benchmark_id": 3,
+     "group": "below1K",
+     "geometry": [
+      1,
+      0,
+      131
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.034922007936984,
+     "clean_truth_ms": 7.795,
+     "prediction_ms": 8.027926203794777
+    },
+    {
+     "benchmark_id": 4,
+     "group": "below1K",
+     "geometry": [
+      1,
+      0,
+      134
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 7.951962004881352,
+     "clean_truth_ms": 7.675,
+     "prediction_ms": 8.079510065726936
+    },
+    {
+     "benchmark_id": 5,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      1535
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.089099021162838,
+     "clean_truth_ms": 7.8149999999999995,
+     "prediction_ms": 8.158862008713186
+    },
+    {
+     "benchmark_id": 6,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      3071
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.051082957535982,
+     "clean_truth_ms": 7.83,
+     "prediction_ms": 8.133855289580293
+    },
+    {
+     "benchmark_id": 7,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      4346
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 7.9796104691922665,
+     "clean_truth_ms": 7.755,
+     "prediction_ms": 8.12538480386138
+    },
+    {
+     "benchmark_id": 8,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      4349
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.09277850203216,
+     "clean_truth_ms": 7.83,
+     "prediction_ms": 8.068533497862518
+    },
+    {
+     "benchmark_id": 9,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      4355
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.085674955509603,
+     "clean_truth_ms": 7.82,
+     "prediction_ms": 8.039205335080624
+    },
+    {
+     "benchmark_id": 10,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      4358
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.012234000489116,
+     "clean_truth_ms": 7.74,
+     "prediction_ms": 8.094549993984401
+    },
+    {
+     "benchmark_id": 11,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      6143
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.135771029628813,
+     "clean_truth_ms": 7.84,
+     "prediction_ms": 8.069473724886697
+    },
+    {
+     "benchmark_id": 12,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      12287
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.093931013718247,
+     "clean_truth_ms": 7.88,
+     "prediction_ms": 8.1560859689489
+    },
+    {
+     "benchmark_id": 13,
+     "group": "1K-32K",
+     "geometry": [
+      1,
+      0,
+      24575
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.11095506651327,
+     "clean_truth_ms": 7.89,
+     "prediction_ms": 8.198406314477324
+    },
+    {
+     "benchmark_id": 14,
+     "group": "64K",
+     "geometry": [
+      1,
+      0,
+      49151
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.145642990712076,
+     "clean_truth_ms": 7.88,
+     "prediction_ms": 8.214134257286787
+    },
+    {
+     "benchmark_id": 15,
+     "group": "64K",
+     "geometry": [
+      1,
+      0,
+      98303
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.205354970414191,
+     "clean_truth_ms": 7.99,
+     "prediction_ms": 8.256758679635823
+    },
+    {
+     "benchmark_id": 16,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      0,
+      3070
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.117567038629204,
+     "clean_truth_ms": 8.99,
+     "prediction_ms": 9.164171642623842
+    },
+    {
+     "benchmark_id": 17,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      0,
+      6142
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.257885976694524,
+     "clean_truth_ms": 8.92,
+     "prediction_ms": 9.329220017324046
+    },
+    {
+     "benchmark_id": 18,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      0,
+      12286
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 8.915213518776,
+     "clean_truth_ms": 8.91,
+     "prediction_ms": 9.270884213037789
+    },
+    {
+     "benchmark_id": 19,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      0,
+      24574
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.02851007413119,
+     "clean_truth_ms": 8.985,
+     "prediction_ms": 9.293700219132006
+    },
+    {
+     "benchmark_id": 20,
+     "group": "1K-32K",
+     "geometry": [
+      2,
+      0,
+      49150
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.213855024427176,
+     "clean_truth_ms": 8.99,
+     "prediction_ms": 9.30130819324404
+    },
+    {
+     "benchmark_id": 21,
+     "group": "64K",
+     "geometry": [
+      2,
+      0,
+      98302
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.13769454928115,
+     "clean_truth_ms": 8.934999999999999,
+     "prediction_ms": 9.262044099159539
+    },
+    {
+     "benchmark_id": 22,
+     "group": "64K",
+     "geometry": [
+      2,
+      0,
+      196606
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.27721499465406,
+     "clean_truth_ms": 9.175,
+     "prediction_ms": 9.37536486890167
+    },
+    {
+     "benchmark_id": 23,
+     "group": "1K-32K",
+     "geometry": [
+      3,
+      0,
+      7677
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.34483453258872,
+     "clean_truth_ms": 10.055,
+     "prediction_ms": 10.255000114973102
+    },
+    {
+     "benchmark_id": 24,
+     "group": "below1K",
+     "geometry": [
+      4,
+      0,
+      488
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.094337980262935,
+     "clean_truth_ms": 9.6,
+     "prediction_ms": 9.978333488106728
+    },
+    {
+     "benchmark_id": 25,
+     "group": "below1K",
+     "geometry": [
+      4,
+      0,
+      500
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.916720970068127,
+     "clean_truth_ms": 9.78,
+     "prediction_ms": 9.977056179195642
+    },
+    {
+     "benchmark_id": 26,
+     "group": "below1K",
+     "geometry": [
+      4,
+      0,
+      524
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.116097459103912,
+     "clean_truth_ms": 9.58,
+     "prediction_ms": 9.954552282579243
+    },
+    {
+     "benchmark_id": 27,
+     "group": "below1K",
+     "geometry": [
+      4,
+      0,
+      536
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.911217028275132,
+     "clean_truth_ms": 9.47,
+     "prediction_ms": 10.030856705270708
+    },
+    {
+     "benchmark_id": 28,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      6140
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.128785506822169,
+     "clean_truth_ms": 9.8,
+     "prediction_ms": 9.86234366428107
+    },
+    {
+     "benchmark_id": 29,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      10236
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.15182601986453,
+     "clean_truth_ms": 9.95,
+     "prediction_ms": 9.960014669998706
+    },
+    {
+     "benchmark_id": 30,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      12284
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.01668901881203,
+     "clean_truth_ms": 9.86,
+     "prediction_ms": 10.014114090447109
+    },
+    {
+     "benchmark_id": 31,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      17384
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.620047989301383,
+     "clean_truth_ms": 9.725,
+     "prediction_ms": 9.807735215872526
+    },
+    {
+     "benchmark_id": 32,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      17396
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.557200013659894,
+     "clean_truth_ms": 9.425,
+     "prediction_ms": 9.76344698574394
+    },
+    {
+     "benchmark_id": 33,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      17420
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.019825538620353,
+     "clean_truth_ms": 9.575,
+     "prediction_ms": 9.650166844949126
+    },
+    {
+     "benchmark_id": 34,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      17432
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.854497038759291,
+     "clean_truth_ms": 9.615,
+     "prediction_ms": 9.65480669401586
+    },
+    {
+     "benchmark_id": 35,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      24572
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.982000978197902,
+     "clean_truth_ms": 9.565000000000001,
+     "prediction_ms": 9.708111841702475
+    },
+    {
+     "benchmark_id": 36,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      49148
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.681072493549436,
+     "clean_truth_ms": 9.91,
+     "prediction_ms": 9.880943456664681
+    },
+    {
+     "benchmark_id": 37,
+     "group": "1K-32K",
+     "geometry": [
+      4,
+      0,
+      98300
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.925889025907964,
+     "clean_truth_ms": 9.285,
+     "prediction_ms": 10.02546411473304
+    },
+    {
+     "benchmark_id": 38,
+     "group": "64K",
+     "geometry": [
+      4,
+      0,
+      196604
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.61739249760285,
+     "clean_truth_ms": 9.754999999999999,
+     "prediction_ms": 10.097088874317706
+    },
+    {
+     "benchmark_id": 39,
+     "group": "64K",
+     "geometry": [
+      4,
+      0,
+      393212
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 9.788129013031721,
+     "clean_truth_ms": 9.64,
+     "prediction_ms": 10.214569396339357
+    },
+    {
+     "benchmark_id": 40,
+     "group": "1K-32K",
+     "geometry": [
+      5,
+      0,
+      12795
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.2592059886083,
+     "clean_truth_ms": 11.32,
+     "prediction_ms": 11.486552214830533
+    },
+    {
+     "benchmark_id": 41,
+     "group": "1K-32K",
+     "geometry": [
+      7,
+      0,
+      17913
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.25098200282082,
+     "clean_truth_ms": 11.27,
+     "prediction_ms": 11.560664322324
+    },
+    {
+     "benchmark_id": 42,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      12280
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.264453933108598,
+     "clean_truth_ms": 11.12,
+     "prediction_ms": 11.112422682344913
+    },
+    {
+     "benchmark_id": 43,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      20472
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.012613016646355,
+     "clean_truth_ms": 11.06,
+     "prediction_ms": 10.662111372674827
+    },
+    {
+     "benchmark_id": 44,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      24568
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.113285436294973,
+     "clean_truth_ms": 10.735,
+     "prediction_ms": 10.707609146204474
+    },
+    {
+     "benchmark_id": 45,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      49144
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.314258572179824,
+     "clean_truth_ms": 10.045,
+     "prediction_ms": 11.017678189091384
+    },
+    {
+     "benchmark_id": 46,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      98296
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.673044016584754,
+     "clean_truth_ms": 10.405000000000001,
+     "prediction_ms": 11.227423325181007
+    },
+    {
+     "benchmark_id": 47,
+     "group": "1K-32K",
+     "geometry": [
+      8,
+      0,
+      196600
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.475941981188953,
+     "clean_truth_ms": 10.51,
+     "prediction_ms": 10.950021794997156
+    },
+    {
+     "benchmark_id": 48,
+     "group": "64K",
+     "geometry": [
+      8,
+      0,
+      393208
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 11.301062011625618,
+     "clean_truth_ms": 10.52,
+     "prediction_ms": 10.784501093439758
+    },
+    {
+     "benchmark_id": 49,
+     "group": "64K",
+     "geometry": [
+      8,
+      0,
+      786424
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 10.777507966849953,
+     "clean_truth_ms": 10.57,
+     "prediction_ms": 10.9067652374506
+    },
+    {
+     "benchmark_id": 50,
+     "group": "1K-32K",
+     "geometry": [
+      9,
+      0,
+      23031
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 12.592458515428007,
+     "clean_truth_ms": 12.489999999999998,
+     "prediction_ms": 12.171099913100917
+    },
+    {
+     "benchmark_id": 51,
+     "group": "1K-32K",
+     "geometry": [
+      15,
+      0,
+      38385
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 14.041199057828635,
+     "clean_truth_ms": 13.445,
+     "prediction_ms": 13.188325092438367
+    },
+    {
+     "benchmark_id": 52,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      24560
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 13.64063803339377,
+     "clean_truth_ms": 13.13,
+     "prediction_ms": 13.37991503532976
+    },
+    {
+     "benchmark_id": 53,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      40944
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 13.407965539954603,
+     "clean_truth_ms": 13.129999999999999,
+     "prediction_ms": 13.21386524488206
+    },
+    {
+     "benchmark_id": 54,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      49136
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 12.783515499904752,
+     "clean_truth_ms": 13.015,
+     "prediction_ms": 12.982333401919572
+    },
+    {
+     "benchmark_id": 55,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      98288
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 12.983563996385783,
+     "clean_truth_ms": 12.885000000000002,
+     "prediction_ms": 12.384309433400631
+    },
+    {
+     "benchmark_id": 56,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      196592
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 13.077212439384311,
+     "clean_truth_ms": 12.065000000000001,
+     "prediction_ms": 12.6984475646168
+    },
+    {
+     "benchmark_id": 57,
+     "group": "1K-32K",
+     "geometry": [
+      16,
+      0,
+      393200
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 12.917404004838318,
+     "clean_truth_ms": 12.08,
+     "prediction_ms": 12.882664450444281
+    },
+    {
+     "benchmark_id": 58,
+     "group": "64K",
+     "geometry": [
+      16,
+      0,
+      786416
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 13.219020969700068,
+     "clean_truth_ms": 12.645,
+     "prediction_ms": 12.996153440326452
+    },
+    {
+     "benchmark_id": 59,
+     "group": "64K",
+     "geometry": [
+      16,
+      0,
+      1572848
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 13.648879015818238,
+     "clean_truth_ms": 12.605,
+     "prediction_ms": 13.449091813527048
+    },
+    {
+     "benchmark_id": 60,
+     "group": "1K-32K",
+     "geometry": [
+      17,
+      0,
+      43503
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 14.196640986483544,
+     "clean_truth_ms": 13.605,
+     "prediction_ms": 13.9523848371169
+    },
+    {
+     "benchmark_id": 61,
+     "group": "1K-32K",
+     "geometry": [
+      31,
+      0,
+      79329
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 16.08311152085662,
+     "clean_truth_ms": 15.375,
+     "prediction_ms": 16.001574239125112
+    },
+    {
+     "benchmark_id": 62,
+     "group": "below1K",
+     "geometry": [
+      32,
+      0,
+      3904
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 17.115482536610216,
+     "clean_truth_ms": 16.175,
+     "prediction_ms": 17.078901718681056
+    },
+    {
+     "benchmark_id": 63,
+     "group": "below1K",
+     "geometry": [
+      32,
+      0,
+      4000
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 16.9938980252482,
+     "clean_truth_ms": 16.27,
+     "prediction_ms": 17.37771404441446
+    },
+    {
+     "benchmark_id": 64,
+     "group": "below1K",
+     "geometry": [
+      32,
+      0,
+      4192
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 17.47565995901823,
+     "clean_truth_ms": 16.51,
+     "prediction_ms": 17.047392087988555
+    },
+    {
+     "benchmark_id": 65,
+     "group": "below1K",
+     "geometry": [
+      32,
+      0,
+      4288
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 17.57910050218925,
+     "clean_truth_ms": 15.915,
+     "prediction_ms": 17.20579294487834
+    },
+    {
+     "benchmark_id": 66,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      49120
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 16.091366996988654,
+     "clean_truth_ms": 15.364999999999998,
+     "prediction_ms": 16.290851635858417
+    },
+    {
+     "benchmark_id": 67,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      81888
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.60930151026696,
+     "clean_truth_ms": 14.86,
+     "prediction_ms": 15.523610209634938
+    },
+    {
+     "benchmark_id": 68,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      98272
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.798902488313615,
+     "clean_truth_ms": 14.915,
+     "prediction_ms": 15.507641118987427
+    },
+    {
+     "benchmark_id": 69,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      139072
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.039780060760677,
+     "clean_truth_ms": 14.07,
+     "prediction_ms": 15.389916176597277
+    },
+    {
+     "benchmark_id": 70,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      139168
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.568197472020984,
+     "clean_truth_ms": 14.675,
+     "prediction_ms": 15.262357890605927
+    },
+    {
+     "benchmark_id": 71,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      139360
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.53970150416717,
+     "clean_truth_ms": 14.565000000000001,
+     "prediction_ms": 15.096788993105292
+    },
+    {
+     "benchmark_id": 72,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      139456
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 14.684627007227391,
+     "clean_truth_ms": 14.165,
+     "prediction_ms": 15.264565707184374
+    },
+    {
+     "benchmark_id": 73,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      196576
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.100612014066428,
+     "clean_truth_ms": 14.075,
+     "prediction_ms": 14.86533237611459
+    },
+    {
+     "benchmark_id": 74,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      393184
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.052499948069453,
+     "clean_truth_ms": 13.865,
+     "prediction_ms": 15.247000032104552
+    },
+    {
+     "benchmark_id": 75,
+     "group": "1K-32K",
+     "geometry": [
+      32,
+      0,
+      786400
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 14.951700053643435,
+     "clean_truth_ms": 14.235,
+     "prediction_ms": 15.130097744986415
+    },
+    {
+     "benchmark_id": 76,
+     "group": "64K",
+     "geometry": [
+      32,
+      0,
+      1572832
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.8621835289523,
+     "clean_truth_ms": 14.705,
+     "prediction_ms": 15.227722004055977
+    },
+    {
+     "benchmark_id": 77,
+     "group": "64K",
+     "geometry": [
+      32,
+      0,
+      3145696
+     ],
+     "in_calibration_geometry": false,
+     "duplicate_of": null,
+     "measured_ms": 15.376725001260638,
+     "clean_truth_ms": 13.844999999999999,
+     "prediction_ms": 15.33481851220131
+    }
+   ]
+  }
+ }
+}

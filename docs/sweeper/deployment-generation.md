@@ -244,7 +244,7 @@ image settings belong to generator overrides.
 |---|---|
 | `dynamo-j2`, `dynamo-python` | Dynamo worker launch scripts, backend flags/configuration and deployment resources |
 | `llm-d-helm`, `llm-d-kustomize` | llm-d deployment configuration with explicitly selected runtime images |
-| `fpm` | Reusable vLLM resource workload, `fpm_env.sh` and `run.sh` |
+| `fpm` | Reusable vLLM or single-node SGLang resource workload, `fpm_env.sh` and `run.sh` |
 | `slurm` | Single-node Dynamo service/benchmark bundle for Slurm with Pyxis/Enroot |
 
 The candidate bridge preserves evaluated worker counts, GPU use, backend/data
@@ -268,6 +268,28 @@ collects evidence, terminates engines and cleans up. Launching `run.sh` alone
 is not a complete measurement round. Each run reloads the model; reusing a Pod
 does not reuse an in-memory engine. `/results` defaults to Pod-local `emptyDir`,
 so retrieve results before deleting the workload or configure a persistent mount.
+
+SGLang also supports the FPM target for one node with TP2 or TP4 and
+DP=PP=EP=1. It reuses the normal SGLang worker's image, GPU resources, volumes
+and scheduling settings, then starts `python3 -m collector.fpm_forward.sglang_driver`
+directly. The collector must stage this module in the runtime image or Python
+path. The native Engine driver needs no Dynamo frontend or etcd service.
+Ordinary SGLang serving generation is unchanged.
+
+For this SGLang collection path, set `kv_cache_dtype: fp8`,
+`disable_prefix_cache: true` and `max_seq_len` at most 131072. Add
+`--benchmark-mode`, `--benchmark-points-file` and the pinned
+`--tokenizer-revision` through `Workers.agg.extra_cli_args`. The optional
+`--benchmark-output` defaults to `/results/benchmark.json`, `--input-text` to
+`/tmp/fpm-bench/fpm_text.txt`, and `--request-timeout-seconds` to 900. The
+driver owns warmup, measurement, state seeding and evidence validation. The
+generator preserves qualified native attention/MoE, memory, page-size and CUDA
+graph options (including space-separated `--cuda-graph-bs`), while rejecting
+speculative decoding, offload, unsupported parallelism, unknown flags and
+duplicate options. NVFP4 launches must include their native
+`--quantization modelopt_fp4` option. SGLang uses its native `--context-length`
+and `--tp-size` spellings and does not receive vLLM's `--dump-config-to` or
+`--benchmark-output-path` options.
 
 The complete resource, overlay, multinode and completion contracts belong to
 [FPM self-service](../perf-model/fpm-self-service/implementation.md), with a

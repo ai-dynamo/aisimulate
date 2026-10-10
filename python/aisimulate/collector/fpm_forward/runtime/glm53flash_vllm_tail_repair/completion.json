@@ -1,0 +1,9 @@
+{
+  "status": "ALL4_RAW_REVALIDATED_PENDING_ROOT_REVIEW_NO_ADMISSION",
+  "summary": {
+    "path": "qualification/admission-summary.json",
+    "sha256": "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45",
+    "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-qualification-four-cell-results/617976/finalized/qualification/admission-summary.json"
+  },
+  "runtime_admission": "CLOSED"
+}

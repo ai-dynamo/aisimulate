@@ -68,7 +68,7 @@ def _cell(phase="prefill", policy=None):
 
 
 def _plan(options):
-    return SimpleNamespace(options=options, sha256="plan-sha", model_path="text/model")
+    return SimpleNamespace(options=options, sha256="plan-sha", model_path="text/model", backend="vllm")
 
 
 def test_cli_freezes_canonical_payload_rows_and_source_mutation(tmp_path):

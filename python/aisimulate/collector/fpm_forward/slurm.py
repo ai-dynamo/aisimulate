@@ -34,6 +34,7 @@ class SlurmCellRunner:
         image: str,
         mounts: tuple[str, ...],
         total_gpus: int,
+        backend: str = "vllm",
         cpus_per_task: int | None = None,
         cpu_bind: str | None = None,
         attention_tp: int = 1,
@@ -41,6 +42,9 @@ class SlurmCellRunner:
         from .runner import _expected_nodes
 
         self.cell_dir = cell_dir.resolve()
+        if backend not in ("vllm", "sglang"):
+            raise ValueError("unsupported native FPM backend")
+        self.backend = backend
         self.node_count = _expected_nodes(manifest)
         if total_gpus % self.node_count:
             raise ValueError("FPM GPUs must divide evenly across Slurm nodes")
@@ -278,6 +282,14 @@ class SlurmCellRunner:
                 f"FPM_SLURM_CPUS_PER_TASK={self.cpus_per_task}",
                 f"FPM_SLURM_CPU_BIND={self.cpu_bind}",
                 f"FPM_LOCAL_GPU_COUNT={self.gpus_per_node}",
+                # Pyxis can start its command as a process-group leader. Keep
+                # a parent alive so native launchers may create their own
+                # session after their exec chain (os.setsid rejects leaders).
+                # Positional arguments preserve the original argv literally.
+                "bash",
+                "-c",
+                '"$@"; status=$?; exit "$status"',
+                "fpm-slurm-command",
                 *command,
             ],
             timeout=timeout,
@@ -293,17 +305,35 @@ class SlurmCellRunner:
         expected_backend_version: str | None = None,
         runtime_backend_version: str | None = None,
     ) -> None:
-        from .runner import _attempt_provenance_command
+        from .runner import REMOTE_WORKDIR, RUNTIME_ENV_FILENAME, _attempt_provenance_command
 
         command = _attempt_provenance_command(
             cell_id=cell_id,
             plan_sha256=plan_sha256,
             attempt_id=attempt_id,
             expected_backend_version=expected_backend_version,
+            backend=self.backend,
             runtime_backend_version=runtime_backend_version,
         )
         for unit in pods:
-            self._exec(unit, command, timeout=300)
+            # Resolve the actual installed distribution through the same frozen
+            # environment used by fpm_exec.sh. Slurm does not inherit the Pod's
+            # extra_env, and inspecting the image before sourcing PYTHONPATH
+            # would misidentify a task-private runtime as the image's baseline.
+            self._exec(
+                unit,
+                [
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    'source "$1"; shift; exec "$@"',
+                    "fpm-slurm-prepare",
+                    f"{REMOTE_WORKDIR}/{RUNTIME_ENV_FILENAME}",
+                    *command,
+                ],
+                timeout=300,
+            )
 
     def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:
         from .runner import CommandScope, _cancel_preserving_interrupt

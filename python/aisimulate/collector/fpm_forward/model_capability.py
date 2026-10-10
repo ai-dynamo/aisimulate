@@ -130,6 +130,10 @@ class ResolvedModelConfig:
                 "num_experts": geometry.get("num_experts") or 0,
                 "moe_inter_size": geometry.get("moe_inter") or 0,
             }
+        if text_key and isinstance(source.get(text_key), dict) and text_key not in raw_config:
+            # Match get_model_config_from_model_path: wrapper model classes
+            # (e.g. GLM-5.3-Flash) read their nested decoder from raw_config.
+            raw_config = {**raw_config, text_key: source[text_key]}
         parsed["raw_config"] = raw_config
         return parsed
 

@@ -44,6 +44,7 @@ pytestmark = pytest.mark.unit
 def _runner(tmp_path) -> KubernetesCellRunner:
     runner = object.__new__(KubernetesCellRunner)
     runner.namespace = "test"
+    runner.backend = "vllm"
     runner.cell_dir = tmp_path
     runner.expected_labels = {}
     return runner
@@ -1395,11 +1396,15 @@ def test_runtime_summaries_use_native_rank_artifacts_and_skip_merged(tmp_path):
     }
 
 
+@pytest.mark.parametrize("execution_timeout", [None, 18000])
 @pytest.mark.parametrize("pending_memory", [False, True])
 @pytest.mark.parametrize("validation_only", [False, True])
-def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pending_memory, validation_only):
+def test_run_collection_stages_owned_runtime_files(
+    monkeypatch, tmp_path, pending_memory, validation_only, execution_timeout
+):
     cell = _cell()
     plan = _plan(cell)
+    plan.options.execution_timeout_seconds = execution_timeout
     if pending_memory:
         plan.runtime_backend_version = "0.27.0"
         plan.fpm_profile = True
@@ -1417,7 +1422,8 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
         (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             events.append("init")
 
         def apply(self):
@@ -1432,7 +1438,8 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
         def prepare_attempt(self, _pods, **_kwargs):
             events.append("prepare_attempt")
 
-        def execute(self, _pods):
+        def execute(self, _pods, **kwargs):
+            assert kwargs == ({"timeout_seconds": execution_timeout} if execution_timeout else {})
             events.append("execute")
 
         def collect(self, _pods, *, require_benchmark=True):
@@ -1517,7 +1524,8 @@ def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypa
         (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def apply(self):
@@ -1811,7 +1819,8 @@ def test_cleanup_failure_marks_passed_cell_retryable(monkeypatch, tmp_path):
         (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def apply(self):
@@ -2378,7 +2387,8 @@ def test_running_recovery_verifies_teardown_of_the_abandoned_workload(monkeypatc
     cleanups = []
 
     class FakeResource:
-        def __init__(self, manifest, _cell_dir):
+        def __init__(self, manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             self.manifest = manifest
 
         def cleanup(self):
@@ -2415,7 +2425,8 @@ def test_running_entry_with_failed_teardown_reruns_instead_of_passing(monkeypatc
     artifact_root, checkpoint_dir, checkpoint_path = _running_cell_fixture(tmp_path, plan, cell)
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def cleanup(self):
@@ -2555,7 +2566,8 @@ def test_pre_apply_cleanup_failure_blocks_apply(monkeypatch, tmp_path):
     applied = []
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def cleanup(self):
@@ -2741,7 +2753,8 @@ def completed_explicit_campaign(monkeypatch, tmp_path):
             (cell_dir / name).write_text("#!/bin/sh\n")
 
     class LocalResource:
-        def __init__(self, _manifest, cell_dir):
+        def __init__(self, _manifest, cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             self.cell_dir = cell_dir
             self.raw = cell_dir / "raw" / "pod-0"
 
@@ -3158,7 +3171,8 @@ def test_run_manifest_records_collector_phases_and_engine_interface(monkeypatch,
         (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def apply(self):
@@ -3239,7 +3253,8 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
         (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
-        def __init__(self, _manifest, _cell_dir):
+        def __init__(self, _manifest, _cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             pass
 
         def cleanup(self):

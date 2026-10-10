@@ -1,0 +1,9 @@
+{
+  "schema": "tail_qualification_assembler_source_bundle_v1",
+  "closed_reader_git_commit": "763793ea855fe82ffc2e252014cedf4d017cfe64",
+  "files": {
+    "assemble.py": "78677313fa6e051fc12bf5e5a0ee2abbc29c21926c6ff17018d1c843a54713ba",
+    "qualification_reader.py": "92238a5dff5b7fbd47e46eb5249a4a368af08bbac4d65134751119469c74253b",
+    "snapshot_reader.py": "975e5be898831299248414d95c0e1b33fbe7c35e63a0c8336a208d89c5b4e358"
+  }
+}

@@ -636,7 +636,8 @@ def _synthetic_collector(monkeypatch, version):
             (cell_dir / name).write_text("#!/bin/sh\n")
 
     class LocalResource:
-        def __init__(self, _manifest, cell_dir):
+        def __init__(self, _manifest, cell_dir, *, backend="vllm"):
+            assert backend == "vllm"
             self.cell = json.loads((cell_dir / "cell.json").read_text())
             self.raw = cell_dir / "raw/pod-0"
 

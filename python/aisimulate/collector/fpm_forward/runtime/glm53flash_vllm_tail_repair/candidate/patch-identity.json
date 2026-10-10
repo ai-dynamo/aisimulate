@@ -1,0 +1,24 @@
+{
+  "purpose": "unqualified_native_correctness_candidate_only",
+  "base_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "source_url": "https://github.com/vllm-project/vllm/tree/ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "license": "Apache-2.0",
+  "copyright": "contributors to the vLLM project; modified by NVIDIA CORPORATION & AFFILIATES, 2026",
+  "sources": [
+    {
+      "source_path": "vllm/model_executor/layers/sparse_attn_indexer_kpool.py",
+      "base_sha256": "625d30d17ad3c66164f83fea59fc86e0e5edc53b4642e8a3a724aa90276f98ab",
+      "patched_sha256": "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8"
+    },
+    {
+      "source_path": "vllm/v1/kv_cache_interface.py",
+      "base_sha256": "1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb",
+      "patched_sha256": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138"
+    }
+  ],
+  "patch_sha256": "eb4704514fdfbd8dd97114da36105c8fc3c783fd7a43534b3d5bedb6606b5fc9",
+  "version": "0.30.0+glm53tail.eb4704514fdf",
+  "formal_runtime_admission": "CLOSED",
+  "qualification": "NOT_EVALUATED",
+  "previous_patch_sha256": "bf5f6b0e689dd8575aa23cc4b83fd48ccaec7e967262d16c630e4cee35783457"
+}

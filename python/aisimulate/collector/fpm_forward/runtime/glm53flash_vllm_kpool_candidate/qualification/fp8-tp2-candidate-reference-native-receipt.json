@@ -1,0 +1,342 @@
+{
+  "status": "native_requests_and_histories_verified",
+  "runtime_kind": "candidate",
+  "mode": "reference",
+  "policy": "production",
+  "checkpoint": "fp8",
+  "tp": 2,
+  "evidence": {
+    "requests": 20,
+    "native_modes": [
+      "FULL",
+      "NONE"
+    ],
+    "all_tp_trace_digest": "8ada36faa69f819093b3d37002eed4d96be6fbe4c5ee5eb9cf1a28c15c2c2fab",
+    "external_to_native_request_ids": {
+      "0": "0-b93a948b",
+      "1": "1-b9b91c29",
+      "2": "2-bb79f326",
+      "3": "3-980b46e0",
+      "4": "4-a211e1b0",
+      "5": "5-8d52f4ca",
+      "6": "6-9bab7cd1",
+      "7": "7-9c12464a",
+      "8": "8-b8ebf614",
+      "9": "9-bbf00fc5",
+      "10": "10-8d6a48a3",
+      "11": "11-bc697652",
+      "12": "12-8851a7e5",
+      "13": "13-8383fae9",
+      "14": "14-80bb0809",
+      "15": "15-b7a3c171",
+      "16": "16-894c33d9",
+      "17": "17-839ead6b",
+      "18": "18-a6e63a17",
+      "19": "19-8c1a82b7"
+    },
+    "request_identity_protocol": "native_assign_request_id_v1",
+    "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+    "actual_prefill_splits": {
+      "0": {
+        "0-b93a948b": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "1-b9b91c29": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "2-bb79f326": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "3-980b46e0": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "4-a211e1b0": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "5-8d52f4ca": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "6-9bab7cd1": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "7-9c12464a": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "8-b8ebf614": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "9-bbf00fc5": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "10-8d6a48a3": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "11-bc697652": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "12-8851a7e5": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "13-8383fae9": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "14-80bb0809": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "15-b7a3c171": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "16-894c33d9": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "17-839ead6b": [
+          [
+            0,
+            8197
+          ]
+        ],
+        "18-a6e63a17": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "19-8c1a82b7": [
+          [
+            0,
+            8197
+          ]
+        ]
+      },
+      "1": {
+        "0-b93a948b": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "1-b9b91c29": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "2-bb79f326": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "3-980b46e0": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "4-a211e1b0": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "5-8d52f4ca": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "6-9bab7cd1": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "7-9c12464a": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "8-b8ebf614": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "9-bbf00fc5": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "10-8d6a48a3": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "11-bc697652": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "12-8851a7e5": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "13-8383fae9": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "14-80bb0809": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "15-b7a3c171": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "16-894c33d9": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "17-839ead6b": [
+          [
+            0,
+            8197
+          ]
+        ],
+        "18-a6e63a17": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "19-8c1a82b7": [
+          [
+            0,
+            8197
+          ]
+        ]
+      }
+    },
+    "files": [
+      {
+        "path": "cohort-admission.jsonl",
+        "sha256": "d3db89a350a0eacaad306b7b01fe5bb7ac52af256f1cc3af95de5fbe66c0c89f"
+      },
+      {
+        "path": "effective-native-config.json",
+        "sha256": "7d89aa84a105e6ece0d69dff390b62dd01eaf8401858a72346a3ac796a048c01"
+      },
+      {
+        "path": "forward-rank-0.jsonl",
+        "sha256": "d2a1efee1237f5d0ea3e192e69aed896aec97f2a4857bcc65229f4cb71655da4"
+      },
+      {
+        "path": "forward-rank-1.jsonl",
+        "sha256": "644d97894dfbd5cb34be7019b726d2fb6d063b3a774eab77f7c070aa341ce020"
+      },
+      {
+        "path": "outputs.jsonl",
+        "sha256": "2e94cd4259daac181a2e2ef3e83cbee63d6d78f006d6b371b9f6f71a33fbf747"
+      },
+      {
+        "path": "preflight.json",
+        "sha256": "c26bc32a170173a47f17747daa37b92b99c9df979752524973c567ea3e11d2f9"
+      },
+      {
+        "path": "prompts-rank-0.jsonl",
+        "sha256": "957a1f2fe5c650544aea8762c2528952ab83ec766025df6acf73e9450a60b541"
+      },
+      {
+        "path": "prompts-rank-1.jsonl",
+        "sha256": "957a1f2fe5c650544aea8762c2528952ab83ec766025df6acf73e9450a60b541"
+      },
+      {
+        "path": "request-id-map.jsonl",
+        "sha256": "57cbbead478d80f80490518420b900bc4e5df8d4ed43645138fe1c903bea9adc"
+      },
+      {
+        "path": "worker-completion.json",
+        "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+      },
+      {
+        "path": "worker-installation.json",
+        "sha256": "eb335ddf257c3d7243eb98f606b0f7d51a21690f5c5292dd32dee515c6bc29b5"
+      },
+      {
+        "path": "worker-rank-0.json",
+        "sha256": "184592b3f19fc24510713c91e6e716229e29e29349bec1e1538f93dc8a88ea46"
+      },
+      {
+        "path": "worker-rank-1.json",
+        "sha256": "074cb36e4dc6e53e523058ca42ce00fc1bdc789a435c57176431c33c3b02aab1"
+      }
+    ]
+  },
+  "correctness_comparison": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}

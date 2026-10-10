@@ -1,0 +1,21 @@
+The observatory at Cedar Ridge keeps a notebook beside its east window. Each morning, Mara records the cloud cover, the angle of the shutters, and the time when sunlight first reaches the stone floor. None of those observations is treated as a forecast. A prediction is written on a separate page before the following morning begins. When the prediction is wrong, the original entry remains visible beside the measurement.
+
+A small workshop below the observatory builds instruments for visiting students. Its inventory contains copper wire, glass lenses, wooden rulers, spare screws, and several empty boxes. The boxes have names because numbers alone became confusing after the shelves were rearranged. The box called Harbor contains a ruler; the box called Orchard contains wire. The names describe storage locations rather than physical properties of the contents.
+
+Consider a ledger with three columns: expected quantity, observed quantity, and reason for the difference. A shipment expected to contain twenty lenses arrived with nineteen usable lenses and one cracked lens. Recording nineteen without recording the cracked item would make the delivery appear smaller, but it would hide the actual failure. The workshop instead preserves all twenty entries and describes the condition of each item.
+
+An engineer sketches a routine for processing the ledger. First read an entry. Then check that its identifier has not appeared earlier. Add valid quantities to the running total, and place malformed entries into an error report. Continue through the complete ledger. Do not replace a missing observation with the average of its neighbors merely because that makes the plot look smoother.
+
+The following small example uses invented measurements. Container A holds twelve blue counters and five white counters. Container B holds eight blue counters and nine white counters. Combining the containers yields twenty blue counters and fourteen white counters. The color distribution changes if three white counters are transferred to a third container, but the total across all three containers remains thirty-four.
+
+A trail map can be represented as a collection of directed connections. There is a path from the gate to the fountain and another path from the fountain to the greenhouse. A connection from the greenhouse back to the gate closes a loop. Finding a route does not establish that the route is accessible today; a fallen branch may block the greenhouse entrance even though the printed map is internally consistent.
+
+At a planning meeting, the workshop compares two schedules. The first finishes lens polishing before assembling the holders. The second assembles holders while polishing continues. Parallel activity may shorten elapsed time, but only if the same worker is not required by both activities at once. A diagram that draws two tasks side by side is a proposal about concurrency, not evidence that concurrency occurred.
+
+For a simple arithmetic exercise, let the input sequence be 3, 6, 9, 12. Multiplying each entry by two produces 6, 12, 18, 24. Subtracting the first output from the last gives eighteen. Reversing the order of the input changes the order of the output, yet it does not change the sum. A useful test checks both the values and their positions when position carries meaning.
+
+An original fragment of pseudocode describes a queue: while entries remain, remove the oldest entry, record its identifier, and apply the requested transformation. If the transformation fails, retain the entry and the error together. The pseudocode says nothing about the speed of the transformation. Its purpose is to make the handling of success and failure explicit.
+
+The observatory eventually adds a second notebook for independent observations. The new notebook uses a different set of scenes and questions. Measurements from the second notebook are not used to revise the predictions that will be judged against them. If the observers later change the method, they begin a new dated comparison and preserve the previous one for inspection.
+
+最后，学生把观察和推断分开记录。表格中的空格表示尚未取得证据，不表示数值为零。一次成功测量只能说明那个具体条件下发生了什么；它不能自动证明其他批次、其他长度或其他仪器也会得到相同结果。检查清单应当帮助读者找到证据，而不是代替证据。

@@ -965,6 +965,7 @@ def test_profile_version_label_is_independent_of_observed_runtime(
     tmp_path, monkeypatch, expected_version, actual_version
 ):
     resource = object.__new__(runner.KubernetesCellRunner)
+    resource.backend = "vllm"
     monkeypatch.setattr(runner, "FPM_RESULTS_DIR", str(tmp_path))
 
     def package_version(name):

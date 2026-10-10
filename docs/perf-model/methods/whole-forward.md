@@ -140,6 +140,20 @@ every row declares a consistent `measurement_policy`/`measurement_repeats`
 pair: `dynamo_native_single_sample_v1`/1 or `kvwarm_median_of_3`/3. Values are
 already aggregated by the producer; the loader preserves their latency.
 
+Schema 7 also accepts `vllm_native_real_hybrid_median_v1` for vLLM and
+`sglang_native_real_hybrid_median_v1` for SGLang. These policies preserve the
+producer's already-reduced `latency_ms`; the consumer neither averages it again
+nor divides it by the repeat count. The sidecar and every row must declare
+integer counts of 5 warmups and 10 measurements. Each row must also bind the same
+policy, `global_warmup_iterations=0`, and
+`state_protocol="glm53flash_same_request_real_hybrid_v1"`. The timing boundary is
+`vllm_native_scheduler_output_interval` or `sglang_native_forward_device_timer`,
+respectively. Missing or inconsistent median metadata and `fake_fallback` KV
+rows are rejected before interpolation; the existing execution-identity and
+real-KV requirements still apply. Mixed `per_row` policies remain unsupported.
+The legacy `dynamo_native_single_sample_v1` contract is unchanged. Loading a
+valid pair does not establish raw collection completeness or prediction accuracy.
+
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python

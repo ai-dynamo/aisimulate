@@ -1,0 +1,13 @@
+{
+  "purpose": "unqualified_native_correctness_candidate_only",
+  "base_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "source_url": "https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/model_executor/layers/sparse_attn_indexer_kpool.py",
+  "source_path": "vllm/model_executor/layers/sparse_attn_indexer_kpool.py",
+  "license": "Apache-2.0",
+  "copyright": "contributors to the vLLM project; modified by NVIDIA CORPORATION & AFFILIATES, 2026",
+  "base_sha256": "625d30d17ad3c66164f83fea59fc86e0e5edc53b4642e8a3a724aa90276f98ab",
+  "patched_sha256": "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8",
+  "patch_sha256": "bf5f6b0e689dd8575aa23cc4b83fd48ccaec7e967262d16c630e4cee35783457",
+  "formal_runtime_version": "NOT_BUILT",
+  "qualification": "NOT_EVALUATED"
+}

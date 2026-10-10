@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .sglang_allocator import cli_max_split_size, validate_max_split_size
+
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
 FPM_MEASUREMENT_REPEATS = 1
@@ -116,6 +118,21 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def validate_sglang_mem_fraction_static(value: float | None) -> None:
+    """Validate an explicit native setting; None leaves SGLang's default intact."""
+    if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1):
+        raise ValueError("--sglang-mem-fraction-static must be finite and strictly between 0 and 1")
+
+
+def _sglang_mem_fraction_static(value: str) -> float:
+    try:
+        parsed = float(value)
+        validate_sglang_mem_fraction_static(parsed)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
     return parsed
 
 
@@ -393,14 +410,36 @@ class FPMCollectionOptions:
     enforce_eager: bool = False
     benchmark_points_json: str | None = None
     benchmark_points_sha256: str | None = None
+    shard_token_budget: int | None = None
+    execution_timeout_seconds: int | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
+    input_text_path: str | None = None
+    input_text_sha256: str = ""
+    dataset_role: str = "calibration"
+    sglang_mem_fraction_static: float | None = None
+    sglang_allocator_max_split_size_mb: int | None = None
+    # Explicit native CUDA-graph requests for GLM same-request campaigns
+    # (graph_policy.py). None keeps each runtime's native graph default and
+    # the existing frozen-plan representation.
+    vllm_cudagraph_capture_sizes: tuple[int, ...] | None = None
+    sglang_cuda_graph_backend_prefill: str | None = None
+    sglang_cuda_graph_max_bs_prefill: int | None = None
+
     # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
     slurm_cpus_per_task: int | None = None
     slurm_cpu_bind: str | None = None
 
     def __post_init__(self) -> None:
+        validate_sglang_mem_fraction_static(self.sglang_mem_fraction_static)
+        validate_max_split_size(self.sglang_allocator_max_split_size_mb)
+        from .graph_policy import validate_capture_sizes, validate_sglang_prefill_graph
+
+        validate_capture_sizes(self.vllm_cudagraph_capture_sizes)
+        validate_sglang_prefill_graph(self.sglang_cuda_graph_backend_prefill, self.sglang_cuda_graph_max_bs_prefill)
+        if self.enforce_eager and self.vllm_cudagraph_capture_sizes is not None:
+            raise ValueError("--vllm-cudagraph-capture-sizes cannot be combined with --fpm-enforce-eager")
         collection_phases(self.worker_type)
         graph_fields = (self.cudagraph_mode, self.cudagraph_capture_sizes, self.max_cudagraph_capture_size)
         if any(value is not None for value in graph_fields) and self.worker_type is None:
@@ -623,8 +662,26 @@ class FPMCollectionOptions:
             points_json, points_sha256 = _freeze_benchmark_points(points_path)
 
         return cls(
+            input_text_path=getattr(args, "fpm_input_text", None),
+            input_text_sha256=(
+                hashlib.sha256(Path(args.fpm_input_text).expanduser().read_bytes()).hexdigest()
+                if getattr(args, "fpm_input_text", None)
+                else ""
+            ),
+            dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
+            sglang_mem_fraction_static=getattr(args, "sglang_mem_fraction_static", None),
+            sglang_allocator_max_split_size_mb=getattr(args, "sglang_allocator_max_split_size_mb", None),
+            vllm_cudagraph_capture_sizes=(
+                tuple(args.vllm_cudagraph_capture_sizes)
+                if getattr(args, "vllm_cudagraph_capture_sizes", None) is not None
+                else None
+            ),
+            sglang_cuda_graph_backend_prefill=getattr(args, "sglang_cuda_graph_backend_prefill", None),
+            sglang_cuda_graph_max_bs_prefill=getattr(args, "sglang_cuda_graph_max_bs_prefill", None),
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
+            shard_token_budget=getattr(args, "fpm_shard_token_budget", None),
+            execution_timeout_seconds=getattr(args, "fpm_execution_timeout_seconds", None),
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
             parallel_presets=requested_presets,
@@ -708,6 +765,21 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.sglang_allocator_max_split_size_mb is not None:
+            result["sglang_allocator_max_split_size_mb"] = self.sglang_allocator_max_split_size_mb
+        if self.sglang_mem_fraction_static is not None:
+            result["sglang_mem_fraction_static"] = self.sglang_mem_fraction_static
+        if self.vllm_cudagraph_capture_sizes is not None:
+            result["vllm_cudagraph_capture_sizes"] = list(self.vllm_cudagraph_capture_sizes)
+        if self.sglang_cuda_graph_backend_prefill is not None:
+            result["sglang_cuda_graph_backend_prefill"] = self.sglang_cuda_graph_backend_prefill
+            result["sglang_cuda_graph_max_bs_prefill"] = self.sglang_cuda_graph_max_bs_prefill
+        if self.enforce_eager:
+            result["enforce_eager"] = True
+        if self.input_text_sha256:
+            result["input_text_sha256"] = self.input_text_sha256
+        if self.dataset_role != "calibration":
+            result["dataset_role"] = self.dataset_role
         # Preserve the existing frozen-plan representation when the new shared
         # runtime limits are absent.
         if self.worker_type is not None:
@@ -727,22 +799,77 @@ class FPMCollectionOptions:
             result["max_num_seqs"] = self.max_num_seqs
         if self.gpu_memory_utilization is not None:
             result["gpu_memory_utilization"] = self.gpu_memory_utilization
-        if self.enforce_eager:
-            result["enforce_eager"] = True
         if self.benchmark_points_json is not None:
             result["benchmark_points"] = {
                 "payload": json.loads(self.benchmark_points_json),
                 "sha256": self.benchmark_points_sha256,
             }
+        if self.shard_token_budget is not None:
+            result["shard_token_budget"] = self.shard_token_budget
+        if self.execution_timeout_seconds is not None:
+            result["execution_timeout_seconds"] = self.execution_timeout_seconds
         return result
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     """Add FPM campaign controls to a collector or dedicated parser."""
 
+    parser.add_argument(
+        "--fpm-shard-token-budget",
+        type=_positive_int,
+        default=None,
+        help="Bound GLM child runs by real tokens across 5+10 repetitions; oversized points stay intact.",
+    )
+    parser.add_argument(
+        "--fpm-execution-timeout-seconds",
+        type=_positive_int,
+        default=None,
+        help="Explicit outer timeout per native engine run, including initialization (default 14400).",
+    )
+
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--sglang-allocator-max-split-size-mb",
+        type=cli_max_split_size,
+        default=None,
+        help="SGLang-only native allocator max split size in MiB (>=20); omit for the original allocator default.",
+    )
+    group.add_argument(
+        "--sglang-mem-fraction-static",
+        type=_sglang_mem_fraction_static,
+        default=None,
+        help="SGLang-only native static-memory fraction (0 < value < 1); omit for the runtime default.",
+    )
+    group.add_argument(
+        "--sglang-cuda-graph-backend-prefill",
+        choices=("breakable",),
+        default=None,
+        help="SGLang-only explicit GLM prefill CUDA graph backend; requires --sglang-cuda-graph-max-bs-prefill. "
+        "Omit to keep the native default, which disables breakable prefill graphs for KDA models.",
+    )
+    group.add_argument(
+        "--sglang-cuda-graph-max-bs-prefill",
+        type=_positive_int,
+        default=None,
+        help="SGLang-only largest prefill CUDA graph token bucket for --sglang-cuda-graph-backend-prefill.",
+    )
+    group.add_argument(
+        "--vllm-cudagraph-capture-sizes",
+        type=_positive_int,
+        nargs="+",
+        default=None,
+        help="vLLM-only explicit GLM CUDA graph capture sizes (increasing, distinct); frozen as a backend "
+        "policy and verified against the resolved engine config. Omit to keep the runtime default.",
+    )
+    group.add_argument("--fpm-input-text", default=None, help="UTF-8 token corpus; freeze its SHA in the plan.")
+    group.add_argument(
+        "--fpm-dataset-role",
+        choices=("calibration", "holdout"),
+        default="calibration",
+        help="Holdout runs retain native evidence without publishing calibration rows.",
     )
     group.add_argument(
         "--fpm-worker-type",
@@ -1075,6 +1202,11 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         return
     explicitly_set = []
     for name in (
+        "sglang_mem_fraction_static",
+        "sglang_allocator_max_split_size_mb",
+        "sglang_cuda_graph_backend_prefill",
+        "sglang_cuda_graph_max_bs_prefill",
+        "vllm_cudagraph_capture_sizes",
         "fpm_max_gpus",
         "fpm_gpu_counts",
         "fpm_weight_quantizations",
@@ -1114,6 +1246,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_decoder_replay",
         "fpm_enforce_eager",
         "fpm_benchmark_points_file",
+        "fpm_shard_token_budget",
+        "fpm_execution_timeout_seconds",
         "fpm_executor",
         "fpm_slurm_container_image",
         "fpm_slurm_container_mount",

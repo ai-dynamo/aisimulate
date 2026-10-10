@@ -45,11 +45,25 @@ def main() -> None:
         "DYN_BENCH_PREFILL_REAL_SEED", "off"
     ).lower() in {"on", "1", "true"}
     dsv41_adapter = os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1"
+    glm53flash_adapter = os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1"
     # The audit artifact exists precisely to document a rejected image, so an
     # image whose runtime module is missing entirely (pre-PR11509) must still
     # produce it before this process fails the pod.
     try:
         from dynamo.vllm.instrumented_scheduler import BenchmarkPoint, InstrumentedScheduler
+
+        if glm53flash_adapter:
+            if os.environ.get("DYN_FPM_GLM53FLASH_PREFIX_SEED") == "1":
+                from glm53flash_prefix_scheduler import Glm53FlashPrefixSeedScheduler as Glm53FlashRealKVScheduler
+            else:
+                from glm53flash_scheduler import Glm53FlashRealKVScheduler
+
+            if InstrumentedScheduler is not Glm53FlashRealKVScheduler:
+                raise RuntimeError("GLM-5.3-Flash source-checked scheduler activation did not occur")
+            from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
+
+            if not callable(Glm53FlashConfig.from_text_config):
+                raise RuntimeError("GLM runtime lacks the shared AISimulate model contract")
 
         if dsv41_adapter:
             from dsv41_scheduler import DeepseekV41RealKVScheduler
@@ -82,10 +96,11 @@ def main() -> None:
     fields = set(getattr(BenchmarkPoint, "__dataclass_fields__", {}))
     missing_fields = sorted(GRAPH_AWARE_FIELDS - fields)
     required_methods = set(GRAPH_AWARE_METHODS)
-    if real_prefill_requested and not dsv41_adapter:
+    if real_prefill_requested and not (dsv41_adapter or glm53flash_adapter):
         # Native cached-prefill seeding is separate from decode warm-up:
         # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L3326
-        # The source-checked V4.1 adapter owns its own real-KV prefill path.
+        # The source-checked V4.1 and GLM-5.3-Flash adapters own their real-KV
+        # prefill paths; GLM's pinned Dynamo predates _bench_realseed_on.
         required_methods.add("_bench_realseed_on")
     missing_methods = sorted(name for name in required_methods if not hasattr(InstrumentedScheduler, name))
     audit = {
@@ -95,7 +110,9 @@ def main() -> None:
         "missing_fields": missing_fields,
         "missing_methods": missing_methods,
         "prefill_real_seed_requested": real_prefill_requested,
-        "prefill_real_seed_implementation": "dsv41_adapter" if dsv41_adapter else "dynamo_native",
+        "prefill_real_seed_implementation": (
+            "dsv41_adapter" if dsv41_adapter else "glm53flash_adapter" if glm53flash_adapter else "dynamo_native"
+        ),
         "status": "passed" if not missing_fields and not missing_methods else "failed",
     }
     _write_audit(audit)

@@ -1,0 +1,20 @@
+{
+  "status": "ACTUAL_IMMUTABLE_ARCHIVE_PATCH_PASS",
+  "archive_sha256": "5309f930285a26629e3e49a8d022f81c0f99b2490e24fa86dddbd2cd4986dfee",
+  "patch_sha256": "eb4704514fdfbd8dd97114da36105c8fc3c783fd7a43534b3d5bedb6606b5fc9",
+  "version": "0.30.0+glm53tail.eb4704514fdf",
+  "files": [
+    {
+      "source_path": "vllm/model_executor/layers/sparse_attn_indexer_kpool.py",
+      "base_sha256": "625d30d17ad3c66164f83fea59fc86e0e5edc53b4642e8a3a724aa90276f98ab",
+      "patched_sha256": "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8"
+    },
+    {
+      "source_path": "vllm/v1/kv_cache_interface.py",
+      "base_sha256": "1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb",
+      "patched_sha256": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138"
+    }
+  ],
+  "patch_stdout": "patching file vllm/model_executor/layers/sparse_attn_indexer_kpool.py\npatching file vllm/v1/kv_cache_interface.py\n",
+  "native_execution": "NOT_EVALUATED"
+}

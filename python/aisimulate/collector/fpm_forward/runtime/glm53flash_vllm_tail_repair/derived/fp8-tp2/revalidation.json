@@ -1,0 +1,279 @@
+{
+  "schema": "glm53flash_tail_revalidation_v1",
+  "status": "passed",
+  "scope": "four_cell_functional_profile_comparison",
+  "original_result_sha256": "057c8650309b1c41f74e73441e35f83fd9230f143574e2bc3c303581601df73a",
+  "derived_result_sha256": "057c8650309b1c41f74e73441e35f83fd9230f143574e2bc3c303581601df73a",
+  "input_files": [
+    {
+      "raw_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-functional-gpu-results/615977/fp8-tp2-tail_reference-reference/native",
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "a0413f7c2e6ee5696e9f85ee1c97fa65717780d76e519989a8a24616ed7750dd"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "ba45dbd96eb4370c1a21e5bd6d8961918b739fc2f1435d9ec0e0b82998abfd5e"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "d50f7f4992f5aa041a5c7b69565d59f2eec24b4594dee8d66eb3ce78526e61ed"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "eafabcd547db9ab938bddafb2f1549df6a9ea50f8cdd53b752f672ab61b4e316"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "ba2d5d870f67034d820258c6e9c72d55bd46316acf6da37d2eceef2095671f35"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "01f14872cf6bc950b60579769c231f485421d7c64e2a0c5e288433903e80c0cb"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "01ba7c0d224d6befdc9897a46e8034285d922c2dffd38fcac202e58edb851d10"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "ef88e0df4fd289e4df8b59f12c152a4f51e84c83e98f8868ffd82a912d87babb"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "ef88e0df4fd289e4df8b59f12c152a4f51e84c83e98f8868ffd82a912d87babb"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "86ae0709a9613394dcfd501a1e8be274f15bb19d9279eec59c9200468a79e000"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "2b269be65be092f89b30e74bc64eafad94c0164a67711d78a1f772d44ebdacfd"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "bb3327c8563708d8ba37485eb98bb0a039f1285762c867382be61e2d78f14ae1"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "27d88c4f1e89d40167df62e5ac67f596e07a42efc242607e6c9780664355fd48"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "3b8aa5b1c0a12f8f18a3c5cf53aa317c6ebd4b09c660c6a372bd8f3e01f0b387"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "27f31dc54c4b8d05761a9bd7b7c152d857158d412e4fd3befdaaa620ba30b002"
+        }
+      ]
+    },
+    {
+      "raw_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-functional-gpu-results/615977/fp8-tp2-candidate-reference/native",
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "7d2cf8fd03f62c44ca90bd688ee701541ceb1ecb1cf8d61fb8b70d95eb9a3d4d"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "ba45dbd96eb4370c1a21e5bd6d8961918b739fc2f1435d9ec0e0b82998abfd5e"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "a13e65919d62d127b6d3ca97b44a6119e59b6f00952b7aaf56246deb9d615a49"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "7e4e37ca67f6917d10b0d35baa58caa9c92a0775304e29098ab84c4dfa0c35a0"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "48b8dafd535adc7cc0235f10c7a37597ffe0c45bc4ca7324f6c51df662bc1438"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "6817d3d8a012e346792170e3a42f34c522989f0ad321459a818fc3906d58aeff"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "8f4cde109aa487071b22828b444347ae268c5dab0118dc739ca11f84d91fb3f5"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "dcfe8f07b5bbaea3efd9c55a131d625dcb03808c82129fcce7f9f4d9425c520e"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "dcfe8f07b5bbaea3efd9c55a131d625dcb03808c82129fcce7f9f4d9425c520e"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "990db1776eb06e293ef7edc2e6dd4a716e34d9edb8ab022e3edbbc1b555574a8"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "d4fac6722bdd0d7364081e7a91a22e65731e28705130b3088b99c0e6f04af7ae"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "8c09ef9e78290b8f0d29ee72459fffafe2c4c5cd949396b0685952dbb58a21ea"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "27d88c4f1e89d40167df62e5ac67f596e07a42efc242607e6c9780664355fd48"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "08ac34e7b60c8eb45be1ba265b9e0e7eaa3f4aa4b90707aca9da111f459d8680"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "48d6889908c87b700fe343e9160550e927246439d2ed69d716ac2e05fb990e42"
+        }
+      ]
+    },
+    {
+      "raw_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-functional-gpu-results/615977/fp8-tp2-candidate-split/native",
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "8d2c9b0d5dc2d0cbdfb20d2d4b6e832b4c26b88e994b927cfb634e95c659323b"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "f1630204e3b3bbe37284eda38f7d178d4263097f085459ccd1485b621ef27ac2"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "2cccb1851d462693191cb45be8ffd01b56a246c5ca7fe5b8624945038cd5096c"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "5e31fa4d27aaea995ed9e5aadc3c35dcc9fb4762144088c7b7945b1c9ea2c18d"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "4a1b74a19a4958b4acb9b48247c2d5f3bf147272af9ba80f3c90fed899a4e39d"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "87823f0df0ed7eb5fe47bce8383ac65bf97d9a36525a5c982fef77986e33f268"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "4d5790ceb05e68e7a0504d9d27e909dee3236bd8425040ee0346823c5b5cb65e"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "0c09165d92346e301ea4840e94dae6a83c1d04d825a01223253f6f3f82f85d64"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "0c09165d92346e301ea4840e94dae6a83c1d04d825a01223253f6f3f82f85d64"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "50059f648ee6408b9c71e76cd0c1f5160854c77df6d28286be955fb2a62da74d"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "9f5c9aa242154303a419c542f32d1ee99221f8f86d2894d96590d475930072d3"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "f46d3d865f748d8cb511f4f0767e74ff1a30c3ecb31013186c5ba8717fd24746"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "d343496fa160c89a8103240ada91cd3d79f9eddb9045dedeb1fdfe547d69bc0a"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "27d88c4f1e89d40167df62e5ac67f596e07a42efc242607e6c9780664355fd48"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "60913cbb2e5d6799411e790ffbe5968a19f509a7427a7efc9cf7d849a131d351"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "badb8fd3b78503c49093465bfc370fa2461814c163d39c35fe90a7c9400a8420"
+        }
+      ]
+    }
+  ],
+  "consumer_reread_external_raw": false,
+  "validator_sources": {
+    "expected-runtime.json": {
+      "sha256": "cf7ab8b815ef16e41e178a17cb24effe1f31f54785f0c61b1931d6e3a134e910",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/expected-runtime.json"
+    },
+    "validate.py": {
+      "sha256": "885258e35358c07278e2f7e55c93b28c507ea678fd822c8b004640adeacd503f",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/validate.py"
+    },
+    "validate_tail.py": {
+      "sha256": "751457541eb3a2c16797b15e6a2c12913d7625cc96c116d1035ebb2e8e1bb44e",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/validate_tail.py"
+    },
+    "tail_metadata_probe.py": {
+      "sha256": "a8ccfd7866301cb838a179dc90688260617593ee4c91d7604ed15049b1af6704",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/tail_metadata_probe.py"
+    },
+    "probe.py": {
+      "sha256": "9b26d0f0ccd9ef08f9944aca1c59744a8810fd8d07d23eb9bbb8f0fa55bac31d",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/probe.py"
+    },
+    "worker_probe.py": {
+      "sha256": "6a8ca1b92d37119f21475f425499a66a7acada4879a48376e1488b370dcdf1ca",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/worker_probe.py"
+    },
+    "request-id-source.json": {
+      "sha256": "e2ceda1bb628586e3b5fafc448681669e089fcb8c0567a89fab4d73853902749",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/request-id-source.json"
+    },
+    "cohort-source.json": {
+      "sha256": "d0bd7102c44e00babb7ab503415f01115cd91cc50166f599658452051c841ead",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-engine-qualification-v2/cohort-source.json"
+    }
+  },
+  "assembler_source": {
+    "sha256": "b140f5dee3fc85f0631ad81ae9506feeb7c9ef360779850aa7dbcfd3e57bb408",
+    "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-qualification-four-cell-results/617976/finalized/assembler/bundle-manifest.json"
+  }
+}

@@ -41,6 +41,12 @@ if report["status"] != "observed" or len(report["main_thread_allowed_cpus"]) < r
     raise SystemExit("Slurm engine CPU affinity is unavailable or smaller than requested; inspect fpm-cpu-launcher.json")
 PY
 fi
+if [[ "${AISIM_FPM_BACKEND:-vllm}" == "sglang" ]]; then
+  # The native Engine driver owns initialization, request execution, its
+  # schema-2 result envelope and shutdown. It does not use Dynamo or etcd.
+  # The common Collector validates the retained native traces after exit.
+  exec bash "${workdir}/run.sh"
+fi
 if [[ ! "${FPM_READINESS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] ||
    (( ${#FPM_READINESS_TIMEOUT_SECONDS} > 4 || FPM_READINESS_TIMEOUT_SECONDS > 3600 )); then
   echo "FPM_READINESS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2

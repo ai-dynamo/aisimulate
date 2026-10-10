@@ -1,0 +1,108 @@
+{
+  "campaign": "glm53flash-vllm-v031-native-fpm",
+  "deployment": {
+    "cp": 1,
+    "dp": 1,
+    "ep": 1,
+    "pp": 1,
+    "precision": "nvfp4",
+    "tp": 4
+  },
+  "method": {
+    "consumer_source": "crates/core/src/perfmodel/perf_database/fpm_forward.rs (policy vllm_native_fpm_prefix_seed_median_v1) at the same revision",
+    "geometry": "Clean-truth align-4 executed geometries: 397 calibration points (250 prefill + 147 decode) and 221 holdout points (144 prefill + 77 decode) per deployment; duplicate geometries collected once.",
+    "inputs": "seeded token ids (sha256_counter_rejection v1, seed 53, ids [0, 154820) of the pinned tokenizer)",
+    "kpool_align4": "Stock vLLM 0.31.0 leaves IndexPool entries incomplete at unaligned cached/chunked prefill starts, so every prefill prefix and new-token length is a multiple of 4 (geometry moved for this is recorded as executed geometry, reason kpool_align4); decode keeps its true context with a 4-aligned cached seed. Every scheduled prefill chunk start is recorded from the native SchedulerOutput and verified to be a multiple of 4. This is a collection rule only; predictions are not restricted.",
+    "producer_source": "python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_prefix_scheduler.py at https://github.com/ai-dynamo/aisimulate/tree/58f49a1d79daaab457882b86bf2e6ac1857a26d0",
+    "repetitions": {
+      "measured": 10,
+      "statistic": "median",
+      "warmup": 5
+    },
+    "summary": "Dynamo InstrumentedScheduler (ai-dynamo/dynamo 54960177) FPM wall_time: prefill = end of schedule() to update_from_output arrival of the measured step; decode = consecutive output arrivals (second pure decode step). The queued-request accounting for vLLM 0.31 is ported from ai-dynamo/dynamo 395f0240. Every request is scheduled natively: prefix seeds, an untimed warm shot and validated measured shots.",
+    "timing_source": "engine_native_fpm"
+  },
+  "model_id": "nvidia/GLM-5.3-Flash-NVFP4",
+  "model_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+  "path_note": "Paths beginning with <glm53flash-v031-fpm> are relative to the local FPM working root and <glm53flash-v031-truth> to the clean-truth working root. source-*.json files are evaluator reports with only those root prefixes rewritten; evaluator_report_original_sha256 is the digest of the unrewritten report.",
+  "prediction_config": {
+    "attention_dp": 1,
+    "backend": "vllm",
+    "backend_version": "0.31.0",
+    "database_mode": "SILICON",
+    "decoder_replay": false,
+    "enable_eplb": false,
+    "enable_shared_layer": false,
+    "estimation_mode": "fpm_interpolation",
+    "fallback_policy": "deny",
+    "fpm_fmha_quant_mode": "fp8",
+    "kvcache_quant_mode": "fp8",
+    "model": "nvidia/GLM-5.3-Flash-NVFP4",
+    "moe_ep_size": 1,
+    "moe_tp_size": 4,
+    "nextn": 0,
+    "pp": 1,
+    "strict_provenance": true,
+    "system": "gb300",
+    "tp": 4,
+    "worker_type": "aggregated"
+  },
+  "runs": {
+    "calibration": {
+      "decode": {
+        "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+        "job": "910726",
+        "points_sha256": "66ff59a6e57a206763f78d83f35c43ebbad8af24be3dea9809c4e3d932a57af8",
+        "raw_run_original_path": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/glm53flash-v031-recollect/fpm/runs/vllm-nvfp4-tp4-calibration-decode/910726/",
+        "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e"
+      },
+      "prefill": {
+        "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+        "job": "902669",
+        "points_sha256": "850cd05fbc33876f7ea4062084c07dc8374f03b22b0efd575d52b5284060fdd1",
+        "raw_run_original_path": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/glm53flash-v031-recollect/fpm/runs/vllm-nvfp4-tp4-calibration-prefill/902669/",
+        "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e"
+      }
+    },
+    "holdout": {
+      "decode": {
+        "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+        "job": "904696",
+        "points_sha256": "8b71e921e9863f526eb25e86316cc0cad5d27102ceea82d20afc9b5114d2819e",
+        "raw_run_original_path": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/glm53flash-v031-recollect/fpm/runs/vllm-nvfp4-tp4-holdout-decode/904696/",
+        "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e"
+      },
+      "prefill": {
+        "input_spec_sha256": "1820c2d7df4427cea314ae8e825992816b38f1b01428559997eaeefd8638609c",
+        "job": "902702",
+        "points_sha256": "4f1821a4d4cddc0dceced064d8cf6fe0d9fee08049761b940d13e810b4a5d363",
+        "raw_run_original_path": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/glm53flash-v031-recollect/fpm/runs/vllm-nvfp4-tp4-holdout-prefill/902702/",
+        "token_ids_sha256": "8aa43e41092fd937fcd101cb8a168a04e3bd097b3ce8c7b2c232d8534055905e"
+      }
+    }
+  },
+  "schema": "glm53flash_native_fpm_provenance_v1",
+  "serving_configuration": {
+    "async_scheduling": false,
+    "cuda_graph": "FULL_AND_PIECEWISE, 62 capture sizes up to 8192",
+    "framework": "vllm",
+    "framework_source": "https://github.com/vllm-project/vllm/tree/db9527a46873454610df6dbedf79a36d6bf1a7f6",
+    "framework_version": "0.31.0",
+    "gpu_memory_utilization": 0.92,
+    "image": "vllm/vllm-openai@sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971",
+    "kv_cache_dtype": "fp8_e4m3",
+    "launcher": "python3 -m dynamo.vllm (benchmark mode) with the GLM prefix-seed scheduler",
+    "mamba_cache_mode": "align",
+    "max_model_len": 131079,
+    "max_num_batched_tokens": 8192,
+    "max_num_seqs": 32,
+    "model_loading": "pinned local checkpoints, HF_HUB_OFFLINE=1",
+    "prefix_caching": true,
+    "prefix_match_unit": 4,
+    "serving_configuration": "default serving configuration"
+  },
+  "source_repository": "https://github.com/ai-dynamo/aisimulate",
+  "source_revision": "58f49a1d79daaab457882b86bf2e6ac1857a26d0",
+  "supersedes": "vLLM 0.30.0+glm53tail.eb4704514fdf native-FPM tables of the same deployment (if published).",
+  "system": "gb300"
+}
