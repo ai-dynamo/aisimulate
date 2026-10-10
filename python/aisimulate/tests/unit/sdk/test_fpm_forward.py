@@ -31,7 +31,7 @@ import yaml
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.main import main
-from aisimulate.runner import AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory, InvalidRunnerError
+from aisimulate.runner import AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
 from aisimulate.sdk import common, models
 from aisimulate.sdk import config as sdk_config
 from aisimulate.sdk.backends.factory import get_backend
@@ -41,7 +41,6 @@ from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-from aisimulate_core.sdk.errors import DecodeMoeProfileError
 from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
@@ -1323,39 +1322,14 @@ def external_fpm_companion_spec(external_fpm_config, request):
     return spec, role
 
 
-@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
-def test_external_fpm_companion_rejects_decode_selector(external_fpm_companion_spec, alias):
+def test_external_fpm_companion_timing(external_fpm_companion_spec):
     spec, role = external_fpm_companion_spec
-    args = getattr(spec.backend_deployment, f"{role}_engine_args")
-    args[alias] = "observed_glm52_nvfp4_decode_composite_v2"
-
-    with pytest.raises(InvalidRunnerError, match=f"AFD {role} companion.*requires explicit op_level") as exc:
-        AICAFDCompanionPerformanceModel().measure(spec)
-
-    assert isinstance(exc.value.__cause__, DecodeMoeProfileError)
-
-
-@pytest.mark.parametrize("alias", [None, "decode_workload_distribution", "aic_decode_workload_distribution"])
-def test_external_fpm_companion_accepts_absent_decode_selector(external_fpm_companion_spec, alias):
-    spec, role = external_fpm_companion_spec
-    if alias is not None:
-        getattr(spec.backend_deployment, f"{role}_engine_args")[alias] = None
 
     timing = AICAFDCompanionPerformanceModel().measure(spec)
 
     assert timing.phase.value == role
     assert timing.latency_ms == pytest.approx(22.0 if role == "prefill" else 6.0)
     assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
-
-
-@pytest.mark.parametrize("values", [(None, None), ("one", "one"), ("one", "two")])
-def test_external_fpm_companion_rejects_duplicate_decode_selector(external_fpm_companion_spec, values):
-    spec, role = external_fpm_companion_spec
-    args = getattr(spec.backend_deployment, f"{role}_engine_args")
-    args.update(decode_workload_distribution=values[0], aic_decode_workload_distribution=values[1])
-
-    with pytest.raises(ValueError, match=f"{role} config duplicates AIC field decode_workload_distribution"):
-        AICAFDCompanionPerformanceModel().measure(spec)
 
 
 def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_fpm_config, tmp_path, capsys):

@@ -88,8 +88,6 @@ _DATABASE_VERSION_METADATA_FILES = {
     INCOMPLETE_MARKER,
     REUSE_YAML_MARKER,
     COLLECTION_META_MARKER,
-    # The graph-profile contract is validated separately by the native loader.
-    "sglang_glm52_nvfp4_vr_nvl72_tp4_graph_v1.profile.json",
 }
 
 
