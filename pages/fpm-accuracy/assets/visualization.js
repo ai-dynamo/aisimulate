@@ -255,12 +255,6 @@
     const models = [...new Set(data.catalog.map(c => c.model))].sort();
     get("catalog-line").textContent = count(models.length) + " models · " + count(data.catalog.length) + " snapshots · "
       + count(data.catalog.filter(c => c.groups.length).length) + " with point data · HF " + data.hf_revision.slice(0, 12);
-    const statusResponse = await fetch(base + "publication.json", {cache:"no-cache"});
-    if (!statusResponse.ok && statusResponse.status !== 404) throw new Error("Publication status unavailable.");
-    const publication = statusResponse.ok ? await statusResponse.json() : null;
-    const stale = publication && (publication.hf_revision !== publication.current_hf_revision || Date.now()-Date.parse(publication.completed_at)>48*3600000);
-    document.getElementById("nav-status-text").textContent = (stale ? "Stale measurement snapshot · " : "") + "HF " + data.hf_revision.slice(0, 12)
-      + (publication ? " · " + publication.completed_at : "");
     const params = new URLSearchParams(location.search);
     const linked = data.catalog.find(c => c.configuration_id === params.get("configuration") && c.snapshot_id === params.get("snapshot"));
     for (const pane of panes) {

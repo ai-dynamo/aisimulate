@@ -74,7 +74,7 @@ def strict_json(data):
 
 def validate_summary(summary):
     keys(summary, ("schema_version", "snapshot", "methods", "rows"))
-    require(type(summary["schema_version"]) is int and summary["schema_version"] == 1, "unsupported schema")
+    require(type(summary["schema_version"]) is int and summary["schema_version"] in (1, 2), "unsupported schema")
     require(summary["methods"] == list(METHODS), "unexpected predictors")
     snapshot = summary["snapshot"]
     keys(
@@ -115,6 +115,45 @@ def validate_summary(summary):
     )
     identities = set()
     for row in rows:
+        require(summary["schema_version"] != 2 or "collection" in row, "missing normalized collection summary")
+        if "collection" in row:
+            collection = row["collection"]
+            keys(
+                collection,
+                (
+                    "types",
+                    "datasets",
+                    "run_count",
+                    "unattributed_measurements",
+                    *(("concurrency_settings",) if "concurrency_settings" in collection else ()),
+                ),
+            )
+            require(
+                isinstance(collection["types"], list)
+                and set(collection["types"]) <= {"self_benchmark", "static_serving", "trace_replay", "unknown"},
+                "invalid collection types",
+            )
+            require(
+                isinstance(collection["datasets"], list)
+                and all(isinstance(name, str) and name for name in collection["datasets"]),
+                "invalid datasets",
+            )
+            for field in ("run_count", "unattributed_measurements"):
+                require(type(collection[field]) is int and collection[field] >= 0, "invalid collection count")
+            if "concurrency_settings" in collection:
+                settings = collection["concurrency_settings"]
+                require(isinstance(settings, list), "invalid concurrency settings")
+                seen = set()
+                for setting in settings:
+                    keys(setting, ("unit", "value"))
+                    value, unit = setting["value"], setting["unit"]
+                    require(
+                        type(value) in (int, float) and math.isfinite(value) and value >= 0, "invalid concurrency value"
+                    )
+                    require(unit in ("requests", "sessions", "session_trees"), "invalid concurrency unit")
+                    require((unit, value) not in seen, "duplicate concurrency setting")
+                    seen.add((unit, value))
+                require(len(settings) <= collection["run_count"], "too many concurrency settings")
         keys(
             row,
             (
@@ -137,6 +176,7 @@ def validate_summary(summary):
                 "configuration_manifest",
                 "measurement_manifest",
                 "results",
+                *(("collection",) if "collection" in row else ()),
             ),
         )
         for name in (

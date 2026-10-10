@@ -77,12 +77,111 @@ def validate_heatmap(value, measured, *, errors=False):
     require(total == measured, "heatmap measurement mismatch")
 
 
+def validate_collection(collection, row):
+    keys(collection, ("runs", "unattributed_measurements"))
+    require(isinstance(collection["runs"], list), "invalid collection runs")
+    require(
+        type(collection["unattributed_measurements"]) is int and collection["unattributed_measurements"] >= 0,
+        "invalid unattributed count",
+    )
+    ids = set()
+    total = collection["unattributed_measurements"]
+    for run in collection["runs"]:
+        keys(
+            run,
+            (
+                "id",
+                "collection_type",
+                "benchmark_preset",
+                "benchmark_id",
+                "started_at",
+                "collector",
+                "replay_mode",
+                "dataset",
+                "workload",
+                "serving",
+                "measurement_count",
+                "availability",
+                "reason",
+                "charts",
+            ),
+        )
+        require(isinstance(run["id"], str) and run["id"] not in ids, "duplicate collection run")
+        ids.add(run["id"])
+        require(type(run["measurement_count"]) is int and run["measurement_count"] > 0, "noncontributing run")
+        total += run["measurement_count"]
+        require(run["availability"] in ("available", "unavailable", "not_applicable"), "invalid chart availability")
+        if run["availability"] != "available":
+            require(
+                run["charts"] is None and isinstance(run["reason"], str) and bool(run["reason"]),
+                "missing chart unavailability reason",
+            )
+            continue
+        charts = run["charts"]
+        keys(charts, ("request_count", "stage_counts", "outcome_counts", "input", "output", "ttft", "interactivity"))
+        population = charts["request_count"]
+        require(type(population) is int and population >= 0, "invalid chart population")
+        require(sum(charts["outcome_counts"].values()) == population, "request outcome count mismatch")
+        require(charts["stage_counts"].get("profiling", 0) == population, "profiling count mismatch")
+        for metric in ("input", "output"):
+            histogram = charts[metric]
+            keys(histogram, ("count", "bins", "p50", "p90"))
+            require(0 <= histogram["count"] <= population and len(histogram["bins"]) <= 32, "invalid histogram count")
+            require(sum(b["count"] for b in histogram["bins"]) == histogram["count"], "histogram population mismatch")
+            for bucket in histogram["bins"]:
+                keys(bucket, ("lower", "upper", "count"))
+                require(
+                    0 <= bucket["lower"] <= bucket["upper"] and type(bucket["count"]) is int and bucket["count"] >= 0,
+                    "invalid histogram bucket",
+                )
+        for metric in ("ttft", "interactivity"):
+            series = charts[metric]
+            keys(series, ("count", "excluded", "points", "rolling_p90"))
+            require(
+                series["count"] == len(series["points"]) == len(series["rolling_p90"]), "time chart population mismatch"
+            )
+            require(series["count"] + series["excluded"] == population, "time chart exclusion mismatch")
+            for points in (series["points"], series["rolling_p90"]):
+                previous = -1
+                for point in points:
+                    require(
+                        isinstance(point, list)
+                        and len(point) == 2
+                        and all(type(v) in (int, float) and math.isfinite(v) and v >= 0 for v in point),
+                        "invalid chart point",
+                    )
+                    require(point[0] >= previous, "time chart is unordered")
+                    previous = point[0]
+    require(total == row["measurement_count"], "collection membership mismatch")
+    if "collection" in row:
+        require(len(ids) == row["collection"]["run_count"], "collection summary count mismatch")
+        require(
+            collection["unattributed_measurements"] == row["collection"]["unattributed_measurements"],
+            "collection summary membership mismatch",
+        )
+
+
 def validate_details(details, summary):
     keys(details, ("schema_version", "snapshot", "rows"))
-    require(details["schema_version"] == 1 and details["snapshot"] == summary["snapshot"], "detail identity mismatch")
+    require(
+        details["schema_version"] in (1, 2) and details["snapshot"] == summary["snapshot"], "detail identity mismatch"
+    )
     require(len(details["rows"]) == len(summary["rows"]), "missing detail rows")
     for detail, row in zip(details["rows"], summary["rows"], strict=True):
-        keys(detail, ("configuration_id", "snapshot_id", "membership_sha256", "workload_heatmaps", "methods"))
+        require(details["schema_version"] != 2 or "collection" in detail, "missing normalized collection details")
+        if "collection" in detail:
+            validate_collection(detail["collection"], row)
+        keys(
+            detail,
+            (
+                "configuration_id",
+                "snapshot_id",
+                "membership_sha256",
+                "workload_heatmaps",
+                "methods",
+                *(("collection",) if "collection" in detail else ()),
+            ),
+        )
         for key in ("configuration_id", "snapshot_id", "membership_sha256"):
             require(detail[key] == row[key], "detail membership mismatch")
         maps = detail["workload_heatmaps"]

@@ -78,7 +78,7 @@ def main():
         case = dataset.measurement_case(configuration.configuration_path, snapshot_id=configuration.snapshot_id)
         rows.append(evaluate_case(case, comparison=comparison, details=details))
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "snapshot": {
             "branch": args.branch,
             "commit_sha": args.commit,
@@ -101,7 +101,7 @@ def main():
         raise ValueError("output must be empty")
     data = (json.dumps(summary, allow_nan=False, sort_keys=True, indent=2) + "\n").encode()
     (args.output / "summary.json").write_bytes(data)
-    detail_document = {"schema_version": 1, "snapshot": summary["snapshot"], "rows": details}
+    detail_document = {"schema_version": 2, "snapshot": summary["snapshot"], "rows": details}
     validate_details(detail_document, summary)
     detail_data = (json.dumps(detail_document, allow_nan=False, sort_keys=True) + "\n").encode()
     (args.output / "details.json").write_bytes(detail_data)

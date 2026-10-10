@@ -28,7 +28,7 @@ SPDX-License-Identifier: Apache-2.0
       }
     </script>
     <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=compact-workload-text-1" />
   </head>
   <body>
     <header class="top-header">
@@ -71,20 +71,13 @@ SPDX-License-Identifier: Apache-2.0
       </div>
     </header>
 
-    <section class="scope-bar" aria-label="Evaluation scope">
-      <div class="shell heading-controls">
-        <span id="nav-status-text" class="scope-control" aria-live="polite">Loading evaluation…</span>
-        <div class="snapshot-links">
-          <span>Daily evaluation · 10:47 UTC</span>
-          <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset">Measurement source</a>
-        </div>
-      </div>
-    </section>
-
     <nav class="shell fpm-tabs" aria-label="FPM dashboard">
-      <a href="index.html">Overview</a><a href="trends.html">Trends</a>
+      <a href="index.html">Overview</a><a href="predictors.html">Predictors</a><a href="trends.html">Trends</a>
       <a href="evaluation-detail.html">Details</a><a href="3d-visualization.html">3D Visualization</a>
     </nav>
+    <div class="shell evaluation-context">
+      <section id="evaluation-banner" class="evaluation-banner" aria-label="Evaluation snapshot" aria-live="polite">Loading evaluation…</section>
+    </div>
 <main class="shell dashboard" data-view="detail"><h2>Measured workload and prediction error</h2>
 <p id="dashboard-status" role="status">Loading retained evaluations…</p>
 <label class="fpm-wide-control">Evaluation<select id="evaluation-filter"></select></label><section class="fpm-filters" aria-label="Filter measurements">
@@ -93,6 +86,7 @@ SPDX-License-Identifier: Apache-2.0
 <label>Search<input id="search-filter" type="search" placeholder="Configuration, model…"></label>
 <label>Parallelism<select id="parallelism-filter"></select></label><label>Worker role<select id="role-filter"></select></label></section>
 <label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
+<section id="dataset-workload" class="matrix-panel" aria-live="polite"></section>
 <section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
 <section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
 <label>Workload<select id="phase-filter"><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
@@ -100,7 +94,8 @@ SPDX-License-Identifier: Apache-2.0
 <div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
 <section class="matrix-panel table-scroll"><h3>Prediction error</h3><div id="error-heatmap"></div></section></div>
 <p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></main>
-    <script src="./navigation.js" defer></script>
-    <script src="./dashboard.js" defer></script>
+    <script src="./navigation.js?v=collection-parquet-1" defer></script>
+    <script src="./collection.js?v=plain-collection-summary-1" defer></script>
+    <script src="./dashboard.js?v=collection-parquet-1" defer></script>
   </body>
 </html>

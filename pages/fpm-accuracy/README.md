@@ -8,12 +8,39 @@ Details and 3D Visualization are separate tabs with independent controls.
 
 ## What is published
 
-- Overview: expandable model/configuration rows and sortable metrics.
+- Overview: expandable model/configuration rows and one sortable Best MAPE
+  column, with the winning predictor and errors. FPM input links are available
+  in Details rather than table cells.
+  Model rows average their configurations' best MAPEs equally and say
+  “Mixed predictors” when winners differ. Prediction counts, coverage, and
+  contributing configuration counts are omitted from Overview/Predictors table
+  cells; summary cards retain their contributing counts, and Details/Trends
+  retain coverage. The Overall MAPE card averages configuration winners once
+  each, independently of model grouping or collapsed rows.
+- Predictors: the same branch and table layout, with Regression, FPM (KV warmup
+  on), and FPM (KV warmup off) columns. Three cards average each predictor's
+  available configuration MAPEs equally; model table rows retain weighting by
+  successful prediction count. A reference section explains mechanisms and the
+  canonical Python construction, prediction, and regression tuning APIs. Three
+  left-aligned reference cards show each mechanism, input source, and explicit
+  mode, with expandable Python examples including the selected library root.
+  The cards stack on smaller screens and share both dashboard themes. KV
+  warmup selects the collected library, not a prediction-time switch.
+- Averages exclude unavailable/nonfinite MAPEs and show contributing
+  configuration counts. No available MAPE displays as a dash. Best selection
+  compares unrounded values; exact ties prefer Regression, warmup on, then
+  warmup off. Winning a low MAPE does not imply complete prediction coverage.
 - Trends: main-only, rolling 90-day history starting at
   `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
   retains its newest qualified evaluation. Dataset or FPM input changes break
   the series; MAPE is weighted by successful prediction count. Chart labels pair
-  each commit ID with its evaluation date (UTC); tooltips include the time.
+  each commit ID with its evaluation date (UTC). Hover, focus, or tap a sample
+  for a structured tooltip with MAPE, counts, coverage, errors, evaluation time,
+  and short revision IDs. Full revisions remain in accessible point labels.
+  Larger targets and active markers help selection; connecting lines do not
+  intercept sample hover targets. Tooltips stay inside the
+  viewport and dismiss with Escape or when leaving the point and tooltip.
+  The separate trend-values table is removed; the latest phase summary remains.
 - Details: retained branch evaluations, selected FPM inputs, phase summaries,
   measurement-only workload distributions, and prediction-error heatmaps.
   Heatmaps use compact cells and size independently, with scrolling only when
@@ -25,6 +52,54 @@ Details and 3D Visualization are separate tabs with independent controls.
 - Hide configurations with zero measurements and models with no measured
   configurations. Overview counts reflect visible configurations; complete
   evaluation artifacts still retain all configurations.
+- Table headings, model/configuration labels, metrics, and evidence links are
+  left-aligned across Overview, Predictors, Trends phase summaries, and Details.
+- Configuration evidence links use the Hugging Face emoji followed by Configuration.
+- Overview/Predictors configuration rows show the evaluated phases rather than
+  the evaluator's inferred `aggregated` worker role. That role combines phase
+  populations and does not establish an aggregated serving deployment.
+  Each row shows a compact collection type, dataset, and distinct recorded concurrency
+  settings (for example, `4 concurrency settings · 4 / 16 / 32 / 64 session trees`),
+  falling back to the contributing run count when concurrency metadata is absent,
+  rendered as plain muted text. The separate Details link opens the configuration.
+  Collection types are
+  `self_benchmark`, `static_serving`, `trace_replay`, and `unknown`.
+  Benchmark preset (including `inferencex-agentx-mvp`), replay mode, dataset,
+  and serving layout are independent recorded fields. Filenames never classify
+  a workload. Metadata is bundled with its pinned evaluation; legacy evaluations
+  keep missing metadata without fetching newer HF manifests. Overview and
+  Predictors summaries omit Unknown labels and the Test set prefix. When no summary
+  is available, the text reads Dataset and workload. Details retains the missing-data context.
+- Details selects a contributing collection with `collection_run` in the URL.
+  The selector is labeled Concurrency setting when recorded values are available;
+  options lead with concurrency and retain the collection type and capture date.
+  Repeated runs at the same concurrency count as one setting; different concurrency
+  units stay separate. Runs with missing concurrency remain selectable.
+  The default is the earliest run with request metrics, then the earliest known
+  run; unknown dates use stable ID order. Supporting-only runs are not shown.
+  Recorded dataset transformations, worker topology, warmup settings, seed, and
+  request counts accompany the run, grouped into Dataset, Workload, and Collection
+  with aligned label/value rows. A compact summary separates the profiling window,
+  included request count, and warmup/drain exclusions. Groups stack on smaller screens.
+  Section headings use 14px text; summaries, selectors, and availability banners use
+  compact 12–13px text consistent with the metadata rows.
+  Each chart reports its contributing population
+  and unavailable measurements.
+  Four request charts use generated JSON, so the browser needs no Parquet runtime:
+  observed input/output token histograms, interactivity (`1000 / TPOT_ms`), and
+  TTFT in seconds. Time is relative to the selected run's start. Histograms use
+  at most 32 log bins, a separate zero bin, and one bin for constant values.
+  Time charts include request points and rolling P90 over 50 valid requests.
+  Charts use compact cards in a left-aligned, two-column grid capped at 1,000px.
+  They stack on mobile with larger axis labels for the scaled SVG viewport.
+  Only profiling requests enter charts; warmup/drain counts and boundaries remain
+  visible. Missing values stay missing. TPOT derivation requires recorded timing
+  compatibility and at least two output tokens. Self-benchmark runs show Not
+  applicable and retain their existing workload heatmaps. Missing matching request
+  evidence shows one availability banner instead of four empty chart panels;
+  recorded workload settings remain visible. Missing collection metadata also
+  uses a single banner. Percentiles and FPM iterations never stand in for
+  request traces. MAPE and evaluation membership remain unchanged.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
@@ -36,8 +111,17 @@ Details and 3D Visualization are separate tabs with independent controls.
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
 - Dataset configuration and measurement links pinned to the evaluated HF commit.
-- The evaluated AISim commit, HF commit, and UTC completion time. Results are
-  marked stale after 48 hours or when the selected branch has advanced.
+- Every tab uses one left-aligned evaluation box below the tabs:
+  `Daily evaluation · YYYY-MM-DD · Evaluation run · AISim <commit> · HF <revision>`.
+  The date is the evaluation completion date in UTC. All three links belong to
+  that snapshot. Separate schedule headers, evaluated-configuration counts,
+  revision/timestamp lines, and age-based stale warnings are removed.
+- The box follows the loaded snapshot on Overview/Predictors, the selected
+  evaluation on Details, and the newest represented evaluation on filtered
+  Trends. On 3D Visualization it describes the selected branch's latest
+  completed evaluation; the independent measurement catalog still identifies
+  its own HF revision. Loading/unavailable states clear prior snapshot links.
+  Dataset links remain in configuration/measurement evidence as well.
 
 There is no op-based evaluation or FPM Coverage tab.
 FPM variants use the same observations. One winner per KV warmup mode is selected
@@ -93,6 +177,11 @@ directory so that both assets are available.
 
 ## Local checks and smoke evaluation
 
+Dashboard script URLs carry a shared version (`collection-parquet-1`) so returning
+visitors fetch scripts compatible with the unified banner. Bump this version
+across all five tabs when changing shared DOM or navigation APIs. The browser
+check covers a cached 3D script that still references the removed status header.
+
 ```bash
 python -m pip install pytest
 python -m pip install --require-hashes -r scripts/fpm_accuracy/requirements.txt
@@ -121,8 +210,9 @@ node --test tests/test_fpm_accuracy_workflow.mjs
 The overview structure and behavior were adapted from NVIDIA
 [AISim FPM Gym](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym/-/tree/e8221729db2802e822f6919fd68bc2941743385b/dashboard),
 commit `e8221729db2802e822f6919fd68bc2941743385b`, originally
-`dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a three-column
-public overview, qualified branch snapshots, and public-only provenance. The
+`dashboard/index.html` and `dashboard/assets/gym.css`. Modified for a best-MAPE
+overview, a three-column Predictors page (derived from the same overview),
+qualified branch snapshots, and public-only provenance. The
 visual presentation now uses AISimulate's E2E accuracy stylesheet.
 Apache-2.0, with maintainer-confirmed migration permission. The new tabs adapt
 Gym behavior from `f934c030afc3a03cb04d8f3ff4709194f7445c98`; the 3D HTML,

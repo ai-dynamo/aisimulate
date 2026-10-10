@@ -7,7 +7,7 @@
 from collections import Counter, defaultdict
 
 from scripts.fpm_accuracy.hf.models import MeasurementCase, MeasurementObservation
-from scripts.fpm_accuracy.hf.protocols import _json_line, _metric, _open_text, _rank_measurement
+from scripts.fpm_accuracy.hf.protocols import _metric, _rank_measurement, _stream_records
 from scripts.fpm_accuracy.types.forward_pass import ForwardPassIteration, WorkloadKind
 
 POLICY = "diagnostic-file-worker-counter-complete-dp-v1"
@@ -28,12 +28,9 @@ def diagnostic_observations(case: MeasurementCase) -> tuple[list[MeasurementObse
         if file.measurement_file_id not in ids:
             continue
         grouped = defaultdict(list)
-        with _open_text(file.local_path) as handle:
-            for line_number, line in enumerate(handle, 1):
-                if not line.strip():
-                    continue
-                rank = _rank_measurement(_json_line(line, file, line_number), file, line_number)
-                grouped[(rank.worker_id, rank.counter_id)].append((line_number, rank))
+        for source_row, payload in _stream_records(file):
+            rank = _rank_measurement(payload, file, source_row)
+            grouped[(rank.worker_id, rank.counter_id)].append((source_row, rank))
         for (worker, counter), rows in sorted(grouped.items()):
             if len(rows) != len(expected) or {rank.dp_rank for _, rank in rows} != expected:
                 counts["incomplete_duplicate_or_unexpected_rank_group"] += 1
