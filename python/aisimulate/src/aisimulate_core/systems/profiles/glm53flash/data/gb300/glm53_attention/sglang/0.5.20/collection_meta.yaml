@@ -7,32 +7,90 @@ runtime:
 tables:
   glm53_attention_module_perf:
     status: complete
-    rows: 1816
-    data_sha256: f3d0b4a24df3fec427700c67a3b581ff4616c4a5a394c3f836634253dcbb4bd5
+    rows: 2292
+    data_sha256: 008e0561308260ca60705f8ba84f2b7cc32876c49be77fe7d8fc5303a203b25f
     collector: collector.sglang.glm53flash_attention_runner
-    measurement: one real sparse-MLA layer (3); output all-reduce excluded
-    # Measured with request token ids encoded from a text corpus (a
-    # concatenation of this repository's docs/*.md), not the seeded generator
-    # that future collections use (collector/glm53flash_attention_tokens.py).
+    measurement: one real sparse-MLA layer (3); output all-reduce excluded; GPU kernel
+      time only
+    timing_method:
+      context:
+      - cupti_gpu_busy_union_framework_breakable_module_graph_replay
+      generation:
+      - cupti_gpu_busy_union_captured_module_graph_replay
+    notes:
+    - 'IndexPool alignment: every prefill chunk starts on a multiple of 4 (the stock
+      vLLM 0.31.0 defect''s trigger); decode rows keep their true sequence length
+      L (prompt L-1, whose last seeding chunk may end off the pool grid and completes
+      in the tail as in serving).'
+    - Regular rows are collected at the serving context limit 131079; long-context
+      rows (prefill prefix >= 262144, decode x >= 262144, B=1) at the model limit
+      1048576 are table-extrapolation coverage. Each attempt's limit is its max_model_len.
+    - 'Validation: kernel-only rows are 0.93-1.02x (one point 1.105x) the per-layer
+      MLA kernels of the SGLang serving node traces at 8 geometries x 4 deployments.'
     input_tokens:
-      source: repository_docs_text
-      corpus_sha256: a3d68e546dab8276e08e58e3ffaa191bb86d6e4c2d80a086ce72b428a422d3b6
-      corpus_bytes: 1262927
+      source: seeded_random_tokens
+      count: 1179743
+      generator: sha256_counter_rejection
+      generator_version: 1
+      seed: 53
+      tokenizer_json_sha256: 19e773648cb4e65de8660ea6365e10acca112d42a854923df93db4a6f333a82d
+      vocab_high_exclusive: 154820
+      vocab_low: 0
+      vocab_source: pinned tokenizer.json ordinary BPE vocabulary; added/special tokens
+        excluded
     execution_mode:
       fp8-tp2-context: cuda_graph
       fp8-tp2-generation: cuda_graph
       fp8-tp4-context: cuda_graph
       fp8-tp4-generation: cuda_graph
+      nvfp4-tp1-context: cuda_graph
+      nvfp4-tp1-generation: cuda_graph
       nvfp4-tp2-context: cuda_graph
       nvfp4-tp2-generation: cuda_graph
       nvfp4-tp4-context: cuda_graph
       nvfp4-tp4-generation: cuda_graph
     attempts:
-    - attempt: gfull-sglang-fp8-tp2-p1-10fef229f291-10021321
-      manifest_sha256: c858611c7eef38726ed07303e1c3c8b22f76d84357ce641301294d4a2ed30f0e
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp2-b16a-228c0f653293-10091341
+      manifest_sha256: f713ea2c377b176a4b9b910ce28b6696e6b29a7a067708f6b3bc6db11ec2e8db
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp2
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      source_commit: 228c0f65329346c6e6ebd78fbfe7e20caa208009
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.6
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q64-c0
+    - attempt: full-sglang-fp8-tp2-b16b-228c0f653293-10091341
+      manifest_sha256: bac92c83231eccdb6b6af890a9857e9367d4b2e292f72e9d1b9b4e8e440fc3f6
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: 228c0f65329346c6e6ebd78fbfe7e20caa208009
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.6
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+    - attempt: full-sglang-fp8-tp2-b16c-228c0f653293-10091341
+      manifest_sha256: 731556b8e67f27f4b26529a04815a710bfb7cbd0aa30f422e82a640a48641196
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: 228c0f65329346c6e6ebd78fbfe7e20caa208009
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.6
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+    - attempt: full-sglang-fp8-tp2-b1b2-e12adc5a28c2-10082340
+      manifest_sha256: 91190d8edd522db4edd69da17d9741df9e902b916dc013e1a5e978abf88a1a85
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.66
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b1-q1024-c0
       - prefill-b1-q1024-c1
@@ -56,12 +114,6 @@ tables:
       - prefill-b1-q8192-c2
       - prefill-b1-q8192-c3
       - prefill-b1-q8192-c4
-    - attempt: gfull-sglang-fp8-tp2-p2-10fef229f291-10021322
-      manifest_sha256: 7ae5e29515904072a102deb02ab5fcbdbdab54beb2cd9367d7a7ea79d34c297f
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp2
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
-      only_sets:
       - prefill-b2-q1024-c0
       - prefill-b2-q1024-c1
       - prefill-b2-q16-c0
@@ -79,11 +131,29 @@ tables:
       - prefill-b2-q4096-c2
       - prefill-b2-q4096-c3
       - prefill-b2-q64-c0
-    - attempt: gfull-sglang-fp8-tp2-b4-10fef229f291-10021348
-      manifest_sha256: 5c699669fb44cd1cc68886000908bba14d25ccf50b29ea771d78eb5248b1362a
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp2-b32-e12adc5a28c2-10082340
+      manifest_sha256: 8a2007f1ad0c8298a99bbcbbf2035d94498fd1dfe79d47455fdae2081b55e538
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp2
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.655
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-sglang-fp8-tp2-b4-e12adc5a28c2-10082340
+      manifest_sha256: 4fb3dd1a13daa7b52387cb99bcd2b65ffa487037af3f3e225f101a2ff912993b
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.66
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b4-q1024-c0
       - prefill-b4-q1024-c1
@@ -96,11 +166,14 @@ tables:
       - prefill-b4-q512-c0
       - prefill-b4-q512-c1
       - prefill-b4-q64-c0
-    - attempt: gfull-sglang-fp8-tp2-b8-7c5aeb22bf55-10021459
-      manifest_sha256: 58ce2f3dbd13429477312478c3c61e68e1e6df99cdc3b38a6dd4d2bdd6be7ead
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp2-b8-e12adc5a28c2-10082340
+      manifest_sha256: 2cdb4410b9d837002786977995a0a4da27ad9c4b541de492a3c7c2b819db893b
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.58
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b8-q1024-c0
       - prefill-b8-q1024-c1
@@ -110,47 +183,53 @@ tables:
       - prefill-b8-q512-c0
       - prefill-b8-q512-c1
       - prefill-b8-q64-c0
-    - attempt: gfull-sglang-fp8-tp2-b16a-9534f4c5bc58-10021559
-      manifest_sha256: 9d3e2312097df73294fa9b97ed7a57bab97edd9a19bf08b7da610da97accabae
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp2-decr-e85c26d709f0-10090500
+      manifest_sha256: 2ffb2d6a0ee96189d8b8d43eb40857f9c6b3be7e41fe0b0057003ea61e55c9a0
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp2
-      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.7
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-sglang-fp8-tp2-long-e12adc5a28c2-10082341
+      manifest_sha256: 3b0496f8ee6c68a8fe58cd3d6cc4769ca9c3c5c4568e9e3df1ca0b9a152f1dfe
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.655
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-sglang-fp8-tp4-b16-e12adc5a28c2-10082341
+      manifest_sha256: 61526f42fb8c013d859f55bda8e6df4f8635b42e978c788d9afcca6ad4ca39f5
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.36
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b16-q16-c0
-      - prefill-b16-q64-c0
-    - attempt: gfull-sglang-fp8-tp2-b16b-9534f4c5bc58-10021559
-      manifest_sha256: 4b6d2aae7e46850053f4524f7095dd40187a63ed21e500b9327247d1183e0249
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp2
-      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
-      only_sets:
       - prefill-b16-q256-c0
       - prefill-b16-q256-c1
-    - attempt: gfull-sglang-fp8-tp2-b16c-9534f4c5bc58-10021559
-      manifest_sha256: 1dead044b37e4005f1331c754dd0a206ee0984e363ccacfb49853a06e5016a57
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp2
-      source_commit: 9534f4c5bc58f8035206f9dfcebd56781388a004
-      only_sets:
       - prefill-b16-q512-c0
       - prefill-b16-q512-c1
-    - attempt: gfull-sglang-fp8-tp2-b32-7c5aeb22bf55-10021500
-      manifest_sha256: 6d9a083dd54c11c1f75a32d72fc9a8d7cacfdb563f57e78fb8e85ff80a145944
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
-      only_sets:
-      - prefill-b32-q128-c0
-      - prefill-b32-q256-c0
-      - prefill-b32-q256-c1
-      - prefill-b32-q32-c0
-      - prefill-b32-q64-c0
-      - prefill-b32-q8-c0
-    - attempt: gfull-sglang-fp8-tp4-p1-10fef229f291-10021321
-      manifest_sha256: 5de428fadece4eb4ffeb28c8b8d1200db20abdecc5ebdca16f95603b1c88e759
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      - prefill-b16-q64-c0
+    - attempt: full-sglang-fp8-tp4-b1b2-e12adc5a28c2-10082341
+      manifest_sha256: 5e5ea26800b3ca31514b4b2bfc0a2384a73700b2fab786f16fad72d3d17ed00f
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp4
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.42
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b1-q1024-c0
       - prefill-b1-q1024-c1
@@ -174,12 +253,6 @@ tables:
       - prefill-b1-q8192-c2
       - prefill-b1-q8192-c3
       - prefill-b1-q8192-c4
-    - attempt: gfull-sglang-fp8-tp4-p2-10fef229f291-10021322
-      manifest_sha256: 3e021c461edbc611664557cc47c034e1eae04d605bbac986c18c900860195b17
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp4
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
-      only_sets:
       - prefill-b2-q1024-c0
       - prefill-b2-q1024-c1
       - prefill-b2-q16-c0
@@ -197,11 +270,29 @@ tables:
       - prefill-b2-q4096-c2
       - prefill-b2-q4096-c3
       - prefill-b2-q64-c0
-    - attempt: gfull-sglang-fp8-tp4-b4s-7c5aeb22bf55-10021535
-      manifest_sha256: b034526bbd9b2a952f864a9689c8d3ad7f38975544f07fbac1c971ec22f9e6b2
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp4-b32-e12adc5a28c2-10082341
+      manifest_sha256: 4bdb6f19e921ac35ae8af83446e0f96b3e7a9652fdfe658afce56058335bc092
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.4
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-sglang-fp8-tp4-b4-e12adc5a28c2-10082341
+      manifest_sha256: 7cd01c06fd4f292c273bee7804ea0f4f25d71f4ee48f56869831e89c4fe075c4
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.42
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b4-q1024-c0
       - prefill-b4-q1024-c1
@@ -214,11 +305,14 @@ tables:
       - prefill-b4-q512-c0
       - prefill-b4-q512-c1
       - prefill-b4-q64-c0
-    - attempt: gfull-sglang-fp8-tp4-b8s-7c5aeb22bf55-10021535
-      manifest_sha256: 4f5caccc313ab5a5cbfdb8d9a8110b980b21607907ff3a4528801ae92e6761a0
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp4-b8-e12adc5a28c2-10082341
+      manifest_sha256: 09308fda563ec7a97d3bf3a6561386265eb595b1a31c8bbe34a14c5984250dca
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.36
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b8-q1024-c0
       - prefill-b8-q1024-c1
@@ -228,11 +322,211 @@ tables:
       - prefill-b8-q512-c0
       - prefill-b8-q512-c1
       - prefill-b8-q64-c0
-    - attempt: gfull-sglang-fp8-tp4-b16s-7c5aeb22bf55-10021538
-      manifest_sha256: 48e2729ad915e591367f90523511c6993a25996e58ed68a44462de5fe5fa403c
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-fp8-tp4-decr-e85c26d709f0-10090521
+      manifest_sha256: 0662321da21209e60cec52aa242aded37940f421c7d261c7a546b2e3d88d59ed
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: fp8-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.66
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-sglang-fp8-tp4-long-e12adc5a28c2-10082341
+      manifest_sha256: 7378450124c7a49ec3ff325aca3cadc3ee526c3033f31d87d790c001d3139873
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.42
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-sglang-nvfp4-tp1-b16q512c1-44530a743540-10090757
+      manifest_sha256: 7746747a2a462cf901c95cd0c6789485db28c5936d81529f70504fc402fb0481
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: 44530a7435406180d0b30195c44af282ac269496
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q512-c1
+    - attempt: full-sglang-nvfp4-tp1-b1q8k-e12adc5a28c2-10090212
+      manifest_sha256: a8460365022d74a9d54b24fdcd05dd5d2596dedd02b739f2f0b223981906cc2c
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b1-q8192-c0
+      - prefill-b1-q8192-c1
+      - prefill-b1-q8192-c2
+      - prefill-b1-q8192-c3
+      - prefill-b1-q8192-c4
+    - attempt: full-sglang-nvfp4-tp1-b1r-e12adc5a28c2-10090212
+      manifest_sha256: b763104ef4afcd6bd34da0d36150ccddc05cf2df5754ddc4473eb304340965e2
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b1-q1024-c0
+      - prefill-b1-q1024-c1
+      - prefill-b1-q16-c0
+      - prefill-b1-q2048-c0
+      - prefill-b1-q2048-c1
+      - prefill-b1-q2048-c2
+      - prefill-b1-q2052-c0
+      - prefill-b1-q2052-c1
+      - prefill-b1-q2052-c2
+      - prefill-b1-q2052-c3
+      - prefill-b1-q256-c0
+      - prefill-b1-q256-c1
+      - prefill-b1-q4096-c0
+      - prefill-b1-q4096-c1
+      - prefill-b1-q4096-c2
+      - prefill-b1-q4096-c3
+      - prefill-b1-q64-c0
+    - attempt: full-sglang-nvfp4-tp1-b2q4k-e12adc5a28c2-10090340
+      manifest_sha256: b243310135e318abec0ab20e4cc08598226a9be2c5a474ce7cb4b0ce6b30c8cb
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+    - attempt: full-sglang-nvfp4-tp1-b32q256c1-e85c26d709f0-10090752
+      manifest_sha256: 7afa44b24e785823110958271bc02eff7bac7475ff84045b5bf687d38c8ea3e7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q256-c1
+    - attempt: full-sglang-nvfp4-tp1-b4-e85c26d709f0-10090546
+      manifest_sha256: 1b6759f37d71ad6f94165e9cbffe2fd6176c984fb9cfefa4d90ae9021c3691b7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: full-sglang-nvfp4-tp1-b8-e85c26d709f0-10090546
+      manifest_sha256: 5d446ea33b24298fb904646614b4bcbd32ae79f7819d345ba6094d688f1396b8
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-sglang-nvfp4-tp1-decr2-e85c26d709f0-10090546
+      manifest_sha256: 1226f5a78f829617c4e3f0c1570ec674bcb413b3c2381c7e819b439f42eb72ab
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375-901221
+        kv_tokens: 3396928
+        transient_gib: 10.5
+      memory_drops:
+      - key:
+        - generation
+        - 16
+        - 0
+        - 98304
+        reason: mqa logits 12.0 GiB > 10.5 GiB
+        set_id: decode-b16
+      - key:
+        - generation
+        - 16
+        - 0
+        - 131072
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: decode-b16
+      - key:
+        - generation
+        - 32
+        - 0
+        - 65536
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: decode-b32
+      - key:
+        - generation
+        - 32
+        - 0
+        - 98304
+        reason: mqa logits 24.0 GiB > 10.5 GiB
+        set_id: decode-b32
+      - key:
+        - generation
+        - 32
+        - 0
+        - 131072
+        reason: kv 4194304 tokens > pool 3396928; mqa logits 32.0 GiB > 10.5 GiB
+        set_id: decode-b32
+    - attempt: full-sglang-nvfp4-tp1-longdec-long-228c0f653293-10090809
+      manifest_sha256: 7d07eddbbe4a0f34dffc70a576ca8fffc43f832813bb0f2ab8bf1ead67c1ae9e
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: 228c0f65329346c6e6ebd78fbfe7e20caa208009
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+    - attempt: full-sglang-nvfp4-tp2-b16-e12adc5a28c2-10082341
+      manifest_sha256: 718c0defedaeab8bd969e4c5894f46eccc88589a30eed58cbc5fd9be21daf9cd
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.4
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b16-q16-c0
       - prefill-b16-q256-c0
@@ -240,23 +534,14 @@ tables:
       - prefill-b16-q512-c0
       - prefill-b16-q512-c1
       - prefill-b16-q64-c0
-    - attempt: gfull-sglang-fp8-tp4-b32s-7c5aeb22bf55-10021538
-      manifest_sha256: b5b5b921c68a7bf373bbec7127adf1074e423981f4fc12e1729d1d39b7b5532b
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: fp8-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
-      only_sets:
-      - prefill-b32-q128-c0
-      - prefill-b32-q256-c0
-      - prefill-b32-q256-c1
-      - prefill-b32-q32-c0
-      - prefill-b32-q64-c0
-      - prefill-b32-q8-c0
-    - attempt: gfull-sglang-nvfp4-tp2-p1-10fef229f291-10021326
-      manifest_sha256: 30d68ec37928d336b4b6ca73a86e6ad64c4c99c3294f327e2bef69ff8e3933aa
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-nvfp4-tp2-b1b2-e12adc5a28c2-10082341
+      manifest_sha256: cb607bcad607a154130f20e9e6f61884e20c8a16d9f882d26e9aa5b245fcd61f
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp2
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.47
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b1-q1024-c0
       - prefill-b1-q1024-c1
@@ -280,12 +565,6 @@ tables:
       - prefill-b1-q8192-c2
       - prefill-b1-q8192-c3
       - prefill-b1-q8192-c4
-    - attempt: gfull-sglang-nvfp4-tp2-p2-10fef229f291-10021327
-      manifest_sha256: f5577dceb214bc34dadcb9e74af72726ba44e6f7042f29564de49a36dbe6e306
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp2
-      source_commit: 10fef229f291bf4b410c594f6db06d04687fc3ce
-      only_sets:
       - prefill-b2-q1024-c0
       - prefill-b2-q1024-c1
       - prefill-b2-q16-c0
@@ -303,11 +582,29 @@ tables:
       - prefill-b2-q4096-c2
       - prefill-b2-q4096-c3
       - prefill-b2-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp2-b4s-7c5aeb22bf55-10021535
-      manifest_sha256: f763a098d265097581b5f443fa4c3f0741831f188a08498c94c38d2e4a5126e7
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-nvfp4-tp2-b32-e12adc5a28c2-10082341
+      manifest_sha256: aabd47b078f2913833f291bb46456d3518cf43e0057f4b48990c863e5ddee706
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.45
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-sglang-nvfp4-tp2-b4-e12adc5a28c2-10082341
+      manifest_sha256: cf5314c0eb68d90e988b683fac1efae20d273ade81cde86041c3835edb973442
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.4
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b4-q1024-c0
       - prefill-b4-q1024-c1
@@ -320,11 +617,14 @@ tables:
       - prefill-b4-q512-c0
       - prefill-b4-q512-c1
       - prefill-b4-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp2-b8s-7c5aeb22bf55-10021535
-      manifest_sha256: 0481669ce4abe8b36d62737e653c89b390cdb22e307573c116668366332e091f
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-nvfp4-tp2-b8-e12adc5a28c2-10082341
+      manifest_sha256: 974277d37f8b70c07987afffa4b582a071547ff25fc8b15cb73ea189336a9c45
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.4
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b8-q1024-c0
       - prefill-b8-q1024-c1
@@ -334,35 +634,49 @@ tables:
       - prefill-b8-q512-c0
       - prefill-b8-q512-c1
       - prefill-b8-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp2-b16s-7c5aeb22bf55-10021538
-      manifest_sha256: ad79e137b828b17c900c18787ee39e0ecc16325c8ebe3d74c57d5be03596ad87
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-nvfp4-tp2-decr-e85c26d709f0-10090510
+      manifest_sha256: 869d21bbe5b2454e1ef27be5ba01aadcdfd5037bd54f8b97fc7e365f1ae76ce9
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.7
+      allocator_max_split_size_mb: 16384
       only_sets:
-      - prefill-b16-q16-c0
-      - prefill-b16-q256-c0
-      - prefill-b16-q256-c1
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-sglang-nvfp4-tp2-long-e12adc5a28c2-10082341
+      manifest_sha256: 70e186a6988e02ba27bf446d10f9493deee805e8e55a697b19b1828b44f8fe55
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.47
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-sglang-nvfp4-tp4-b16q512-228c0f653293-10091508
+      manifest_sha256: 1d6bdbe6ec8317d02681d4156551a42dd85a44645ff9199f0ae2ea460e707750
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: 228c0f65329346c6e6ebd78fbfe7e20caa208009
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.3
+      allocator_max_split_size_mb: 16384
+      only_sets:
       - prefill-b16-q512-c0
       - prefill-b16-q512-c1
-      - prefill-b16-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp2-b32s-7c5aeb22bf55-10021539
-      manifest_sha256: 2c296a42f08efb7c2783c65c9f2fb2cbd7d0927c2d853c964e48fcbe45666edd
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp2
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
-      only_sets:
-      - prefill-b32-q128-c0
-      - prefill-b32-q256-c0
-      - prefill-b32-q256-c1
-      - prefill-b32-q32-c0
-      - prefill-b32-q64-c0
-      - prefill-b32-q8-c0
-    - attempt: gfull-sglang-nvfp4-tp4-p1-8dc9956dafeb-10021358
-      manifest_sha256: ecab9f31c4965f756d74c3d4d2e6ff954b8be5591bce66597edf3cf920c95642
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+    - attempt: full-sglang-nvfp4-tp4-b1b2-e12adc5a28c2-10082342
+      manifest_sha256: fe40abe64335542b25da65d209a40198a5e9a89cb8151f6894dc4b7e6065ca0b
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp4
-      source_commit: 8dc9956dafeb1c24690121373c0d11ddc827b395
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.3
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b1-q1024-c0
       - prefill-b1-q1024-c1
@@ -386,11 +700,283 @@ tables:
       - prefill-b1-q8192-c2
       - prefill-b1-q8192-c3
       - prefill-b1-q8192-c4
-    - attempt: gfull-sglang-nvfp4-tp4-p2-8dc9956dafeb-10021358
-      manifest_sha256: cc739697457e3036a236442c3215708888dbe58b3706def38db9451b2c6cf0bb
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
+      - prefill-b2-q1024-c0
+      - prefill-b2-q1024-c1
+      - prefill-b2-q16-c0
+      - prefill-b2-q2048-c0
+      - prefill-b2-q2048-c1
+      - prefill-b2-q2048-c2
+      - prefill-b2-q2052-c0
+      - prefill-b2-q2052-c1
+      - prefill-b2-q2052-c2
+      - prefill-b2-q2052-c3
+      - prefill-b2-q256-c0
+      - prefill-b2-q256-c1
+      - prefill-b2-q4096-c0
+      - prefill-b2-q4096-c1
+      - prefill-b2-q4096-c2
+      - prefill-b2-q4096-c3
+      - prefill-b2-q64-c0
+    - attempt: full-sglang-nvfp4-tp4-b32-e12adc5a28c2-10082342
+      manifest_sha256: ef8e51f16d05b4bbac3c8f1831d50a21c33f3161ee5e669047360ae13e2a40c4
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
       deployment: nvfp4-tp4
-      source_commit: 8dc9956dafeb1c24690121373c0d11ddc827b395
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.32
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q128-c0
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      - prefill-b32-q32-c0
+      - prefill-b32-q64-c0
+      - prefill-b32-q8-c0
+    - attempt: full-sglang-nvfp4-tp4-b4-e12adc5a28c2-10082342
+      manifest_sha256: 0d6494715ca64f1d1afb941d8a81a8d7aa5dd16a520c269f1f6e0f7ca9b609d9
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.3
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b4-q1024-c0
+      - prefill-b4-q1024-c1
+      - prefill-b4-q16-c0
+      - prefill-b4-q2048-c0
+      - prefill-b4-q2048-c1
+      - prefill-b4-q2048-c2
+      - prefill-b4-q256-c0
+      - prefill-b4-q256-c1
+      - prefill-b4-q512-c0
+      - prefill-b4-q512-c1
+      - prefill-b4-q64-c0
+    - attempt: full-sglang-nvfp4-tp4-b8-e12adc5a28c2-10082342
+      manifest_sha256: d09c5ab0f9cd3d13ec023687a53c91262cb7d19d5606adeeb81ca2774f9bc776
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.3
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b8-q1024-c0
+      - prefill-b8-q1024-c1
+      - prefill-b8-q16-c0
+      - prefill-b8-q256-c0
+      - prefill-b8-q256-c1
+      - prefill-b8-q512-c0
+      - prefill-b8-q512-c1
+      - prefill-b8-q64-c0
+    - attempt: full-sglang-nvfp4-tp4-decr-e85c26d709f0-10090535
+      manifest_sha256: e8f0e4b0eb7ade87395658ee93d495be03403f84f5f31981b54e07b2d5ccce3a
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.66
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b16
+      - decode-b24
+      - decode-b32
+    - attempt: full-sglang-nvfp4-tp4-long-e12adc5a28c2-10082342
+      manifest_sha256: 96f9b6b780cfe202a25631ef937fcfc8f88051437064f3d992c3e9aaf568d374
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.32
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+    - attempt: full-sglang-fp8-tp2-dec-e12adc5a28c2-10082341
+      manifest_sha256: 880f869d1ee2fd451c0fb42ce3b19e70a2c3dc8236678b83777d6ddd0f5e5e71
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.82
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+      partial:
+        admitted_sets:
+        - decode-b1
+        - decode-b2
+        - decode-b3
+        - decode-b4
+        - decode-b6
+        - decode-b8
+        - decode-b12
+        - decode-b16:10/12
+        failed_sets:
+        - decode-b16
+        superseded_by_complete_attempts: 10
+    - attempt: full-sglang-fp8-tp2-b16-e12adc5a28c2-10082340
+      manifest_sha256: 84a571c6c1f210f9cea673600132bcf01e757dd261cd1077ed2b76f7c3166ff7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.6
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0:8/9
+        failed_sets:
+        - prefill-b16-q256-c0
+        superseded_by_complete_attempts: 28
+    - attempt: full-sglang-fp8-tp4-dec-e12adc5a28c2-10082341
+      manifest_sha256: b7a473a103625c3a0affd5725039e7e74633ab977e9d97eba7e0ec3f0c94ab9c
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: fp8-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.82
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+      partial:
+        admitted_sets:
+        - decode-b1
+        - decode-b2
+        - decode-b3
+        - decode-b4
+        - decode-b6
+        - decode-b8
+        - decode-b12
+        - decode-b16:11/12
+        failed_sets:
+        - decode-b16
+        superseded_by_complete_attempts: 11
+    - attempt: full-sglang-nvfp4-tp2-dec-e12adc5a28c2-10082341
+      manifest_sha256: 16c1f43c52e4b26e7ea28ea03870a42e83b9b00237d23f7256e39afc850c3f30
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp2
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.82
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+      partial:
+        admitted_sets:
+        - decode-b1
+        - decode-b2
+        - decode-b3
+        - decode-b4
+        - decode-b6
+        - decode-b8
+        - decode-b12
+        - decode-b16:10/12
+        failed_sets:
+        - decode-b16
+        superseded_by_complete_attempts: 10
+    - attempt: full-sglang-nvfp4-tp4-dec-e12adc5a28c2-10082342
+      manifest_sha256: f023cbfc67cd87daa85715661892b9e07d38dfc07ab1abc4594b4c5772a36cfd
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.82
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+      partial:
+        admitted_sets:
+        - decode-b1
+        - decode-b2
+        - decode-b3
+        - decode-b4
+        - decode-b6
+        - decode-b8
+        - decode-b12
+        - decode-b16:11/12
+        failed_sets:
+        - decode-b16
+        superseded_by_complete_attempts: 11
+    - attempt: full-sglang-nvfp4-tp4-b16-e12adc5a28c2-10082342
+      manifest_sha256: d9e3bbaf066f7d73c6326bbda3466343d5c45a784f5112755e3100dac459a2d4
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp4
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.3
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q16-c0
+      - prefill-b16-q256-c0
+      - prefill-b16-q256-c1
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      - prefill-b16-q64-c0
+      partial:
+        admitted_sets:
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0
+        - prefill-b16-q256-c1
+        - prefill-b16-q512-c0:1/9
+        failed_sets:
+        - prefill-b16-q512-c0
+        superseded_by_complete_attempts: 1
+    - attempt: full-sglang-nvfp4-tp1-b2r-e12adc5a28c2-10090212
+      manifest_sha256: cb464b59b89edc87ed26831f1e10edd3321b6880afab600dfd096f6e80bb5a69
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b2-q1024-c0
       - prefill-b2-q1024-c1
@@ -409,42 +995,84 @@ tables:
       - prefill-b2-q4096-c2
       - prefill-b2-q4096-c3
       - prefill-b2-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp4-b4s-7c5aeb22bf55-10021539
-      manifest_sha256: 54d88777c17232c9c7f01caaeaf1de61c3787fc820e1aa5e2d3452c2b0cd58a3
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      partial:
+        admitted_sets:
+        - prefill-b2-q16-c0
+        - prefill-b2-q64-c0
+        - prefill-b2-q256-c0
+        - prefill-b2-q256-c1
+        - prefill-b2-q1024-c0
+        - prefill-b2-q1024-c1
+        - prefill-b2-q2048-c0
+        - prefill-b2-q2048-c1
+        - prefill-b2-q2048-c2
+        - prefill-b2-q2052-c0
+        - prefill-b2-q2052-c1
+        - prefill-b2-q2052-c2
+        - prefill-b2-q2052-c3
+        failed_sets:
+        - prefill-b2-q4096-c0
+        superseded_by_complete_attempts: 0
+    - attempt: full-sglang-nvfp4-tp1-dec-e12adc5a28c2-10082342
+      manifest_sha256: a8317398e376bd293eead21ceb8e8a8754402f7feb857494cf8e95f9217a4063
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e12adc5a28c2024e4a92c092d5b31ca5244cfd7d
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
       only_sets:
-      - prefill-b4-q1024-c0
-      - prefill-b4-q1024-c1
-      - prefill-b4-q16-c0
-      - prefill-b4-q2048-c0
-      - prefill-b4-q2048-c1
-      - prefill-b4-q2048-c2
-      - prefill-b4-q256-c0
-      - prefill-b4-q256-c1
-      - prefill-b4-q512-c0
-      - prefill-b4-q512-c1
-      - prefill-b4-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp4-b8s-7c5aeb22bf55-10021539
-      manifest_sha256: f735ba5ea2bd05dd1ca4f6ec2625cdccd7a52dda151b3069891d00b62175b2de
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
-      only_sets:
-      - prefill-b8-q1024-c0
-      - prefill-b8-q1024-c1
-      - prefill-b8-q16-c0
-      - prefill-b8-q256-c0
-      - prefill-b8-q256-c1
-      - prefill-b8-q512-c0
-      - prefill-b8-q512-c1
-      - prefill-b8-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp4-b16s-7c5aeb22bf55-10021539
-      manifest_sha256: 8e46994f91efc7d551f4ff05cd4f061e29fa2a4d5fcf75ef50434b78627a7224
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      - decode-b1
+      - decode-b12
+      - decode-b16
+      - decode-b2
+      - decode-b24
+      - decode-b3
+      - decode-b32
+      - decode-b4
+      - decode-b6
+      - decode-b8
+      partial:
+        admitted_sets:
+        - decode-b1
+        - decode-b2
+        - decode-b3
+        - decode-b4
+        - decode-b6
+        - decode-b8
+        - decode-b12
+        - decode-b16:10/12
+        failed_sets:
+        - decode-b16
+        superseded_by_complete_attempts: 10
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375
+        kv_tokens: 3396928
+        transient_gib: 18.0
+      memory_drops:
+      - key:
+        - generation
+        - 32
+        - 0
+        - 98304
+        reason: mqa logits 24.0 GiB > 18.0 GiB
+        set_id: decode-b32
+      - key:
+        - generation
+        - 32
+        - 0
+        - 131072
+        reason: kv 4194304 tokens > pool 3396928; mqa logits 32.0 GiB > 18.0 GiB
+        set_id: decode-b32
+    - attempt: full-sglang-nvfp4-tp1-b16-e85c26d709f0-10090546
+      manifest_sha256: 5283e164e8a95d40ba6e7498a03d91696305f0724f802ff67af95f33a05b738c
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b16-q16-c0
       - prefill-b16-q256-c0
@@ -452,11 +1080,88 @@ tables:
       - prefill-b16-q512-c0
       - prefill-b16-q512-c1
       - prefill-b16-q64-c0
-    - attempt: gfull-sglang-nvfp4-tp4-b32s-7c5aeb22bf55-10021539
-      manifest_sha256: 85a6f352d4e961f84181e5708dc58950847d071dd1865bd2ba4909591e4ea058
-      plan_sha256: 7aa5582c70a9e03d601cdd19e3dc7792a2bb39834b68ac8d1091857959020b9c
-      deployment: nvfp4-tp4
-      source_commit: 7c5aeb22bf5549e819b3dd1af4d035130f8d8590
+      partial:
+        admitted_sets:
+        - prefill-b16-q16-c0
+        - prefill-b16-q64-c0
+        - prefill-b16-q256-c0
+        - prefill-b16-q256-c1
+        - prefill-b16-q512-c0:7/8
+        failed_sets:
+        - prefill-b16-q512-c0
+        superseded_by_complete_attempts: 0
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375-901221
+        kv_tokens: 3396928
+        transient_gib: 10.5
+      memory_drops:
+      - key:
+        - context
+        - 16
+        - 98304
+        - 16
+        reason: mqa logits 12.0 GiB > 10.5 GiB
+        set_id: prefill-b16-q16-c0
+      - key:
+        - context
+        - 16
+        - 98304
+        - 64
+        reason: mqa logits 12.0 GiB > 10.5 GiB
+        set_id: prefill-b16-q64-c0
+      - key:
+        - context
+        - 16
+        - 98304
+        - 256
+        reason: mqa logits 12.0 GiB > 10.5 GiB
+        set_id: prefill-b16-q256-c0
+      - key:
+        - context
+        - 16
+        - 98304
+        - 512
+        reason: mqa logits 12.1 GiB > 10.5 GiB
+        set_id: prefill-b16-q512-c0
+    - attempt: full-sglang-nvfp4-tp1-b16q512-e85c26d709f0-10090733
+      manifest_sha256: 6748af53b4ba1d1d72fef5fab4b0295322b2b90be23660463bd2e9656e7dd8c1
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b16-q512-c0
+      - prefill-b16-q512-c1
+      partial:
+        admitted_sets:
+        - prefill-b16-q512-c0:7/8
+        failed_sets:
+        - prefill-b16-q512-c0
+        superseded_by_complete_attempts: 7
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375-901221
+        kv_tokens: 3396928
+        transient_gib: 10.5
+      memory_drops:
+      - key:
+        - context
+        - 16
+        - 98304
+        - 512
+        reason: mqa logits 12.1 GiB > 10.5 GiB
+        set_id: prefill-b16-q512-c0
+    - attempt: full-sglang-nvfp4-tp1-b32-e85c26d709f0-10090546
+      manifest_sha256: 279e46d9f1b865a897fc17cf343201ce71a5dfb8d4330acbd16051771f1016d2
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
       only_sets:
       - prefill-b32-q128-c0
       - prefill-b32-q256-c0
@@ -464,8 +1169,191 @@ tables:
       - prefill-b32-q32-c0
       - prefill-b32-q64-c0
       - prefill-b32-q8-c0
-    - attempt: kept:sglang.parquet
-      data_sha256: f481daa8e4d1c6ba7f96982c961ce210c19c77c5dac2863faf4c07fe60d5b83b
-      rows: 416
-      phases:
-      - generation
+      partial:
+        admitted_sets:
+        - prefill-b32-q8-c0
+        - prefill-b32-q32-c0
+        - prefill-b32-q64-c0
+        - prefill-b32-q128-c0
+        - prefill-b32-q256-c0:3/7
+        failed_sets:
+        - prefill-b32-q256-c0
+        superseded_by_complete_attempts: 0
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375-901221
+        kv_tokens: 3396928
+        transient_gib: 10.5
+      memory_drops:
+      - key:
+        - context
+        - 32
+        - 65536
+        - 8
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q8-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 8
+        reason: mqa logits 24.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q8-c0
+      - key:
+        - context
+        - 32
+        - 65536
+        - 32
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q32-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 32
+        reason: mqa logits 24.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q32-c0
+      - key:
+        - context
+        - 32
+        - 65536
+        - 64
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q64-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 64
+        reason: mqa logits 24.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q64-c0
+      - key:
+        - context
+        - 32
+        - 65536
+        - 128
+        reason: mqa logits 16.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q128-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 128
+        reason: mqa logits 24.0 GiB > 10.5 GiB
+        set_id: prefill-b32-q128-c0
+      - key:
+        - context
+        - 32
+        - 65536
+        - 256
+        reason: mqa logits 16.1 GiB > 10.5 GiB
+        set_id: prefill-b32-q256-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 256
+        reason: mqa logits 24.1 GiB > 10.5 GiB
+        set_id: prefill-b32-q256-c0
+    - attempt: full-sglang-nvfp4-tp1-b32q256-e85c26d709f0-10090730
+      manifest_sha256: 68369056dc494c3bb92170128ef764c1b0fe0fdcbbb882459b0d795f615e4d4e
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 131079
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - prefill-b32-q256-c0
+      - prefill-b32-q256-c1
+      partial:
+        admitted_sets:
+        - prefill-b32-q256-c0:5/7
+        failed_sets:
+        - prefill-b32-q256-c0
+        superseded_by_complete_attempts: 3
+      memory_budget:
+        device_gib: 276.6
+        evidence: jobs-867530-867891-870375-901221
+        kv_tokens: 3396928
+        transient_gib: 10.5
+      memory_drops:
+      - key:
+        - context
+        - 32
+        - 65536
+        - 256
+        reason: mqa logits 16.1 GiB > 10.5 GiB
+        set_id: prefill-b32-q256-c0
+      - key:
+        - context
+        - 32
+        - 98304
+        - 256
+        reason: mqa logits 24.1 GiB > 10.5 GiB
+        set_id: prefill-b32-q256-c0
+    - attempt: full-sglang-nvfp4-tp1-long-e85c26d709f0-10090546
+      manifest_sha256: 8a1566e7c55573bbbe05751711bf2df328defc5e3a81fd922d4f44345c2decf7
+      plan_sha256: 409dd861ce4523e497f8c7404b138306b04705eb7d71e2cce7d2e3f95d8627cb
+      deployment: nvfp4-tp1
+      source_commit: e85c26d709f0cd636f9fa4a5513784cde316d755
+      max_model_len: 1048576
+      sglang_mem_fraction_static: 0.74
+      allocator_max_split_size_mb: 16384
+      only_sets:
+      - long-decode-b1
+      - long-prefill-b1-q1024-c0
+      - long-prefill-b1-q8192-c0
+      partial:
+        admitted_sets:
+        - long-prefill-b1-q1024-c0
+        - long-prefill-b1-q8192-c0:2/3
+        failed_sets:
+        - long-prefill-b1-q8192-c0
+        superseded_by_complete_attempts: 0
+    classified_failures:
+    - deployment: nvfp4-tp1
+      key:
+      - context
+      - 32
+      - 16384
+      - 256
+      reason: OOM in the probe's module capture after B32 seeding (18.8 GiB reserved-unallocated
+        at --mem-fraction-static 0.74, KV pool 3.4M tokens); reproduced in a fresh
+        process
+      evidence:
+      - slurm 903194 (after 35 targets)
+      - slurm 903558 (fresh process, after 5 targets)
+    - deployment: nvfp4-tp1
+      key:
+      - context
+      - 32
+      - 32768
+      - 256
+      reason: 'unreachable: follows prefix 16384 in the same request chain, which
+        OOMs reproducibly; larger context needs more memory'
+      evidence:
+      - slurm 903194
+      - slurm 903558
+    - deployment: nvfp4-tp1
+      key:
+      - context
+      - 16
+      - 65536
+      - 512
+      reason: OOM (256 MiB, 18.6 GiB reserved-unallocated) after B16 seeding to 64K
+        at --mem-fraction-static 0.74; reproduced in a fresh process
+      evidence:
+      - slurm 903234 (after 34 targets)
+      - slurm 903647 (fresh process, after 7 targets)
+    - deployment: nvfp4-tp1
+      key:
+      - context
+      - 1
+      - 1032192
+      - 8192
+      reason: OOM (64 MiB, 18.3 GiB reserved-unallocated) at the ~1M long-context
+        B1 x8192 step; the fresh-process retry OOMed earlier in the same chain
+      evidence:
+      - slurm 903766
+      - slurm 904927

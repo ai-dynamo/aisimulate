@@ -1,31 +1,34 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Worker-side probe for the vLLM GLM-5.3-Flash attention collector.
+"""Worker-side probe for the vLLM GLM-5.3-Flash attention collector (stock vLLM 0.31.0).
 
 Loaded in every vLLM worker through vLLM's own general-plugin entry point
 (``vllm/plugins/__init__.py`` ``load_general_plugins``; called by
 ``v1/worker/worker_base.py`` before the model is built). It is inert unless
 ``GLM53_W4_MANIFEST`` is set by ``glm53flash_attention_runner``.
 
-Boundary: ``Glm5NextMLAAttention.forward`` (models/glm5next/nvidia/attention.py)
-of one layer, i.e. the MLA wrapper including the IndexPool indexer and
-``o_proj``. vLLM's ``o_proj`` is a ``RowParallelLinear`` whose
-``reduce_results`` flag owns the attention-output all-reduce; the model itself
-turns that flag off for sequence parallelism (models/glm5next/nvidia/model.py,
-Glm5NextDecoderLayer.__init__). Measured repetitions run with the flag off so
-the collective is excluded; the real forward call restores it.
+Boundary: ``Glm5NextMLAAttention.forward`` (models/glm5next/common/
+attention.py:598-602) of one layer, i.e. the MLA wrapper including the
+IndexPool indexer and ``o_proj``. vLLM's ``o_proj`` is a ``RowParallelLinear``
+whose ``reduce_results`` flag owns the attention-output all-reduce; the model
+itself turns that flag off for sequence parallelism (models/glm5next/common/
+model.py:368-370). Measured repetitions run with the flag off so the
+collective is excluded.
 
-Graph-mode prefill (revision 2): serving runs prefill steps through vLLM's
-breakable PIECEWISE graphs (v1/worker/gpu/cudagraph_utils.py run_pw_graph ->
-compilation/breakable_cudagraph.py BreakableCUDAGraphWrapper). The custom ops
-decorated with ``eager_break_during_capture`` -- the IndexPool indexer
-(model_executor/layers/sparse_attn_indexer_kpool.py) and the MLA attention op
-(model_executor/layers/attention/mla_attention.py) -- run eagerly against the
-step's forward context; every other kernel of the module replays from captured
-segments. The probe records the module's capture-time inputs per PIECEWISE
-size, witnesses the real step's run_pw_graph, then captures the module alone
-with the same BreakableCUDAGraphCapture under that step's forward context and
-replays it.
+Execution (serving default ``FULL_AND_PIECEWISE`` with the deployment's capture
+sizes): prefill steps replay vLLM's breakable PIECEWISE graphs
+(v1/worker/gpu/cudagraph_utils.py:552-557 ``run_pw_graph`` ->
+compilation/breakable_cudagraph.py ``BreakableCUDAGraphWrapper``). The custom
+ops decorated with ``eager_break_during_capture`` -- the IndexPool indexer
+(models/glm5next/nvidia/sparse_indexer.py:93) and the MLA attention op
+(model_executor/layers/attention/mla_attention.py:1466) -- run eagerly against
+the step's forward context; every other kernel of the module replays from
+captured segments. Uniform decode batches replay FULL graphs
+(cudagraph_utils.py:531-545 and 751-764 ``run_fullgraph``). The probe records
+the module's capture-time inputs per graph size, witnesses the real step's
+framework replay, then captures the module alone with the same capture
+mechanism under that step's forward context and times its replays with
+``KernelTimer`` (GPU kernel time only).
 """
 
 from __future__ import annotations
@@ -39,23 +42,21 @@ STATE = SimpleNamespace(
     probe=None,
     writer=None,
     options=None,
-    armed=None,
-    done=None,
     full_replays=0,
     last_full_tokens=None,
     pw_replays=0,
     last_pw=None,
-    error=None,
 )
 
 
 def register() -> None:
     """vLLM general-plugin entry point (runs in every vLLM process).
 
-    vLLM 0.30.0 workers use the V2 model runner (v1/worker/gpu_worker.py
+    vLLM 0.31.0 workers use the V2 model runner by default (config/vllm.py:701
     ``use_v2_model_runner``; v1/worker/gpu/model_runner.py). Its
-    ``capture_model`` drives ``ModelCudaGraphManager.capture`` (FULL decode
-    graphs), so the probe is installed immediately before it.
+    ``capture_model`` (model_runner.py:1019) drives
+    ``ModelCudaGraphManager.capture`` (FULL and breakable PIECEWISE graphs),
+    so the probe is installed immediately before it.
     """
     if not os.environ.get("GLM53_W4_MANIFEST"):
         return
@@ -135,18 +136,14 @@ def validate_attention(attention, manifest, model_runner) -> None:
         "index_head_dim": (indexer.head_dim, expected["index_head_dim"]),
         "index_topk": (indexer.topk_tokens, expected["index_topk"]),
         "index_kpool": (indexer.index_kpool, expected["index_pool"]),
-        "o_proj.reduce_results": (bool(attention.o_proj.reduce_results), expected["tp_size"] > 1),
-        "cudagraph_mode": (
-            model_runner.vllm_config.compilation_config.cudagraph_mode.name,
-            "FULL_AND_PIECEWISE"
-            if manifest.get("prefill_execution") == "framework_breakable_cuda_graph"
-            else "FULL_DECODE_ONLY",
-        ),
+        # Only sequence parallelism turns the flag off (common/model.py:368-370).
+        "o_proj.reduce_results": (bool(attention.o_proj.reduce_results), True),
+        "cudagraph_mode": (model_runner.vllm_config.compilation_config.cudagraph_mode.name, "FULL_AND_PIECEWISE"),
     }
     for name, (actual, wanted) in checks.items():
         if actual != wanted:
             raise RuntimeError(f"loaded attention {name}={actual!r}, contract expects {wanted!r}")
-    # models/glm5next/nvidia/model.py builds MLA with quant_config=None.
+    # models/glm5next/common/model.py:318-334 builds MLA with quant_config=None.
     for name in ("fused_qkv_a_proj", "q_b_proj", "kv_b_proj", "o_proj"):
         method = type(getattr(attention, name).quant_method).__name__
         if method != "UnquantizedLinearMethod" or expected["projection_quant_mode"] != "bfloat16":
@@ -180,12 +177,6 @@ class Probe:
         self.source = kernel_source(attention)
         attention.forward = self.forward
 
-    def _metadata(self):
-        from vllm.forward_context import get_forward_context
-
-        attn_metadata = get_forward_context().attn_metadata
-        return attn_metadata[self.attention.indexer.k_cache.prefix]
-
     def forward(self, hidden_states, positions):
         torch = self.torch
         from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture
@@ -204,59 +195,11 @@ class Probe:
                 hidden_states=hidden_states, positions=positions, context=get_forward_context()
             )
             return self.original(hidden_states, positions)
-        target = STATE.armed
-        if target is None or target["phase"] != "context" or not isinstance(get_forward_context().attn_metadata, dict):
-            return self.original(hidden_states, positions)
-        metadata = self._metadata()
-        requests = metadata.num_decodes + metadata.num_prefills
-        observed = {
-            "requests": requests,
-            "tokens": int(hidden_states.shape[0]),
-            "seq_lens": sorted(set(int(v) for v in metadata.seq_lens[:requests].tolist())),
-        }
-        expected = {
-            "requests": target["batch_size"],
-            "tokens": target["batch_size"] * target["x"],
-            "seq_lens": [target["prefix"] + target["x"]],
-        }
-        if observed != expected:
-            STATE.error = f"framework batch {observed} differs from planned target {expected}"
-            raise RuntimeError(STATE.error)
-        # The indexer may classify short uniform queries as decode rows
-        # (v1/attention/backends/mla/indexer.py decode_threshold); record it.
-        classification = {"num_decodes": metadata.num_decodes, "num_prefills": metadata.num_prefills}
-        from collector.glm53flash_attention_runtime import EventTimer
-
-        options = STATE.options
-        o_proj = self.attention.o_proj
-        reduce = o_proj.reduce_results
-        timer = EventTimer(torch)
-        outputs = []
-        o_proj.reduce_results = False
-        try:
-            for _ in range(options["warmup"] + options["iterations"]):
-                outputs.append(timer(lambda: self.original(hidden_states, positions)))
-        finally:
-            o_proj.reduce_results = reduce
-        latencies = timer.read()
-        host = [round(v, 4) for v in timer.host_ms[STATE.options["warmup"] :]]
-        finite = all(bool(torch.isfinite(o).all().item()) for o in outputs)
-        drift = float((outputs[-1].float() - outputs[0].float()).abs().max().item())
-        STATE.writer.samples(
-            target,
-            latencies,
-            options["warmup"],
-            self.source,
-            {"finite": finite, "repeat_max_abs_diff": drift, "host_enqueue_ms": host, **classification},
-        )
-        if not finite:
-            STATE.error = f"nonfinite attention output for {target['target_id']}"
-            raise RuntimeError(STATE.error)
-        STATE.done = target["target_id"]
         return self.original(hidden_states, positions)
 
     def measure_decode(self, target: dict, replays_before: int) -> dict:
         torch = self.torch
+        from collector.glm53flash_attention_runtime import time_replays
         from vllm.forward_context import override_forward_context
 
         batch = target["batch_size"]
@@ -285,20 +228,14 @@ class Probe:
                     output = self.original(record.hidden_states, record.positions)
         finally:
             o_proj.reduce_results = reduce
-        from collector.glm53flash_attention_runtime import EventTimer
-
-        timer = EventTimer(torch)
-        for _ in range(options["warmup"] + options["iterations"]):
-            timer(graph.replay)
-        latencies = timer.read()
-        host = [round(v, 4) for v in timer.host_ms[STATE.options["warmup"] :]]
+        latencies, timing = time_replays(torch, graph.replay, options["warmup"], options["iterations"])
         finite = bool(torch.isfinite(output[:batch]).all().item())
         STATE.writer.samples(
             target,
             latencies,
             options["warmup"],
             self.source,
-            {"finite": finite, "padded_tokens": padded, "host_enqueue_ms": host},
+            {"finite": finite, "padded_tokens": padded, "prefill_chunk_starts": target["chunk_starts"], **timing},
         )
         del graph
         if not finite:
@@ -308,8 +245,7 @@ class Probe:
 
 def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
     torch = probe.torch
-    from collector.glm53flash_attention_contract import GRAPH_PREFILL
-    from collector.glm53flash_attention_runtime import EventTimer
+    from collector.glm53flash_attention_runtime import time_replays
     from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture
     from vllm.config import CUDAGraphMode
     from vllm.forward_context import override_forward_context
@@ -340,13 +276,9 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
             with torch.cuda.stream(torch.cuda.Stream()), capture:
                 output = probe.original(record.hidden_states, record.positions)
             torch.cuda.synchronize()
-            timer = EventTimer(torch)
-            for _ in range(options["warmup"] + options["iterations"]):
-                timer(capture.replay)
-            latencies = timer.read()
+            latencies, timing = time_replays(torch, capture.replay, options["warmup"], options["iterations"])
     finally:
         o_proj.reduce_results = reduce
-    host = [round(v, 4) for v in timer.host_ms[options["warmup"] :]]
     finite = bool(torch.isfinite(output[:tokens]).all().item())
     STATE.writer.samples(
         target,
@@ -359,9 +291,11 @@ def _measure_prefill(probe, target: dict, replays_before: int) -> dict:
             "reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
             "segments": capture.num_graphs,
             "eager_breaks": capture.num_eager_breaks,
-            "host_enqueue_ms": host,
+            # vLLM 0.31.0 corrupts unaligned chunk starts: every chunk of this
+            # request set started on a multiple of 4 (checked by the driver).
+            "prefill_chunk_starts": target["chunk_starts"],
+            **timing,
         },
-        timing_method=GRAPH_PREFILL,
     )
     probe.keepalive = capture
     del capture, output
@@ -388,14 +322,8 @@ def rpc_setup(worker, output: str, key_base: dict, provenance: dict, options: di
     }
 
 
-def rpc_arm(worker, target: dict | None) -> None:
-    STATE.armed, STATE.done, STATE.error = target, None, None
-
-
 def rpc_status(worker) -> dict:
     return {
-        "done": STATE.done,
-        "error": STATE.error,
         "full_replays": STATE.full_replays,
         "pw_replays": STATE.pw_replays,
     }

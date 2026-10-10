@@ -1,25 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Time one real GLM-5.3-Flash sparse-MLA layer standalone on vLLM 0.30.0+glm53tail.
+"""Time one real GLM-5.3-Flash sparse-MLA layer standalone on stock vLLM 0.31.0.
 
 The checkpoint is built by vLLM's own ``LLM`` engine (model builder, KV/IndexPool
 and retained-tail cache allocation, scheduler and metadata builders) with the
 pinned serving configuration. The in-process engine core (``VLLM_ENABLE_V1_
 MULTIPROCESSING=0``, v1/engine/core_client.py InprocClient) lets this driver
 set, before each step, the scheduler's per-step token budget
-(``Scheduler.max_num_scheduled_tokens``) and per-request chunk
-(``SchedulerConfig.long_prefill_token_threshold``, v1/core/sched/scheduler.py)
-so B homogeneous requests advance in lockstep. Those two knobs only decide how
-real requests are batched; every KV/IndexPool slot and metadata field is still
-produced by vLLM. The worker probe (``glm53flash_attention_worker``) times the
-module. See ``collector/README.glm53flash_attention.md``.
+(``Scheduler.max_num_scheduled_tokens``, v1/core/sched/scheduler.py:132-136,
+582) and per-request chunk (``SchedulerConfig.long_prefill_token_threshold``,
+scheduler.py:611-626, 679-680; ignored for a lone request, which the budget
+then bounds) so B homogeneous requests advance in lockstep. Those two knobs
+only decide how real requests are batched; every KV/IndexPool slot and
+metadata field is still produced by vLLM. The worker probe
+(``glm53flash_attention_worker``) times the module.
 
-Graph mode: serving resolved ``cudagraph_mode=FULL_AND_PIECEWISE`` with capture
-sizes up to 64 tokens. Pure decode batches replay FULL graphs there; this
-collector uses ``FULL_DECODE_ONLY``, which captures the same FULL uniform-decode
-graphs but runs every prefill/mixed step eagerly (serving also runs >64-token
-steps eagerly; <=64-token prefill steps use breakable piecewise graphs in
-serving and are therefore eager-overestimated here, see README).
+IndexPool alignment: stock 0.31.0 leaves the boundary pool of a prefill chunk
+that starts off the 4-token pool grid unwritten or fills it with another
+request's tokens (models/glm5next/nvidia/sparse_indexer.py:47-90
+``_kpool_compress_insert``, "Assumes pool-aligned chunk starts"). Every planned
+chunk starts on a multiple of 4 (contract ``seed_chunk``; aligned targets); the
+driver checks every scheduled prefill chunk and raises ``KpoolAlignmentError``
+before an unaligned one could run, and records the chunk starts per target.
+
+Graph mode: the serving default ``FULL_AND_PIECEWISE`` with the deployment's
+capture sizes: uniform decode batches replay FULL graphs and prefill steps up
+to 8192 tokens replay breakable PIECEWISE graphs. See
+``collector/README.glm53flash_attention.md``.
 """
 
 from __future__ import annotations
@@ -33,10 +40,15 @@ import traceback
 from pathlib import Path
 
 from collector.glm53flash_attention_contract import (
+    KPOOL_ALIGN,
     RUNTIME_VERSIONS,
     build_plan,
     geometry,
+    queued_plan,
     representative_layer_is_uniform,
+    selected_max_model_len,
+    selected_plan,
+    unaligned_targets,
 )
 from collector.glm53flash_attention_runtime import (
     config_sha256,
@@ -59,8 +71,12 @@ def write_plugin(directory: Path) -> Path:
     return directory
 
 
+class KpoolAlignmentError(RuntimeError):
+    """A vLLM prefill chunk would start off the IndexPool grid (stock 0.31.0 defect)."""
+
+
 class Driver:
-    def __init__(self, llm, plan, tokens, output, graph_prefill=False):
+    def __init__(self, llm, plan, tokens, output):
         self.llm = llm
         self.engine = llm.llm_engine
         self.scheduler = self.engine.engine_core.engine_core.scheduler
@@ -68,7 +84,7 @@ class Driver:
         self.tokens = tokens
         self.output = output
         self.counter = 0
-        self.graph_prefill = graph_prefill
+        self.chunk_starts: set[int] = set()
 
     def rpc(self, name, *args):
         from collector.vllm import glm53flash_attention_worker as worker
@@ -86,8 +102,17 @@ class Driver:
         self.scheduler.scheduler_config.long_prefill_token_threshold = chunk
 
     def _step(self, prefix, batch, expected_computed):
+        """One engine step whose prefill chunks must all start on the pool grid."""
+        before = {r.request_id: (r.num_computed_tokens, r.num_prompt_tokens) for r in self._requests(prefix)}
+        unaligned = sorted({c for c, prompt in before.values() if c < prompt and c % KPOOL_ALIGN})
+        if unaligned:
+            raise KpoolAlignmentError(f"prefill chunk would start at {unaligned} (not a multiple of {KPOOL_ALIGN})")
         self.engine.step()
-        state = [r.num_computed_tokens for r in self._requests(prefix)]
+        after = {r.request_id: r.num_computed_tokens for r in self._requests(prefix)}
+        for request, (computed, prompt) in before.items():
+            if computed < prompt and after.get(request, prompt) > computed:
+                self.chunk_starts.add(computed)
+        state = list(after.values())
         if expected_computed is not None and state and state != [expected_computed] * batch:
             raise RuntimeError(f"requests computed {state}, planned {expected_computed}")
 
@@ -101,6 +126,7 @@ class Driver:
                 {"prompt_token_ids": request_tokens(self.tokens, request, length)},
                 params,
             )
+        self.chunk_starts = set()
 
     def _seed(self, prefix, batch, chunk, start, end):
         computed = start
@@ -121,48 +147,21 @@ class Driver:
         for value in request_set["targets"]:
             started = time.monotonic()
             computed = self._seed(prefix, batch, request_set["seed_chunk"], computed, value)
+            self._budget(batch, query)
+            replays = {s["pw_replays"] for s in self.rpc("rpc_status")}
+            if len(replays) != 1:
+                raise RuntimeError(f"workers disagree on PIECEWISE replay counts {replays}")
+            final = value + query == last
+            self._step(prefix, batch, None if final else value + query)
             target = {
                 "phase": "context",
                 "batch_size": batch,
                 "prefix": value,
                 "x": query,
                 "target_id": target_id("context", batch, value, query),
+                "chunk_starts": sorted(self.chunk_starts),
             }
-            self._budget(batch, query)
-            if self.graph_prefill:
-                replays = {s["pw_replays"] for s in self.rpc("rpc_status")}
-                if len(replays) != 1:
-                    raise RuntimeError(f"workers disagree on PIECEWISE replay counts {replays}")
-                self.engine.step()
-                if value + query != last:
-                    state = [r.num_computed_tokens for r in self._requests(prefix)]
-                    if state != [value + query] * batch:
-                        raise RuntimeError(f"target step computed {state}, planned {value + query}")
-                result = self.rpc("rpc_measure_prefill", target, replays.pop())
-                computed = value + query
-                progress(
-                    {
-                        "set_id": request_set["set_id"],
-                        "target_id": target["target_id"],
-                        "elapsed_seconds": time.monotonic() - started,
-                        "status": "passed",
-                        "rpc": result,
-                    }
-                )
-                continue
-            self.rpc("rpc_arm", target)
-            try:
-                final = value + query == last
-                self.engine.step()
-                if not final:
-                    state = [r.num_computed_tokens for r in self._requests(prefix)]
-                    if state != [value + query] * batch:
-                        raise RuntimeError(f"target step computed {state}, planned {value + query}")
-            finally:
-                status = self.rpc("rpc_status")
-                self.rpc("rpc_arm", None)
-            if any(s["done"] != target["target_id"] for s in status):
-                raise RuntimeError(f"probe did not measure {target['target_id']}: {status}")
+            result = self.rpc("rpc_measure_prefill", target, replays.pop())
             computed = value + query
             progress(
                 {
@@ -170,6 +169,8 @@ class Driver:
                     "target_id": target["target_id"],
                     "elapsed_seconds": time.monotonic() - started,
                     "status": "passed",
+                    "chunk_starts": target["chunk_starts"],
+                    "rpc": result,
                 }
             )
         if self.engine.has_unfinished_requests():
@@ -189,6 +190,7 @@ class Driver:
                 "prefix": 0,
                 "x": length,
                 "target_id": target_id("generation", batch, 0, length),
+                "chunk_starts": sorted(self.chunk_starts),
             }
             self._budget(batch, request_set["seed_chunk"])
             before = [r.num_computed_tokens for r in self._requests(prefix)]
@@ -197,7 +199,7 @@ class Driver:
             replays = {s["full_replays"] for s in self.rpc("rpc_status")}
             if len(replays) != 1:
                 raise RuntimeError(f"workers disagree on FULL replay counts {replays}")
-            self.engine.step()
+            self._step(prefix, batch, None)
             result = self.rpc("rpc_measure_decode", target, replays.pop())
             if self.engine.has_unfinished_requests():
                 raise RuntimeError("decode request set did not finish after its measured step")
@@ -207,6 +209,7 @@ class Driver:
                     "target_id": target["target_id"],
                     "elapsed_seconds": time.monotonic() - started,
                     "status": "passed",
+                    "chunk_starts": target["chunk_starts"],
                     "rpc": result,
                 }
             )
@@ -233,6 +236,9 @@ def main():
         if options.only_sets and sorted(options.only_sets) != manifest["only_sets"]:
             raise ValueError("--only-sets differs from the manifest selection")
         options.only_sets = manifest["only_sets"]
+    unaligned = unaligned_targets(selected_plan(manifest))
+    if unaligned:
+        raise KpoolAlignmentError(f"kpool_align4: planned prefill chunks off the pool grid {unaligned[:6]}")
     output = Path(options.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     if any(output.glob("rank-*.jsonl")) or (output / "COMPLETE").exists():
@@ -263,18 +269,18 @@ def main():
         raise RuntimeError(f"vllm {installed}/{vllm.__version__} is not the pinned {RUNTIME_VERSIONS['vllm']}")
     from vllm import LLM
 
-    graph_prefill = manifest.get("prefill_execution") == "framework_breakable_cuda_graph"
-    if graph_prefill:
-        # Serving default FULL_AND_PIECEWISE (breakable CUDA graph auto-enabled
-        # under CompilationMode.NONE) with the deployment's 62 capture sizes.
-        compilation_config = {"cudagraph_capture_sizes": manifest["serving_graph"]["vllm_cudagraph_capture_sizes"]}
-    else:
-        compilation_config = {"cudagraph_mode": "FULL_DECODE_ONLY"}
+    # Serving default FULL_AND_PIECEWISE (breakable CUDA graph under
+    # CompilationMode.NONE) with the deployment's 62 capture sizes.
+    compilation_config = {"cudagraph_capture_sizes": manifest["serving_graph"]["vllm_cudagraph_capture_sizes"]}
+    max_model_len = selected_max_model_len(manifest)
+    if manifest["max_model_len"] != max_model_len:
+        raise ValueError("manifest max_model_len differs from its selected context class")
     engine_args = {
         "model": options.model_path,
         "tensor_parallel_size": expected["tp_size"],
         "kv_cache_dtype": "fp8_e4m3",
-        "max_model_len": 131079,
+        # Serving context limit of the selected context class (capacity only).
+        "max_model_len": max_model_len,
         "max_num_batched_tokens": 8192,
         "max_num_seqs": 32,
         "enable_prefix_caching": False,
@@ -298,18 +304,14 @@ def main():
         plugins = [e.value for e in entry_points(group="vllm.general_plugins")]
         if "collector.vllm.glm53flash_attention_worker:register" not in plugins:
             raise RuntimeError(f"probe plugin is not discoverable: {plugins}")
-        phases = set(manifest.get("phases", ("context", "generation")))
         print(
             json.dumps(
                 {
                     "dry_run": "ok",
                     "framework": installed,
                     "geometry": expected,
-                    "sets": sum(
-                        s["phase"] in phases and (not options.only_sets or s["set_id"] in options.only_sets)
-                        for s in plan["sets"]
-                    ),
-                    "prefill_execution": manifest.get("prefill_execution", "eager"),
+                    "sets": len(queued_plan(manifest)["sets"]),
+                    "memory_drops": len(manifest.get("memory_drops") or []),
                     "engine_args": engine_args,
                     "plugins": plugins,
                 },
@@ -331,7 +333,7 @@ def main():
     tokens, inputs = manifest_tokens(manifest, tokenizer, Path(options.model_path))
     (output / "source_hashes.json").write_text(json.dumps(sources, sort_keys=True))
     (output / "input_provenance.json").write_text(json.dumps({**inputs, **provenance}, sort_keys=True))
-    driver = Driver(llm, plan, tokens, output, graph_prefill=graph_prefill)
+    driver = Driver(llm, plan, tokens, output)
     setup = driver.rpc(
         "rpc_setup",
         str(output),
@@ -347,10 +349,9 @@ def main():
         with (output / "progress.jsonl").open("a") as stream:
             stream.write(json.dumps(payload) + "\n")
 
-    for request_set in plan["sets"]:
+    # The attempt's queue: its selected sets without memory-dropped targets.
+    for request_set in queued_plan(manifest)["sets"]:
         if options.only_sets and request_set["set_id"] not in options.only_sets:
-            continue
-        if request_set["phase"] not in set(manifest.get("phases", ("context", "generation"))):
             continue
         try:
             if request_set["phase"] == "context":

@@ -3,9 +3,11 @@
 """Freeze a GLM attention collection attempt and render its Slurm script.
 
 CPU-only. ``prepare`` writes ``manifest.json`` (pinned runtime, checkpoint,
-geometry and the frozen plan) plus ``run.sbatch`` into a fresh attempt
-directory; the caller copies the directory to shared storage and submits it.
-One attempt = one (backend, checkpoint, TP) deployment on one exclusive node.
+geometry, the frozen plan and the attempt's set selection) plus ``run.sbatch``
+and ``dryrun.sbatch`` into a fresh attempt directory; the caller copies the
+directory to shared storage and submits it. One attempt = one (backend,
+checkpoint, TP) deployment and one context class (one server context limit)
+on one exclusive node.
 """
 
 from __future__ import annotations
@@ -21,37 +23,76 @@ from collector.glm53flash_attention_contract import (
     RUNTIME_IMAGES,
     RUNTIME_VERSIONS,
     build_plan,
+    context_class_sets,
     geometry,
+    memory_drops,
     representative_layer_is_uniform,
     sha256_json,
+    unaligned_targets,
 )
 from collector.glm53flash_attention_tokens import spec as input_token_spec
 
-SMOKE_SWEEP = {
+_SMOKE_COMMON = {
     "layer_id": 3,
     "warmup": 3,
     "iterations": 10,
     "max_step_tokens": 8192,
     "max_context": 131072,
-    "prefill": {
-        "batch_sizes": [1, 4],
-        "query_lengths": {"1": [256, 2048], "4": [64, 2048]},
-        "prefix_lengths": [0, 1024, 8192, 32768],
+    "max_model_len": 131079,
+}
+_SMOKE_DECODE = {"batch_sizes": [1, 32], "sequence_lengths": {"1": [2048, 2049, 16384], "32": [4096]}}
+# Small smoke plans. The validation geometries are the in-serving nsys points:
+# vLLM (stock serve, prefix ON, per request prefix/new tokens, all multiples of
+# 4) and SGLang (the clean-truth holdout points profiled in
+# sglang-prefill-gap-profile: B1 T32 KV128, B1 T2042, B1 T8189, B4 T1024
+# KV48128, B32 T320, B32 T1024 KV139264, B32 T8000, B32 T8192 KV3137536).
+# "long" holds one ~1M prefill and the 1M decode, plus two regular-length
+# decodes that expose any dependence on the server context limit.
+SMOKE_SWEEPS = {
+    "validation-vllm": {
+        **_SMOKE_COMMON,
+        "prefill": {
+            "batch_sizes": [1, 4, 32],
+            "query_lengths": {"1": [32, 2048, 8192], "4": [256], "32": [8]},
+            "prefix_lengths": {"1": {"32": [128], "2048": [0], "8192": [0]}, "4": [12032], "32": [0]},
+        },
+        "decode": _SMOKE_DECODE,
     },
-    "decode": {
-        "batch_sizes": [1, 4, 32],
-        "sequence_lengths": {"1": [1024, 2049, 16384], "4": [2048, 2052, 8192], "32": [4096]},
+    "validation-sglang": {
+        **_SMOKE_COMMON,
+        "prefill": {
+            "batch_sizes": [1, 4, 32],
+            "query_lengths": {"1": [32, 2042, 8189], "4": [256], "32": [10, 32, 250, 256]},
+            "prefix_lengths": {
+                "1": {"32": [128], "2042": [0], "8189": [0]},
+                "4": [12032],
+                "32": {"10": [0], "32": [4352], "250": [0], "256": [98048]},
+            },
+        },
+        "decode": _SMOKE_DECODE,
+    },
+    "long": {
+        **_SMOKE_COMMON,
+        "prefill": {"batch_sizes": [], "query_lengths": {}, "prefix_lengths": []},
+        "decode": {"batch_sizes": [], "sequence_lengths": {}},
+        "long_context": {
+            "max_context": 1048575,
+            "max_model_len": 1048576,
+            "prefill": {"batch_sizes": [1], "query_lengths": {"1": [1024]}, "prefix_lengths": [1032192]},
+            "decode": {"batch_sizes": [1], "sequence_lengths": {"1": [2048, 16384, 1048575]}},
+        },
     },
 }
 SGLANG_ARGS = (
     "--kv-cache-dtype fp8_e4m3 --moe-runner-backend auto --disable-radix-cache "
-    "--context-length 131079 --chunked-prefill-size 8192 --mem-fraction-static 0.82 "
+    "--chunked-prefill-size 8192 --mem-fraction-static 0.82 "
     "--max-running-requests 32 --cuda-graph-bs-decode " + " ".join(str(b) for b in range(1, 33))
 )
-# Serving prefill CUDA-graph policy adopted 2026-10-01 (pgraph smoke v4):
-# vLLM keeps its default FULL_AND_PIECEWISE mode with breakable graphs and these
-# 62 capture sizes (its default 11 sizes plus SGLang's 58 prefill buckets);
-# SGLang captures breakable prefill graphs up to 8192 tokens (its own buckets).
+# Serving CUDA-graph policy (pgraph smoke v4, clean-truth server flags): vLLM
+# keeps its default FULL_AND_PIECEWISE mode with breakable graphs and these 62
+# capture sizes (its default 11 sizes plus SGLang's 58 prefill buckets);
+# SGLang captures breakable prefill graphs up to 8192 tokens (its own buckets)
+# and full decode graphs for bs 1..32.
 SGLANG_PREFILL_GRAPH_ARGS = "--cuda-graph-backend-prefill breakable --cuda-graph-max-bs-prefill 8192"
 VLLM_PREFILL_GRAPH_CAPTURE_SIZES = (
     [1, 2, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 56, 64]
@@ -68,6 +109,10 @@ VLLM_ENV = {
     "NCCL_P2P_LEVEL": "NVL",
     "VLLM_USE_NCCL_SYMM_MEM": "1",
 }
+# One GB300 holds ~279 GiB; the FP8 checkpoint's safetensors are 305.8 GiB
+# (zai-org/GLM-5.3-Flash@eb9eb208), the NVFP4 checkpoint's 190.4 GiB. TP1 is
+# therefore an NVFP4-only deployment (campaign decision; capacity fact).
+TP1_CHECKPOINTS = ("nvfp4",)
 
 
 def prepare(args) -> Path:
@@ -76,20 +121,38 @@ def prepare(args) -> Path:
     attempt = Path(args.attempt)
     if attempt.exists() and any(attempt.iterdir()):
         raise SystemExit(f"{attempt} is not a fresh attempt directory")
-    attempt.mkdir(parents=True, exist_ok=True)
     config = json.loads(Path(args.config).read_text())
     if args.smoke:
-        sweep = dict(SMOKE_SWEEP)
+        sweep = json.loads(json.dumps(SMOKE_SWEEPS[args.smoke]))
         if args.layer_id is not None:
             # Smoke-only cross-check that another sparse-MLA layer times like
             # the representative one; full attempts always use the YAML layer.
             sweep["layer_id"] = args.layer_id
+        if args.warmup is not None:
+            # Smoke-only study of the warmup length (GPU clock steady state).
+            sweep["warmup"] = args.warmup
     else:
         sweep = yaml.safe_load(Path(args.sweep).read_text())["common_case_values"][OP_NAME]
     representative_layer_is_uniform(config, sweep["layer_id"], args.checkpoint)
     plan = build_plan(sweep)
+    selection = context_class_sets(plan, args.context_class)
+    if not selection:
+        raise SystemExit(f"the plan has no {args.context_class} sets")
+    if args.only_sets or args.skip_sets:
+        unknown = (set(args.only_sets or ()) | set(args.skip_sets or ())) - set(selection)
+        chosen = set(args.only_sets or selection) - set(args.skip_sets or ())
+        if unknown or not chosen:
+            raise SystemExit(f"invalid set selection: unknown {sorted(unknown)}, selected {len(chosen)}")
+        selection = [s for s in selection if s in chosen]
+    selected = [s for s in plan["sets"] if s["set_id"] in set(selection)]
+    if args.backend == "vllm":
+        bad = unaligned_targets({"sets": selected})
+        if bad:
+            # Stock vLLM 0.31.0 must never run an unaligned chunk start.
+            raise SystemExit(f"kpool_align4: vLLM plan has unaligned prefill targets {bad[:6]}")
+    max_model_len = selected[0]["max_model_len"]
     body = {
-        "schema_version": 1,
+        "schema_version": 2,
         "op": OP_NAME,
         "role": "smoke" if args.smoke else "full",
         "geometry": geometry(config, args.backend, args.checkpoint, args.tp),
@@ -103,39 +166,52 @@ def prepare(args) -> Path:
         # Request token ids come from the in-repo seeded generator.
         "input_tokens": input_token_spec(plan),
         "source_commit": args.source_commit,
-        # Allocator policy only (no kernel change): the same 16384 MiB split the
+        "context_class": args.context_class,
+        # Server context limit (vLLM --max-model-len, SGLang --context-length)
+        # of the selected context class; capacity only.
+        "max_model_len": max_model_len,
+        # Allocator policy only (no kernel change): the 16384 MiB split the
         # qualified SGLang FP8 TP2 FPM campaign uses against fragmentation of
         # the ragged IndexPool MQA-logits buffer at long batched context.
         "allocator_max_split_size_mb": args.allocator_max_split_mb,
+        "serving_graph": (
+            {"vllm_cudagraph_capture_sizes": VLLM_PREFILL_GRAPH_CAPTURE_SIZES}
+            if args.backend == "vllm"
+            else {"sglang_args": SGLANG_PREFILL_GRAPH_ARGS}
+        ),
     }
-    if args.only_sets or args.skip_sets:
+    if len(selection) != len(plan["sets"]):
         # Split attempt: one deployment's plan measured by several attempts
         # whose set selections finalize unions exactly once.
-        phases = {"context"} if args.prefill_graph else {"context", "generation"}
-        known = [s["set_id"] for s in body["plan"]["sets"] if s["phase"] in phases]
-        chosen = set(args.only_sets or known) - set(args.skip_sets or ())
-        unknown = (set(args.only_sets or ()) | set(args.skip_sets or ())) - set(known)
-        if unknown or not chosen:
-            raise SystemExit(f"invalid set selection: unknown {sorted(unknown)}, selected {len(chosen)}")
-        body["only_sets"] = sorted(chosen)
+        body["only_sets"] = sorted(selection)
+    if args.kv_token_capacity is not None:
+        # Sanctioned generation-time memory-feasibility filter: the measured
+        # KV pool and transient headroom of this deployment at this memory
+        # setting (size vs capacity only); dropped targets are never queued.
+        budget = {
+            "kv_tokens": args.kv_token_capacity,
+            "transient_gib": args.transient_gib,
+            "device_gib": args.device_gib,
+            "evidence": args.memory_evidence,
+        }
+        drops = memory_drops({**plan, "sets": selected}, budget)
+        total = sum(len(s["targets"]) for s in selected)
+        print(f"{OP_NAME}: dropped {len(drops)}/{total} cases (memory budget, device={args.device_gib}GB)")
+        for drop in drops:
+            print(f"  {drop['set_id']} {drop['key']}: {drop['reason']}")
+        body["memory_budget"] = budget
+        body["memory_drops"] = drops
     if args.sglang_mem_fraction is not None:
         body["sglang_mem_fraction_static"] = args.sglang_mem_fraction
     if args.vllm_gpu_memory_utilization is not None:
         body["vllm_gpu_memory_utilization"] = args.vllm_gpu_memory_utilization
-    if args.prefill_graph:
-        # Revision 2: re-collect prefill only, under the serving prefill graphs.
-        body["phases"] = ["context"]
-        body["prefill_execution"] = "framework_breakable_cuda_graph"
-        body["serving_graph"] = (
-            {"vllm_cudagraph_capture_sizes": VLLM_PREFILL_GRAPH_CAPTURE_SIZES}
-            if args.backend == "vllm"
-            else {"sglang_args": SGLANG_PREFILL_GRAPH_ARGS}
-        )
+    attempt.mkdir(parents=True, exist_ok=True)
     manifest = {**body, "manifest_sha256": sha256_json(body)}
     (attempt / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    suffix = ("-smoke" if args.smoke else "") + (f"-l{args.layer_id}" if args.layer_id is not None else "")
-    prefix = "glm53-sa-w4g" if args.prefill_graph else "glm53-sa-w4"
-    job = f"{prefix}-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
+    suffix = (f"-smoke-{args.smoke}" if args.smoke else "") + (f"-{args.tag}" if args.tag else "")
+    suffix += f"-l{args.layer_id}" if args.layer_id is not None else ""
+    suffix += f"-w{args.warmup}" if args.warmup is not None else ""
+    job = f"glm53-v031c-attn-{args.backend}-{args.checkpoint}-tp{args.tp}{suffix}"
     container = f"{args.remote_attempt}"
     runner = f"collector.{args.backend}.glm53flash_attention_runner"
     common = "--manifest /results/manifest.json --output /results/raw"
@@ -149,16 +225,13 @@ def prepare(args) -> Path:
     if args.allocator_max_split_mb is not None:
         env["PYTORCH_CUDA_ALLOC_CONF"] = f"max_split_size_mb:{args.allocator_max_split_mb}"
     if args.backend == "vllm":
-        mounts.append(f"{args.remote_tail}:/opt/glm53flash-candidate:ro")
-        env["PYTHONPATH"] = "/opt/glm53flash-candidate:/workspace"
         env.update(VLLM_ENV)
         command = f"python3 -m {runner} {common} --model-path {model}"
         if args.vllm_gpu_memory_utilization is not None:
             # Capacity only: leaves headroom for the per-target module graphs.
             command += f" --gpu-memory-utilization {args.vllm_gpu_memory_utilization}"
     else:
-        graph_args = f" {SGLANG_PREFILL_GRAPH_ARGS}" if args.prefill_graph else ""
-        sglang_args = SGLANG_ARGS
+        sglang_args = f"{SGLANG_ARGS} --context-length {max_model_len}"
         if args.sglang_mem_fraction is not None:
             # Capacity only: a smaller static KV pool leaves headroom for the
             # per-target module graphs beside the framework's prefill graph
@@ -166,7 +239,10 @@ def prepare(args) -> Path:
             sglang_args = sglang_args.replace(
                 "--mem-fraction-static 0.82", f"--mem-fraction-static {args.sglang_mem_fraction}"
             )
-        command = f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} {sglang_args}{graph_args}"
+        command = (
+            f"python3 -m {runner} {common} --model-path {model} --tp-size {args.tp} "
+            f"{sglang_args} {SGLANG_PREFILL_GRAPH_ARGS}"
+        )
     exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
     script = f"""#!/bin/bash
 #SBATCH --job-name={job}
@@ -214,32 +290,42 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=sorted(RUNTIME_VERSIONS), required=True)
     parser.add_argument("--checkpoint", choices=sorted(CHECKPOINTS), required=True)
-    parser.add_argument("--tp", type=int, choices=(2, 4), required=True)
+    parser.add_argument("--tp", type=int, choices=(1, 2, 4), required=True)
     parser.add_argument("--config", required=True, help="checkpoint config.json (pinned revision)")
     parser.add_argument("--sweep", default="collector/cases/base_ops/glm53flash_attention.yaml")
-    parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--smoke", choices=sorted(SMOKE_SWEEPS))
+    parser.add_argument("--context-class", choices=("regular", "long"), default="regular")
     parser.add_argument("--layer-id", type=int, help="smoke-only representative-layer cross-check")
+    parser.add_argument("--warmup", type=int, help="smoke-only warmup repetitions per target")
     parser.add_argument("--attempt", required=True, help="local fresh attempt directory")
     parser.add_argument("--remote-attempt", required=True)
     parser.add_argument("--remote-source", required=True, help="shared-storage copy of python/aisimulate")
     parser.add_argument("--remote-model", required=True)
-    parser.add_argument("--remote-tail", default="")
     parser.add_argument("--image", required=True)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--tag", default="", help="job-name suffix of a split attempt")
     parser.add_argument("--account", default="coreai_comparch_inferencex")
     parser.add_argument("--partition", default="batch")
     parser.add_argument("--time", default="04:00:00")
     parser.add_argument("--allocator-max-split-mb", type=int, default=None)
-    parser.add_argument("--prefill-graph", action="store_true", help="revision 2: prefill under serving graphs")
     parser.add_argument("--sglang-mem-fraction", type=float, default=None)
     parser.add_argument("--only-sets", nargs="+", help="split attempt: measure only these plan sets")
-    parser.add_argument("--skip-sets", nargs="+", help="split attempt: measure every other set of the phases")
+    parser.add_argument("--skip-sets", nargs="+", help="split attempt: measure every other set of the class")
     parser.add_argument("--vllm-gpu-memory-utilization", type=float, default=None)
+    parser.add_argument("--kv-token-capacity", type=int, help="measured KV pool tokens (memory-feasibility filter)")
+    parser.add_argument("--transient-gib", type=float, help="measured transient headroom (memory-feasibility filter)")
+    parser.add_argument("--device-gib", type=float, help="device memory (memory-feasibility log)")
+    parser.add_argument("--memory-evidence", default="", help="jobs/logs the budget was measured in")
     args = parser.parse_args()
-    if args.layer_id is not None and not args.smoke:
-        parser.error("--layer-id is a smoke-only cross-check")
-    if args.backend == "vllm" and not args.remote_tail:
-        parser.error("vLLM requires the reviewed glm53tail overlay (--remote-tail)")
+    if (args.layer_id is not None or args.warmup is not None) and not args.smoke:
+        parser.error("--layer-id and --warmup are smoke-only")
+    budget = (args.kv_token_capacity, args.transient_gib, args.device_gib)
+    if any(v is not None for v in budget) and (None in budget or not args.memory_evidence):
+        parser.error(
+            "the memory-feasibility filter needs --kv-token-capacity, --transient-gib, --device-gib, --memory-evidence"
+        )
+    if args.tp == 1 and args.checkpoint not in TP1_CHECKPOINTS:
+        parser.error("TP1 is NVFP4-only: the FP8 checkpoint's weights exceed one GB300")
     print(prepare(args))
 
 

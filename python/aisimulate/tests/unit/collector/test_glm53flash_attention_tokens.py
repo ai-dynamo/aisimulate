@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 from collector.glm53flash_attention_contract import build_plan
-from collector.glm53flash_attention_launch import SMOKE_SWEEP, prepare
+from collector.glm53flash_attention_launch import SMOKE_SWEEPS, prepare
 from collector.glm53flash_attention_tokens import (
     SEED,
     TOKENIZER_JSON_SHA256,
@@ -69,9 +69,10 @@ def test_generator_rejects_invalid_ranges():
 
 def test_count_covers_the_longest_request_and_window_offsets():
     full = build_plan(yaml.safe_load(SWEEP.read_text())["common_case_values"]["glm53flash_attention"])
-    assert required_token_count(full) == 131072 + 32 * 4099
-    smoke = build_plan(SMOKE_SWEEP)
-    assert required_token_count(smoke) == 32768 + 2048 + 32 * 4099
+    # The longest request is the ~1M long-context decode (L = 1048575).
+    assert required_token_count(full) == 1048575 + 32 * 4099
+    smoke = build_plan(SMOKE_SWEEPS["validation-sglang"])
+    assert required_token_count(smoke) == 98048 + 256 + 32 * 4099
 
 
 def test_vocab_range_excludes_added_and_special_tokens():
@@ -83,7 +84,7 @@ def test_vocab_range_excludes_added_and_special_tokens():
 def test_manifest_tokens_check_the_pinned_tokenizer(tmp_path, monkeypatch):
     from collector import glm53flash_attention_tokens as tokens_module
 
-    plan = build_plan(SMOKE_SWEEP)
+    plan = build_plan(SMOKE_SWEEPS["validation-vllm"])
     manifest = {"plan": plan, "input_tokens": spec(plan)}
     (tmp_path / "tokenizer.json").write_text("{}")
     with pytest.raises(RuntimeError, match="not the pinned tokenizer"):
@@ -105,8 +106,15 @@ def test_launcher_freezes_the_generator_and_needs_no_corpus(tmp_path, backend):
     args = Namespace(
         attempt=tmp_path / "attempt",
         config=CONFIG,
-        smoke=True,
+        smoke="validation-vllm",
+        context_class="regular",
+        tag="",
         layer_id=None,
+        warmup=None,
+        kv_token_capacity=None,
+        transient_gib=None,
+        device_gib=None,
+        memory_evidence="",
         sweep=None,
         backend=backend,
         checkpoint="fp8",
@@ -117,11 +125,9 @@ def test_launcher_freezes_the_generator_and_needs_no_corpus(tmp_path, backend):
         skip_sets=None,
         sglang_mem_fraction=None,
         vllm_gpu_memory_utilization=None,
-        prefill_graph=False,
         remote_attempt="/remote/attempt",
         remote_source="/remote/src",
         remote_model="/remote/model",
-        remote_tail="/remote/tail",
         image="image.sqsh",
         account="acct",
         partition="batch",
