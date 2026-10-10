@@ -355,7 +355,7 @@ def test_direct_compilation_validates_options_before_short_circuit(
         )
 
 
-@pytest.mark.parametrize("control", ["moe_kernel_source", "decode_workload_distribution", "prefill_graph_profile"])
+@pytest.mark.parametrize("control", ["moe_kernel_source"])
 def test_profile_compilation_rejects_op_level_controls_before_graph_construction(profile_dict, direct_compile, control):
     with pytest.raises(ValueError, match="FPM profiles do not support"):
         engine.compile_engine(

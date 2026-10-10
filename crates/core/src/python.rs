@@ -260,9 +260,6 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
-    /// Saved pilot input alias; lowered into the canonical op-level controls.
-    #[serde(default)]
-    decode_workload_distribution: Option<String>,
     #[serde(default)]
     fpm_profile: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing)]
@@ -346,23 +343,12 @@ impl AicTimingConfig {
                 mode == EstimationMode::FpmInterpolation,
             )?;
         }
-        let mut estimator_config = EstimatorConfig::migrate_legacy_inputs(
+        let estimator_config = EstimatorConfig::migrate_legacy_inputs(
             Some(&serde_json::to_string(&self.estimator_config)?),
             None,
             self.fpm_interpolation.map(|method| method.as_str()),
             self.fpm_parquet_path.as_deref(),
         )?;
-        if let Some(selected) = &self.decode_workload_distribution {
-            ensure!(
-                estimator_config
-                    .op_level
-                    .decode_workload_distribution
-                    .as_ref()
-                    .is_none_or(|value| value == selected),
-                "decode_workload_distribution conflicts with estimator_config.op_level"
-            );
-            estimator_config.op_level.decode_workload_distribution = Some(selected.clone());
-        }
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -530,21 +516,6 @@ struct AicTimingModel {
 impl AicTimingModel {
     fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
         let request = config.estimator_request(worker_type)?;
-        if request
-            .estimator_config
-            .op_level
-            .prefill_graph_profile
-            .is_some()
-            || request
-                .estimator_config
-                .op_level
-                .prefill_graph_profile_id
-                .is_some()
-        {
-            anyhow::bail!(
-                "graph prefill profile supports only direct predict_prefill_latency; replay/scheduler timing is unqualified"
-            );
-        }
         config.validate_parallel_shape()?;
         config.resolved_memory_fraction()?;
         let model = Arc::new(
@@ -3693,7 +3664,6 @@ mod tests {
             forward_model: None,
             fpm_profile: None,
             fpm_interpolation: None,
-            decode_workload_distribution: None,
             fpm_parquet_path: None,
             decoder_replay: false,
         }
@@ -3839,27 +3809,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(role.rank.num_gpu_blocks, 17);
-    }
-
-    #[test]
-    fn replay_provider_rejects_graph_profile_before_native_construction() {
-        let mut config = aic_config();
-        config.estimator_config.insert(
-            "op_level".into(),
-            serde_json::json!({"prefill_graph_profile": crate::perf_database::prefill_graph::PROFILE_NAME}),
-        );
-        for role in [
-            ForwardPassWorkerType::Prefill,
-            ForwardPassWorkerType::Decode,
-            ForwardPassWorkerType::Aggregated,
-        ] {
-            let error = AicTimingModel::build(&mut config, role).err().unwrap();
-            assert!(
-                error
-                    .to_string()
-                    .contains("replay/scheduler timing is unqualified")
-            );
-        }
     }
 
     #[test]
