@@ -7,7 +7,35 @@
 # compute_scale: 8/8 representative cases. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# 0.30.0 audit (2026-09-30; source tag v0.30.0 == ced6857afa0e vs v0.27.1,
+# runtime smoke on GB300 in the GLM-5.3-Flash W1 campaign). ops.
+# scaled_fp8_quant's body is byte-identical (_custom_ops.py:1832-1898
+# @0.27.1, :1834-1900 @0.30.0): scale=None + per-token ->
+# _C.dynamic_per_token_scaled_fp8_quant, a given scale ->
+# _C.static_scaled_fp8_quant; GroupShape.PER_TENSOR is unchanged
+# (quant_utils.py:135-136). Serving's per-tensor-weight fp8 linear still uses
+# a per-token dynamic activation key on SM89+ (fp8.py:289-297) through
+# CutlassFP8ScaledMMLinearKernel -> QuantFP8(PER_TOKEN) -> this op when the
+# quant_fp8 CustomOp is enabled (input_quant_fp8.py:126-135). Pre-existing
+# caveat, unchanged since 0.27.1: under default VLLM_COMPILE+inductor,
+# custom_ops="none" (config/vllm.py:1608-1615) runs the inductor-compiled
+# forward_native instead of this CUDA kernel. The GLM-5.3-Flash 0.30.0 rows
+# were collected as 0.30.0+glm53tail.eb4704514fdf; neither overlay file is
+# imported by _custom_ops/quant_utils. 0.25.1-0.29.0 are not audited.
+# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a46873 vs
+# v0.30.0 ced6857afa0e; stock image, no overlay). Apart from its docstring,
+# scaled_fp8_quant has the same body (_custom_ops.py:1823-1891). The same
+# dispatch applies: scale=None + per-token ->
+# _C.dynamic_per_token_scaled_fp8_quant, and a given scale ->
+# _C.static_scaled_fp8_quant. GroupShape.PER_TENSOR is unchanged
+# (quant_utils.py:134-135). The serving key is unchanged: per-token dynamic
+# on SM89+ (fp8.py:273-280), reached through CutlassFP8ScaledMMLinearKernel
+# -> QuantFP8 forward_cuda (input_quant_fp8.py:125-133, body unchanged). The
+# custom_ops default block is byte-identical (config/vllm.py:1788-1795). In
+# csrc/libtorch_stable/quantization/w8a8/fp8/common.cu, only the dynamic
+# per-tensor absmax reduction changed; the dynamic per-token and static
+# kernels timed here are unchanged.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.27.1,!=0.28.0,!=0.29.0"
 
 import torch
 from collector.case_generator import get_compute_scale_case_specs

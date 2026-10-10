@@ -816,6 +816,7 @@ mod tests {
                 shared_quant_mode: GemmQuantMode::Bfloat16,
                 moe_quant_mode: MoeQuantMode::Nvfp4,
                 children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
             }),
             OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
                 name: "embedding".into(),
@@ -830,6 +831,7 @@ mod tests {
                 output_dtype: "bfloat16".into(),
                 collective: "none".into(),
                 children: vec![],
+                measured: vec![],
             }),
         ];
 

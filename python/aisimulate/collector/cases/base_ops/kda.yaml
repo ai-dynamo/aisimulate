@@ -9,6 +9,10 @@ description: >
   exclusively from per-model model_case_values.kda rows (no synthetic
   default shapes). verify_draft_token_nums is the speculative-decode
   target-verify width sweep (tokens per request = dspark block size + 1).
+  context_long_* is a second, small-batch context sweep that extends the
+  prefill axis to 131072 tokens per request (GLM-5.3-Flash serves 128K
+  contexts) without crossing the long lengths with the full batch sweep,
+  whose largest cells would need hundreds of GB of activations.
 common_case_values:
   kda:
     context_batch_sizes:
@@ -36,6 +40,12 @@ common_case_values:
     - 8192
     - 16384
     - 32768
+    context_long_batch_sizes:
+    - 1
+    - 2
+    context_long_sequence_lengths:
+    - 65536
+    - 131072
     generation_batch_sizes:
     - 1
     - 2

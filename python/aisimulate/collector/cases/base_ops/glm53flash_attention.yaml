@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+op: glm53flash_attention
+description: >-
+  GLM-5.3-Flash NoPE sparse-MLA + IndexPool attention, one real checkpoint layer
+  timed standalone over real KV/IndexPool state (GPU kernel time only).
+  Prefill (x = new tokens per request, exact prefix grid) and decode (x =
+  absolute sequence length) up to 131072 context and batch 1-32, both IndexPool
+  regimes (prefix+x <= 2048 short, otherwise pooled + retained tail), plus B=1
+  long-context rows at 256K, 512K and ~1M. Every step stays inside the pinned
+  serving chunked-prefill budget of 8192 scheduled tokens, and every prefill
+  chunk starts on a multiple of the IndexPool size 4 (stock vLLM 0.31.0
+  corrupts unaligned chunk starts).
+common_case_values:
+  glm53flash_attention:
+    # All 11 NoPE sparse-MLA layers (3, 7, ..., 43) are identical modules with
+    # their own indexer (indexer_types == "full") and identical quantization
+    # exclusions; layer 3 is the first. Checked by
+    # glm53flash_attention_contract.representative_layer_is_uniform.
+    layer_id: 3
+    warmup: 3
+    iterations: 10
+    max_step_tokens: 8192
+    max_context: 131072
+    # Serving server context limit (vLLM --max-model-len, SGLang
+    # --context-length) of the regular rows, as in the clean-truth servers.
+    max_model_len: 131079
+    prefill:
+      batch_sizes: [1, 2, 4, 8, 16, 32]
+      query_lengths:
+        "1": [16, 64, 256, 1024, 2048, 2052, 4096, 8192]
+        "2": [16, 64, 256, 1024, 2048, 2052, 4096]
+        "4": [16, 64, 256, 512, 1024, 2048]
+        "8": [16, 64, 256, 512, 1024]
+        "16": [16, 64, 256, 512]
+        "32": [8, 32, 64, 128, 256]
+      prefix_lengths: [0, 128, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 98304]
+    decode:
+      batch_sizes: [1, 2, 3, 4, 6, 8, 12, 16, 24, 32]
+      sequence_lengths:
+        "1": &decode_full [64, 512, 1024, 2048, 2052, 4096, 8192, 16384, 32768, 65536, 98304, 131072]
+        "2": *decode_full
+        "3": &decode_short [64, 512, 1024, 2048, 2052, 4096, 8192, 16384]
+        "4": *decode_full
+        "6": *decode_short
+        "8": *decode_full
+        "12": *decode_short
+        "16": *decode_full
+        "24": *decode_short
+        "32": *decode_full
+    # B=1 rows beyond the serving context, collected by separate attempts whose
+    # server limit is the model's max_position_embeddings (1048576). A prompt
+    # must stay below max_model_len, and a decode reading L tokens needs
+    # L <= max_model_len - 1 (vLLM caps a request at max_model_len tokens), so
+    # the ~1M points are prefix 1032192 and decode 1048575.
+    long_context:
+      max_context: 1048575
+      max_model_len: 1048576
+      prefill:
+        batch_sizes: [1]
+        query_lengths:
+          "1": [1024, 8192]
+        prefix_lengths: [262144, 524288, 1032192]
+      decode:
+        batch_sizes: [1]
+        sequence_lengths:
+          "1": [262144, 524288, 1048575]

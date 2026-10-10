@@ -128,6 +128,112 @@ impl Availability<'_> {
         )))
     }
 
+    /// GLM tables must come from the exact requested runtime: the primary
+    /// file of this system/backend/version or an explicitly declared
+    /// `reuse.yaml` donor. Nearest-earlier siblings and cross-backend fill
+    /// are not admitted for GLM SILICON.
+    fn exact(&mut self, name: &str) -> Result<(), AicError> {
+        let key = format!("exact:{name}");
+        if let Some(found) = self.tables.get(&key) {
+            return if *found {
+                Ok(())
+            } else {
+                Err(self.exact_miss(name))
+            };
+        }
+        let mut found = false;
+        for source in self
+            .db
+            .source_resolver
+            .prioritized_sources_for(name, &self.db.data_root)?
+        {
+            if !matches!(source.channel, "primary" | "declared_reuse")
+                || !source.source.path().is_file()
+            {
+                continue;
+            }
+            let reader = PerfReader::open(source.source.path())?;
+            let kernel = reader.col_optional("kernel_source");
+            for row in reader.rows()? {
+                if kernel_source_ok(source.source.kernel_sources(), kernel, &row?)? {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        self.tables.insert(key, found);
+        if found {
+            Ok(())
+        } else {
+            Err(self.exact_miss(name))
+        }
+    }
+
+    fn exact_miss(&self, name: &str) -> AicError {
+        AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash SILICON requires {name} measured on the exact runtime {}/{} \
+             (primary or declared reuse.yaml donor) under {}; earlier-version and \
+             cross-backend tables are not admitted",
+            self.db.backend,
+            self.db.version,
+            self.db.data_root.display(),
+        ))
+    }
+
+    fn glm53_silicon(&mut self, op: &Op) -> Result<(), AicError> {
+        use Op::*;
+        let (name, measured) = match op {
+            Glm53Attention(o) if o.layer_kind == "sparse_mla" => {
+                let path = self.db.glm53_attention.primary_path().map(|p| p.to_owned());
+                let found = match path {
+                    Some(path) if path.is_file() => {
+                        let reader = PerfReader::open(&path)?;
+                        reader.rows()?.next().is_some()
+                    }
+                    _ => false,
+                };
+                return if found {
+                    Ok(())
+                } else {
+                    Err(self.exact_miss(crate::perf_database::glm53flash::BASENAME))
+                };
+            }
+            // mHC reads mhc_module_perf rows directly (GLM role semantics).
+            Glm53Mhc(_) => return self.exact("mhc_module_perf.parquet"),
+            Glm53Attention(o) => (&o.name, &o.measured),
+            Glm53Ffn(o) => (&o.name, &o.measured),
+            Glm53Primitive(o) => (&o.name, &o.measured),
+            _ => {
+                return Err(AicError::PerfDatabase(format!(
+                    "{} is a GLM-5.3-Flash analytical child without measured data",
+                    op.name()
+                )));
+            }
+        };
+        if measured.is_empty() {
+            return Err(AicError::PerfDatabase(format!(
+                "GLM-5.3-Flash {name} has no measured generic composition"
+            )));
+        }
+        for child in measured {
+            self.op(child)?;
+            match child {
+                Gemm(_) => self.exact("gemm_perf.parquet")?,
+                Moe(_) => self.exact("moe_perf.parquet")?,
+                Kda(_) => self.exact("kda_perf.parquet")?,
+                Mhc(_) => self.exact("mhc_module_perf.parquet")?,
+                CustomAllReduce(comm) if comm.tp_size > 1 => {
+                    self.exact("custom_allreduce_perf.parquet")?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn op(&mut self, op: &Op) -> Result<(), AicError> {
         use Op::*;
         // CSA context parallelism consumes both sparse correction tables even
@@ -331,9 +437,7 @@ impl Availability<'_> {
             | MoeDispatch(_) => Ok(()),
             Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) | Glm53Primitive(_) => {
                 match self.db.database_mode {
-                    DatabaseMode::Silicon => Err(AicError::PerfDatabase(
-                        "GLM-5.3-Flash measured module tables are unavailable".into(),
-                    )),
+                    DatabaseMode::Silicon => self.glm53_silicon(op),
                     DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(
                         "GLM-5.3-Flash has no empirical anchor".into(),
                     )),
@@ -411,6 +515,60 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn glm53_silicon_admits_only_exact_runtime_generic_tables() {
+        const RUNTIME: &str = "0.31.0";
+        let root = systems();
+        let data = root.path().join("data/b200_sxm");
+        // Earlier runtime rows exist; the requested GLM runtime has only GEMM.
+        table(&data.join("mhc/vllm/0.24.0/mhc_module_perf.parquet"));
+        table(&data.join("glm53_attention/vllm/0.24.0/glm53_attention_module_perf.parquet"));
+        table(&data.join(format!("gemm/vllm/{RUNTIME}/gemm_perf.parquet")));
+        let mhc: Op = serde_json::from_value(serde_json::json!({"Glm53Mhc": {
+            "name": "mhc_pre_attn_1", "role": "pre", "backend": "vllm",
+            "checkpoint_format": "fp8", "tp_size": 2, "is_context": true,
+            "hidden_size": 4096, "hc_mult": 4, "sinkhorn_iters": 20,
+        }}))
+        .unwrap();
+        let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+        sparse.checkpoint_format = "fp8".into();
+        let sparse = Op::Glm53Attention(sparse);
+        let load = |mode| {
+            PerfDatabase::load_resolved(
+                root.path(),
+                "b200_sxm",
+                "vllm",
+                RUNTIME,
+                true,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(mode, TransferPolicy::ALL)
+        };
+        for op in [&mhc, &sparse] {
+            let error = validate(&load(DatabaseMode::Silicon), [op].into_iter()).unwrap_err();
+            assert!(error.to_string().contains("exact runtime"), "{error}");
+            // HYBRID stays constructible; its fallbacks are labelled per query.
+            validate(&load(DatabaseMode::Hybrid), [op].into_iter()).unwrap();
+            validate(&load(DatabaseMode::Sol), [op].into_iter()).unwrap();
+        }
+        table(&data.join(format!("mhc/vllm/{RUNTIME}/mhc_module_perf.parquet")));
+        table(&data.join(format!(
+            "glm53_attention/vllm/{RUNTIME}/glm53_attention_module_perf.parquet"
+        )));
+        validate(&load(DatabaseMode::Silicon), [&mhc, &sparse].into_iter()).unwrap();
+        // A GLM boundary without a generic composition cannot be SILICON.
+        let bare = Op::Glm53Attention(crate::operators::glm53flash::tests::attention("kda"));
+        let error = validate(&load(DatabaseMode::Silicon), [&bare].into_iter()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no measured generic composition"),
+            "{error}"
+        );
     }
 
     #[test]

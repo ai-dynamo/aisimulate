@@ -43,6 +43,32 @@ def parse_nccl_latency(stdout: str, stderr: str, size: int, expected_version: st
     return timings[0]
 
 
+def runtime_nccl_version() -> str:
+    """Version of the NCCL shared library the framework loads at runtime.
+
+    Frameworks' own collectives (vLLM/SGLang pynccl) dlopen ``libnccl.so.2``;
+    in some images that library differs from the version torch reports at
+    ``torch.cuda.nccl.version()`` (e.g. the vLLM 0.30.0 / SGLang 0.5.20 images:
+    torch reports 2.29.7 while the loaded libnccl.so.2 is 2.30.7; the vLLM
+    0.31.0 image ships the same torch 2.13.0+cu130 and nvidia-nccl-cu13
+    2.30.7). nccl-tests link the same shared library, so its version is the
+    one to require.
+    Falls back to torch when no shared libnccl is loadable.
+    """
+    import ctypes
+
+    try:
+        library = ctypes.CDLL("libnccl.so.2")
+    except OSError:
+        major, minor, patch = torch.cuda.nccl.version()
+        return f"{major}.{minor}.{patch}"
+    code = ctypes.c_int()
+    if library.ncclGetVersion(ctypes.byref(code)) != 0:
+        raise RuntimeError("ncclGetVersion failed")
+    # NCCL >= 2.9 encodes major*10000 + minor*100 + patch.
+    return f"{code.value // 10000}.{code.value % 10000 // 100}.{code.value % 100}"
+
+
 def nccl_benchmark(
     dtype: str,
     nccl_op: str = "all_gather",
@@ -64,8 +90,7 @@ def nccl_benchmark(
     min_size, max_size, ratio = [int(i) for i in test_range.split(",")]
     size = min_size
 
-    major, minor, patch = torch.cuda.nccl.version()
-    nccl_version = f"{major}.{minor}.{patch}"
+    nccl_version = runtime_nccl_version()
 
     bytes_per_element = 2 if dtype == "half" else 1
 

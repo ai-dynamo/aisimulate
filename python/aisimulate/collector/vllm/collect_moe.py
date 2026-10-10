@@ -72,7 +72,96 @@ approximation must be retired.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+# 0.30.0 audit (2026-09-30; source tag v0.30.0 == ced6857afa0e vs v0.27.1,
+# runtime smoke on GB300 in the GLM-5.3-Flash W1 campaign). 0.28.0/0.29.0
+# were NOT audited and stay excluded. (Historical: the 0.30.0 GLM rows were
+# collected on the 0.30.0+glm53tail overlay, which touched no MoE file.)
+# FusedMoEFactory (layer.py:88-131 @0.30.0, :99-140 @0.27.1): every kwarg
+# passed here is unchanged; 0.30.0 only adds defaulted params. swiglu_limit
+# exists at both (:108 / :119), so other models keep passing None.
+# Runner shape unchanged: routed_experts/router/moe_config (moe_runner.py:
+# 265-272), quant_method (routed_experts.py:123), moe_kernel.fused_experts
+# (modular_kernel.py:1666), fp8_backend (fp8.py:551), nvfp4_backend
+# (modelopt.py:843, compressed_tensors_moe_w4a4_nvfp4.py:59),
+# init_workspace_manager (v1/worker/workspace.py:248), forward_context.py:
+# 186/269, fallback.py:127 (file unchanged).
+# GLM-5.3-Flash (glm5_next_text) serving path, models/glm5next/nvidia/
+# model.py:151-248: grouped topk with n_group=topk_group=1, sigmoid, fp32
+# e_score_correction_bias (:187-190), fp32 router logits
+# (deepseek_v2.py:135-145), swiglu_limit (:208,:247),
+# apply_routed_scale_to_output=False (default; not passed at :345-350).
+# routing_method=DeepSeekV3 (fused_moe/config.py:153); the kernel folds the
+# 2.5 routed scale into the top-k weights (layer.py:301,394,423).
+# SM103 fp8_block: Fp8MoEMethod (fp8.py:217,497-556) -> FLASHINFER_TRTLLM /
+# TrtLlmFp8ExpertsMonolithic (oracle/fp8.py:81-96,140-146); 0.30.0 adds a
+# swiglu gate that admits block-fp8+SiLU (trtllm_fp8_moe.py:84-106); the
+# clamp becomes gemm1_clamp_limit (fp8.py:811, oracle/fp8.py:640-719).
+# SM103 nvfp4: the checkpoint's quant_method "modelopt" resolves to
+# modelopt_fp4 (config/model.py:1271-1310, modelopt.py:757-764) ->
+# ModelOptNvFp4FusedMoE (modelopt.py:820-851); swiglu_limit filters the
+# backend list (oracle/nvfp4.py:207-221) -> FLASHINFER_TRTLLM /
+# TrtLlmNvFp4ExpertsMonolithic (trtllm_nvfp4_moe.py:486-508, clamp
+# :90-105,:175-181). Serving logs of both GLM checkpoints on this runtime
+# report "Using FLASHINFER_TRTLLM" for Fp8 and NvFp4 MoE.
+# Known non-parity (unchanged from 0.27.1): no FlashInfer autotune pass
+# before timing; the gate GEMM and shared expert are separate ops.
+# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# ced6857a; no releases in between). GLM-5.3-Flash now runs STOCK 0.31.0
+# (no overlay). Construction surface unchanged: FusedMoEFactory
+# (layer.py:88-141) keeps every kwarg passed here (swiglu_limit :108,
+# activation_situ_beta :111, router_logits_dtype :125,
+# apply_routed_scale_to_output :131) and only adds defaulted skip_padding
+# (:140; DeepEP-v2 padding rows only, not passed by GLM). Runner/attribute
+# probes: moe_runner.py:265-272, routed_experts.py:145 (quant_method),
+# modular_kernel.py:1657 (fused_experts), fp8.py:518 (fp8_backend),
+# modelopt.py:843 and compressed_tensors_moe_w4a4_nvfp4.py:59
+# (nvfp4_backend), v1/worker/workspace.py:307 (init_workspace_manager, new
+# params defaulted), forward_context.py:195/278 (moe_layer_index /
+# set_forward_context, new params defaulted), fallback.py:126 (docstring-only
+# diff). Fp8Config's default is_checkpoint_fp8_serialized flipped to True and
+# online fp8 now raises (fp8.py:96-112); every lane here passes True.
+# GLM-5.3-Flash (glm5_next_text) serving path moved to
+# models/glm5next/common/model.py; Glm5NextMoE (:151-248) is byte-identical
+# to 0.30.0 nvidia/model.py:151-248: use_grouped_topk=True with
+# n_group=topk_group=1, sigmoid, fp32 e_score_correction_bias (:187-190),
+# fp32 router logits (:180 -> deepseek_v2.py:135-145, unchanged),
+# swiglu_limit (:208,:247), renormalize=config.moe_renormalize (norm_topk_prob,
+# transformers_utils/configs/glm5_next.py:91, rename-only diff), and
+# apply_routed_scale_to_output left False (not passed at :346-350).
+# routing_method=DeepSeekV3 (fused_moe/config.py:153-154; 0.31.0 drops the
+# routed_scaling_factor argument, which only affected the ungrouped
+# MiniMax2 branch); the 2.5 routed scale is folded into the top-k weights
+# (layer.py:308,403,432).
+# SM103 fp8_block: Fp8Config -> Fp8MoEMethod (fp8.py:205,464-523). Block
+# shape now goes through resolve_fp8_moe_weight_block_shape
+# (oracle/fp8.py:348-388): with moe_backend "auto" (serving and this
+# collector) it reduces to the 0.30.0 refine path; the new pad-to-block path
+# needs an explicit moe_backend. Priority list (oracle/fp8.py:84-100) puts
+# FLASHINFER_TRTLLM first on CUDA SM10x (AITER is ROCm-only) ->
+# TrtLlmFp8ExpertsMonolithic (oracle/fp8.py:143-152); the swiglu gate
+# admitting block-fp8+SiLU and the 2048-expert cap are unchanged
+# (trtllm_fp8_moe.py:86-112); routing list incl. DeepSeekV3 at
+# trtllm_fp8_moe.py:399-420; clamp -> gemm1_clamp_limit (fp8.py:777,
+# oracle/fp8.py:738-817). The monolithic kernel invocation is unchanged;
+# only the modular class gained deferred finalize (unused: only
+# deepseek_v41/kimi_k3 call defer_moe_finalize).
+# SM103 nvfp4: quant_method "modelopt" resolves to modelopt_fp4
+# (config/model.py:1336-1418 == 0.30.0 :1258-1340; modelopt.py:756-763) ->
+# ModelOptNvFp4FusedMoE (modelopt.py:819-851, activation key still
+# kNvfp4Dynamic); swiglu_limit filters the backend list
+# (oracle/nvfp4.py:205-219) -> FLASHINFER_TRTLLM /
+# TrtLlmNvFp4ExpertsMonolithic (routing list trtllm_nvfp4_moe.py:498-520).
+# Clamp: trtllm_nvfp4_moe.py:89-104,:177-184 -- 0.31.0 folds the per-expert
+# clamp/beta from an unfolded copy so a weight reload does not refold; the
+# first-load value is identical. Expected labels at 0.31.0 SM103 (TP shard
+# 128-aligned): vllm_fp8moe_flashinfer_trtllm_trtllmfp8expertsmonolithic and
+# vllm_modeloptnvfp4fusedmoe_flashinfer_trtllm_trtllmnvfp4expertsmonolithic;
+# the row's kernel_source records whatever actually ran. FlashInfer moved
+# 0.6.18.post1 -> 0.7.0.post1 underneath an unchanged vLLM call site.
+# K3 SiTU: FusedMoEFactory exposes activation_situ_beta on stock 0.30.0 and
+# 0.31.0, so the probe below passes the betas natively there; the
+# situ-as-silu approximation applies only to older stock builds.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0"
 
 import contextlib
 import json
@@ -111,6 +200,37 @@ def _load_model_moe_config(model_name: str) -> dict:
     return config.get("text_config", config)
 
 
+def _load_checkpoint_quantization_config(model_name: str) -> dict:
+    """Return the checked-in checkpoint's top-level ``quantization_config``.
+
+    ``_load_model_moe_config`` returns the text sub-config, whose
+    ``quantization_config`` is null for multimodal wrappers such as
+    GLM-5.3-Flash; vLLM reads the top-level one (weight_utils.py:224 @v0.31.0).
+    """
+    config_path = _MODEL_CONFIG_ROOT / f"{model_name.replace('/', '--')}_config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"missing packaged model config for vLLM MoE case {model_name!r}: {config_path}")
+    with config_path.open() as config_file:
+        return json.load(config_file).get("quantization_config") or {}
+
+
+def _uses_modelopt_nvfp4_checkpoint(model_name: str) -> bool:
+    """True when serving loads this model's NVFP4 experts via ModelOptNvFp4Config.
+
+    Scoped to GLM-5.3-Flash so every other nvfp4 model keeps its existing
+    CompressedTensors construction (and kernel_source label). vLLM resolves
+    quant_method "modelopt" + quant_algo "NVFP4" to modelopt_fp4
+    (config/model.py:1349-1388, quantization/modelopt.py:756-763 @v0.31.0).
+    """
+    if _load_model_moe_config(model_name).get("model_type") != "glm5_next_text":
+        return False
+    checkpoint_qc = _load_checkpoint_quantization_config(model_name)
+    return (
+        str(checkpoint_qc.get("quant_method", "")).lower() == "modelopt"
+        and str(checkpoint_qc.get("quant_algo", "")).upper() == "NVFP4"
+    )
+
+
 def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
     """Resolve the FusedMoE arguments used by vLLM 0.24 model code."""
     model_config = _load_model_moe_config(model_name)
@@ -132,6 +252,10 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
         "kimi_linear",
         "mimo_v2_flash",
         "glm_moe_dsa",
+        # GLM-5.3-Flash: Glm5NextMoE hard-codes use_grouped_topk=True with
+        # num_expert_group=config.n_group (1) and topk_group
+        # (models/glm5next/common/model.py:225-248 @v0.31.0).
+        "glm5_next_text",
         "nemotron_h",
     }
     declares_grouped_routing = (
@@ -232,7 +356,15 @@ def _resolve_moe_runtime_config(model_name: str, module_config: dict) -> dict:
             model_config.get("activation_situ_linear_beta") if activation == "situ" else None
         ),
         "routed_scaling_factor": float(declared_routed_scale if declared_routed_scale is not None else 1.0),
-        "swiglu_limit": model_config.get("swiglu_limit") if model_type in ("deepseek_v4", "deepseek_ref") else None,
+        # Glm5NextMoE also passes config.swiglu_limit to FusedMoEFactory
+        # (models/glm5next/common/model.py:208,247 @v0.31.0); on SM10x it
+        # filters the NVFP4 backends (oracle/nvfp4.py:205-219) and gates the
+        # TRT-LLM FP8 experts (trtllm_fp8_moe.py:86-112).
+        "swiglu_limit": (
+            model_config.get("swiglu_limit")
+            if model_type in ("deepseek_v4", "deepseek_ref", "glm5_next_text")
+            else None
+        ),
         "use_grouped_topk": use_grouped_topk,
         "num_expert_group": num_expert_group,
         "topk_group": topk_group,
@@ -475,7 +607,7 @@ def run_moe_torch(
     elif moe_type == "fp8_block":
         # Block-FP8 serving (DeepSeek-style checkpoints) is per-128-block
         # weights with dynamic per-group activations; Fp8Config rejects
-        # static for block quant (fp8.py:130-134).
+        # static for block quant (fp8.py:128-133 @v0.31.0).
         quant_config = Fp8Config(
             is_checkpoint_fp8_serialized=True,
             activation_scheme="dynamic",
@@ -524,6 +656,14 @@ def run_moe_torch(
             activation_scheme="dynamic",
             weight_block_size=[128, 128],
         )
+    elif moe_type == "nvfp4" and _uses_modelopt_nvfp4_checkpoint(model_name):
+        # Serving loads this checkpoint with ModelOptNvFp4Config
+        # (ModelOptNvFp4FusedMoE, modelopt.py:819-851 @v0.31.0). It shares the
+        # CT method's backend selector and kernel builder, but constructing
+        # the checkpoint's own config keeps the method identity exact.
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4Config
+
+        quant_config = ModelOptNvFp4Config.from_config(_load_checkpoint_quantization_config(model_name))
     elif moe_type == "nvfp4":
         nvfp4_args = {
             "num_bits": 4,

@@ -77,6 +77,25 @@ frameworks:
         images:
           default: "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
           cu130: "lmsysorg/sglang:v0.5.17-cu130@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155"
+      # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
+      # collection. SGLang first ships python/sglang/srt/models/glm5_next.py
+      # (with dsa_indexer_kpool.py and communicator_mhc.py) in the official
+      # v0.5.20 release, tag commit 94602c9c2b7cbdb8efd5c52802dac6a1c180089e;
+      # the 0.5.14 default has no glm5_next model. Docker Hub reported the
+      # multi-arch index digest below for both v0.5.20 and v0.5.20-cu130 on
+      # 2026-09-30; its linux/arm64 child (the GB300 platform image, imported
+      # for collection as b0d8718a...-auth3.sqsh) is
+      # sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862.
+      # Scope/precedence as documented for the Qwen3.8 pins above: the pin
+      # applies only when collect.py resolves exactly one of these model
+      # paths; every other model resolves exactly as before.
+      "zai-org/GLM-5.3-Flash": &glm53flash_sglang_runtime
+        version: "0.5.20"
+        source_commit: "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"
+        images:
+          default: "lmsysorg/sglang:v0.5.20@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
+          cu130: "lmsysorg/sglang:v0.5.20-cu130@sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f"
+      "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_sglang_runtime
   trtllm:
     source_repo: "https://github.com/NVIDIA/TensorRT-LLM.git"
     default:
@@ -214,6 +233,27 @@ frameworks:
         images:
           default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
           cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
+      # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
+      # collection runs on the stock official v0.31.0 release (no overlay),
+      # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves
+      # the GLM layers from vllm/models/glm5next/nvidia/ to
+      # vllm/models/glm5next/common/ and the KPool indexer from
+      # model_executor/layers/sparse_attn_indexer_kpool.py to
+      # models/glm5next/nvidia/sparse_indexer.py; it also carries the KPool
+      # tail slot-mapping fix (v1/kv_cache_interface.py:1036-1038) that the
+      # earlier 0.30.0+glm53tail overlay supplied. Docker Hub reported the
+      # multi-arch index digest below for v0.31.0 on 2026-10-07; its
+      # linux/arm64 child (also tag v0.31.0-aarch64; the GB300 platform
+      # image, imported for collection as 3f7dd5b7...2b971.sqsh) is
+      # sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971
+      # and the linux/amd64 child is
+      # sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b.
+      "zai-org/GLM-5.3-Flash": &glm53flash_vllm_runtime
+        version: "0.31.0"
+        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+        images:
+          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
+      "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_vllm_runtime
   vllm_xpu:
     base_framework: vllm
     data_backend: vllm
