@@ -9,6 +9,7 @@ Tests model validation, default models, and model-specific configurations.
 
 import json
 from collections import Counter
+from importlib.resources import files
 from typing import ClassVar
 from unittest.mock import patch
 
@@ -351,6 +352,11 @@ class TestHFModelSupport:
         assert hasattr(common, "DefaultHFModels")
         assert isinstance(common.DefaultHFModels, set)
         assert len(common.DefaultHFModels) > 0
+
+    def test_mistral3_is_not_a_bundled_default_model(self):
+        assert "mistralai/Mistral-Medium-3.5-128B" not in common.DefaultHFModels
+        config_path = files("aisimulate_core") / "model_configs" / "mistralai--Mistral-Medium-3.5-128B_config.json"
+        assert not config_path.is_file()
 
     def test_hf_models_have_valid_architecture(self):
         """Test that all HF model IDs have valid architecture mapping."""

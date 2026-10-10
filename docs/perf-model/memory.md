@@ -38,6 +38,11 @@ across versions or configurations.
 
 ## KV-cache capacity reservation
 
+For Mistral3's gated Pixtral encoder, the analytical activation estimate includes
+the replicated residual alongside the gate and up intermediates. Encoder tensor
+parallelism shards those intermediates; encoder data parallelism keeps a full
+tower on each rank. This remains an analytical lower bound, not a measured peak.
+
 SGLang's native estimator treats `mem_fraction_static` as a static weights/KV
 pool. Peak activation/workspace estimates remain visible in
 `memory_breakdown.activations_bytes`, but are not deducted from that pool;

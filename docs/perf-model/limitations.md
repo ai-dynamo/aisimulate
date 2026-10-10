@@ -25,6 +25,20 @@ not establish behavior after changing that regime. Likewise, a regression may
 fit observed aggregate behavior without an explicit graph/capture input. Neither
 route makes unmeasured execution-policy changes qualified.
 
+## Mistral3 images
+
+Mistral3/Pixtral modeling supports images and the final vision feature layer
+(`vision_feature_layer=-1`). Video inputs and other feature-layer selections
+raise an error. Image workloads require both `image_height` and `image_width`;
+an image-token count alone cannot determine the row separators in the prompt.
+
+Images larger than the configured `vision_config.image_size` are resized to
+that maximum side while preserving aspect ratio. Patch grids round up to the
+patch/merge stride. Each merged row adds one prompt separator or end token,
+which contributes to the decoder context but not the encoder embeddings.
+For example, a 70×70 image with patch size 14 and merge size 2 gives 36 encoder
+patches, 9 embeddings, and 12 context tokens.
+
 ## Other scoped boundaries
 
 - [Support](support-matrix.md) distinguishes engine queries from Replay and accuracy.

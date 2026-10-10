@@ -193,6 +193,9 @@ class VisionEncoderConfig:
             rotated fraction — the 2-axis vision RoPE always rotates the full
             head_dim (vLLM ApplyRotaryEmb / SGLang cat([cos, cos])). Only gates
             the encoder_rope_apply op; 0.0 means no RoPE.
+        gated_mlp (bool): ViT FFN is a gated (SwiGLU-style) MLP with separate
+            gate and up projections (e.g. Pixtral, hidden_act="silu"). False
+            (default) models a plain up/down MLP (e.g. Qwen3-VL, GELU).
         in_channels (int): Number of image/video input channels consumed by the
             patch embedding projection.
         qkv_hidden_size (int): Optional QKV projection width before the three-way
@@ -202,8 +205,8 @@ class VisionEncoderConfig:
         projector_post_norm (bool): Whether to normalize the final projector output.
         encoder_type (str): Architecture-specific encoder contract tag.
         projector_pre_norm (bool): Normalize inputs before the projector's pixel shuffle.
-        image_size (int): Fixed square image-tile size in pixels. Zero denotes
-            a dynamic-resolution encoder such as Qwen3-VL.
+        image_size (int): Fixed square image-tile size, or Pixtral's maximum
+            image side in pixels. Zero denotes an uncapped dynamic encoder.
         has_cls_token (bool): Whether each tile appends a CLS token before the
             transformer and removes it before pixel shuffle/projector work.
         max_num_tiles (int): Maximum tile count selected by the checkpoint's
@@ -236,6 +239,9 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
+    # Keyword-only: inserted after existing positional fields shipped, so it must
+    # not shift the positional binding of in_channels and the fields below it.
+    gated_mlp: bool = field(default=False, kw_only=True)
     in_channels: int = 3
     image_size: int = 0
     has_cls_token: bool = False
@@ -250,7 +256,8 @@ class VisionEncoderConfig:
     pool_temporal: bool = False
     video_attention_type: str = ""
     # Processor geometry: Kimi resizes to patch budgets, then pads to the
-    # patch/merge stride. Qwen retains its existing nearest-stride behavior.
+    # patch/merge stride. Pixtral caps the longest side and rounds up to that
+    # stride. Qwen retains its existing nearest-stride behavior.
     resize_mode: str = "qwen"
     image_max_patches: int = 0
     video_max_patches: int = 0
@@ -258,6 +265,9 @@ class VisionEncoderConfig:
     max_video_frames: int = 0
     # Some towers use replicated projector linear layers even with encoder TP.
     projector_replicated: bool = False
+    # Some PatchMerger implementations replicate only the merger projection;
+    # subsequent projector layers retain their encoder-TP sharding.
+    projector_merger_replicated: bool = field(default=False, kw_only=True)
     # Keyword-only additions preserve positional callers of this config and
     # existing subclasses such as Gemma4VisionEncoderConfig.
     qkv_hidden_size: int = field(default=0, kw_only=True)
@@ -832,6 +842,7 @@ ModelFamily = {
     "MINIMAXM3",
     "MUSEGLIMMER",
     "STEP3P7",
+    "MISTRAL3",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
     "LlamaForCausalLM": "LLAMA",
@@ -875,6 +886,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Qwen3_5MoeForCausalLM": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
     "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
+    "Mistral3ForConditionalGeneration": "MISTRAL3",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -896,6 +908,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",
+    "Mistral3ForConditionalGeneration": "text_config",
 }
 
 # Architectures whose speculative decoding is DSPARK-style: ``nextn`` is the

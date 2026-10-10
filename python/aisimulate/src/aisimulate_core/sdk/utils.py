@@ -7,6 +7,9 @@
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/layers/quantization/modelopt.py
+# Mistral3 projector topology is adapted and modified for performance modeling
+# from vLLM (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 import importlib.resources as pkg_resources
 import json
@@ -868,6 +871,11 @@ def _parse_hf_config_json(config: dict) -> dict:
     """
     architecture = config["architectures"][0]
     vision_cfg = config.get("vision_config")
+    vision_feature_layer = config.get("vision_feature_layer", -1)
+    # Captured before the text_config flatten below drops top-level keys.
+    # Mistral3/Pixtral keeps spatial_merge_size at the top level (Qwen3-VL
+    # nests it inside vision_config).
+    top_level_spatial_merge_size = config.get("spatial_merge_size") if vision_cfg else None
     vision_soft_tokens_per_image = config.get("vision_soft_tokens_per_image")
     processor_cfg = config.get("preprocessor_config")
     root_quant_cfg = config.get("quantization_config")
@@ -1482,6 +1490,66 @@ def _parse_hf_config_json(config: dict) -> dict:
         if extra_params is not None:
             logger.info(
                 "Qwen3VL vision encoder config: depth=%d, hidden=%d, patch=%d, spatial_merge=%d",
+                extra_params.depth,
+                extra_params.hidden_size,
+                extra_params.patch_size,
+                extra_params.spatial_merge_size,
+            )
+    elif architecture == "Mistral3ForConditionalGeneration":
+        if vision_cfg is not None:
+            if not isinstance(vision_cfg, dict) or not vision_cfg:
+                raise ValueError("Mistral3 vision_config must be a non-empty object")
+            if type(vision_feature_layer) is not int or vision_feature_layer != -1:
+                raise ValueError("Mistral3 modeling supports only vision_feature_layer=-1")
+            image_size = vision_cfg.get("image_size")
+            if type(image_size) is not int or image_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer image_size")
+            patch_size = vision_cfg.get("patch_size")
+            if type(patch_size) is not int or patch_size <= 0:
+                raise ValueError("Mistral3 vision_config needs a positive integer patch_size")
+            # spatial_merge_size sizes both the patch merger and the image-token
+            # counts; a silent default would mispredict, so require a positive
+            # integer (reject missing/None, bool, non-int, and <= 0).
+            merge = top_level_spatial_merge_size
+            if not isinstance(merge, int) or isinstance(merge, bool) or merge <= 0:
+                raise ValueError(
+                    "Mistral3 config needs a positive integer top-level 'spatial_merge_size' to size "
+                    f"the Pixtral patch merger and per-image token counts; got {merge!r}."
+                )
+            vit_hidden = vision_cfg["hidden_size"]
+            # After the text_config flatten, hidden_size is the LLM hidden dim,
+            # which is the projector's output dimension.
+            text_hidden = hidden_size
+            # PatchMerger fuses spatial_merge_size² patches per token, so the
+            # projector's first GEMM takes vit_hidden * spatial_merge_size² in:
+            #   patch_merger:  merger_dim -> vit_hidden
+            #   linear_1:      vit_hidden -> text_hidden
+            #   linear_2:      text_hidden -> text_hidden
+            merger_dim = vit_hidden * merge**2
+            # ViT FFN is SwiGLU (hidden_act="silu"); gated_mlp=True adds the
+            # separate gate projection the plain up/down builder omits. The
+            # model selects the activation after linear_1 only. The pre-merger
+            # RMSNorm remains an unmodeled ElementWise term.
+            extra_params = VisionEncoderConfig(
+                depth=vision_cfg["num_hidden_layers"],
+                hidden_size=vit_hidden,
+                num_heads=vision_cfg["num_attention_heads"],
+                intermediate_size=vision_cfg["intermediate_size"],
+                patch_size=patch_size,
+                temporal_patch_size=1,
+                spatial_merge_size=merge,
+                encoder_type="pixtral",
+                resize_mode="pixtral",
+                image_size=image_size,
+                out_hidden_size=text_hidden,
+                projector_dims=((merger_dim, vit_hidden), (vit_hidden, text_hidden), (text_hidden, text_hidden)),
+                projector_n_instances=1,
+                projector_merger_replicated=True,
+                partial_rotary_factor=0.5,
+                gated_mlp=True,
+            )
+            logger.info(
+                "Mistral3 (Pixtral) vision encoder config: depth=%d, hidden=%d, patch=%d, spatial_merge=%d",
                 extra_params.depth,
                 extra_params.hidden_size,
                 extra_params.patch_size,
