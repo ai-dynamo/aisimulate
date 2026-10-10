@@ -19,8 +19,6 @@ product workspace. Imported AIConfigurator source does not retain another builda
 The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
 Python import namespaces are removed. See the [migration guide](../aic-backward-compatibility/migration.md#python-imports-and-resources).
 
-The pinned-image `collector.sglang_rubin` operation collectors are source-checkout tools and are not wheel payloads. Collection runs from `python/aisimulate/` inside the pinned SGLang image; the wheel includes their qualified Vera Rubin NVL72 data and prediction APIs. This does not change the packaged FPM Collector workflow/runtime listed above. See the [pilot collector instructions](../../python/aisimulate/collector/sglang_rubin/README.md).
-
 `scripts/release/build_release_artifacts.py` validates the manifest set before it
 builds and validates the output directory afterward. A release build fails if
 an additional wheel, source distribution, or crate appears.

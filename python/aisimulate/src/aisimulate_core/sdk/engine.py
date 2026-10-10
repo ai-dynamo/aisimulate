@@ -58,7 +58,6 @@ from aisimulate_core.sdk.fpm_profile import (
     load_fpm_profile,
 )
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.deepseek_v32 import _generation_ops_for_engine
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
@@ -148,9 +147,6 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 #   for selector diagnostics; legacy JSON defaults do not cover bincode.
 # - 21 (AIC-1781): exact moe_kernel_source identity in EngineConfig and MoeOp.
-# - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
-#   identity and two appended composite operators extend the schema-21 layout.
-#   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
 # - 23 (DCP identity): optional recorded dcp_size in ParallelMapping.
 # - 24 (typed FPM DCP): dcp_size moves out of the op matching tuple.
 # - 25 (FPM decoupling): merge the SOL/direct selector into the typed DCP layout.
@@ -392,20 +388,6 @@ def _engine_config_dict(
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
         "extra": {},
     }
-    selected = getattr(cfg, "prefill_graph_profile", None)
-    if selected is not None:
-        from aisimulate_core._native import prefill_graph_profile_identity
-
-        engine["prefill_graph_profile"] = selected
-        engine["prefill_graph_profile_id"] = prefill_graph_profile_identity()[1]
-        engine["forward_model"] = cfg.forward_model
-        # A supplied Python view must agree with the disabled Rust policy;
-        # an override cannot undo shared rows already loaded into that view.
-        if engine["enable_shared_layer"] or _shared_layer_flag(database):
-            from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
-        engine["enable_shared_layer"] = False
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
     # flattened Option deserializes to None.
@@ -494,8 +476,6 @@ def compile_engine(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
-    decode_workload_distribution: str | None = None,
-    prefill_graph_profile: str | None = None,
     fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
@@ -512,18 +492,6 @@ def compile_engine(
     Profile precision is authoritative on either route, with
     conflicting caller overrides rejected. ``cp_size`` completes the profile
     identity; profiles currently support only CP1/PP1 and no speculation.
-
-    ``decode_workload_distribution=None`` preserves the default model and latency
-    behavior. The observed GLM-5.2 NVFP4 pilot profile selects only generation MoE
-    on the exact Vera Rubin NVL72 SGLang runtime, TP4/MoETP4/EP1, BF16 GEMM/FMHA, FP8 KV and
-    half communication. Its measured physical nodes are 1, 8 and 32; intermediate
-    logical batches are exploratory and queries outside 1..32 fail. Missing or
-    mismatched approved profile data raises ``DecodeMoeProfileError``.
-
-    Engine schema 26 adds decode context parallelism on top of the schema-25
-    FPM interpolation selector, typed DCP and exact-profile policy on MoE
-    operators. Older binary specs require
-    recompilation; default representations are therefore not byte-identical.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
@@ -572,10 +540,8 @@ def compile_engine(
     interpolation = fpm_interpolation
     deployment = None
     if profile is not None:
-        if any(value is not None for value in (moe_kernel_source, decode_workload_distribution, prefill_graph_profile)):
-            raise InvalidEngineConfigurationError(
-                "FPM profiles do not support moe_kernel_source, decode_workload_distribution or prefill_graph_profile"
-            )
+        if moe_kernel_source is not None:
+            raise InvalidEngineConfigurationError("FPM profiles do not support moe_kernel_source")
         if dcp_size is not None:
             raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
         if nextn or speculation is not None:
@@ -640,12 +606,6 @@ def compile_engine(
 
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
-    if prefill_graph_profile is not None:
-        from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-        if shared_layer:
-            raise PrefillGraphProfileError("prefill_graph_profile does not allow shared-source inheritance")
-        shared_layer = False
     from aisimulate_core.sdk.speculation import SpeculationConfig
 
     if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
@@ -676,8 +636,6 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
-            decode_workload_distribution=decode_workload_distribution,
-            prefill_graph_profile=prefill_graph_profile,
             moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
@@ -964,7 +922,7 @@ def build_engine_spec_json(
     _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
     _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
     context_ops = json.loads(_ops_json(model.context_ops))
-    generation_ops = json.loads(_ops_json(_generation_ops_for_engine(model, identity)))
+    generation_ops = json.loads(_ops_json(model.generation_ops))
 
     spec = {
         "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
@@ -973,15 +931,6 @@ def build_engine_spec_json(
         "generation_ops": generation_ops,
     }
     result = json.dumps(spec)
-    if any(
-        getattr(getattr(model, "config", None), field, None) is not None
-        for field in ("decode_workload_distribution", "prefill_graph_profile")
-    ):
-        # The native engine owns the exact profile/source policy on both this
-        # preflight and later reload. No Python latency lookup or formula.
-        aisimulate_core.AicEngine.from_spec(
-            bytes(aisimulate_core.engine_spec_bincode_from_json(result)), systems_path=systems_path
-        )
     return result
 
 
@@ -1272,21 +1221,8 @@ class EngineHandle:
             int(stride),
         )
 
-    @property
-    def prefill_graph_profile(self) -> dict | None:
-        """A fresh, read-only-by-copy view of the compiled immutable profile."""
-        raw = self._engine.prefill_graph_profile_json
-        return None if raw is None else json.loads(raw)
-
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
         """Forward-step milliseconds. ``isl`` includes the cached ``prefix``."""
-        if self._engine.prefill_graph_profile_id is not None:
-            from aisimulate_core.sdk.errors import PrefillGraphProfileError
-
-            if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF for value in (bs, isl, prefix)):
-                raise PrefillGraphProfileError("bs, total isl and prefix must be exact integers within u32")
-            # Native Rust performs checked subtraction, exact shape admission and multiplication.
-            return self._engine.predict_prefill_latency(bs, isl, prefix)
         return self._engine.predict_prefill_latency(int(bs), int(isl), int(prefix))
 
     def predict_decode_latency(self, bs: int, isl: int, osl: int = 2) -> float:

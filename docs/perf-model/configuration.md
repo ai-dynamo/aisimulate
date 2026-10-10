@@ -52,8 +52,6 @@ The canonical configuration also carries quantization overrides and `attention_b
 
 `moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
 
-Selected `prefill_graph_profile` and observed `decode_workload_distribution` profiles require `moe_kernel_source=None`. Their qualified composition and source identity are fixed; an explicit source override is rejected even when its label matches the measured kernel. An absent or null source preserves the approved profile identity and predictions.
-
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
 
 An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
@@ -183,7 +181,6 @@ never switch estimator or interpolation method. A registered model's graph
 construction failure does not change SOL to direct; top-level fallback still
 follows the configured estimator ordering and policy.
 
-- `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
 - `fpm_interpolation`: `text_only` (false) permits text prefill/decode profiles
   for multimodal architectures while retaining encoder weights. It does not
   supply encoder timing. `unrecorded_quant_modes` (empty) may contain `fmha`
@@ -192,8 +189,6 @@ follows the configured estimator ordering and policy.
   profile values exactly; it does not make precision matching a wildcard.
   `fpm_parquet_path` selects an external FPM parquet with its same-stem metadata
   sidecar. Unknown fields are rejected.
-
-Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids were already supported. Regression's
@@ -360,8 +355,6 @@ setting's path. The same rule applies to legacy and canonical interpolation
 methods, including an explicit `auto`. An omitted field does not override a
 saved value. `ForwardPassPerfOptions.to_dict()` serializes only arguments
 explicitly supplied to that legacy options object, including explicit defaults.
-
-The migration adapter rejects any non-null `prefill_graph_profile`, `prefill_graph_profile_id`, or `decode_workload_distribution` field, including an orphan profile ID. These selectors require the canonical `ForwardPassPerfModelConfig.estimator_config.op_level` configuration; pass a saved canonical configuration directly to `RustForwardPassPerfModel.best_available` to preserve its profile identity and supported API restrictions. Profile-free legacy configurations continue to migrate normally.
 
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`

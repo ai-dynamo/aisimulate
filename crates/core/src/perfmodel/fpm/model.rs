@@ -496,7 +496,6 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<Option<f64>, AicError> {
-        self.require_general_forward_api()?;
         match &self.mode {
             ForwardPassPerfMode::Native {
                 engine,
@@ -542,7 +541,6 @@ impl ForwardPassPerfModel {
         &self,
         metrics_by_rank: &[ForwardPassMetrics],
     ) -> Result<crate::ForwardPassEstimate, AicError> {
-        self.require_general_forward_api()?;
         if let ForwardPassPerfMode::Native {
             engine,
             corrections,
@@ -609,7 +607,6 @@ impl ForwardPassPerfModel {
         &mut self,
         iterations: &[Vec<ForwardPassMetrics>],
     ) -> Result<(), AicError> {
-        self.require_general_forward_api()?;
         let Self {
             mode,
             options,
@@ -855,7 +852,6 @@ impl ForwardPassPerfModel {
         output_tokens: u32,
         prefill: bool,
     ) -> Result<f64, AicError> {
-        self.require_general_forward_api()?;
         let engine = self.native_engine().ok_or_else(|| {
             AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
         })?;
@@ -872,7 +868,6 @@ impl ForwardPassPerfModel {
         input_tokens: u32,
         prefix: u32,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
-        self.require_general_forward_api()?;
         let engine = self.native_engine().ok_or_else(|| {
             AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
         })?;
@@ -895,7 +890,6 @@ impl ForwardPassPerfModel {
         prefill: bool,
     ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
     {
-        self.require_general_forward_api()?;
         if self
             .provenance
             .as_ref()
@@ -912,22 +906,6 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
-    }
-
-    pub(crate) fn has_prefill_graph_profile(&self) -> bool {
-        match &self.mode {
-            ForwardPassPerfMode::Native { engine, .. } => engine.has_prefill_graph_profile(),
-            ForwardPassPerfMode::Regression { .. } => false,
-        }
-    }
-
-    fn require_general_forward_api(&self) -> Result<(), AicError> {
-        if self.has_prefill_graph_profile() {
-            return Err(crate::perf_database::prefill_graph::error(
-                "selected profile supports only direct predict_prefill_latency; telemetry, tuning, scheduler, energy and SOL routes are unqualified",
-            ));
-        }
-        Ok(())
     }
 
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {

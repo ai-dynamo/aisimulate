@@ -123,7 +123,7 @@ These are prediction-regression baselines, not whole-model silicon validation.
 
 ### B200 SGLang dense-prefix correction in PR #303
 
-Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode. The Vera Rubin NVL72-only decode composition does not cause these B200 changes.
+Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode.
 
 The following deltas are `head 91687c4 - base 1267d0f`, in milliseconds, rounded to six decimal places. Full-precision reference values remain in `goldens/engine_step.json` and its base revision.
 
