@@ -1457,12 +1457,18 @@ pub(crate) mod tests {
         let mut tp4 = op.clone();
         tp4.tp_size = 4;
         tp4.num_heads = 16;
-        assert!(tp4.query(&load(RUNTIME, DatabaseMode::Silicon), &c).is_err());
+        assert!(
+            tp4.query(&load(RUNTIME, DatabaseMode::Silicon), &c)
+                .is_err()
+        );
         let fallback = tp4.query(&load(RUNTIME, DatabaseMode::Hybrid), &c).unwrap();
         assert_eq!(fallback.source, Source::Sol);
         // Another runtime never borrows this runtime's GLM table.
         const OTHER: &str = "0.30.0+glm53tail.eb4704514fdf";
-        let other = root.path().join("data/gb300/glm53_attention/vllm").join(OTHER);
+        let other = root
+            .path()
+            .join("data/gb300/glm53_attention/vllm")
+            .join(OTHER);
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("reuse.yaml"), "schema_version: 1\nreuse: []\n").unwrap();
         let err = op

@@ -536,9 +536,17 @@ mod tests {
         sparse.checkpoint_format = "fp8".into();
         let sparse = Op::Glm53Attention(sparse);
         let load = |mode| {
-            PerfDatabase::load_resolved(root.path(), "b200_sxm", "vllm", RUNTIME, true, false, false)
-                .unwrap()
-                .with_mode(mode, TransferPolicy::ALL)
+            PerfDatabase::load_resolved(
+                root.path(),
+                "b200_sxm",
+                "vllm",
+                RUNTIME,
+                true,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(mode, TransferPolicy::ALL)
         };
         for op in [&mhc, &sparse] {
             let error = validate(&load(DatabaseMode::Silicon), [op].into_iter()).unwrap_err();
