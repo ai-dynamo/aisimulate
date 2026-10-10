@@ -460,8 +460,6 @@ python -m pip check
 
 After pulling native Rust changes, rebuild the editable installation with
 `uv pip install --reinstall-package aisimulate -e ./python/aisimulate`.
-A missing `_runtime` attribute such as `SglangPrefillAttentionSequence` usually
-means the Python source and compiled extension are from different revisions.
 Run the command in the environment that owns your `aiconfigurator` executable.
 
 Current performance profiles are checked-in Parquet files, so normal builds

@@ -144,15 +144,6 @@ impl Availability<'_> {
             DatabaseMode::Sol | DatabaseMode::SolFull
         );
         match op {
-            SglangPrefillAttentionSequence(_) | SglangPrefillCommNormBoundary(_) => {
-                const KEY: &str = "\0prefill_graph_profile";
-                if !self.tables.contains_key(KEY) {
-                    self.db.prefill_graph.validate()?;
-                    self.db.prefill_graph.validate_sources(self.db)?;
-                    self.tables.insert(KEY.to_owned(), true);
-                }
-                return Ok(());
-            }
             Dsv41Stage(stage) => {
                 for child in &stage.children {
                     self.op(child)?;
@@ -348,13 +339,7 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
-            Overlap(_)
-            | Fallback(_)
-            | TokenScale(_)
-            | FpmForward(_)
-            | Dsv41Stage(_)
-            | SglangPrefillAttentionSequence(_)
-            | SglangPrefillCommNormBoundary(_) => Ok(()),
+            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
         }
     }
 }
@@ -395,51 +380,6 @@ mod tests {
         };
         Engine::build(EngineSpec::new(config, context, generation), Arc::new(db))?
             .validate_forward_pass_readiness(crate::ForwardPassWorkerType::Aggregated)
-    }
-
-    #[test]
-    fn prefill_validation_is_reused_only_within_one_successful_readiness_pass() {
-        use crate::perf_database::prefill_graph::{PrefillGraphTable, VERSION};
-
-        let root = std::env::var_os("AISIMULATE_PREFILL_GRAPH_SYSTEMS")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                crate::perfmodel::repo_relative("python/aisimulate/src/aisimulate_core/systems")
-                    .unwrap()
-            });
-        let source = PrefillGraphTable::new(&root).snapshot().unwrap();
-        let db = PerfDatabase::load(source.path(), "vr_nvl72", "sglang", VERSION).unwrap();
-        let ops: Vec<Op> = serde_json::from_str(include_str!(
-            "../operators/testdata/glm52_prefill_graph_context.json"
-        ))
-        .unwrap();
-        let gemm = source
-            .path()
-            .join("data/vr_nvl72/gemm/sglang")
-            .join(VERSION)
-            .join("gemm_perf.parquet");
-        let approved = std::fs::read(&gemm).unwrap();
-        let mut check = Availability {
-            db: &db,
-            tables: HashMap::new(),
-        };
-        std::fs::write(&gemm, b"incomplete collection").unwrap();
-        let error = check.op(&ops[0]).unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        std::fs::write(&gemm, &approved).unwrap();
-        check.op(&ops[0]).unwrap();
-
-        // Later composites reuse this pass's successful validation. Neither a
-        // fresh pass nor the final admission snapshot can reuse that result.
-        std::fs::write(&gemm, b"changed after readiness").unwrap();
-        check.op(&ops[1]).unwrap();
-        check.op(&ops[2]).unwrap();
-        let error = validate(&db, ops[..3].iter()).unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        let error = db.prefill_graph.snapshot().unwrap_err();
-        assert!(error.to_string().contains("retained input changed"));
-        std::fs::write(&gemm, approved).unwrap();
-        validate(&db, ops[..3].iter()).unwrap();
     }
 
     fn dsv4_op(kind: &str, context: bool, cp: u32) -> Op {
