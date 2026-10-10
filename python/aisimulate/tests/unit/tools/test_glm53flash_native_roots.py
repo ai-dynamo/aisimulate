@@ -32,7 +32,7 @@ def test_public_collector_boundary_preserves_plan_attempt_and_pod(tmp_path):
         "cell_id": cid,
         "plan_sha256": "TEST_ONLY_plan",
         "attempt_id": "TEST_ONLY_attempt",
-        "runtime": {"backend": "vllm", "backend_version": "0.30.0"},
+        "runtime": {"backend": "vllm", "backend_version": "0.31.0"},
     }
     path = pod / "collector-provenance.json"
     path.write_text(json.dumps(original))
@@ -40,16 +40,16 @@ def test_public_collector_boundary_preserves_plan_attempt_and_pod(tmp_path):
     spec = {"cell_id": cid, "raw_root": str(collection), roots.FIELD: roots.SCOPE}
     actual_collection, actual_pod = roots.collection(spec, tmp_path)
     cell = SimpleNamespace(cell_id=cid, backend="vllm", state_protocol="glm53flash_same_request_real_hybrid_v1")
-    ranks = [(pod / "benchmark.json", {"producer": {"vllm_package_version": "0.30.0"}})]
+    ranks = [(pod / "benchmark.json", {"producer": {"vllm_package_version": "0.31.0"}})]
 
     def validate(root, plan="TEST_ONLY_plan", attempt="TEST_ONLY_attempt"):
         return _validate_collector_provenance(
-            cell, root, ranks, expected_plan_sha256=plan, expected_attempt_id=attempt, expected_backend_version="0.30.0"
+            cell, root, ranks, expected_plan_sha256=plan, expected_attempt_id=attempt, expected_backend_version="0.31.0"
         )
 
     with pytest.raises(ValueError, match="not scoped"):
         validate(actual_pod)
-    assert validate(actual_collection) == ("0.30.0", "TEST_ONLY_attempt")
+    assert validate(actual_collection) == ("0.31.0", "TEST_ONLY_attempt")
     for kwargs in ({"plan": "wrong"}, {"attempt": "wrong"}):
         with pytest.raises(ValueError, match="mismatch"):
             validate(actual_collection, **kwargs)

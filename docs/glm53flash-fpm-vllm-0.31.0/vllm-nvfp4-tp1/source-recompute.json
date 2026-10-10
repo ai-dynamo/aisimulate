@@ -1,0 +1,14 @@
+{
+ "vllm-nvfp4-tp1-prefill": {
+  "n": 144,
+  "fpm_mape_pct": 2.354936644758879,
+  "clean_mape_pct": 4.5890734023076645,
+  "matches_report": true
+ },
+ "vllm-nvfp4-tp1-decode": {
+  "n": 77,
+  "fpm_mape_pct": 1.9833609606738056,
+  "clean_mape_pct": 3.0279979974003943,
+  "matches_report": true
+ }
+}

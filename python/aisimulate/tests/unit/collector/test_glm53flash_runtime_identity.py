@@ -13,7 +13,7 @@ from collector.fpm_forward import hybrid_artifact
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("version", [None, "0.30", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d.other", "0.31.0"])
+@pytest.mark.parametrize("version", [None, "0.30", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d.other", "0.30.0"])
 def test_candidate_versions_are_not_implicitly_qualified(version):
     with pytest.raises(ValueError, match="unqualified"):
         identity.validate_backend_version("vllm", version)
@@ -22,20 +22,18 @@ def test_candidate_versions_are_not_implicitly_qualified(version):
 def test_actual_source_closure_is_required_even_for_stock_version():
     manifest = Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
     producer = {
-        "vllm_package_version": "0.30.0",
+        "vllm_package_version": "0.31.0",
         "runtime_source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
     }
-    assert "vllm/model_executor/layers/sparse_attn_indexer_kpool.py" in identity.validate_vllm_source_identity(
-        producer, manifest
-    )
+    assert "vllm/models/glm5next/nvidia/sparse_indexer.py" in identity.validate_vllm_source_identity(producer, manifest)
     producer["runtime_source_manifest_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="source manifest"):
         identity.validate_vllm_source_identity(producer, manifest)
 
 
 def test_holdout_runtime_must_equal_calibration_runtime():
-    calibration = {"backend_version": "0.30.0"}
-    assert identity.validate_runtime_pair("vllm", calibration, calibration) == "0.30.0"
+    calibration = {"backend_version": "0.31.0"}
+    assert identity.validate_runtime_pair("vllm", calibration, calibration) == "0.31.0"
     with pytest.raises(ValueError, match="different native runtime"):
         identity.validate_runtime_pair("vllm", calibration, {"backend_version": "0.30.0+other"})
 
@@ -49,7 +47,7 @@ def test_closed_candidate_cannot_generate_a_source_or_binary_admission(monkeypat
     for function in (identity.vllm_source_pins, identity.vllm_runtime_closure, identity.vllm_source_manifest_sha256):
         with pytest.raises(ValueError, match="unqualified"):
             function(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
-    assert identity.vllm_unaligned_prefill_admitted("0.30.0") is False
+    assert identity.vllm_unaligned_prefill_admitted("0.31.0") is False
     with pytest.raises(ValueError, match="unqualified"):
         identity.vllm_unaligned_prefill_admitted(identity.VLLM_KPOOL_CANDIDATE)
 
@@ -60,7 +58,8 @@ def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries
     monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
     contract = identity.vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
-    stock = identity.vllm_source_pins("0.30.0", source_manifest())
+    # The 0.30.0-based repairs extend the 0.30.0 stock manifest, not the current one.
+    stock = json.loads(source_manifest().with_name(identity.VLLM_REPAIR_BASE_MANIFEST).read_bytes())
     repaired = identity.vllm_source_pins(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
     assert [name for name in stock if stock[name] != repaired[name]] == [
         "vllm/model_executor/layers/sparse_attn_indexer_kpool.py"
@@ -70,7 +69,7 @@ def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries
         assert "vllm/v1/worker/gpu/" + path in contract["files"]
     assert len(contract["files"]) == len([name for name in repaired if name.startswith("vllm/")]) + 19
     assert contract["runtime_source_manifest_sha256"] != identity.vllm_source_manifest_sha256(
-        "0.30.0", source_manifest()
+        "0.31.0", source_manifest()
     )
     observation = {"contract_sha256": identity._canonical_sha256(contract), "observed_files": contract["files"]}
     identity.validate_vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest(), observation)
@@ -78,12 +77,12 @@ def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries
         with pytest.raises(ValueError, match="closure"):
             identity.validate_vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest(), bad)
     with pytest.raises(ValueError, match="closure"):
-        identity.validate_vllm_runtime_closure("0.30.0", source_manifest(), observation)
+        identity.validate_vllm_runtime_closure("0.31.0", source_manifest(), observation)
     with pytest.raises(ValueError, match="source manifest"):
         identity.validate_vllm_source_identity(
             {
                 "vllm_package_version": identity.VLLM_KPOOL_CANDIDATE,
-                "runtime_source_manifest_sha256": identity.vllm_source_manifest_sha256("0.30.0", source_manifest()),
+                "runtime_source_manifest_sha256": identity.vllm_source_manifest_sha256("0.31.0", source_manifest()),
             },
             source_manifest(),
         )
@@ -116,9 +115,9 @@ def test_worker_closure_reads_real_file_bytes_and_rejects_substitution(tmp_path,
     elif corruption == "missing":
         binary.unlink()
     elif corruption == "version":
-        sys.modules["vllm"].__version__ = "0.30.0"
+        sys.modules["vllm"].__version__ = "0.31.0"
     elif corruption == "metadata":
-        monkeypatch.setattr(identity.importlib.metadata, "version", lambda _: "0.30.0")
+        monkeypatch.setattr(identity.importlib.metadata, "version", lambda _: "0.31.0")
     if corruption is None:
         assert identity.observe_vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest()) == {
             "contract_sha256": identity._canonical_sha256(contract),
@@ -190,16 +189,16 @@ def test_tail_binding_uses_new_build_both_repairs_and_original_v2_sources(monkey
     assert len(contract["files"]) == 52
     assert (
         pins["dynamo/vllm/instrumented_scheduler.py"]
-        == identity.vllm_source_pins("0.30.0", source_manifest())["dynamo/vllm/instrumented_scheduler.py"]
+        == identity.vllm_source_pins("0.31.0", source_manifest())["dynamo/vllm/instrumented_scheduler.py"]
     )
     observation = {"contract_sha256": identity._canonical_sha256(contract), "observed_files": contract["files"]}
     identity.validate_vllm_runtime_closure(version, source_manifest(), observation)
     assert identity.vllm_unaligned_prefill_admitted(version) is True
     assert identity.validate_runtime_pair("vllm", {"backend_version": version}, {"backend_version": version}) == version
     with pytest.raises(ValueError, match="different native runtime"):
-        identity.validate_runtime_pair("vllm", {"backend_version": version}, {"backend_version": "0.30.0"})
+        identity.validate_runtime_pair("vllm", {"backend_version": version}, {"backend_version": "0.31.0"})
     assert contract["runtime_source_manifest_sha256"] != identity.vllm_source_manifest_sha256(
-        "0.30.0", source_manifest()
+        "0.31.0", source_manifest()
     )
     # A valid closure for the new wheel cannot qualify the old quarantined wheel.
     with pytest.raises(ValueError, match="unqualified"):
@@ -227,10 +226,10 @@ def test_tail_build_and_source_bytes_are_immutable(tmp_path, monkeypatch, filena
 def test_tail_source_merge_rejects_changed_baseline_instead_of_overwriting_it(tmp_path, monkeypatch, path):
     tail_binding_only(monkeypatch)
     manifest = tmp_path / "runtime-source-sha256.json"
-    pins = json.loads(source_manifest().read_bytes())
+    pins = json.loads(source_manifest().with_name(identity.VLLM_REPAIR_BASE_MANIFEST).read_bytes())
     assert path in pins
     pins[path] = "0" * 64
-    manifest.write_text(json.dumps(pins))
+    manifest.with_name(identity.VLLM_REPAIR_BASE_MANIFEST).write_text(json.dumps(pins))
     with pytest.raises(ValueError, match="source base differs|conflicting identities"):
         identity.vllm_source_pins(identity.VLLM_TAIL_CANDIDATE, manifest)
 
@@ -273,3 +272,19 @@ def test_actual_tail_admission_rechecks_packaged_evidence(tmp_path, monkeypatch,
     monkeypatch.setattr(identity, "_tail_root", lambda: root)
     with pytest.raises((ValueError, FileNotFoundError)):
         identity.validate_backend_version("vllm", identity.VLLM_TAIL_CANDIDATE)
+
+
+def test_stock_v031_manifest_pins_moved_glm_modules_and_keeps_the_v030_base():
+    current = json.loads(source_manifest().read_bytes())
+    base = json.loads(source_manifest().with_name(identity.VLLM_REPAIR_BASE_MANIFEST).read_bytes())
+    assert identity.BASELINE_VERSIONS["vllm"] == "0.31.0"
+    assert identity.vllm_source_pins("0.31.0", source_manifest()) == current
+    for moved in ("model", "attention", "kda"):
+        assert f"vllm/models/glm5next/common/{moved}.py" in current
+        assert f"vllm/models/glm5next/nvidia/{moved}.py" in base
+    assert "vllm/model_executor/layers/sparse_attn_indexer_kpool.py" not in current
+    assert {k: v for k, v in current.items() if k.startswith("dynamo/")} == {
+        k: v for k, v in base.items() if k.startswith("dynamo/")
+    }
+    with pytest.raises(ValueError, match="unqualified"):
+        identity.validate_backend_version("vllm", "0.30.0")

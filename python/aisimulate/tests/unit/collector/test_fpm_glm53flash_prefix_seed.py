@@ -142,7 +142,9 @@ def load_producer(monkeypatch):
         "vllm.sampling_params": types.SimpleNamespace(SamplingParams=lambda **kw: types.SimpleNamespace(**kw)),
         "vllm.tokenizers": types.SimpleNamespace(get_tokenizer=None),
         "vllm.v1": types.ModuleType("vllm.v1"),
-        "vllm.v1.request": types.SimpleNamespace(Request=Request),
+        "vllm.v1.request": types.SimpleNamespace(
+            Request=Request, RequestStatus=types.SimpleNamespace(PREEMPTED="preempted", WAITING_FOR_REMOTE_KVS="remote")
+        ),
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -178,9 +180,12 @@ class Engine:
         if not active:
             return False
         new = [r for r in active if r in s.waiting]
+        new_reqs, cached, scheduled = [], types.SimpleNamespace(req_ids=[], num_computed_tokens=[]), {}
         if new:
             for r in new:
                 r.computed = self.hit(r)
+                new_reqs.append(types.SimpleNamespace(req_id=r.request_id, num_computed_tokens=r.computed))
+                scheduled[r.request_id] = len(r.prompt) - r.computed
                 metrics.num_prefill_requests += 1
                 metrics.sum_prefill_tokens += len(r.prompt) - r.computed
                 metrics.sum_prefill_kv_tokens += r.computed
@@ -193,13 +198,22 @@ class Engine:
             stepped = new
         else:
             for r in active:
+                cached.req_ids.append(r.request_id)
+                cached.num_computed_tokens.append(r.computed)
+                scheduled[r.request_id] = 1
                 metrics.num_decode_requests += 1
                 metrics.sum_decode_kv_tokens += r.computed
                 r.computed += 1
                 r.outputs += 1
             stepped = active
         tokens = metrics.sum_prefill_tokens + metrics.num_decode_requests
-        out = types.SimpleNamespace(total_num_scheduled_tokens=tokens, metrics=metrics)
+        out = types.SimpleNamespace(
+            total_num_scheduled_tokens=tokens,
+            metrics=metrics,
+            scheduled_new_reqs=new_reqs,
+            scheduled_cached_reqs=cached,
+            num_scheduled_tokens=scheduled,
+        )
         model = types.SimpleNamespace(cudagraph_stats=Stats(tokens, tokens, 0, "FULL"))
         s._update_from_output(out, model)
         for r in stepped:
@@ -220,6 +234,7 @@ def make_scheduler(module, tmp_path, points):
     s._glm_point = s._glm_stage = s._glm_seed = s._glm_rows = None
     s._glm_repetitions, s._glm_rejected, s._glm_point_records = [], [], {}
     s._glm_evidence_count = 0
+    s._glm_step_outputs, s._glm_prompt_lengths = [], {}
     s._glm_evidence_digest = module.hashlib.sha256()
     s._glm_request_set = "test"
     s._glm_tokens = list(range(100, 197))
@@ -266,18 +281,37 @@ def test_prefill_prefix_seed_lifecycle(monkeypatch, tmp_path):
     assert s.saved[1][1][0]["wall_time"] == pytest.approx(sorted(measured)[4:6][0] / 2 + sorted(measured)[4:6][1] / 2)
 
 
-def test_decode_steady_step_lifecycle(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("context", "seed"), [(201, 196), (200, 196), (198, 196), (197, 192)])
+def test_decode_steady_step_lifecycle(monkeypatch, tmp_path, context, seed):
     module = load_producer(monkeypatch)
-    points = [Point("decode", 1, 3, 0, 3 * 200)]
+    points = [Point("decode", 1, 3, 0, 3 * context)]
     s = make_scheduler(module, tmp_path, points)
     run(s, Engine(s), "decode")
     ((point, fpms),) = s.saved
-    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 600
+    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 3 * context
     record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
-    assert record["seed"]["lengths"] == [196, 196, 196]
+    # True context: prompt context - 1; the cached seed (measured chunk start) stays on the 4-token grid.
+    assert record["rows"]["prompt"] == [context - 1] * 3 and record["rows"]["measured_decode_step"] == 2
+    assert record["seed"]["lengths"] == [seed] * 3
     assert all(len(rep["fpms"]) == 2 for rep in record["repetitions"])
-    assert all(rep["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 597 for rep in record["repetitions"])
+    assert all(
+        rep["fpms"][0]["scheduled_requests"]["sum_decode_kv_tokens"] == 3 * (context - 1)
+        for rep in record["repetitions"]
+    )
+    assert all(rep["prefill_chunks"] == [[[seed, context - 1 - seed]] * 3] for rep in record["repetitions"])
+    assert record["seed"]["prefill_chunks"] == [[[0, seed]] * 3]
     assert not record["rejected_repetitions"]
+
+
+def test_unaligned_prefill_chunk_start_fails_the_run(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    points = [Point("prefill", 1, 1, 32, 120, rows=[[32, 120]])]
+    s = make_scheduler(module, tmp_path, points)
+    engine = Engine(s)
+    engine.hit = lambda request: 118 if len(request.prompt) == 152 else 0
+    with pytest.raises(RuntimeError, match="not divisible by 4"):
+        run(s, engine, "prefill")
+    assert not s.saved
 
 
 def test_mismatched_geometry_is_never_published(monkeypatch, tmp_path):
@@ -289,3 +323,21 @@ def test_mismatched_geometry_is_never_published(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="too many rejected repetitions"):
         run(s, engine, "prefill")
     assert not s.saved
+
+
+def test_explicit_align4_decode_contexts_override_the_even_split(monkeypatch, tmp_path):
+    module = load_producer(monkeypatch)
+    contexts = tmp_path / "decode-contexts.json"
+    contexts.write_text(json.dumps([[2, 246, [125, 121]]]))  # TEST ONLY uneven split
+    monkeypatch.setenv("DYN_FPM_GLM53FLASH_DECODE_CONTEXTS", str(contexts))
+    monkeypatch.setattr(module, "_DECODE_CONTEXTS", None)
+    s = make_scheduler(module, tmp_path, [Point("decode", 1, 2, 0, 246)])
+    run(s, Engine(s), "decode")
+    ((point, fpms),) = s.saved
+    assert fpms[0]["scheduled_requests"]["sum_decode_kv_tokens"] == 246
+    record = json.loads((tmp_path / "benchmark.repetitions.jsonl").read_text())
+    assert record["rows"] == {"context": [125, 121], "prompt": [124, 120], "measured_decode_step": 2}
+    assert record["seed"]["lengths"] == [120, 116]
+    assert all(rep["prefill_chunks"] == [[[120, 4], [116, 4]]] for rep in record["repetitions"])
+    with pytest.raises(ValueError, match="no frozen per-request contexts"):
+        module.Glm53FlashPrefixSeedScheduler._bench_decode_context_lengths(250, 2)

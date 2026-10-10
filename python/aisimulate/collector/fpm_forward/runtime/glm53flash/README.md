@@ -22,11 +22,14 @@ runtime dispatch, independently of the benchmark's expected capture metadata.
 
 Fixed API sources:
 
-- vLLM v0.30.0, commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`.
+- vLLM v0.31.0 (stock), commit `db9527a46873454610df6dbedf79a36d6bf1a7f6`.
 - Dynamo instrumentation, commit `54960177085413259859c88bd34ed0734d4c2ea9`.
+  The prefix-seed producer overrides `_compute_queued` with the vLLM v0.31.0
+  version from Dynamo `395f02405c1dd1835ab73a39f7a5984ae5fd4552`.
 
 The exact source-file hashes in `runtime-source-sha256.json` must match the
-installed image/overlay. Configure an independently qualified Dynamo overlay
+installed image/overlay. `runtime-source-sha256-vllm-0.30.0.json` keeps the
+vLLM 0.30.0 closure that the historical 0.30.0 repairs extend. Configure an independently qualified Dynamo overlay
 on PYTHONPATH; `runtime-paths.json` declares its default mounted location.
 The source-checked lazy bootstrap activates when a native scheduler or GPU
 worker is imported. Helper/compiler Python processes remain inert.
@@ -43,19 +46,29 @@ this contract remain historical and cannot enter a new formal publication.
 Ops uses its separately bound per-worker state inventory instead of this FPM
 initializer receipt. No state tensors or GPU selection are changed by the wrapper.
 
-Required environment: `DYN_FPM_GLM53FLASH_REAL_KV=1`, `DYN_FPM_INPUT_TEXT`, and
+Required environment: `DYN_FPM_GLM53FLASH_REAL_KV=1` and
 `DYN_FPM_TOKENIZER_REVISION` equal to the fixed FP8 or NVFP4 checkpoint revision.
+The prefix-seed producer (`DYN_FPM_GLM53FLASH_PREFIX_SEED=1`) generates its
+inputs with `collector/glm53flash_attention_tokens.py` (seed 53) after checking
+the model directory's `tokenizer.json`. The older `glm53flash_scheduler.py`
+producer still reads `DYN_FPM_INPUT_TEXT` and targets vLLM 0.30.0 only.
 The matching installed AISimulate wheel must provide the GLM model descriptor
 and FPM execution identity. The collector stages the content-hashed corpus,
 explicit point manifest and adapter. Native global warmup is set to zero because
 the adapter performs its own five real warmups per exact geometry.
 
-The formal baseline is TP2/TP4, DP=PP=CP=EP=1, full text inference with no
+The formal baseline is TP2/TP4 (plus TP1 for NVFP4), DP=PP=CP=EP=1, full text inference with no
 speculation, EPLB, offload, connectors or ubatching. Maximum context is 131072,
 batch is at most 32, and scheduled prefill new-token total is at most 8192.
 CUDA graph policy is native; eager-only campaigns require a separate identity.
 
 ## Native IndexPool qualification restriction
+
+Stock v0.31.0 still has this defect. The prefix-seed producer therefore keeps
+every prefill prefix and new-token length, and every decode seed prefix, on the
+4-token grid (decode prompts keep their true context minus one). It records the
+start of every scheduled prefill chunk (seed, warmup and measured shots) from
+the native `SchedulerOutput` and fails on an unaligned start.
 
 Stock vLLM cached prefill with a prefix not divisible by four and at least two
 new tokens is unqualified. GB300 split/one-shot probes observed wrong pooled

@@ -328,20 +328,32 @@ def test_public_tail_fpm_qualified_unaligned_exact_and_bracket(tmp_path, model_p
 @pytest.mark.parametrize(
     "version",
     [
+        "0.31.0",
         "0.30.0",
         "0.30.0+unknown",
         _TAIL_VERSION + ".other",
         "0.30.0+glm53tail.eb4704514fde",
-        "0.30.0+glm53kpool.bf5f6b0e689d",
     ],
 )
-def test_public_tail_fpm_rejects_unqualified_exact_data(tmp_path, version):
+def test_public_glm_fpm_predicts_unaligned_prefixes(tmp_path, version):
+    # Align-4 is a collection rule; predictions for any prefix are never refused.
     points = [("prefill", 1, 32, p, 15.0) for p in _TAIL_PREFIXES]
     config, _, _ = _median_pair_request(tmp_path, "vllm", version=version, points=points)
     predictor = RustForwardPassPerfModel.best_available(config)
     try:
         for prefix in _TAIL_PREFIXES:
-            with pytest.raises(Exception, match="cached-prefill start is unqualified|runtime quarantined"):
+            assert predictor.estimate_forward_pass_time_ms(_tail_metrics(1, 32, prefix)) == 15.0
+    finally:
+        predictor.close()
+
+
+def test_public_glm_fpm_rejects_quarantined_runtime_tables(tmp_path):
+    points = [("prefill", 1, 32, p, 15.0) for p in _TAIL_PREFIXES]
+    config, _, _ = _median_pair_request(tmp_path, "vllm", version="0.30.0+glm53kpool.bf5f6b0e689d", points=points)
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        for prefix in _TAIL_PREFIXES:
+            with pytest.raises(Exception, match="runtime quarantined"):
                 predictor.estimate_forward_pass_time_ms(_tail_metrics(1, 32, prefix))
     finally:
         predictor.close()

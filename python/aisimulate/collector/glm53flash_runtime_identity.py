@@ -18,7 +18,11 @@ from urllib.parse import unquote, urlsplit
 
 from collector import glm53flash_tail_qualification as tail_qualification
 
-BASELINE_VERSIONS = {"vllm": "0.30.0", "sglang": "0.5.20"}
+# Stock vLLM v0.31.0 (tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6), no local patch.
+BASELINE_VERSIONS = {"vllm": "0.31.0", "sglang": "0.5.20"}
+# The historical repairs below are local builds of vLLM 0.30.0; their source
+# closures extend the 0.30.0 stock manifest kept next to the current one.
+VLLM_REPAIR_BASE_MANIFEST = "runtime-source-sha256-vllm-0.30.0.json"
 VLLM_KPOOL_CANDIDATE = "0.30.0+glm53kpool.bf5f6b0e689d"
 VLLM_TAIL_CANDIDATE = tail_qualification.VERSIONS["candidate"]
 # Diagnostic612960 quarantined the old KPool runtime after out-of-bounds tail
@@ -394,9 +398,19 @@ def validate_backend_version(backend: str, version: str) -> str:
     return version
 
 
+def _repair_base_manifest(manifest: Path) -> Path:
+    return manifest.with_name(VLLM_REPAIR_BASE_MANIFEST)
+
+
 def vllm_source_pins(version: str, manifest: Path) -> dict[str, str]:
-    """Return the effective source closure for an admitted exact runtime."""
+    """Return the effective source closure for an admitted exact runtime.
+
+    ``manifest`` is the current stock manifest; 0.30.0-based repairs read the
+    sibling 0.30.0 stock manifest instead.
+    """
     validate_backend_version("vllm", version)
+    if version in (VLLM_KPOOL_CANDIDATE, VLLM_TAIL_CANDIDATE):
+        manifest = _repair_base_manifest(manifest)
     pins = json.loads(manifest.read_bytes())
     if version == VLLM_TAIL_CANDIDATE:
         build, native_sources = _tail_runtime_files()

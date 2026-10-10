@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import dsv41_producer_lifecycle as precedent
 
-sys.modules["vllm"].__version__ = "0.30.0"  # CPU fixture, never native evidence.
+sys.modules["vllm"].__version__ = "0.31.0"  # CPU fixture, never native evidence.
 
 path = Path(os.environ["AIC_FPM_GLM53FLASH_PRODUCER"])
 spec = importlib.util.spec_from_file_location("glm53flash_tested", path)

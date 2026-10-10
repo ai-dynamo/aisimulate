@@ -422,61 +422,12 @@ impl FpmForwardOp {
     }
 
     /// Domain gate + ScatteredSites resolution, mirroring `FPMForwardOp._resolve`.
-    fn validate_glm53flash_native_start(
-        &self,
-        backend: &str,
-        version: &str,
-        coords: &[f64],
-    ) -> Result<(), AicError> {
-        self.validate_glm53flash_runtime(backend, version)?;
-        if backend != "vllm"
-            || self.phase != FpmPhase::Prefill
-            || !matches!(
-                self.model_path.as_str(),
-                "zai-org/GLM-5.3-Flash" | "nvidia/GLM-5.3-Flash-NVFP4"
-            )
-        {
-            return Ok(());
-        }
-        // Stock vLLM assumes pool-aligned cached-prefill starts. GB300
-        // split/one-shot probes fail for P4097/Q3 and Q4. Keep the broader
-        // unaligned-start contract unqualified, even for an exact table hit.
-        // A repaired runtime needs its own explicit qualification identity.
-        if coords.len() != 3
-            || coords.iter().any(|v| !v.is_finite() || v.fract() != 0.0)
-            || coords[0] < 1.0
-            || coords[1] < coords[0]
-            || coords[2] < 0.0
-            || coords[1] % coords[0] != 0.0
-            || coords[2] % coords[0] != 0.0
-        {
-            return Err(data_err(
-                "GLM-5.3-Flash FPM requires homogeneous integral native coordinates".into(),
-            ));
-        }
-        let query = coords[1] / coords[0];
-        let prefix = coords[2] / coords[0];
-        // Exact parity with collector/glm53flash_runtime_identity.py: only the
-        // new tail repair has reviewed four-cell native, 128K and cache-oracle
-        // evidence (qualification summary SHA256
-        // 8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45).
-        // The older KPool repair remains quarantined above. Never admit a
-        // version prefix or an unreviewed local suffix.
-        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &["0.30.0+glm53tail.eb4704514fdf"];
-        let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
-        if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
-            return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
-        }
-        Ok(())
-    }
-
     fn resolve(
         &self,
         db: &PerfDatabase,
         cell: &FpmForwardCell,
         coords: &[f64],
     ) -> Result<PerformanceResult, AicError> {
-        self.validate_glm53flash_native_start(&db.backend, &db.version, coords)?;
         if self.interpolation == FpmInterpolation::Direct {
             return match self.phase {
                 FpmPhase::Prefill => self.resolve_direct_prefill(cell, coords),
@@ -1206,7 +1157,9 @@ mod tests {
     }
 
     #[test]
-    fn glm53flash_native_pool_start_blocks_exact_and_interpolated_queries() {
+    fn glm53flash_prefill_queries_are_not_refused_for_unaligned_prefixes() {
+        // Align-4 is a collection rule (inputs are built on the 4-token grid);
+        // predictions for arbitrary prefixes and totals are never refused.
         use crate::perf_database::fpm_forward::tests::RowSpec;
         for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
             let rows: Vec<_> = [(3, 4096), (3, 4097), (3, 4100), (1, 4097)]
@@ -1226,77 +1179,20 @@ mod tests {
             let db = db_with_pair(tmp.path());
             let mut prefill = op(FpmPhase::Prefill);
             prefill.model_path = model.into();
-            for prefix in [4097, 4098] {
-                for result in [
-                    prefill.query(&db, &ctx(1, 3, prefix)),
-                    prefill.query_totals(&db, &[1.0, 3.0, prefix as f64]),
-                ] {
-                    assert!(
-                        result
-                            .unwrap_err()
-                            .to_string()
-                            .contains("cached-prefill start is unqualified")
-                    );
-                }
+            // Exact table hits on and off the 4-token grid.
+            for prefix in [4096, 4097, 4100] {
+                assert_eq!(
+                    prefill.query(&db, &ctx(1, 3, prefix)).unwrap().latency_ms,
+                    1.0
+                );
+                assert_eq!(
+                    prefill
+                        .query_totals(&db, &[1.0, 3.0, prefix as f64])
+                        .unwrap()
+                        .latency_ms,
+                    1.0
+                );
             }
-            assert_eq!(
-                prefill.query(&db, &ctx(1, 3, 4096)).unwrap().latency_ms,
-                1.0
-            );
-            assert_eq!(
-                prefill
-                    .query_totals(&db, &[1.0, 1.0, 4097.0])
-                    .unwrap()
-                    .latency_ms,
-                1.0
-            );
-            assert!(
-                prefill
-                    .query_totals(&db, &[2.0, 3.0, 8192.0])
-                    .unwrap_err()
-                    .to_string()
-                    .contains("homogeneous integral")
-            );
-            // The native restriction does not apply to SGLang's separate path.
-            assert!(
-                prefill
-                    .validate_glm53flash_native_start("sglang", "0.5.20", &[1.0, 3.0, 4097.0])
-                    .is_ok()
-            );
-        }
-        let legacy = op(FpmPhase::Prefill);
-        assert!(
-            legacy
-                .validate_glm53flash_native_start("vllm", "0.30.0", &[1.0, 3.0, 4097.0])
-                .is_ok()
-        );
-        let mut decode = op(FpmPhase::Decode);
-        decode.model_path = "zai-org/GLM-5.3-Flash".into();
-        assert!(
-            decode
-                .validate_glm53flash_native_start("vllm", "0.30.0", &[1.0, 4097.0])
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn unqualified_glm_repair_suffix_does_not_bypass_native_pool_start() {
-        let mut prefill = op(FpmPhase::Prefill);
-        prefill.model_path = "zai-org/GLM-5.3-Flash".into();
-        for version in [
-            "0.30.0",
-            "0.30.0+unknown",
-            "0.30.0+glm53kpool.bf5f6b0e689d.other",
-            "0.30.0+glm53tail.eb4704514fdf.other",
-            "0.30.0+glm53tail.eb4704514fde",
-        ] {
-            assert!(
-                prefill
-                    .validate_glm53flash_native_start("vllm", version, &[1.0, 3.0, 4097.0])
-                    .unwrap_err()
-                    .to_string()
-                    .contains("cached-prefill start is unqualified")
-            );
         }
     }
 
@@ -1705,44 +1601,6 @@ mod tests {
             assert!(direct.query_totals(&db, &[8.0, 4096.0]).is_err());
             assert!(direct.query_pass_baseline(&db, 8, 4096.0).is_err());
             assert_eq!(direct.decode_kv_ceiling(&db).unwrap(), None);
-        }
-    }
-
-    #[test]
-    fn qualified_tail_keeps_native_coordinate_guards() {
-        for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
-            let mut prefill = op(FpmPhase::Prefill);
-            prefill.model_path = model.into();
-            let version = "0.30.0+glm53tail.eb4704514fdf";
-            for batch in [1.0, 4.0, 32.0] {
-                for prefix in [122.0, 125.0, 131.0, 134.0, 4346.0, 4349.0, 4355.0, 4358.0] {
-                    assert!(
-                        prefill
-                            .validate_glm53flash_native_start(
-                                "vllm",
-                                version,
-                                &[batch, batch * 32.0, batch * prefix]
-                            )
-                            .is_ok()
-                    );
-                }
-            }
-            for coords in [
-                vec![2.0, 3.0, 244.0],
-                vec![2.0, 64.0, 245.0],
-                vec![0.0, 32.0, 122.0],
-                vec![1.0, 32.5, 122.0],
-                vec![1.0, 32.0, -1.0],
-                vec![1.0, 32.0, f64::NAN],
-            ] {
-                assert!(
-                    prefill
-                        .validate_glm53flash_native_start("vllm", version, &coords)
-                        .unwrap_err()
-                        .to_string()
-                        .contains("homogeneous integral")
-                );
-            }
         }
     }
 

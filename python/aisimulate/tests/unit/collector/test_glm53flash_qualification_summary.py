@@ -221,7 +221,7 @@ def test_packaged_historical_evidence_remains_readable_without_runtime_admission
         identity.validate_backend_version("vllm", version)
     with pytest.raises(ValueError, match="unqualified"):
         identity.vllm_unaligned_prefill_admitted(version)
-    assert not identity.vllm_unaligned_prefill_admitted("0.30.0")
+    assert not identity.vllm_unaligned_prefill_admitted("0.31.0")
     assert {(c["checkpoint"], c["tp"]) for c in summary["cells"]} == {
         (precision, tp) for precision in ("fp8", "nvfp4") for tp in (2, 4)
     }
@@ -251,7 +251,7 @@ def test_exact_four_cells_required(staged, monkeypatch, bad):
         ("wheel_sha256", "f" * 64),
         ("build_receipt_sha256", "f" * 64),
         ("expected_runtime_sha256", "f" * 64),
-        ("backend_version", "0.30.0"),
+        ("backend_version", "0.31.0"),
         ("source_commit", "main"),
         ("accuracy_acceptance", "PASSED"),
     ],

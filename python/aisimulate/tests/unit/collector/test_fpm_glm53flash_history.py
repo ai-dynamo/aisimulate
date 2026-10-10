@@ -76,7 +76,7 @@ def fixture(tmp_path, phase):
             "warmup_repeats": 5,
             "measurement_repeats": 10,
             "context_policy_version": 1,
-            "vllm_package_version": "0.30.0",
+            "vllm_package_version": "0.31.0",
         },
         "limits": {"max_model_len": 131079},
         "context_policy": {

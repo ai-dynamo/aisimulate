@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Observe each native worker's selected device once, outside forward timing.
 
-API integration: vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607,
+API integration: vllm-project/vllm@db9527a46873454610df6dbedf79a36d6bf1a7f6 (v0.31.0),
 vllm/v1/worker/gpu_worker.py:Worker.init_device (Apache-2.0). This original
 wrapper calls the native initializer unchanged, then reads device properties.
 """
@@ -52,11 +52,11 @@ def install(module) -> None:
             if (
                 type(worker.rank) is not int
                 or not 0 <= worker.rank < parallel.tensor_parallel_size
-                or parallel.tensor_parallel_size not in (2, 4)
+                or parallel.tensor_parallel_size not in (1, 2, 4)
                 or parallel.pipeline_parallel_size != 1
                 or parallel.data_parallel_size != 1
             ):
-                raise ValueError("GLM hardware evidence requires native pure TP2/TP4")
+                raise ValueError("GLM hardware evidence requires native pure TP1/TP2/TP4")
             validate_gb300_identity(receipt["hardware"])
             if str(worker.device) != f"cuda:{receipt['hardware']['cuda_device_index']}":
                 raise ValueError("vLLM worker device differs from its selected CUDA device")

@@ -15,8 +15,50 @@ The required matrix is GB300 × vLLM/SGLang × native FP8/NVIDIA NVFP4 × TP2/TP
 
 - FP8: `zai-org/GLM-5.3-Flash@eb9eb208eb0d988989d07a6a12d0fdeb5f52574a`.
 - NVFP4: `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
-- vLLM: `v0.30.0`, source `ced6857afa0ea7b2e3f0846a62e1394e90f15607`.
+- vLLM: stock `v0.31.0`, source `db9527a46873454610df6dbedf79a36d6bf1a7f6` (earlier campaigns:
+  `v0.30.0`, source `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, and its local repairs below).
 - SGLang: `v0.5.20`, source `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+
+### vLLM v0.31.0 recollection (stock runtime)
+
+The vLLM FPM is recollected on stock vLLM `0.31.0` without a local patch. The
+default serving configuration is unchanged: prefix caching on (Mamba `align`
+mode, `--prefix-match-unit 4`), `FULL_AND_PIECEWISE` graphs with the 62 capture
+sizes, `--no-async-scheduling`, GPU memory 0.92, budget 8192. Timing is the
+engine-native Dynamo `InstrumentedScheduler` FPM `wall_time` of the
+prefix-seed producer (`glm53flash_prefix_scheduler.py`).
+
+- Stock v0.31.0 does not complete IndexPool entries at a cached or chunked
+  prefill start that is not a multiple of 4. Every prefill prompt, prefix and
+  new-token length is a multiple of 4. Decode points keep their true context
+  `c`: the prompt is `c - 1` and its cached seed prefix is `4 * floor((c - 2) / 4)`,
+  so the measured shot starts on the grid. The measured step is the second
+  pure decode step. The producer records every prefill chunk start from the
+  native `SchedulerOutput` and fails on an unaligned start. Geometry moved to
+  satisfy this is executed geometry with reason `kpool_align4`. Align-4 is a
+  collection rule only: the consumer predicts any prefix length or total. Optional
+  per-request decode contexts come from a frozen sidecar
+  (`DYN_FPM_GLM53FLASH_DECODE_CONTEXTS`), because Dynamo's explicit decode
+  points carry totals only.
+- Inputs are the seeded token stream of `collector/glm53flash_attention_tokens.py`
+  (generator `sha256_counter_rejection` v1, seed 53, ids `[0, 154820)` of the
+  pinned tokenizer), recorded in `input_provenance`; there is no text corpus.
+- Deployments: FP8 and NVFP4 at TP2/TP4, plus NVFP4 TP1. FP8 TP1 does not
+  fit one GB300: a stock v0.31.0 startup ran out of memory while creating the
+  weights (275.26 of 276.62 GiB allocated). NVFP4 TP1 reads back a Mamba block
+  of 8576 tokens and 7,198,858 KV tokens at memory 0.92. The block is larger
+  than the 8192 budget, so a long prefill advances by whole 8192-token chunks
+  and then stops at the next block boundary. Both are multiples of 4.
+- Dynamo: the instrumentation stays at `54960177`. Its `_compute_queued`
+  reads `Scheduler.skipped_waiting`, which v0.31.0 removed. The producer
+  overrides that one method with the v0.31.0 version from Dynamo `395f0240`.
+- Source pins: `runtime-source-sha256.json` holds the v0.31.0 stock closure.
+  It uses the moved `vllm/models/glm5next/common/` and `nvidia/sparse_indexer.py`
+  modules. The 0.30.0 closure that the historical repairs extend is kept in
+  `runtime-source-sha256-vllm-0.30.0.json`.
+
+Evaluation, fidelity and provenance records of the five vLLM 0.31.0 tables:
+[glm53flash-fpm-vllm-0.31.0](glm53flash-fpm-vllm-0.31.0/README.md).
 
 These are qualification candidates, not evidence of measured GB300 coverage. Preserve the checkpoint's actual per-module precision; do not relabel all weights as FP8 or NVFP4. TensorRT-LLM serving support is outside this initial matrix.
 
@@ -48,11 +90,12 @@ producer, full-campaign and independent accuracy checks. The reference runtime
 is not a measured producer. Licensed patches and qualification commands remain in
 the [runtime qualification sources](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/README.md).
 
-The Rust FPM cached-prefill guard admits that exact reviewed tail version in
-parity with the Python native reader. Stock unaligned starts, unknown local
-suffixes and the quarantined KPool runtime remain rejected. This admits queries
-to existing calibration tables; it does not grant holdout coverage or accuracy
-acceptance, which still requires predictions for every original requested point.
+The Rust consumer does not refuse prediction queries because of their prefix
+alignment. Real workloads have arbitrary prefix lengths; the IndexPool start
+restriction applies to collection inputs and to the Python native reader of
+collected evidence. Tables from the quarantined KPool runtime remain rejected.
+Holdout coverage and accuracy acceptance still require predictions for every
+original requested point.
 
 The current tail runtime has passed the original nine-point producer qualification
 and strict prefill/decode readers in all four vLLM deployments, followed by the
