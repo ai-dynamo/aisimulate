@@ -1,0 +1,34 @@
+{
+  "aic_revision": "glm53flash-v031-fpm (identity columns from the previous deployment table)",
+  "backend": "vllm",
+  "backend_version": "0.31.0",
+  "collector_attempt_ids": [
+    "902669",
+    "910726"
+  ],
+  "coordinate_system": "iteration_totals_balanced_v1",
+  "input_source": "seeded_tokens: collector/glm53flash_attention_tokens.py sha256_counter_rejection v1 seed 53; input_text_sha256 holds the canonical generator-spec digest",
+  "measurement_policy": "vllm_native_fpm_prefix_seed_median_v1",
+  "measurement_repeats": 10,
+  "model_paths": [
+    "nvidia/GLM-5.3-Flash-NVFP4"
+  ],
+  "parquet_sha256": "0a7d62334768aa61b99fc0b9ad96220eebb1961b0e8c702a642a834f12933f80",
+  "row_count": 359,
+  "runtime_grid_digests": [
+    "66ff59a6e57a206763f78d83f35c43ebbad8af24be3dea9809c4e3d932a57af8",
+    "850cd05fbc33876f7ea4062084c07dc8374f03b22b0efd575d52b5284060fdd1"
+  ],
+  "runtime_run_ids": [
+    "glm53flash-v031-fpm-vllm-nvfp4-tp4-calibration-decode-910726",
+    "glm53flash-v031-fpm-vllm-nvfp4-tp4-calibration-prefill-902669"
+  ],
+  "schema_name": "aic_fpm_forward_perf",
+  "schema_version": 7,
+  "source_plan_sha256": [
+    "66ff59a6e57a206763f78d83f35c43ebbad8af24be3dea9809c4e3d932a57af8",
+    "850cd05fbc33876f7ea4062084c07dc8374f03b22b0efd575d52b5284060fdd1"
+  ],
+  "system": "gb300",
+  "warmup_repeats": 5
+}

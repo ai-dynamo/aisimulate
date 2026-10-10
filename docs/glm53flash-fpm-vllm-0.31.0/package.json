@@ -1,0 +1,361 @@
+{
+  "campaign": "glm53flash-vllm-v031-native-fpm",
+  "deployments": [
+    {
+      "backend": "vllm",
+      "deployment": "fp8-tp2",
+      "directory": "vllm-fp8-tp2",
+      "evidence_date": "2026-10-09",
+      "files": [
+        {
+          "bytes": 22406,
+          "name": "fpm_forward_perf.parquet",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "role": "calibration_table",
+          "sha256": "c590d709a0ddc7d0b432f4fc607a6f97a902756d955555ed8e45921e02a9804c"
+        },
+        {
+          "bytes": 1312,
+          "name": "source-metadata.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "role": "source_metadata",
+          "sha256": "a7c6f3b0ce8195edfc7d7a78d6ba60308b56aff5e0e88d5e1154b78639bb6f82"
+        },
+        {
+          "bytes": 2113,
+          "name": "systems.gb300.yaml",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/systems/gb300.yaml",
+          "role": "consumer_system_configuration",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        {
+          "bytes": 78166,
+          "name": "source-evaluation.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/evaluation.json",
+          "role": "evaluation_support",
+          "sha256": "a473453db0f7b7dde02ac56af6ca12a3328227bebbee2758e77194cdc61fec0e"
+        },
+        {
+          "bytes": 290,
+          "name": "source-recompute.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/recompute.json",
+          "role": "evaluation_support",
+          "sha256": "971ab0be5264eb1dea3f7e1f5dee49ba708632c1055afdcce3aeae7d34d86c07"
+        },
+        {
+          "bytes": 53026,
+          "name": "source-fidelity.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp2/fidelity.json",
+          "role": "evaluation_support",
+          "sha256": "b1a847a311fdb3c21fda256971eaecde52d9ccb10e709f2c953cc9e71a420b4e"
+        },
+        {
+          "bytes": 6130,
+          "name": "evaluation-summary.json",
+          "original_path": null,
+          "role": "evaluation_support",
+          "sha256": "b4d870298fdd44f1690ff3a848d39fae55ed8f88197bdc7b661947aab54a233a"
+        },
+        {
+          "bytes": 6346,
+          "name": "provenance.json",
+          "original_path": null,
+          "role": "provenance",
+          "sha256": "573be2edd100eb81664c07521a7885c272a284ff23ad3c6c764fd8c9eb2cbef5"
+        }
+      ],
+      "framework_version": "0.31.0",
+      "model_id": "zai-org/GLM-5.3-Flash",
+      "model_revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "source_jobs": {
+        "decode": "899326",
+        "prefill": "898822"
+      }
+    },
+    {
+      "backend": "vllm",
+      "deployment": "fp8-tp4",
+      "directory": "vllm-fp8-tp4",
+      "evidence_date": "2026-10-09",
+      "files": [
+        {
+          "bytes": 22679,
+          "name": "fpm_forward_perf.parquet",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "role": "calibration_table",
+          "sha256": "887b74ff40469e8c39e3839d52203a9b0e65a0810a0425b11987a848f7df6260"
+        },
+        {
+          "bytes": 1312,
+          "name": "source-metadata.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "role": "source_metadata",
+          "sha256": "263d2bcdc96feadca1dc253c692d4f301dc98e42123efd6b2c1fa20e2b582200"
+        },
+        {
+          "bytes": 2113,
+          "name": "systems.gb300.yaml",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/systems/gb300.yaml",
+          "role": "consumer_system_configuration",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        {
+          "bytes": 78227,
+          "name": "source-evaluation.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/evaluation.json",
+          "role": "evaluation_support",
+          "sha256": "d288d066580f256015ffc5676b03a6a2f40f16ff2589eb48414a4cdbbea169ad"
+        },
+        {
+          "bytes": 289,
+          "name": "source-recompute.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/recompute.json",
+          "role": "evaluation_support",
+          "sha256": "56b17918dc0cae0bbc92ad5c8f8a8231231b99cbef8c833c244e6cc5467df3d7"
+        },
+        {
+          "bytes": 53092,
+          "name": "source-fidelity.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-fp8-tp4/fidelity.json",
+          "role": "evaluation_support",
+          "sha256": "7a2c1d0a51e616cfa8840014b057bf12a575608f4e8cb19957af671b419275a8"
+        },
+        {
+          "bytes": 6128,
+          "name": "evaluation-summary.json",
+          "original_path": null,
+          "role": "evaluation_support",
+          "sha256": "0be8b7c042daa52c3df6754b5527d136bc50b88f7a74f4a48e47428376202782"
+        },
+        {
+          "bytes": 6346,
+          "name": "provenance.json",
+          "original_path": null,
+          "role": "provenance",
+          "sha256": "3917e02765f96716009b1e8972b0ab8cb65b98bead32a9528b7104103f9251a6"
+        }
+      ],
+      "framework_version": "0.31.0",
+      "model_id": "zai-org/GLM-5.3-Flash",
+      "model_revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "source_jobs": {
+        "decode": "901298",
+        "prefill": "899675"
+      }
+    },
+    {
+      "backend": "vllm",
+      "deployment": "nvfp4-tp2",
+      "directory": "vllm-nvfp4-tp2",
+      "evidence_date": "2026-10-09",
+      "files": [
+        {
+          "bytes": 22358,
+          "name": "fpm_forward_perf.parquet",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "role": "calibration_table",
+          "sha256": "960b3aa187de794fba07e0ee8d4b9583b324a64b5ca5eab435247b7d44958c1f"
+        },
+        {
+          "bytes": 1321,
+          "name": "source-metadata.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "role": "source_metadata",
+          "sha256": "e80f2fba1e408f0f3209ffaedb3c8678a0a43d37a7034f6bc042e269dad1a765"
+        },
+        {
+          "bytes": 2113,
+          "name": "systems.gb300.yaml",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/systems/gb300.yaml",
+          "role": "consumer_system_configuration",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        {
+          "bytes": 78229,
+          "name": "source-evaluation.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/evaluation.json",
+          "role": "evaluation_support",
+          "sha256": "5b9880956496baf134c424e5156ea95dbb2ad5e8f34022009d37c34342ba958a"
+        },
+        {
+          "bytes": 294,
+          "name": "source-recompute.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/recompute.json",
+          "role": "evaluation_support",
+          "sha256": "07c9b00f8209e2a572c3fb87955896bd7fc973de638d467a860dc033e968b6d0"
+        },
+        {
+          "bytes": 53041,
+          "name": "source-fidelity.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp2/fidelity.json",
+          "role": "evaluation_support",
+          "sha256": "d9579c420f4cd5c47abd81eaa5108abc87b4fd33caf2528a03b5370124060e5f"
+        },
+        {
+          "bytes": 6124,
+          "name": "evaluation-summary.json",
+          "original_path": null,
+          "role": "evaluation_support",
+          "sha256": "7168af207ff06b78e1752414034101c64efd5c1c646c4ad75cc69ab5d3608d6d"
+        },
+        {
+          "bytes": 6366,
+          "name": "provenance.json",
+          "original_path": null,
+          "role": "provenance",
+          "sha256": "0e5766924e69883032db3dfd5570906b93302e70f665d074d811c0fa108b1147"
+        }
+      ],
+      "framework_version": "0.31.0",
+      "model_id": "nvidia/GLM-5.3-Flash-NVFP4",
+      "model_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+      "source_jobs": {
+        "decode": "902620",
+        "prefill": "901822"
+      }
+    },
+    {
+      "backend": "vllm",
+      "deployment": "nvfp4-tp4",
+      "directory": "vllm-nvfp4-tp4",
+      "evidence_date": "2026-10-09",
+      "files": [
+        {
+          "bytes": 22297,
+          "name": "fpm_forward_perf.parquet",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "role": "calibration_table",
+          "sha256": "0a7d62334768aa61b99fc0b9ad96220eebb1961b0e8c702a642a834f12933f80"
+        },
+        {
+          "bytes": 1321,
+          "name": "source-metadata.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "role": "source_metadata",
+          "sha256": "c9587f0a72d982fc2ef93e7100f45934a9cb427701c58718432783db081983d3"
+        },
+        {
+          "bytes": 2113,
+          "name": "systems.gb300.yaml",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/systems/gb300.yaml",
+          "role": "consumer_system_configuration",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        {
+          "bytes": 78071,
+          "name": "source-evaluation.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/evaluation.json",
+          "role": "evaluation_support",
+          "sha256": "1a6f12960d2ee7a65f1333acf767f75d289b7d51fcc797526562798f1271d2b6"
+        },
+        {
+          "bytes": 292,
+          "name": "source-recompute.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/recompute.json",
+          "role": "evaluation_support",
+          "sha256": "d2742cf5a1b618501a41147f2ef89a49a415338818cabc0124223f08c3e4ea0a"
+        },
+        {
+          "bytes": 52898,
+          "name": "source-fidelity.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp4/fidelity.json",
+          "role": "evaluation_support",
+          "sha256": "debedfd04d6ae0317ed1a85b896b214d33c49e302764a07e889c30c0986e0250"
+        },
+        {
+          "bytes": 6130,
+          "name": "evaluation-summary.json",
+          "original_path": null,
+          "role": "evaluation_support",
+          "sha256": "c0b9c0dd51e7a9511ba63a9b4971436c788aef63cf2019936d25843f74b5c13e"
+        },
+        {
+          "bytes": 6366,
+          "name": "provenance.json",
+          "original_path": null,
+          "role": "provenance",
+          "sha256": "7b602ba05e5cf48bba3d293aa0c2bc91cbd36765bb01e8a5740e865e5a4e4275"
+        }
+      ],
+      "framework_version": "0.31.0",
+      "model_id": "nvidia/GLM-5.3-Flash-NVFP4",
+      "model_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+      "source_jobs": {
+        "decode": "910726",
+        "prefill": "902669"
+      }
+    },
+    {
+      "backend": "vllm",
+      "deployment": "nvfp4-tp1",
+      "directory": "vllm-nvfp4-tp1",
+      "evidence_date": "2026-10-09",
+      "files": [
+        {
+          "bytes": 22743,
+          "name": "fpm_forward_perf.parquet",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "role": "calibration_table",
+          "sha256": "a3d3ad924935474380f8b9cabf25cb51b8b3d3abdaa71de567be837b2ecf5577"
+        },
+        {
+          "bytes": 1321,
+          "name": "source-metadata.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/systems/data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "role": "source_metadata",
+          "sha256": "48a166dde61dff7815b925547c3f55b0510567a83b791711a38fdee99152612e"
+        },
+        {
+          "bytes": 2113,
+          "name": "systems.gb300.yaml",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/systems/gb300.yaml",
+          "role": "consumer_system_configuration",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        },
+        {
+          "bytes": 78243,
+          "name": "source-evaluation.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/evaluation.json",
+          "role": "evaluation_support",
+          "sha256": "72e16883081e274f11041d4a6656d71f450547e2dc7272734936eb554ae1c305"
+        },
+        {
+          "bytes": 295,
+          "name": "source-recompute.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/recompute.json",
+          "role": "evaluation_support",
+          "sha256": "15464723ad34b41795feeece4e6f5f4b4c1997e4e3e87e26348a55bcf80d21c3"
+        },
+        {
+          "bytes": 53175,
+          "name": "source-fidelity.json",
+          "original_path": "<glm53flash-v031-fpm>/eval/final/vllm-nvfp4-tp1/fidelity.json",
+          "role": "evaluation_support",
+          "sha256": "d389bd84fac3591cd1509f6d58dd0d7db2b9822ffd8d14fce98af114125c4073"
+        },
+        {
+          "bytes": 6139,
+          "name": "evaluation-summary.json",
+          "original_path": null,
+          "role": "evaluation_support",
+          "sha256": "bdbe539216145d28cdc2cdc2843a3b4e63b9d12dd0a9cf02e0c8b5fb2d0a99f7"
+        },
+        {
+          "bytes": 6366,
+          "name": "provenance.json",
+          "original_path": null,
+          "role": "provenance",
+          "sha256": "9534cae90193d135e7584b27e3e1bedb8800f5168c2d3f7cdffd35f5e1e8c309"
+        }
+      ],
+      "framework_version": "0.31.0",
+      "model_id": "nvidia/GLM-5.3-Flash-NVFP4",
+      "model_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+      "source_jobs": {
+        "decode": "898419",
+        "prefill": "896544"
+      }
+    }
+  ],
+  "source_revision": "58f49a1d79daaab457882b86bf2e6ac1857a26d0"
+}

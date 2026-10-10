@@ -57,6 +57,9 @@ prefix-seed producer (`glm53flash_prefix_scheduler.py`).
   modules. The 0.30.0 closure that the historical repairs extend is kept in
   `runtime-source-sha256-vllm-0.30.0.json`.
 
+Evaluation, fidelity and provenance records of the five vLLM 0.31.0 tables:
+[glm53flash-fpm-vllm-0.31.0](glm53flash-fpm-vllm-0.31.0/README.md).
+
 These are qualification candidates, not evidence of measured GB300 coverage. Preserve the checkpoint's actual per-module precision; do not relabel all weights as FP8 or NVFP4. TensorRT-LLM serving support is outside this initial matrix.
 
 ## Acceptance and data status
