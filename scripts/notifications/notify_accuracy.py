@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Preview or deliver one daily accuracy message plus its detail thread."""
+"""Preview or deliver one scheduled accuracy message plus its detail thread."""
 
 from __future__ import annotations
 
@@ -501,6 +501,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--deliver", type=Path, help="Deliver a previously persisted report")
+    # Keep the production mode and Slack metadata compatible with prior deliveries.
     parser.add_argument("--mode", choices=("dry-run", "test", "daily"), default="dry-run")
     parser.add_argument("--e2e-run-id", type=int)
     parser.add_argument("--fpm-run-id", type=int)

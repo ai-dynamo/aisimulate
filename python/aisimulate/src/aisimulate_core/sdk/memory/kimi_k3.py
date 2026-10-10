@@ -21,56 +21,37 @@
 # vllm/platforms/interface.py, vllm/v1/kv_cache_interface.py,
 # vllm/v1/attention/backends/mla/triton_mla.py.
 
-"""Resolve Kimi K3 token/state cache geometry without loading GPU weights."""
+"""Resolve Kimi K3 token and KDA state cache geometry without loading GPU weights."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from .state import _integer
+
 VLLM_REVISION = "a474da28131f61684849b31e29af0eebaaedc383"
 _WIDTH = {"float16": 2, "bfloat16": 2, "float32": 4}
 
 
-def estimate_state_cache(
+def kimi_k3_state_cache(
     model_path: str,
+    info: dict[str, Any],
     *,
-    backend: str = "vllm",
-    tp_size: int = 1,
-    pp_size: int = 1,
-    block_size: int = 64,
-    kv_bytes_per_token: int | None = None,
-    kvcache_quant_mode: str | None = None,
-    mamba_cache_dtype: str = "auto",
-    num_speculative_tokens: int = 0,
+    backend: str,
+    tp_size: int,
+    block_size: int | None,
+    kv_bytes_per_token: int | None,
+    kvcache_quant_mode: str | None,
+    mamba_cache_dtype: str,
+    num_speculative_tokens: int,
 ) -> dict[str, Any]:
-    """Resolve the physical block size and ONE K3 state copy per rank.
+    """Per-rank MLA token bytes and one KDA state, padded to the resolved block."""
+    from ..config_builders import build_model_config
+    from ..models import get_model
 
-    Uses the existing Kimi model for target-only token KV geometry. Draft KV and
-    extra state copies belong to their runtime pools, not this one-copy size.
-    Model configuration loading follows the SDK's normal model loader.
-
-    ``block_size`` is the requested page granularity (AISimulate defaults to 64).
-    It must satisfy the attention kernel's alignment. Automatic sizing follows
-    the pinned vLLM KDA none/align layout and Triton MLA's 16-token minimum;
-    supply a larger granularity for kernels requiring it (e.g. 128 for CUTLASS).
-    The returned block size grows to fit a recurrent state. An explicit token
-    byte rate overrides the model's rate, including caller-normalized geometry.
-
-    State bytes include per-layer page padding, before pool-block rounding.
-    ``num_speculative_tokens`` is metadata: it does not change a KDA copy's shape.
-    """
-    from .config_builders import build_model_config
-    from .models import _get_model_info, get_model
-
-    if backend != "vllm" or pp_size != 1:
-        raise ValueError("automatic K3 state sizing requires vllm and PP=1")
-    for name, value, minimum in (
-        ("tp_size", tp_size, 1),
-        ("pp_size", pp_size, 1),
-        ("block_size", block_size, 2),
-        ("num_speculative_tokens", num_speculative_tokens, 0),
-    ):
-        _integer(name, value, minimum)
+    if block_size is None:
+        block_size = 64
+    _integer("block_size", block_size, 2)
     if block_size % 16:
         raise ValueError("K3 automatic block_size requires a multiple of 16 tokens")
     if mamba_cache_dtype not in ("auto", "float16", "float32"):
@@ -88,8 +69,6 @@ def estimate_state_cache(
         raise ValueError(f"unsupported kvcache_quant_mode: {kvcache_quant_mode!r}") from error
     config.language_only = True
     model = get_model(model_path, config, backend)
-    if model.model_family != "KIMIK3":
-        raise ValueError("automatic state sizing supports Kimi K3 only; supply manual state geometry")
     geometry = model.extra_params
     attention_layers = geometry.layer_types.count("full_attention")
     state_layers = geometry.layer_types.count("linear_attention")
@@ -103,7 +82,7 @@ def estimate_state_cache(
 
     conv_dtype = mamba_cache_dtype
     if conv_dtype == "auto":
-        raw = _get_model_info(model_path)["raw_config"]
+        raw = info["raw_config"]
         text = raw.get("text_config", raw)
         conv_dtype = text.get("dtype", text.get("torch_dtype"))
         if conv_dtype not in ("float16", "bfloat16"):
@@ -132,8 +111,3 @@ def estimate_state_cache(
         "num_speculative_tokens": num_speculative_tokens,
         "backend_revision": VLLM_REVISION,
     }
-
-
-def _integer(name: str, value: int, minimum: int) -> None:
-    if type(value) is not int or not minimum <= value <= (1 << 64) - 1:
-        raise ValueError(f"{name} must be an integer from {minimum} through u64 max")

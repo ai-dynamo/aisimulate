@@ -1080,7 +1080,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 ## vLLM Kimi KDA state sizing
 
-`src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
+`src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
 `src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
@@ -1133,6 +1133,27 @@ https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c1800
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
 the repository Apache-2.0 license text applies to these adaptations.
 
+## vLLM DeepSeek V4 cache sizing
+
+`src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
+control in `src/aisimulate/config/engine.py` are adapted and modified from vLLM
+commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
+`vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,
+`vllm/v1/attention/backends/mla/sparse_swa.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/single_type_kv_cache_manager.py`,
+and `vllm/config/attention.py`. The modified implementation computes DeepSeek V4
+cache pages, packed cache groups and resident sliding-window blocks with CPU
+arithmetic, maps them onto AISimulate's state cache, and adds AISimulate
+validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/LICENSE
+
 ## SemiAnalysis AgentX simulation-performance fixture
 
 `python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
@@ -1150,3 +1171,17 @@ The original play retains its rows-API representation; the three added plays
 retain their raw JSONL request values, dependencies, hashes, and timestamps.
 See the adjacent fixture README and `agentx.json` manifest for the source,
 play identities, counts, and content checksum.
+
+## NVIDIA Dynamo CI handoff compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+is adapted and modified from NVIDIA Dynamo's `lib/mocker/src/common/handoff.rs`
+at commit `def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/handoff.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds zero recurrent-state bytes to the legacy token-only DTO
+conversion for CI builds against the newer AISimulate handoff API. It preserves
+the upstream copyright header and marks the modified conversion in the output.

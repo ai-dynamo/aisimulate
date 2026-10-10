@@ -20,6 +20,9 @@ engine:
 ```
 
 Omitting `kv_transfer` is the same as `{}`: the transfer happens with no delay.
+A native ReplaySpec or Sweeper search space whose prefill rank sets a positive
+`kv_transfer_bandwidth` without `kv_transfer_bytes_per_token` is rejected; the
+YAML above always resolves the bytes.
 
 ## Transfer fields
 
@@ -43,7 +46,7 @@ where `transferred_tokens` follows `timing_mode`. With
 receives the request sooner, so prefix reuse on the decode side can lower TTFT
 even when compute time does not change. `state_bytes` is the prefill role's
 `state_cache.bytes_per_request` for
-[recurrent-state models](kv-cache.md#state-cache), and 0 otherwise.
+[hybrid-KV models](kv-cache.md#state-cache), and 0 otherwise.
 
 <a id="handoff"></a>
 

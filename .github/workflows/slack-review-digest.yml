@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Slack review digest
+name: Slack weekly review digest
 
 on:
   schedule:
-    - cron: '7 17 * * *'
+    - cron: '7 17 * * 1'
       timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
