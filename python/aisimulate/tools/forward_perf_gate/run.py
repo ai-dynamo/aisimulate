@@ -136,7 +136,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _effective_counts(args: argparse.Namespace) -> tuple[int, int, int]:
-    defaults = (1, 1, 3) if args.smoke else (5, 10, 100)
+    defaults = (1, 1, 3) if args.smoke else (10, 10, 100)
     return tuple(
         value if value is not None else default
         for value, default in zip((args.rounds, args.warmup, args.iterations), defaults, strict=True)
@@ -268,7 +268,7 @@ def main() -> int:
     for round_index in range(rounds):
         ordered_cases = selected_cases if round_index % 2 == 0 else list(reversed(selected_cases))
         case_order = "forward" if round_index % 2 == 0 else "reverse"
-        side_order = ("base", "head") if round_index % 2 == 0 else ("head", "base")
+        side_order = ("base", "head") if round_index % 4 in (0, 3) else ("head", "base")
         round_responses = {}
         for side in side_order:
             python, worker, revision = sides[side]

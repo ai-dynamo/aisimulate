@@ -94,7 +94,7 @@ their cases do not change the original cache-preparation groups. The worker
 uses pinned requested versions with shared-layer data reuse enabled on both revisions.
 
 Before rollout, validate all 64 cases against two separate installations of
-the same revision for three five-round comparisons. Require no missing data
+the same revision for three ten-round comparisons. Require no missing data
 or invalid comparisons, investigate any case flagged in at least two runs,
 and compare runtime with the original matrix. Missing data or more than five
 additional benchmark minutes blocks rollout; do not remove cases or change
@@ -108,7 +108,7 @@ in the artifact and a separate summary. Both runs use the same measurement
 method and retain their own regression checks. After merge, the expanded matrix
 becomes the normal comparison when a PR's merge base includes it.
 
-The default comparison requires four of five paired rounds to exceed both a
+The default comparison requires eight of ten paired rounds to exceed both a
 10% relative threshold and a 2 us absolute threshold. Other round counts use
 an 80% quorum. Every selected case must have data on both revisions. A data miss
 on either or both revisions is invalid and blocks the comparison, during both
@@ -116,8 +116,10 @@ availability and measured rounds. Malformed worker responses and incomplete
 runs also block the comparison. Case names and errors remain visible in the summary.
 The worker treats missing silicon data, unavailable empirical data, missing
 system FLOPS, and unavailable SOL models as data misses.
-The controller alternates which revision runs first and reverses the case order
-on alternating rounds. Raw results are checkpointed after the paired
+The controller reverses the case order on alternating rounds and changes which
+revision runs first on a separate four-round cycle. In the default ten rounds,
+each revision runs first five times and each case order appears five times;
+all four combinations occur at least twice. Raw results are checkpointed after the paired
 availability pass and after each paired measured round.
 
 The controller starts each revision's worker from its matching source checkout

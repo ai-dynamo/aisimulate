@@ -630,10 +630,118 @@ def test_full_controller_checks_availability_before_paired_rounds(
     assert calls[4:6] == [("head", list(reversed(forward))), ("base", list(reversed(forward)))]
 
 
+@pytest.mark.parametrize("exceed_rounds", [8, 7, 1])
+def test_default_controller_balances_orders_and_preserves_regression_quorum(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    exceed_rounds: int,
+) -> None:
+    selected = cases.expand_cases()
+    case_ids = [case["case_id"] for case in selected]
+    target_id = "qwen3-32b/silicon/generation/bs1-isl1024"
+    assert len(selected) == 64
+    assert target_id in case_ids
+    executable = tmp_path / "python"
+    worker_path = tmp_path / "worker.py"
+    executable.touch()
+    worker_path.touch()
+    output_dir = tmp_path / "results"
+    calls = []
+    measured_rounds = {"base": 0, "head": 0}
+
+    def fake_batch(*, revision: str, cases: list[dict], warmup: int, iterations: int, **kwargs: object):
+        calls.append((revision, [case["case_id"] for case in cases], warmup, iterations))
+        if warmup:
+            measured_rounds[revision] += 1
+        results = []
+        for case in cases:
+            slow = (
+                revision == "head" and 0 < measured_rounds[revision] <= exceed_rounds and case["case_id"] == target_id
+            )
+            results.append(
+                {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "revision": revision,
+                    "case_id": case["case_id"],
+                    "case_hash": worker.canonical_case_hash(case),
+                    "status": "OK",
+                    "cold_us": 120.0 if slow else 100.0,
+                    "warm": {"call_median_us": 24.0 if slow else 20.0},
+                }
+            )
+        return results, None
+
+    monkeypatch.setattr(
+        gate_run,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            base_python=executable,
+            base_worker=worker_path,
+            base_revision="base",
+            head_python=executable,
+            head_worker=worker_path,
+            head_revision="head",
+            output_dir=output_dir,
+            rounds=None,
+            warmup=None,
+            iterations=None,
+            worker_timeout=120.0,
+            skip_prewarm=False,
+            smoke=False,
+        ),
+    )
+    monkeypatch.setattr(gate_run.shutil, "which", lambda command: "/usr/bin/taskset")
+    monkeypatch.setattr(gate_run, "run_worker_batch", fake_batch)
+    monkeypatch.setattr(gate_run, "_command_version", lambda command: "test")
+
+    assert gate_run.main() == int(exceed_rounds >= 8)
+    assert calls[:2] == [("base", case_ids, 0, 1), ("head", case_ids, 0, 1)]
+    first_sides = ["base", "head", "head", "base", "base", "head", "head", "base", "base", "head"]
+    case_orders = ["forward", "reverse"] * 5
+    for index, first in enumerate(first_sides):
+        second = "head" if first == "base" else "base"
+        ordered_ids = case_ids if case_orders[index] == "forward" else list(reversed(case_ids))
+        assert calls[2 + index * 2 : 4 + index * 2] == [(first, ordered_ids, 10, 100), (second, ordered_ids, 10, 100)]
+    assert measured_rounds == {"base": 10, "head": 10}
+    assert first_sides.count("base") == first_sides.count("head") == 5
+    combinations = list(zip(case_orders, first_sides, strict=True))
+    assert [
+        combinations.count(pair)
+        for pair in (("forward", "base"), ("forward", "head"), ("reverse", "base"), ("reverse", "head"))
+    ] == [3, 2, 2, 3]
+
+    raw = json.loads((output_dir / "raw_results.json").read_text())
+    assert raw["worker_processes"] == len(calls) == 22
+    assert raw["configuration"]["rounds"] == 10
+    assert raw["configuration"]["expected_case_ids"] == case_ids
+    assert [entry["case"] for entry in raw["cases"]] == selected
+    assert not raw["run_errors"]
+    for entry in raw["cases"]:
+        assert [paired["round"] for paired in entry["rounds"]] == list(range(1, 11))
+        assert [paired["case_order"] for paired in entry["rounds"]] == case_orders
+        assert [paired["order"][0] for paired in entry["rounds"]] == first_sides
+        for paired in entry["rounds"]:
+            for side in ("base", "head"):
+                assert paired[side]["case_id"] == entry["case"]["case_id"]
+                assert paired[side]["case_hash"] == worker.canonical_case_hash(entry["case"])
+                assert paired[side]["revision"] == side
+
+    comparison = json.loads((output_dir / "comparison.json").read_text())
+    assert len(comparison["points"]) == 128
+    assert comparison["blocking"] is (exceed_rounds >= 8)
+    for point in comparison["points"]:
+        affected = point["case_id"] == target_id
+        classification = "REGRESSION" if exceed_rounds >= 8 else "UNSTABLE"
+        assert point["classification"] == (classification if affected else "OK")
+        assert point["exceed_count"] == (exceed_rounds if affected else 0)
+        assert point["consensus_required"] == 8
+
+
 @pytest.mark.parametrize(
     ("smoke", "values", "expected"),
     [
-        (False, (None, None, None), (5, 10, 100)),
+        (False, (None, None, None), (10, 10, 100)),
+        (False, (5, None, None), (5, 10, 100)),
         (True, (None, None, None), (1, 1, 3)),
         (True, (3, 2, 7), (3, 2, 7)),
         (True, (3, None, None), (3, 1, 3)),
