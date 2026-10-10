@@ -627,6 +627,6 @@ assert not {"aisimulate.config.engine", "vllm"}.intersection(sys.modules)
 def test_state_memory_public_paths_share_one_implementation() -> None:
     from aisimulate import capacity
     from aisimulate.sdk.memory import estimate_state_cache as legacy
-    from aisimulate_core.sdk.state_memory import estimate_state_cache as canonical
+    from aisimulate_core.sdk.memory.state import estimate_state_cache as canonical
 
     assert sdk.estimate_state_cache is estimate_state_cache is legacy is capacity.estimate_state_cache is canonical

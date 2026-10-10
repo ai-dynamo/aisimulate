@@ -1080,7 +1080,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 ## vLLM Kimi KDA state sizing
 
-`src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
+`src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
 `src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
@@ -1099,6 +1099,27 @@ Licensed under Apache-2.0;
 the license is included at the repository root as `LICENSE` and in the Python
 distribution. Upstream license:
 https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE
+
+## vLLM DeepSeek V4 cache sizing
+
+`src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
+control in `src/aisimulate/config/engine.py` are adapted and modified from vLLM
+commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
+`vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,
+`vllm/v1/attention/backends/mla/sparse_swa.py`, `vllm/v1/kv_cache_interface.py`,
+`vllm/v1/core/kv_cache_utils.py`, `vllm/v1/core/single_type_kv_cache_manager.py`,
+and `vllm/config/attention.py`. The modified implementation computes DeepSeek V4
+cache pages, packed cache groups and resident sliding-window blocks with CPU
+arithmetic, maps them onto AISimulate's state cache, and adds AISimulate
+validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/c5c116138267ac738bc262495326d28ffff834a2
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/LICENSE
 
 ## SemiAnalysis AgentX simulation-performance fixture
 

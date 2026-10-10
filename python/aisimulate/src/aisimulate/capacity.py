@@ -13,7 +13,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Any
 
-from aisimulate_core.sdk.state_memory import estimate_state_cache as estimate_state_cache
+from aisimulate_core.sdk.memory import estimate_state_cache as estimate_state_cache
 
 DEFAULT_BACKEND_VERSIONS = {
     "vllm": "0.19.0",
