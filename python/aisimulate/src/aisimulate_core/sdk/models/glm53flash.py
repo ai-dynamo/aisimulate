@@ -34,8 +34,8 @@ def _specs(operations) -> list[dict]:
 #
 # KDA kda_perf kernel_source per (backend, phase): (short conv, delta rule),
 # as collected by Ops W2. Both backends run ONE merged q|k|v conv
-# (causal_conv1d_fn, not Kimi's three-call _qkv3). vLLM 0.30.0+glm53tail
-# glm5next/nvidia/kda.py: FlashKDA prefill on SM100, fused_recurrent_kda
+# (causal_conv1d_fn, not Kimi's three-call _qkv3). vLLM 0.31.0
+# glm5next/common/kda.py: FlashKDA prefill on SM10x, fused_recurrent_kda
 # decode. SGLang 0.5.20 kda_backend.py: chunk_kda prefill; decode skips the
 # packed T=1 kernel because GLM sets lower_bound (-5), so it runs
 # fused_sigmoid_gating_delta_rule_update. One row = one layer on one TP rank.

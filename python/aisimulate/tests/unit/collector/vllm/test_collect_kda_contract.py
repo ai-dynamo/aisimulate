@@ -142,7 +142,7 @@ def _exec_functions(names, namespace):
     return namespace
 
 
-def _fake_vllm_version(monkeypatch, version="0.30.0+glm53tail.eb4704514fdf"):
+def _fake_vllm_version(monkeypatch, version="0.31.0"):
     vllm_module = ModuleType("vllm")
     vllm_module.__path__ = []
     version_module = ModuleType("vllm.version")
@@ -170,7 +170,7 @@ GLM_SHAPE = {
     ],
 )
 def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, expected):
-    # GLM-5.3-Flash is served by vllm/models/glm5next/nvidia/kda.py, not the
+    # GLM-5.3-Flash is served by vllm/models/glm5next/common/kda.py, not the
     # Kimi-K3 layer; the entry point must hand its rows to the GLM router and
     # leave every other model on the unchanged Kimi path.
     calls = []
@@ -191,7 +191,7 @@ def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, 
         **GLM_SHAPE,
     )
     assert result == 23
-    assert calls == [(expected, "0.30.0+glm53tail.eb4704514fdf")]
+    assert calls == [(expected, "0.31.0")]
 
 
 def test_glm5_next_phase_router_matches_serving_decode_threshold():
@@ -269,7 +269,12 @@ def test_glm5_next_decode_mirrors_serving_decode():
 
 @pytest.mark.parametrize(
     ("version", "accepted"),
-    [("0.1.dev19262+gb6bbf29dd", True), ("0.30.0+glm53tail.eb4704514fdf", True), ("0.30.1", False)],
+    [
+        ("0.1.dev19262+gb6bbf29dd", True),
+        ("0.30.0+glm53tail.eb4704514fdf", True),
+        ("0.31.0", True),
+        ("0.31.1", False),
+    ],
 )
 def test_kda_compat_admits_kimi_preview_and_glm_runtime(version, accepted):
     from collector.version_resolver import _check_compat
@@ -326,7 +331,11 @@ def test_kda_audited_release_sets_do_not_overlap():
         ("moonshotai/Kimi-K3", "0.1.dev19262+gb6bbf29dd", True),
         ("moonshotai/Kimi-K3", "0.27.0", False),
         ("moonshotai/Kimi-K3", "0.30.0+glm53tail.eb4704514fdf", False),
-        ("zai-org/GLM-5.3-Flash", "0.30.0+glm53tail.eb4704514fdf", True),
+        ("moonshotai/Kimi-K3", "0.31.0", False),
+        ("zai-org/GLM-5.3-Flash", "0.31.0", True),
+        ("nvidia/GLM-5.3-Flash-NVFP4", "0.31.0", True),
+        ("zai-org/GLM-5.3-Flash", "0.30.0+glm53tail.eb4704514fdf", False),
+        ("zai-org/GLM-5.3-Flash", "0.30.0", False),
         ("zai-org/GLM-5.3-Flash", "0.29.0", False),
         ("nvidia/GLM-5.3-Flash-NVFP4", "0.1.dev19262", False),
     ],
@@ -338,3 +347,23 @@ def test_kda_runtime_gate_rejects_unaudited_releases(model_name, version, audite
     else:
         with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="not an audited KDA runtime"):
             namespace["_require_audited_runtime"](model_name, version)
+
+
+def test_glm5_next_imports_follow_the_v031_module_layout():
+    # vLLM 0.31.0 moved the GLM layer glm5next/nvidia/kda.py ->
+    # glm5next/common/kda.py (byte-identical); the CUDA ops stay under
+    # glm5next/nvidia/ops/third_party/kda (common/kda.py:42-51). The GLM path
+    # is 0.31.0-only, so no import from the 0.30.0 location may remain.
+    glm_imports = {
+        (node.module, alias.name)
+        for name in ("run_glm5_next_kda_context", "run_glm5_next_kda_decode")
+        for node in ast.walk(_function(name))
+        if isinstance(node, ast.ImportFrom) and node.module and "glm5next" in node.module
+        for alias in node.names
+    }
+    assert glm_imports == {
+        ("vllm.models.glm5next.common.kda", "_cast_sigmoid"),
+        ("vllm.models.glm5next.common.kda", "_resolve_kda_prefill_backend"),
+        ("vllm.models.glm5next.nvidia.ops.third_party.kda", "chunk_kda_with_fused_gate"),
+        ("vllm.models.glm5next.nvidia.ops.third_party.kda", "fused_recurrent_kda"),
+    }

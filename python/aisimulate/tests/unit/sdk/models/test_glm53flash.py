@@ -41,7 +41,7 @@ def test_pinned_text_schedule_and_no_vision(path):
 
 @pytest.mark.parametrize("path", MODEL_REVISIONS)
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-@pytest.mark.parametrize("tp", [2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4])
 def test_native_graph_boundary_precision_and_state(path, backend, tp):
     model = build(path, backend, tp)
     expected_format = "nvfp4" if "NVFP4" in path else "fp8"
@@ -187,7 +187,7 @@ def test_hybrid_is_constructible_and_labels_analytical_fallbacks(backend):
 
 @pytest.mark.parametrize("path", MODEL_REVISIONS)
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-@pytest.mark.parametrize("tp", [2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4])
 def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path, backend, tp):
     from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS
 
@@ -267,3 +267,39 @@ def test_kda_kernels_match_collected_kda_rows():
         ("sglang", "context"): ("causal_conv1d_fn", "chunk_kda"),
         ("sglang", "generation"): ("causal_conv1d_update", "fused_sigmoid_gating_delta_rule_update"),
     }
+
+
+@pytest.mark.parametrize(("backend", "version"), [("vllm", "0.31.0"), ("sglang", "0.5.20")])
+def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint(backend, version):
+    # TP1 is an NVFP4-only deployment: the FP8 checkpoint's resident weights
+    # exceed one GB300, so the native memory model leaves no KV budget and the
+    # deployment is rejected; NVFP4 TP1 keeps a positive KV budget.
+    from pathlib import Path
+
+    import aisimulate_core
+    from aisimulate_core.sdk.memory import estimate_kv_cache
+
+    root = Path(aisimulate_core.__file__).parent / "systems" / "profiles" / "glm53flash"
+
+    def estimate(path, quant):
+        return estimate_kv_cache(
+            path,
+            "gb300",
+            backend,
+            version,
+            max_num_tokens=8192,
+            max_batch_size=32,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            tp_size=1,
+            moe_tp_size=1,
+            moe_ep_size=1,
+            gemm_quant_mode=quant,
+            moe_quant_mode=quant,
+            kvcache_quant_mode="fp8",
+            systems_path=str(root),
+        )
+
+    assert estimate("nvidia/GLM-5.3-Flash-NVFP4", "nvfp4")["total_kv_size_bytes"] > 0
+    with pytest.raises(ValueError, match="no KV budget"):
+        estimate("zai-org/GLM-5.3-Flash", "fp8_block")

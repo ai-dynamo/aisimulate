@@ -32,7 +32,9 @@ from collector.version_resolver import _check_compat
 # additionally gated to its own audited release(s) by ``_ARCHITECTURE_COMPAT``
 # below, so DeepSeek-V4 behaviour on 0.24.0-0.25.0 is unchanged and neither
 # architecture runs on an unaudited release in between (it raises instead).
-__compat__ = "vllm>=0.24.0,<=0.30.0"
+# GLM-5.3-Flash moved to stock vLLM 0.31.0 (no overlay); the upper bound
+# admits it while DeepSeek-V4 stays gated to its own releases.
+__compat__ = "vllm>=0.24.0,<=0.31.0"
 
 # vLLM imports stay lazy in this module so that a mismatched install fails
 # inside collect.py's per-op error handling (after the __compat__ gate can
@@ -63,28 +65,55 @@ GLM5NEXT_ARCHITECTURE = "Glm5NextForConditionalGeneration"
 # classified failure) instead of running an unverified dispatch.
 _ARCHITECTURE_COMPAT = {
     ARCHITECTURE: "vllm>=0.24.0,<=0.25.0",
-    # vllm 0.30.0 (+glm53tail overlay, which patches only the KPool indexer and
-    # kv_cache_interface; neither is on the mHC path) — see the GLM audit below.
-    GLM5NEXT_ARCHITECTURE: "vllm==0.30.0",
+    # Stock vllm 0.31.0 only (no overlay) — see the GLM audit below. The
+    # earlier 0.30.0 rows were collected on 0.30.0+glm53tail.eb4704514fdf
+    # (overlay patched only the KPool indexer and kv_cache_interface, neither
+    # on the mHC path); GLM no longer targets that runtime.
+    GLM5NEXT_ARCHITECTURE: "vllm==0.31.0",
 }
 
-# GLM-5.3-Flash mHC call sites in vLLM 0.30.0 serving. The registry maps
-# Glm5NextForConditionalGeneration to vllm.models.glm5next
-# (vllm/model_executor/models/registry.py:429), which re-exports
-# vllm/models/glm5next/nvidia/model.py (sha256 d7353ea0..., installed
-# 0.30.0+glm53tail.eb4704514fdf; Glm5NextDecoderLayer.forward L450-555,
-# Glm5NextModel.forward layer loop L729):
-#   layer 0 attn:   hc_expand (L492) + standalone hc_pre with the fused
-#                   input_layernorm (L494-501)
+# GLM-5.3-Flash mHC call sites in stock vLLM 0.31.0 serving (tag v0.31.0 ==
+# db9527a4). The registry maps Glm5NextForConditionalGeneration to
+# vllm.models.glm5next (vllm/model_executor/models/registry.py:428-431), whose
+# __init__ re-exports vllm/models/glm5next/common/model.py (sha256
+# 9ad4952e...; Glm5NextDecoderLayer.forward L451-556, Glm5NextModel.forward
+# layer loop L730):
+#   layer 0 attn:   hc_expand (L493) + standalone hc_pre with the fused
+#                   input_layernorm (L495-502)
 #   every other attn site and every ffn site: hc_fused_post_pre with the fused
-#                   input/post_attention layernorm (L503-513, L529-539) — the
+#                   input/post_attention layernorm (L504-514, L530-540) — the
 #                   previous sublayer's hc_post is deferred into this kernel
-#   last layer:     standalone hc_post (L551) + hc_contract (L552)
+#   last layer:     standalone hc_post (L552) + hc_contract (L553)
 # i.e. per forward with L=45 layers: pre=1, fused_post_pre=2L-1=89, post=1,
 # expand=1, contract=1. MHCPreOp/MHCPostOp/MHCFusedPostPreOp.forward_cuda
 # dispatch unconditionally to torch.ops.vllm.mhc_{pre,post,fused_post_pre}_tilelang
 # (vllm/model_executor/layers/mhc.py sha256 923828e7..., L110-138, L533-542,
 # L738-774); hc_expand/hc_contract are plain torch (mhc.py L969-976).
+#
+# mHC is replicated per rank: the decoder layer runs it on the rank's full
+# token batch unless sequence-parallel MoE is on (model.py L305, L516-527,
+# Glm5NextModel L689-691/L727-728), and ParallelConfig.use_sequence_parallel_moe
+# requires EP and TP>1 and DP>1 (vllm/config/parallel.py:718-735). Rows carry
+# no TP dimension; pure-TP (TP1/2/4) serving reads the same num_tokens rows.
+#
+# 0.31.0 audit (2026-10-07, source-only: tag v0.31.0 == db9527a4 vs v0.30.0
+# ced6857a): glm5next/nvidia/model.py moved to glm5next/common/model.py; the
+# only diff on the decoder layer is one added Glm5NextMLP kwarg (L358), so
+# every model.py line above is the 0.30.0 line +1 with identical content
+# (registry entry 429 -> 428, identical content).
+# layers/mhc.py is byte-identical (923828e7). kernels/mhc/tilelang.py differs
+# only in docstrings/blank lines (dispatch logic identical; fused entry moved
+# L812-981 -> L814-983). kernels/mhc/tilelang_kernels.py: the fused split
+# config (L57-95: <=32 tokens and hidden % 128 == 0) and compute_num_split
+# (L44-54) are identical; the big_fuse kernel gained a split_mode argument
+# defaulting to "fused" (L325) that the GLM path never sets (only
+# deepseek_v41 uses "stats"/"input"), and ROCm-only thread-role helpers.
+# utils/deep_gemm.py is_deep_gemm_supported (L109-115) only reorders the same
+# AND terms. Glm5NextConfig switched its base to transformers
+# PreTrainedConfig (no field change). Toolchain: requirements/cuda.txt pins
+# tilelang==0.1.12 at both tags and cmake/external_projects/deepgemm.cmake
+# pins DeepGEMM e1f418c2 at both tags (measured in-container identity:
+# DeepGEMM e1f418c2 unchanged; tilelang not separately measured).
 #
 # Row convention (shared with the DeepSeek-V4 rows of this table): pre, post
 # and fused_post_pre rows time BOTH per-layer sites (attention params +
@@ -335,16 +364,17 @@ def _build_glm5next_sites(text_config, *, device: str):
     """Build the mHC state of one Glm5NextDecoderLayer without its attention/MLP.
 
     The returned module binds the serving decoder layer's own ``hc_pre`` /
-    ``hc_post`` / ``hc_fused_post_pre`` methods (model.py L557-616), so every
+    ``hc_post`` / ``hc_fused_post_pre`` methods (glm5next/common/model.py
+    L558-620 @v0.31.0), so every
     kernel argument (eps values, post multiplier, Sinkhorn repeat, n_splits,
     tile_n, fused-norm weight) is the one serving passes. Parameters mirror
-    ``Glm5NextDecoderLayer.__init__`` (model.py L364-404): fp32 hc fn/base/scale
+    ``Glm5NextDecoderLayer.__init__`` (model.py L362-405): fp32 hc fn/base/scale
     and the two RMSNorms whose weights are fused into the pre kernels.
     """
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.model_executor.layers.layernorm import RMSNorm
     from vllm.model_executor.layers.mhc import MHCFusedPostPreOp, MHCPostOp, MHCPreOp
-    from vllm.models.glm5next.nvidia.model import Glm5NextDecoderLayer
+    from vllm.models.glm5next.common.model import Glm5NextDecoderLayer
 
     class _Glm5NextMhcSites(torch.nn.Module):
         hc_pre = Glm5NextDecoderLayer.hc_pre
@@ -417,11 +447,11 @@ def _glm5next_kernel(sites, op: str, num_tokens: int, *, device: str):
         return torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16, device=device)
 
     if op == "expand":
-        # model.py L492: embedding output [T, H] -> [T, n, H].
+        # model.py L493: embedding output [T, H] -> [T, n, H].
         x = layer_out()
         return lambda: hc_expand(x, n)
     if op == "contract":
-        # model.py L552: last layer's post output [T, n, H] -> [T, H].
+        # model.py L553: last layer's post output [T, n, H] -> [T, H].
         x = residual()
         return lambda: hc_contract(x, n)
 
@@ -437,10 +467,10 @@ def _glm5next_kernel(sites, op: str, num_tokens: int, *, device: str):
     outs = [layer_out() for _ in state]
     torch.cuda.synchronize()
     if op == "post":
-        # model.py L551: hc_post(x, residual, post, comb).
+        # model.py L552: hc_post(x, residual, post, comb).
         return lambda: [sites.hc_post(x, res, post, comb) for x, (post, comb, res) in zip(outs, state, strict=True)]
     if op == "fused_post_pre":
-        # model.py L503-513 (attention site) and L529-539 (FFN site).
+        # model.py L504-514 (attention site) and L530-540 (FFN site).
         params = _glm5next_site_params(sites)
         return lambda: [
             sites.hc_fused_post_pre(
@@ -467,8 +497,9 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
         return "vllm.model_executor.layers.mhc.hc_contract"
     from vllm.utils.deep_gemm import is_deep_gemm_supported
 
-    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-60) uses DeepGEMM
-    # tf32_hc_prenorm_gemm when supported, else the TileLang prenorm GEMM.
+    # _hc_prenorm_gemm_outputs (kernels/mhc/tilelang.py L22-71 @v0.31.0) uses
+    # DeepGEMM tf32_hc_prenorm_gemm when is_deep_gemm_supported() (L38), else
+    # the TileLang prenorm GEMM.
     gemm = "deepgemm" if is_deep_gemm_supported() else "tilelang"
     if op == "pre":
         return f"vllm.mhc_pre_tilelang[prenorm_gemm={gemm},norm=fused]"
@@ -477,8 +508,10 @@ def _glm5next_kernel_source(op: str, num_tokens: int, hidden_size: int, hc_mult:
     if op == "fused_post_pre":
         from vllm.model_executor.kernels.mhc.tilelang_kernels import mhc_fused_post_pre_split_config
 
-        # mhc_fused_post_pre_tilelang (tilelang.py L812-981) picks the fused
-        # post+GEMM kernel when a split config exists, else post + prenorm GEMM.
+        # mhc_fused_post_pre_tilelang (tilelang.py L814-983 @v0.31.0; branch
+        # L893/L914-976) picks the fused post+GEMM kernel when a split config
+        # exists (tilelang_kernels.py L67-95: num_tokens <= 32 and
+        # hidden_size % 128 == 0), else post + prenorm GEMM.
         if mhc_fused_post_pre_split_config(num_tokens, hidden_size, hc_mult) is not None:
             return "vllm.mhc_fused_post_pre_tilelang[fused_post_gemm,norm=fused]"
         return f"vllm.mhc_fused_post_pre_tilelang[post+prenorm_gemm={gemm},norm=fused]"

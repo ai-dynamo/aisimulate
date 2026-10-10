@@ -12,6 +12,8 @@ tables:
   nccl_perf:
     # nccl-tests b4d5beebca8a76cf01335f724d154b9b9d394d96 built in the SGLang 0.5.20 image against its libnccl.so.2
     # (2.30.7, the library vLLM/SGLang pynccl load; the vLLM 0.30.0 image ships the same version). TP2/TP4.
+    # Reused unchanged for vLLM 0.31.0: that image loads the same nvidia-nccl-cu13 2.30.7 (attested in CPU dry run 867159;
+    # audit audits/glm53flash-v031-recollect/opsmig/reuse-audit.md). The table is keyed by NCCL version, not vLLM version.
     # collector_hash: sha256 of collector/network/collect_nccl.py at collector_ref.
     # GB300 (SM103, ocijhb), 4 GPUs/node, image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 run via pyxis; launcher audits/ops-standalone-w1/launcher; Slurm job(s) 723757.
     # data_sha256: eb3484037048b5e4db63fd2c60f87a6870d1749a830451914cb68cb9e0593a54

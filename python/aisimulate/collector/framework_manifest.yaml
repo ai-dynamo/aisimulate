@@ -234,44 +234,25 @@ frameworks:
           default: "vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
           cu129: "vllm/vllm-openai:v0.27.1-cu129@sha256:07913e94a58a4e61322c88f8d4647411b4dd394838b53abacaa32448d9d8de0a"
       # GLM-5.3-Flash (Glm5NextForConditionalGeneration) standalone per-op
-      # collection. vLLM first ships vllm/models/glm5next/nvidia/ (model.py,
-      # attention.py, kda.py) and sparse_attn_indexer_kpool.py in the
-      # official v0.30.0 release, tag commit
-      # ced6857afa0ea7b2e3f0846a62e1394e90f15607. Docker Hub reported the
-      # multi-arch index digest below for v0.30.0 on 2026-09-30; its
-      # linux/arm64 child (the GB300 platform image, imported for collection
-      # as 4864d466...dfb56.sqsh) is
-      # sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56.
-      #
-      # Runtime overlay: GLM serving uses the official image plus the
-      # glm53tail candidate package mounted first on PYTHONPATH
-      # (/opt/glm53flash-candidate), which reports vllm
-      # 0.30.0+glm53tail.eb4704514fdf. It is an upstream-source build of the
-      # same tag with one patch (sha256 below) that modifies only
-      # vllm/model_executor/layers/sparse_attn_indexer_kpool.py and
-      # vllm/v1/kv_cache_interface.py (KPool tail slot mapping); every native
-      # binary is the image's own. `version` stays the public 0.30.0 because
-      # require_collector_runtime compares public versions (local build
-      # metadata is ignored), so this entry records the overlay as `abi`
-      # provenance (copied into collection_meta.yaml by collect.py). The
-      # manifest schema cannot make collect.py VERIFY the overlay: the
-      # campaign launcher must attest the installed version string and the
-      # two patched-file hashes below before collecting. GEMM/MoE/
-      # compute-scale/allreduce collection imports v1/kv_cache_interface.py
-      # (module scope) but never executes the patched KpoolTailSpec field,
-      # and never imports sparse_attn_indexer_kpool.py, so those tables are
-      # identical with or without the overlay.
+      # collection runs on the stock official v0.31.0 release (no overlay),
+      # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6. v0.31.0 moves
+      # the GLM layers from vllm/models/glm5next/nvidia/ to
+      # vllm/models/glm5next/common/ and the KPool indexer from
+      # model_executor/layers/sparse_attn_indexer_kpool.py to
+      # models/glm5next/nvidia/sparse_indexer.py; it also carries the KPool
+      # tail slot-mapping fix (v1/kv_cache_interface.py:1036-1038) that the
+      # earlier 0.30.0+glm53tail overlay supplied. Docker Hub reported the
+      # multi-arch index digest below for v0.31.0 on 2026-10-07; its
+      # linux/arm64 child (also tag v0.31.0-aarch64; the GB300 platform
+      # image, imported for collection as 3f7dd5b7...2b971.sqsh) is
+      # sha256:3f7dd5b777d34d1724456ce71f87385dca288c3bb23029ab27dee358f5d2b971
+      # and the linux/amd64 child is
+      # sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b.
       "zai-org/GLM-5.3-Flash": &glm53flash_vllm_runtime
-        version: "0.30.0"
-        source_commit: "ced6857afa0ea7b2e3f0846a62e1394e90f15607"
-        abi:
-          build_mode: "official-v0.30.0-image+glm53tail-pythonpath-overlay"
-          overlay_version: "0.30.0+glm53tail.eb4704514fdf"
-          overlay_patch_sha256: "eb4704514fdfbd8dd97114da36105c8fc3c783fd7a43534b3d5bedb6606b5fc9"
-          overlay_sparse_attn_indexer_kpool_sha256: "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8"
-          overlay_kv_cache_interface_sha256: "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138"
+        version: "0.31.0"
+        source_commit: "db9527a46873454610df6dbedf79a36d6bf1a7f6"
         images:
-          default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+          default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
       "nvidia/GLM-5.3-Flash-NVFP4": *glm53flash_vllm_runtime
   vllm_xpu:
     base_framework: vllm

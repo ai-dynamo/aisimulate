@@ -530,7 +530,7 @@ pub struct Glm53MhcOp {
 }
 impl Glm53MhcOp {
     /// Call sites covered by one `mhc_module_perf` row for this role. GLM
-    /// rows (Ops W3, vLLM 0.30.0+glm53tail / SGLang 0.5.20) follow the
+    /// rows (Ops W3, vLLM 0.31.0 / SGLang 0.5.20) follow the
     /// DeepSeek-V4 convention: `pre`, `post` and `fused_post_pre` time a
     /// layer's attention and FFN sites together (`num_sites=2`); `expand`
     /// and `contract` time one call. RMSNorm is inside `pre` and
@@ -1442,8 +1442,8 @@ pub(crate) mod tests {
 
     #[test]
     fn sparse_attention_uses_only_the_exact_runtime_glm_table() {
-        const TAIL: &str = "0.30.0+glm53tail.eb4704514fdf";
-        let root = sparse_tree(TAIL);
+        const RUNTIME: &str = "0.31.0";
+        let root = sparse_tree(RUNTIME);
         let op = attention("sparse_mla");
         let load = |version: &str, mode| {
             PerfDatabase::load_resolved(root.path(), "gb300", "vllm", version, true, false, false)
@@ -1451,21 +1451,22 @@ pub(crate) mod tests {
                 .with_mode(mode, TransferPolicy::ALL)
         };
         let c = ctx(2, 512, 0, true);
-        let hit = op.query(&load(TAIL, DatabaseMode::Silicon), &c).unwrap();
+        let hit = op.query(&load(RUNTIME, DatabaseMode::Silicon), &c).unwrap();
         assert_eq!((hit.latency_ms, hit.source), (1.5, Source::Silicon));
         // Another geometry: SILICON fails closed, HYBRID reports labelled SOL.
         let mut tp4 = op.clone();
         tp4.tp_size = 4;
         tp4.num_heads = 16;
-        assert!(tp4.query(&load(TAIL, DatabaseMode::Silicon), &c).is_err());
-        let fallback = tp4.query(&load(TAIL, DatabaseMode::Hybrid), &c).unwrap();
+        assert!(tp4.query(&load(RUNTIME, DatabaseMode::Silicon), &c).is_err());
+        let fallback = tp4.query(&load(RUNTIME, DatabaseMode::Hybrid), &c).unwrap();
         assert_eq!(fallback.source, Source::Sol);
-        // A later runtime never borrows the earlier runtime's GLM table.
-        let later = root.path().join("data/gb300/glm53_attention/vllm/0.31.0");
-        std::fs::create_dir_all(&later).unwrap();
-        std::fs::write(later.join("reuse.yaml"), "schema_version: 1\nreuse: []\n").unwrap();
+        // Another runtime never borrows this runtime's GLM table.
+        const OTHER: &str = "0.30.0+glm53tail.eb4704514fdf";
+        let other = root.path().join("data/gb300/glm53_attention/vllm").join(OTHER);
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("reuse.yaml"), "schema_version: 1\nreuse: []\n").unwrap();
         let err = op
-            .query(&load("0.31.0", DatabaseMode::Silicon), &c)
+            .query(&load(OTHER, DatabaseMode::Silicon), &c)
             .unwrap_err();
         assert!(
             err.to_string()
@@ -1477,12 +1478,12 @@ pub(crate) mod tests {
     #[test]
     fn mhc_reads_glm_rows_with_w3_site_semantics_from_exact_runtime() {
         use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
-        const TAIL: &str = "0.30.0+glm53tail.eb4704514fdf";
+        const RUNTIME: &str = "0.31.0";
         let root = tempfile::tempdir().unwrap();
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../python/aisimulate/src/aisimulate_core/systems");
         std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
-        let dir = root.path().join("data/gb300/mhc/vllm").join(TAIL);
+        let dir = root.path().join("data/gb300/mhc/vllm").join(RUNTIME);
         std::fs::create_dir_all(&dir).unwrap();
         let ops = ["pre", "post", "fused_post_pre", "expand", "contract"];
         let op_names: Vec<&str> = ops.iter().flat_map(|op| [*op, *op]).collect();
@@ -1501,7 +1502,7 @@ pub(crate) mod tests {
             ],
         );
         let load = |mode| {
-            PerfDatabase::load_resolved(root.path(), "gb300", "vllm", TAIL, false, false, false)
+            PerfDatabase::load_resolved(root.path(), "gb300", "vllm", RUNTIME, false, false, false)
                 .unwrap()
                 .with_mode(mode, TransferPolicy::ALL)
         };

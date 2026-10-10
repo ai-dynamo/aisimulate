@@ -10,7 +10,12 @@ import types
 from pathlib import Path
 
 import pytest
-from collector.case_generator import get_common_moe_test_cases, get_gemm_case_specs, moe_model_allows_quantization
+from collector.case_generator import (
+    get_common_kda_test_cases,
+    get_common_moe_test_cases,
+    get_gemm_case_specs,
+    moe_model_allows_quantization,
+)
 from collector.model_cases import build_collection_case_plan
 from collector.sglang.registry import REGISTRY as SGLANG_REGISTRY
 from collector.version_resolver import _check_compat
@@ -95,6 +100,26 @@ def test_sglang_moe_rows_carry_serving_routing_and_pure_tp(monkeypatch, model_pa
         assert backends[mode][103] == "flashinfer_trtllm"
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_nvfp4_tp1_moe_shard_is_planned(monkeypatch, backend):
+    # TP1 is served with the NVFP4 checkpoint only; MoE TP1 EP1 must be planned.
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", NVFP4)
+    cases = [c for c in get_common_moe_test_cases(backend=backend) if c.model_name == NVFP4]
+    assert {1, 2, 4} <= {c.tp for c in cases if c.ep == 1}
+
+
+@pytest.mark.parametrize("model_path", [FP8, NVFP4])
+def test_kda_plan_covers_the_tp1_tp2_tp4_head_shards(monkeypatch, model_path):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    cases = [c for c in get_common_kda_test_cases() if c.model_name == FP8]
+    # 64 KDA heads: 64 local heads at TP1, 32 at TP2, 16 at TP4. One physical
+    # case per shard; the NVFP4 artifact is a shape-only alias.
+    assert {c.num_v_heads for c in cases} == {64, 32, 16}
+    assert all(c.num_k_heads == c.num_v_heads and c.head_k_dim == c.head_v_dim == 128 for c in cases)
+    for heads in (64, 32, 16):
+        assert {c.phase for c in cases if c.num_v_heads == heads} == {"context", "generation", "verify"}
+
+
 def test_vllm_moe_resolves_glm_routing_without_touching_other_models(monkeypatch):
     _install_vllm_stubs(monkeypatch)
     module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
@@ -134,15 +159,16 @@ def test_vllm_nvfp4_uses_modelopt_only_for_the_glm53flash_checkpoint(monkeypatch
 @pytest.mark.parametrize(
     "version,accepted",
     [
+        ("0.31.0", True),
         ("0.30.0", True),
-        ("0.30.0+glm53tail.eb4704514fdf", True),
         ("0.28.0", False),
         ("0.29.0", False),
-        ("0.30.1", False),
+        ("0.31.1", False),
+        ("0.32.0", False),
         ("0.24.0", True),
     ],
 )
-def test_vllm_collectors_admit_exactly_the_audited_0_30_0(path, version, accepted):
+def test_vllm_collectors_admit_exactly_the_audited_releases(path, version, accepted):
     assert _check_compat(_compat(path), version) is accepted
 
 
