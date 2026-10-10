@@ -562,25 +562,35 @@ def _initialize_nvfp4_parameters(module):
     untouched. vLLM subsequently performs its own layout conversion/dispatch.
     """
     from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+    from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Static
 
-    # Native API contracts at vLLM v0.25.1, commit 752a3a504485790a:
-    # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
-    # per 16 inputs, and dequantizing FP32 global scales. _custom_ops.py:1492-
-    # 1571 accepts the inverse global scale and can return unswizzled scales;
-    # modelopt.py:1203-1238 performs native conversion only after loading.
+    # Native API contracts at vLLM v0.30.0: every ModelOpt linear is the
+    # generic ModelOptLinearMethod carrying a (weight, activation) QuantSpec
+    # and a CkptCtx (modelopt.py:2448-2476). The NVFP4 weight scheme
+    # KNvfp4Static stores two E2M1 values per uint8, one E4M3 scale per
+    # ctx.group_size inputs (created as a NaN sentinel that process() refuses)
+    # and a per-partition FP32 global scale `weight_scale_2`
+    # (modelopt.py:1913-1990); the W4A4 activation scheme KNvfp4Dynamic adds
+    # the per-partition `input_scale` (modelopt.py:1993-2028) while W4A16 has
+    # none. Both global scales are ModelOpt's dequantizing amax/(6*448)
+    # values, raw-max'ed at process_weights_after_loading. _custom_ops.py:
+    # 1525-1531 accepts the inverse global scale and can return unswizzled
+    # block scales. (v0.25.1's ModelOptNvFp4LinearMethod no longer exists.)
     generator = torch.Generator(device="cpu").manual_seed(0)
     initialized = 0
     with torch.no_grad():
         for name, layer in module.named_modules():
-            if not isinstance(getattr(layer, "quant_method", None), ModelOptNvFp4LinearMethod):
+            quant_method = getattr(layer, "quant_method", None)
+            spec = getattr(quant_method, "spec", None)
+            if spec is None or getattr(spec, "weight", None) != kNvfp4Static:
                 continue
             weight, scales = layer.weight, layer.weight_scale
             if weight.dtype != torch.uint8 or scales.dtype != torch.float8_e4m3fn:
                 raise ValueError(f"Unexpected native NVFP4 storage for {name}")
             if weight.ndim != 2 or tuple(scales.shape) != (weight.shape[0], weight.shape[1] // 8):
                 raise ValueError(f"Unexpected native NVFP4 block layout for {name}")
-            if layer.quant_method.quant_config.group_size != 16 or weight.shape[1] % 8:
+            group_size = getattr(getattr(quant_method, "ctx", None), "group_size", None)
+            if group_size != 16 or weight.shape[1] % 8:
                 raise ValueError(f"Native NVFP4 quantization requires 16-input blocks for {name}")
             input_size = weight.shape[1] * 2
             rows_per_chunk = max(1, 1048576 // input_size)
@@ -589,7 +599,9 @@ def _initialize_nvfp4_parameters(module):
             # These fixed source ranges are unrelated to timing/accuracy targets.
             weight_global_scale = 0.08 / (6.0 * 448.0)
             layer.weight_scale_2.fill_(weight_global_scale)
-            layer.input_scale.fill_(1.0 / (6.0 * 448.0))
+            input_scale = getattr(layer, "input_scale", None)  # W4A4 only (KNvfp4Dynamic)
+            if input_scale is not None:
+                input_scale.fill_(1.0 / (6.0 * 448.0))
             inverse_scale = torch.tensor(1.0 / weight_global_scale, dtype=torch.float32, device=weight.device)
             for start in range(0, weight.shape[0], rows_per_chunk):
                 end = min(start + rows_per_chunk, weight.shape[0])

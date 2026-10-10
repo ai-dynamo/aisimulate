@@ -260,9 +260,15 @@ def test_nvfp4_config_preserves_native_modelopt_without_projection_exclusions(mo
     }
 
 
-def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
+def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False, w4a16=False):
+    # vLLM 0.30: ModelOptLinearMethod carries a (weight, activation) QuantSpec and a
+    # CkptCtx; NVFP4 is recognized by spec.weight == kNvfp4Static, W4A16 has no
+    # activation scheme and therefore no input_scale (modelopt.py:1913-2028,2448-2476).
+    nvfp4_static = object()
+
     class NativeMethod:
-        quant_config = SimpleNamespace(group_size=16)
+        spec = SimpleNamespace(weight=nvfp4_static, activation=None if w4a16 else object())
+        ctx = SimpleNamespace(group_size=16)
 
     calls = []
 
@@ -288,16 +294,19 @@ def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
     )
     monkeypatch.setitem(
         sys.modules,
-        "vllm.model_executor.layers.quantization.modelopt",
-        SimpleNamespace(ModelOptNvFp4LinearMethod=NativeMethod),
+        "vllm.model_executor.layers.quantization.utils.quant_utils",
+        SimpleNamespace(kNvfp4Static=nvfp4_static),
     )
     module = torch.nn.Module()
     layer = module.projection = torch.nn.Module()
     layer.quant_method = NativeMethod()
     layer.weight = torch.nn.Parameter(torch.zeros(1025, 512, dtype=torch.uint8), requires_grad=False)
-    layer.weight_scale = torch.nn.Parameter(torch.zeros(1025, 64, dtype=torch.float8_e4m3fn), requires_grad=False)
+    layer.weight_scale = torch.nn.Parameter(
+        torch.full((1025, 64), float("nan")).to(torch.float8_e4m3fn), requires_grad=False
+    )
     layer.weight_scale_2 = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
-    layer.input_scale = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
+    if not w4a16:
+        layer.input_scale = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
     module.other_weight = torch.nn.Parameter(torch.full((2, 2), 17.0), requires_grad=False)
     module.register_buffer("rotary", torch.tensor([0.3, 0.7]), persistent=False)
     return module, calls
@@ -338,3 +347,14 @@ def test_nvfp4_cannot_be_claimed_without_a_native_nvfp4_projection(monkeypatch, 
     module.projection.quant_method = object()
     with pytest.raises(RuntimeError, match="no native ModelOpt NVFP4 linear"):
         _load_function("_initialize_nvfp4_parameters", torch)(module)
+
+
+def test_nvfp4_w4a16_projection_is_populated_without_an_input_scale(monkeypatch, torch):
+    module, calls = _nvfp4_fixture(monkeypatch, torch, w4a16=True)
+    _load_function("_initialize_nvfp4_parameters", torch)(module)
+    layer = module.projection
+    assert not hasattr(layer, "input_scale")
+    assert [v.shape[0] for v, _ in calls] == [1024, 1]
+    assert torch.all(layer.weight == 0x12)
+    assert not torch.isnan(layer.weight_scale.float()).any()
+    assert torch.unique(layer.weight_scale_2).numel() == 1 and torch.all(layer.weight_scale_2 > 0)

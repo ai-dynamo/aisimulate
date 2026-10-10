@@ -3626,7 +3626,7 @@ def _validate_perf_transaction_document(
         if attempted & seen_attempted or (not attempted and not (checkpoint["done"] or checkpoint["failed"])):
             raise RuntimeError(f"Invalid collector perf checkpoint attempts in {journal_path}")
         if attempted:
-            attempted_tables.add(table)
+            attempted_tables.update(owned_tables)
         seen_checkpoint_paths.add(attestation.path)
         seen_attempted.update(attempted)
     if {table for checkpoint in checkpoint_records for table in checkpoint["tables"]} != tables:
