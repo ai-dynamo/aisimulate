@@ -133,6 +133,7 @@ collector.sglang.collect_mla_bmm:
   - collector/cases/base_ops/mla_bmm_gen_post.yaml
   - __model_cases__
 collector.sglang.collect_mla_module:
+  - collector/sglang/dsa_prefill_graph.py
   # DSA variants share tables; the registry and executor bind each worker selector.
   - collector/registry_types.py
   - collector/collect.py
