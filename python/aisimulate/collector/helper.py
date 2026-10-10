@@ -487,6 +487,18 @@ def setup_signal_handlers(worker_id):
     for sig in [signal.SIGTERM, signal.SIGABRT]:
         signal.signal(sig, signal_handler)
 
+    # SIGUSR1 = "dump every thread's stack to stderr and keep running". The
+    # executor's stall watchdog sends it before killing a wedged worker, so a
+    # hang leaves the exact frame in the log (sglang 0.5.21 moe/bf16 on l40s
+    # and b300, 2026-10-06: 8 workers took their first task and never returned,
+    # 76 min of silence, nothing to diagnose from).
+    try:
+        import faulthandler
+
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+
     # SIGSEGV might not be catchable on all platforms
     try:
         signal.signal(signal.SIGSEGV, signal_handler)
@@ -666,7 +678,19 @@ def save_error_report(errors, filename):
 
 
 def get_sm_version():
-    """Get CUDA compute capability (SM version)"""
+    """Get CUDA compute capability (SM version).
+
+    ``AIS_SM`` (``sm100`` or ``100``; legacy ``AIC_SM``) overrides the probe so
+    case getters can be enumerated for a target SM on a box without that GPU
+    (opharness components/case_inventory.py: the case set is a pure function
+    of (SM, framework version, case files) and must be derivable without
+    collecting). Real collection never sets it.
+    """
+    forced = os.environ.get("AIS_SM") or os.environ.get("AIC_SM")
+    if forced:
+        digits = "".join(ch for ch in str(forced) if ch.isdigit())
+        if digits:
+            return int(digits)
     try:
         import torch
 
@@ -2593,9 +2617,19 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
     # (pandas round-trips change it).
+    # `string` and `large_string` are one logical type: pyarrow.csv infers
+    # `string`, but a parquet that already went through one pandas merge comes
+    # back as `large_string`, so the THIRD finalize of a table (run -> resume
+    # -> retry-failed) used to read as a schema mismatch and OVERWRITE the
+    # accumulated rows (sm120 attention_generation fp8kv, 2026-10-01: 27,303
+    # rows replaced by 5,067). Compare the logical string type.
+    def _logical(type_str: str) -> str:
+        return {"large_string": "string", "large_binary": "binary"}.get(type_str, type_str)
+
     def fields(schema):
         return sorted(
-            (f.name, str(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>") for f in schema
+            (f.name, _logical(str(f.type))) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>")
+            for f in schema
         )
 
     old_fields = fields(old_table.schema)
@@ -2630,6 +2664,17 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
                 new_table.schema.get_field_index(f.name),
                 f.name,
                 new_table.column(f.name).cast(f.type),
+            )
+
+    # align string width variants (string vs large_string) on the new side so the
+    # concatenation below does not widen or fail on a logical-type-equal column
+    for f in old_table.schema:
+        if f.name in PERF_METRIC_COLUMNS:
+            continue
+        new_field = new_table.schema.field(f.name)
+        if new_field.type != f.type and _logical(str(new_field.type)) == _logical(str(f.type)):
+            new_table = new_table.set_column(
+                new_table.schema.get_field_index(f.name), f.name, new_table.column(f.name).cast(f.type)
             )
 
     new_df = new_table.to_pandas()

@@ -8,16 +8,28 @@ generation pre/post processing. It consumes YAML-backed synthetic tensor
 shapes, selects SGLang kernel helpers, and logs the resulting MLA BMM perf rows.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import get_mla_bmm_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from sgl_kernel import bmm_fp8
-from sglang.srt.layers.quantization.fp8_kernel import (
-    per_tensor_quant_mla_fp8,
-)
+try:
+    from sgl_kernel import bmm_fp8
+
+    _BMM_FP8_SOURCE = "sglang_sgl_kernel_bmm_fp8"
+except ImportError:  # sglang>=0.5.21: sgl_kernel no longer exports bmm_fp8; serving wraps flashinfer's
+    # (layers/quantization/fp8_utils.py:246-273 @0.5.21, custom op flashinfer_bmm_fp8_batched)
+    from sglang.srt.layers.quantization.fp8_utils import bmm_fp8
+
+    _BMM_FP8_SOURCE = "sglang_flashinfer_bmm_fp8"
+try:
+    from sglang.srt.layers.quantization.fp8_kernel import per_tensor_quant_mla_fp8
+except ModuleNotFoundError:  # sglang>=0.5.21: the Triton quant kernels moved to sglang.kernels.ops
+    # (kernels/ops/quantization/fp8_kernel.py:956 @0.5.21; same kernel, the serving MLA fp8 lane
+    # imports it from there — deepseek_common/attention_forward_methods/forward_mla_fused_rope_rocm.py:8)
+    from sglang.kernels.ops.quantization.fp8_kernel import per_tensor_quant_mla_fp8
 
 
 def _supported_dtypes() -> set[str]:
@@ -97,10 +109,10 @@ def run_mla_gen_pre(num_tokens, num_heads, dtype, num_warmups, num_runs, *, perf
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name="mla_gen_pre",
-        kernel_source="sglang_sgl_kernel_bmm_fp8" if dtype == "fp8" else "sglang_torch_bmm",
+        kernel_source=_BMM_FP8_SOURCE if dtype == "fp8" else "sglang_torch_bmm",
         perf_filename=perf_filename,
         power_stats=results["power_stats"],
     ):
@@ -181,10 +193,10 @@ def run_mla_gen_post(num_tokens, num_heads, dtype, num_warmups, num_runs, *, per
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name="mla_gen_post",
-        kernel_source="sglang_sgl_kernel_bmm_fp8" if dtype == "fp8" else "sglang_torch_bmm",
+        kernel_source=_BMM_FP8_SOURCE if dtype == "fp8" else "sglang_torch_bmm",
         perf_filename=perf_filename,
         power_stats=results["power_stats"],
     ):

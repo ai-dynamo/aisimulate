@@ -1,13 +1,16 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0. On 0.29 the
+# kv dtype FORKS the backend (bf16 -> FLASH_ATTN_MLA_SPARSE, fp8 ->
+# FLASHMLA_SPARSE on SM90) — both keys are collected.
+#
 # Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
 # Copyright contributors to the vLLM project. Modified for collector execution.
-
-# 0.27.0 audit (pod GB300 probe): DeepseekV2MLAAttention ctor params,
-# _CONFIG_REGISTRY gap (glm_moe_dsa still unmapped),
-# backend_supports_prefill_query_quantization (mla_attention.py) and the
-# prefill selector surface are all unchanged vs the 0.24.0 citations below.
-__compat__ = "vllm>=0.24.0,<=0.25.1"
+__compat__ = "vllm>=0.30.0,<=0.30.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.
@@ -52,23 +55,6 @@ from functools import partial
 from pathlib import Path
 
 import torch
-from collector.case_generator import (
-    get_mla_module_model_specs,
-    get_mla_module_precision_specs,
-    get_mla_module_sweep_spec,
-)
-from collector.helper import benchmark_with_power as _benchmark_with_power
-from collector.helper import get_sm_version, log_perf
-from collector.registry_types import PerfFile
-from collector.vllm.utils import (
-    BatchSpec,
-    create_and_prepopulate_kv_cache_mla,
-    create_common_attn_metadata,
-    create_vllm_config,
-    enable_engine_fused_ops,
-    setup_distributed,
-    with_exit_stack,
-)
 from vllm.config import set_current_vllm_config
 from vllm.forward_context import set_forward_context
 
@@ -83,6 +69,25 @@ from vllm.transformers_utils.config import _CONFIG_REGISTRY
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.version import __version__ as vllm_version
 
+from collector.case_generator import (
+    get_mla_module_model_specs,
+    get_mla_module_precision_specs,
+    get_mla_module_sweep_spec,
+)
+from collector.helper import benchmark_with_power as _benchmark_with_power
+from collector.helper import get_sm_version, log_perf
+from collector.registry_types import PerfFile
+from collector.vllm.utils import (
+    BatchSpec,
+    create_and_prepopulate_kv_cache_mla,
+    create_common_attn_metadata,
+    create_vllm_config,
+    enable_engine_fused_ops,
+    framework_kv_block_size,
+    setup_distributed,
+    with_exit_stack,
+)
+
 # Keep graph lifetime handling local to the MLA/DSA module collector. Other
 # collectors retain benchmark_with_power's default cleanup and synchronization.
 benchmark_with_power = partial(_benchmark_with_power, explicit_graph_cleanup=True)
@@ -95,11 +100,15 @@ if "glm_moe_dsa" not in _CONFIG_REGISTRY:
 # Local model config resolution — avoid HuggingFace Hub downloads
 # ═══════════════════════════════════════════════════════════════════════
 
-# Pre-cached HF configs live in src/aisimulate_core/model_configs/ as
-# "<org>--<model>_config.json".  vLLM's ModelConfig accepts a local
-# directory containing config.json, so we create a temp dir with a
-# symlink when the cached file exists.
-_MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
+# Pre-cached HF configs ship with AISim as "<org>--<model>_config.json".
+# The directory is helper.py's constant — never recomputed here, so a
+# package rename cannot silently strand this lane (the aiconfigurator ->
+# aisimulate consolidation did exactly that to a hand-built copy of it).
+# vLLM's ModelConfig accepts a local directory containing config.json, so
+# we create a temp dir with a symlink when the cached file exists.
+from collector.helper import _AIC_MODEL_CONFIG_DIR as _AIS_MODEL_CONFIG_DIR
+
+_MODEL_CONFIGS_DIR = Path(_AIS_MODEL_CONFIG_DIR)
 
 # Cache of model_name -> temp dir path (created once per process).
 _local_config_cache: dict[str, str] = {}
@@ -201,16 +210,31 @@ def get_context_test_cases(attn_type: str):
     """
     cases = []
     sweep = get_mla_module_sweep_spec("vllm")
+    # DSA context mirrors serving's chunked prefill (matches DSV4 sparse +
+    # sglang DSA): cap the per-forward NEW-token budget (b*s) at the chunk
+    # prefill size and let the long context enter via prefix, bounded by the
+    # full-sequence budget b*(s+prefix). This makes rows faithful to the
+    # engine's query shape (isl=chunk, prefix=context) and keeps the fp8
+    # sparse-decode q stride int32-safe. Falls back to the shared context
+    # axes when the DSA-specific budgets are not declared.
+    dsa_new_token_budget = getattr(sweep, "context_dsa_chunk_prefill_size", None) or sweep.context_max_tokens
+    dsa_full_seq_budget = getattr(sweep, "context_dsa_max_full_sequence_length", None)
+    dsa_prefixes = getattr(sweep, "context_dsa_prefix_lengths", None) or sweep.context_prefix_lengths
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
         for num_heads in sweep.inner_sweep_head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
                     if attn_type == "dsa":
-                        for prefix_len in sweep.context_prefix_lengths:
+                        # new-token budget per chunk (not the shared memory cap)
+                        if b * s > dsa_new_token_budget:
+                            continue
+                        for prefix_len in dsa_prefixes:
+                            if dsa_full_seq_budget and b * (s + prefix_len) > dsa_full_seq_budget:
+                                continue
                             cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
                     else:
+                        if b * s > sweep.context_max_tokens:
+                            continue
                         cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
     return cases
 
@@ -252,6 +276,57 @@ def get_generation_test_cases(attn_type: str):
     return cases
 
 
+def _rope_tolerating_missing_key(forward):
+    """Wrap a rotary module's forward so `forward(positions, query)` (key=None) works.
+
+    vLLM 0.30's DeepseekV32 attention ropes q_pe alone in its dense-MHA FP8 branch, but
+    both DeepseekScalingRotaryEmbedding implementations require a key (FlashInfer op:
+    key.view; native: assert). Rope the query against a throwaway copy and drop it.
+    """
+    import functools
+
+    if getattr(forward, "_aisim_rope_shim", False):
+        # Idempotent: run_mla_module installs the shim per case on a module that may be reused,
+        # and named_modules() can visit a shared rotary twice. Re-wrapping stacked one closure
+        # per case until "maximum recursion depth exceeded" (b200/gb200 pipelines 72387095 /
+        # 72387091 at e598d380: 2,286 cases each).
+        return forward
+
+    @functools.wraps(forward)
+    def wrapped(positions, query, key=None, *args, **kwargs):
+        # Forward only what the caller passed: vLLM 0.30's forward_cuda signatures take
+        # (positions, query, key) — no `offsets` — so a positional None for offsets raised
+        # "takes from 3 to 4 positional arguments but 5 were given" (508 GLM-5 cases, same runs).
+        if key is None:
+            out = forward(positions, query, query.clone(), *args, **kwargs)
+            q = out[0] if isinstance(out, tuple) else out
+            return q, None
+        return forward(positions, query, key, *args, **kwargs)
+
+    wrapped._aisim_rope_shim = True
+    return wrapped
+
+
+# SM100/103: trtllm-gen sparse-MLA decode has no kernel below tileSizeQ 8 (see the
+# FIXME in _build_module_test_cases). Hopper/Ada/SM120 route sparse decode elsewhere.
+_DSA_SPARSE_DECODE_MIN_HEADS = 8
+_DSA_SPARSE_DECODE_MIN_HEADS_SMS = (100, 103)
+
+
+def _model_max_position_embeddings(model_id: str) -> int | None:
+    """The model's max context length from its cached config (same file the
+    sglang module collector reads); None when unavailable (no cap applied)."""
+    config_file = os.path.join(_AIS_MODEL_CONFIG_DIR, f"{model_id.replace('/', '--')}_config.json")
+    if not os.path.exists(config_file):
+        return None
+    try:
+        with open(config_file) as f:
+            value = json.load(f).get("max_position_embeddings")
+        return int(value) if value else None
+    except Exception:
+        return None
+
+
 def _build_module_test_cases(attn_type: str, mode: str):
     """Build module-level test cases for a specific attention type and phase.
 
@@ -260,13 +335,43 @@ def _build_module_test_cases(attn_type: str, mode: str):
     """
     base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
     cases = []
+    dropped_small_heads = 0
+    dropped_over_ceiling = 0
+    sm_version = get_sm_version()
     for model_spec in get_mla_module_model_specs(attention_type=attn_type, backend="vllm"):
+        max_position = _model_max_position_embeddings(model_spec.model_path) if attn_type == "dsa" else None
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            small_head_hole = sm_version in _DSA_SPARSE_DECODE_MIN_HEADS_SMS and h < _DSA_SPARSE_DECODE_MIN_HEADS
+            if attn_type == "dsa" and small_head_hole:
+                # FIXME(kernel-limit): FlashInfer's trtllm-gen sparse-MLA decode ships no kernel for
+                # tileSizeQ < 8 (= per-rank heads at q_len 1): "Missing TRTLLM-GEN kernel (decode) ...
+                # tileSizeQ=4, sparseMlaType=1" (trtllm_fmha_kernel_launcher.cu:320, flashinfer 0.6.x).
+                # Heads 1/2/4 (TP 32/64/128 of a 128-head model) failed 68,435 of the b200 vllm 0.30.0
+                # DSA cases AFTER loading a full module each (job 471043976); trtllm's fallback FMHA
+                # rejects the same cells ("Num. rows must be a multiple of 8"). Serving has no such
+                # deployment either. Dropped at plan time, counted here, not silently.
+                dropped_small_heads += 1
+                continue
+            prefix_len = rest[0] if rest else 0
+            if attn_type == "dsa" and max_position is not None and prefix_len + s > max_position:
+                # The shared dsa_prefix_lengths axis reaches 1,048,575 (GLM-5.2's ceiling); a model
+                # with a smaller max_position_embeddings (DeepSeek-V3.2 163,840, GLM-5 202,752) cannot
+                # build an engine past it: vLLM rejects max_model_len > derived limit (7,050 cases,
+                # job 471043976). sglang's module collector applies the same per-model cap
+                # (_prefix_fits_model); mirror it here.
+                dropped_over_ceiling += 1
+                continue
             case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
             if rest:
                 case.append(rest[0])
             cases.append(case)
+    if dropped_small_heads or dropped_over_ceiling:
+        print(
+            f"[vllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank heads "
+            f"< {_DSA_SPARSE_DECODE_MIN_HEADS} (SM{sm_version} sparse-MLA decode kernel domain) and "
+            f"{dropped_over_ceiling} cases whose prefix+isl exceeds the model's max_position_embeddings"
+        )
     return cases
 
 
@@ -357,12 +462,57 @@ def _create_gemm_quant_config(gemm_type: str):
 
 
 def _move_module_preserving_buffers(module, device):
-    """Materialize meta weights without discarding initialized runtime buffers."""
+    """Materialize meta weights without discarding initialized runtime buffers.
+
+    Two construction paths reach here. The explicit-class path builds the
+    module on the host, so only serialized block-scaled FP8 weights are meta
+    and every buffer already holds its constructor value. The serving-parity
+    path instantiates the framework's whole model under torch.device("meta")
+    (_create_attention_module), so its buffers are meta as well, and each is
+    rebuilt from its owner's own constructor recipe:
+
+    - rotary cos/sin tables: `rotary_emb` and `indexer_rope_emb` on
+      DeepseekV32Attention (models/deepseek_v32/attention.py:272-283
+      @ v0.30.0), registered non-persistent by rotary_embedding/base.py:60-63
+      and deepseek_scaling_rope.py:241-242 from a device-free recipe
+      (_compute_cos_sin_cache: torch.arange / einsum on the default device),
+      cast to the dtype the constructor chose (the meta tensor carries it);
+    - KV-quant scales `_k_scale/_v_scale/_q_scale/_prob_scale` that
+      MLAAttention registers through _init_kv_cache_quant ->
+      set_default_quant_scales(register_buffer=True) as 1.0 fp32
+      (layers/attention/attention.py:129-135,184 @ v0.30.0), together with
+      the `<name>_cpu` host copies the same call keeps beside them.
+
+    Any other meta buffer is refused rather than filled: a filled table
+    silently changes what the kernels see (the pre-#404 collector filled RoPE
+    with 0.01 and these scales with 0.5).
+    """
     if not any(parameter.is_meta for parameter in module.parameters()):
         return module.to(device)
-    buffers = dict(module.named_buffers())
-    if any(buffer.is_meta for buffer in buffers.values()):
-        raise RuntimeError("Cannot preserve an uninitialized meta buffer in the attention module")
+    buffers = {}
+    for name, buffer in module.named_buffers():
+        if buffer.is_meta:
+            parent_name, _, local_name = name.rpartition(".")
+            owner = module.get_submodule(parent_name) if parent_name else module
+            recompute = getattr(owner, "_compute_cos_sin_cache", None)
+            if local_name in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+                buffer = torch.ones(buffer.shape, dtype=buffer.dtype)
+                host_name = f"{local_name}_cpu"
+                if getattr(getattr(owner, host_name, None), "is_meta", False):
+                    setattr(owner, host_name, torch.ones((), dtype=torch.float32))
+            elif local_name.startswith("cos_sin_cache") and callable(recompute):
+                table = recompute()
+                if table.is_meta or tuple(table.shape) != tuple(buffer.shape):
+                    raise RuntimeError(
+                        f"Rotary table rebuilt for {name} is {tuple(table.shape)} on {table.device}; "
+                        f"the constructor registered {tuple(buffer.shape)}"
+                    )
+                buffer = table.to(dtype=buffer.dtype)
+            else:
+                raise RuntimeError(
+                    f"Cannot preserve an uninitialized meta buffer in the attention module: {name}"
+                )
+        buffers[name] = buffer
     module = module.to_empty(device=torch.device(device))
     for name, buffer in buffers.items():
         parent_name, _, local_name = name.rpartition(".")
@@ -412,25 +562,35 @@ def _initialize_nvfp4_parameters(module):
     untouched. vLLM subsequently performs its own layout conversion/dispatch.
     """
     from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+    from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Static
 
-    # Native API contracts at vLLM v0.25.1, commit 752a3a504485790a:
-    # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
-    # per 16 inputs, and dequantizing FP32 global scales. _custom_ops.py:1492-
-    # 1571 accepts the inverse global scale and can return unswizzled scales;
-    # modelopt.py:1203-1238 performs native conversion only after loading.
+    # Native API contracts at vLLM v0.30.0: every ModelOpt linear is the
+    # generic ModelOptLinearMethod carrying a (weight, activation) QuantSpec
+    # and a CkptCtx (modelopt.py:2448-2476). The NVFP4 weight scheme
+    # KNvfp4Static stores two E2M1 values per uint8, one E4M3 scale per
+    # ctx.group_size inputs (created as a NaN sentinel that process() refuses)
+    # and a per-partition FP32 global scale `weight_scale_2`
+    # (modelopt.py:1913-1990); the W4A4 activation scheme KNvfp4Dynamic adds
+    # the per-partition `input_scale` (modelopt.py:1993-2028) while W4A16 has
+    # none. Both global scales are ModelOpt's dequantizing amax/(6*448)
+    # values, raw-max'ed at process_weights_after_loading. _custom_ops.py:
+    # 1525-1531 accepts the inverse global scale and can return unswizzled
+    # block scales. (v0.25.1's ModelOptNvFp4LinearMethod no longer exists.)
     generator = torch.Generator(device="cpu").manual_seed(0)
     initialized = 0
     with torch.no_grad():
         for name, layer in module.named_modules():
-            if not isinstance(getattr(layer, "quant_method", None), ModelOptNvFp4LinearMethod):
+            quant_method = getattr(layer, "quant_method", None)
+            spec = getattr(quant_method, "spec", None)
+            if spec is None or getattr(spec, "weight", None) != kNvfp4Static:
                 continue
             weight, scales = layer.weight, layer.weight_scale
             if weight.dtype != torch.uint8 or scales.dtype != torch.float8_e4m3fn:
                 raise ValueError(f"Unexpected native NVFP4 storage for {name}")
             if weight.ndim != 2 or tuple(scales.shape) != (weight.shape[0], weight.shape[1] // 8):
                 raise ValueError(f"Unexpected native NVFP4 block layout for {name}")
-            if layer.quant_method.quant_config.group_size != 16 or weight.shape[1] % 8:
+            group_size = getattr(getattr(quant_method, "ctx", None), "group_size", None)
+            if group_size != 16 or weight.shape[1] % 8:
                 raise ValueError(f"Native NVFP4 quantization requires 16-input blocks for {name}")
             input_size = weight.shape[1] * 2
             rows_per_chunk = max(1, 1048576 // input_size)
@@ -439,7 +599,9 @@ def _initialize_nvfp4_parameters(module):
             # These fixed source ranges are unrelated to timing/accuracy targets.
             weight_global_scale = 0.08 / (6.0 * 448.0)
             layer.weight_scale_2.fill_(weight_global_scale)
-            layer.input_scale.fill_(1.0 / (6.0 * 448.0))
+            input_scale = getattr(layer, "input_scale", None)  # W4A4 only (KNvfp4Dynamic)
+            if input_scale is not None:
+                input_scale.fill_(1.0 / (6.0 * 448.0))
             inverse_scale = torch.tensor(1.0 / weight_global_scale, dtype=torch.float32, device=weight.device)
             for start in range(0, weight.shape[0], rows_per_chunk):
                 end = min(start + rows_per_chunk, weight.shape[0])
@@ -506,12 +668,14 @@ def _create_attention_module(
 
     local_model_path = _resolve_model_path(model_path)
 
-    block_size = 64
+    # The module is built at the framework default page; the real page is asked from the
+    # backend the module selected (_create_kv_cache_and_metadata, utils.framework_kv_block_size).
+    block_size = None  # unconstrained selection; _create_kv_cache_and_metadata asks the selected backend for the page
     # seq_len includes the current token; generation caches only seq_len - 1.
     # Keep exact-limit models such as Kimi-K2-Instruct at their declared limit.
     max_model_len = max(max_seq_len, 4096)
     num_kv_cache_blocks = max(
-        1 + math.ceil((max_seq_len + 1) / block_size) * max_batch_size,
+        1 + math.ceil((max_seq_len + 1) / 16) * max_batch_size,  # upper bound at the smallest page; recomputed per page below
         8192,
     )
 
@@ -625,27 +789,67 @@ def _create_attention_module(
     # (MLA backends only support bfloat16, not float32).
     from vllm.utils.torch_utils import set_default_torch_dtype
 
+    use_legacy = bool(os.environ.get("AIS_DSA_LEGACY_MODULE") or os.environ.get("AIC_DSA_LEGACY_MODULE"))
     with set_current_vllm_config(vllm_config), set_default_torch_dtype(vllm_config.model_config.dtype):
-        attn_module = DeepseekV2MLAAttention(
-            vllm_config=vllm_config,
-            config=hf_config,
-            hidden_size=hf_config.hidden_size,
-            num_heads=num_heads,
-            qk_nope_head_dim=hf_config.qk_nope_head_dim,
-            qk_rope_head_dim=hf_config.qk_rope_head_dim,
-            v_head_dim=hf_config.v_head_dim,
-            q_lora_rank=hf_config.q_lora_rank if hasattr(hf_config, "q_lora_rank") else None,
-            kv_lora_rank=hf_config.kv_lora_rank,
-            max_position_embeddings=hf_config.max_position_embeddings,
-            cache_config=vllm_config.cache_config,
-            quant_config=vllm_config.quant_config,
-            prefix="model.layers.0.self_attn",
-            topk_indices_buffer=topk_indices_buffer,
-        )
+        if attn_type == "dsa" and not use_legacy:
+            # GENERIC serving-parity construction (owner rule 2026-09-19:
+            # config in -> the module SERVING would build comes out; never a
+            # per-model class import — that is how the prelude-fusion drift
+            # was born). Resolve the model class through the framework's own
+            # registry (exactly serving's routing, registry.resolve_model_cls),
+            # instantiate the WHOLE model on the meta device (free), and
+            # extract layer 0's attention submodule. Attention layers register
+            # themselves into static_forward_context during init, which is
+            # what _create_kv_cache_and_metadata reads — same as serving.
+            from vllm.model_executor.models.registry import ModelRegistry
+            model_cls, _resolved = ModelRegistry.resolve_model_cls(
+                hf_config.architectures, vllm_config.model_config)
+            with torch.device("meta"):
+                _meta_model = model_cls(vllm_config=vllm_config, prefix="")
+            attn_module = None
+            for _n, _m in _meta_model.named_modules():
+                if _n.endswith("layers.0.self_attn"):
+                    attn_module = _m
+                    break
+            if attn_module is None:  # no fallback: raise, never substitute
+                raise RuntimeError(
+                    f"framework model {model_cls.__name__} exposes no "
+                    "layers.0.self_attn — extend the extraction, do not pin a class")
+            # the model allocated its shared topk buffer on meta; swap in the
+            # real one the collector allocated (same shape contract)
+            for _n, _m in attn_module.named_modules():
+                if getattr(_m, "topk_indices_buffer", None) is not None:
+                    _m.topk_indices_buffer = topk_indices_buffer
+            if getattr(attn_module, "topk_indices_buffer", None) is not None:
+                attn_module.topk_indices_buffer = topk_indices_buffer
+        else:
+            if attn_type == "dsa" and use_legacy:
+                print("  [AB-ONLY] AIS_DSA_LEGACY_MODULE=1: building the LEGACY generic "
+                      "DeepseekV2MLAAttention — NOT serving-parity on 0.29; rows are for "
+                      "comparison only, never for the database")
+            attn_module = DeepseekV2MLAAttention(
+                vllm_config=vllm_config,
+                config=hf_config,
+                hidden_size=hf_config.hidden_size,
+                num_heads=num_heads,
+                qk_nope_head_dim=hf_config.qk_nope_head_dim,
+                qk_rope_head_dim=hf_config.qk_rope_head_dim,
+                v_head_dim=hf_config.v_head_dim,
+                q_lora_rank=hf_config.q_lora_rank if hasattr(hf_config, "q_lora_rank") else None,
+                kv_lora_rank=hf_config.kv_lora_rank,
+                max_position_embeddings=hf_config.max_position_embeddings,
+                cache_config=vllm_config.cache_config,
+                quant_config=vllm_config.quant_config,
+                prefix="model.layers.0.self_attn",
+                topk_indices_buffer=topk_indices_buffer,
+            )
 
     # Serialized block-scaled FP8 creates weight params on meta device;
     # to_empty() also discards already-initialized buffers. Preserve their
-    # constructor values, including nonpersistent RoPE tables, across it.
+    # constructor values, including nonpersistent RoPE tables, across it. On
+    # the serving-parity path above the whole module is meta, so the RoPE
+    # tables and KV-quant scales are rebuilt from their owners' constructor
+    # recipe instead of preserved.
     attn_module = _move_module_preserving_buffers(attn_module, device)
     attn_module.eval()
     attn_module.requires_grad_(False)
@@ -768,7 +972,11 @@ def _create_kv_cache_and_metadata(
     hf_config = vllm_config.model_config.hf_text_config
     kv_lora_rank = hf_config.kv_lora_rank
     qk_rope_head_dim = hf_config.qk_rope_head_dim
-    block_size = vllm_config.cache_config.block_size
+    # page = what the framework would run the SELECTED backend with (serving re-derives it
+    # from the built model, platforms/interface.py update_block_size_for_backend)
+    _attn_layer = vllm_config.compilation_config.static_forward_context["model.layers.0.self_attn.attn"]
+    block_size = framework_kv_block_size(_attn_layer.get_attn_backend())
+    vllm_config.cache_config.block_size = block_size
     is_dsa = attn_type == "dsa"
 
     if is_dsa and indexer is None:
@@ -889,11 +1097,57 @@ def _create_kv_cache_and_metadata(
             device=device,
         )
         indexer_builder_cls = indexer_layer.get_attn_backend().get_builder_cls()
-        indexer_builder = indexer_builder_cls(indexer_spec, [indexer_layer_name], vllm_config, torch.device(device))
+        # 0.29.0: builders may demand block_table_width (indexer.py:519,531);
+        # mirror serving's population exactly (v1/worker/utils.py:276-283)
+        # using vllm's own width helper (v1/worker/block_table.py:29-49).
+        builder_kwargs = {}
+        if getattr(indexer_builder_cls, "requires_block_table_width", False):
+            from vllm.v1.worker.block_table import get_block_table_width
+            max_num_blocks = indexer_spec.max_num_blocks_per_req(
+                vllm_config, vllm_config.model_config.max_model_len
+            )
+            builder_kwargs["block_table_width"] = get_block_table_width(
+                max_num_blocks, indexer_spec.block_size
+            )
+            # Serving allocates the block table AT block_table_width columns
+            # (v1/worker/block_table.py), so builders may assume
+            # table.shape[1] == width. The family-100 decode path acts on
+            # that assumption: it copies the metadata's table into
+            # expanded_block_table_buffer sized by the width
+            # (v1/attention/backends/mla/indexer.py:609,745@0.29.0) and
+            # crashes on our ceil(seq/block)-column table ("expanded size
+            # (64) must match existing size (32)"). Zero-pad to the width —
+            # padding blocks are never dereferenced for absent tokens. SM90
+            # paths never read the expanded buffer, which is why this stayed
+            # latent on H20 (found on B300, 2026-09-20).
+            _width = builder_kwargs["block_table_width"]
+            _bt = common_attn_metadata.block_table_tensor
+            if _bt.shape[1] < _width:
+                _pad = torch.zeros(
+                    (_bt.shape[0], _width - _bt.shape[1]),
+                    dtype=_bt.dtype, device=_bt.device,
+                )
+                common_attn_metadata.block_table_tensor = torch.cat([_bt, _pad], dim=1)
+        indexer_builder = indexer_builder_cls(
+            indexer_spec, [indexer_layer_name], vllm_config, torch.device(device), **builder_kwargs
+        )
         indexer_metadata = indexer_builder.build(
             common_prefix_len=prefix_len,
             common_attn_metadata=common_attn_metadata,
         )
+        if os.environ.get("AIS_DEBUG_IDXMETA") or os.environ.get("AIC_DEBUG_IDXMETA"):  # diagnostic dump, no behavior change
+            _pre = getattr(indexer_metadata, "prefill", None)
+            print(f"[idxmeta] type={type(indexer_metadata).__name__} "
+                  f"prefill={type(_pre).__name__ if _pre is not None else None} "
+                  f"decode={getattr(indexer_metadata, 'decode', None) is not None}")
+            if _pre is not None:
+                _ch = getattr(_pre, "chunks", None)
+                print(f"[idxmeta] chunks={None if _ch is None else len(_ch)}")
+                for _c in (_ch or [])[:1]:
+                    for _f in dir(_c):
+                        _v = getattr(_c, _f, None)
+                        if not _f.startswith("_") and isinstance(_v, (int, bool, float)):
+                            print(f"[idxmeta]   chunk.{_f} = {_v}")
         _populate_indexer_kv_cache(
             indexer_kv_cache=indexer_kv_cache,
             common_attn_metadata=common_attn_metadata,
@@ -980,6 +1234,28 @@ def run_mla_module(
         device=device,
         is_context=is_context,
     )
+    if attn_type == "dsa" and use_fp8_kv_cache:
+        # vLLM 0.30 DeepseekV32 attention: the short-prefill dense-MHA branch with an FP8 query
+        # calls `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) —
+        # key=None. NEITHER rope implementation accepts that: the FlashInfer custom op does
+        # `key.view(...)` ("'NoneType' object has no attribute 'view'", 3.9k b200 + ~3k b300 +
+        # ~3k gb200 cases) and forward_native asserts `key is not None`
+        # (deepseek_scaling_rope.py:123; the ed9109ec attempt to run native moved every case
+        # onto that assert: gb200 pipeline 72343556). The call's intent is "rope q_pe only";
+        # give the module's rotary that contract: when key is None, rope the query against a
+        # throwaway copy and return (query, None). One tiny extra elementwise op on a
+        # prefill-only branch; kernels and labels unchanged. Whether serving ever takes this
+        # branch with FP8 KV is NOT established (identity probes run isl 4096 > topk; the
+        # dense-MHA skip fires for prompts <= topk) — FIXME(re-verify): probe DeepSeek-V3.2
+        # fp8 KV at isl 512-2048 on sm100 vllm 0.30 and drop this shim if vLLM fixes :534.
+        _patched = 0
+        for _name, _m in (attn_module.named_modules() if hasattr(attn_module, "named_modules") else ()):
+            if _m.__class__.__name__.endswith("RotaryEmbedding") and hasattr(_m, "forward"):
+                _patched += 1
+                _m.forward = _rope_tolerating_missing_key(_m.forward)
+        if _patched:
+            print(f"[vllm-mla-module] dsa fp8: {_patched} rotary module(s) accept key=None "
+                  "(vLLM 0.30 attention.py:534 ropes q_pe alone; both rope impls reject None)")
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
@@ -1090,17 +1366,20 @@ def run_mla_module(
     attn_metadata_dict = {attn_layer_name: attn_metadata}
     if indexer_metadata is not None:
         attn_metadata_dict[indexer_layer_name] = indexer_metadata
-    # Native MLA cache insertion reads the per-layer forward-context mapping,
-    # separately from the attention metadata. Omitting it silently suppresses
-    # current-token writes (vLLM mla_attention.py:1037-1058 and
-    # attention.py:726-766 @ vLLM v0.25.1, commit 752a3a504485790a).
-    slot_mapping_dict = {attn_layer_name: common_attn_metadata.slot_mapping}
-    if indexer_metadata is not None:
-        slot_mapping_dict[indexer_layer_name] = common_attn_metadata.slot_mapping
-    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config, slot_mapping=slot_mapping_dict))
+    # 0.29: DeepseekV32Attention reads per-layer slot mappings from
+    # forward_context.slot_mapping (attention.py:303-306@v0.29.0 — a dict
+    # keyed by layer name); mirror serving's population with the SAME slot
+    # tensor the metadata was built from.
+    _slot = getattr(common_attn_metadata, "slot_mapping", None)
+    _slot_map = ({name: _slot for name in attn_metadata_dict} if _slot is not None else None)
+    exit_stack.enter_context(set_forward_context(
+        attn_metadata_dict, vllm_config, slot_mapping=_slot_map))
     try:
         with torch.inference_mode():
-            attn_module.forward(positions, hidden_states, None)
+            _fwd_args = ((positions, hidden_states)
+                         if type(attn_module).__name__ == "DeepseekV32Attention"
+                         else (positions, hidden_states, None))
+            attn_module.forward(*_fwd_args)
     except torch.cuda.OutOfMemoryError as e:
         print(f"  Dry run OOM: {e}")
         # Let collect.py record the capacity failure. Returning normally would
@@ -1114,34 +1393,45 @@ def run_mla_module(
         # rows while the pipeline reports success.
         raise
 
-    # The full dry run above populates the shared top-k indices. Native vLLM
-    # uses skip_topk to reuse that buffer while retaining MLA projections and
-    # sparse attention (deepseek_v2.py:1080-1104,1150-1162 and layers/mla.py
-    # MultiHeadLatentAttentionWrapper @ vLLM v0.25.1, commit 752a3a504485790a).
-    # Emit both existing op_name variants for checkpoints declaring reuse;
-    # no model-averaged latency is written into a full-indexer row.
+    # 5. Benchmark
+    def kernel_func():
+        attn_module.forward(*_fwd_args)
+
+    # Index reuse (GLM-5.x index_topk_freq / index_topk_pattern): the full dry run above
+    # populated the shared top-k buffer; serving's reuse layers run with skip_topk=True,
+    # keeping the MLA projections and sparse attention while skipping the indexer
+    # (vllm/models/deepseek_v32/attention.py:169-177,226,297,324,406,460 @v0.30.0; the
+    # generic DeepseekV2 wrapper keeps the flag on mla_attn, layers/mla.py:109,147,232).
+    # Emit both op_name variants for checkpoints declaring reuse; never a model-averaged
+    # latency in a full-indexer row.
     hf_text_config = vllm_config.model_config.hf_text_config
     reuse_pattern = getattr(hf_text_config, "index_topk_pattern", None)
     has_reuse = attn_type == "dsa" and (
         "S" in reuse_pattern if reuse_pattern is not None else (getattr(hf_text_config, "index_topk_freq", 1) or 1) > 1
     )
+    # 0.30 DeepseekV32Attention IS the MLA layer and owns skip_topk; the legacy generic
+    # DeepseekV2MLAAttention nests it under mla_attn.
+    skip_owner = next(
+        (c for c in (attn_module, getattr(attn_module, "mla_attn", None)) if c is not None and hasattr(c, "skip_topk")),
+        None,
+    )
     if has_reuse:
-        if not hasattr(attn_module.mla_attn, "skip_topk"):
+        if skip_owner is None:
             raise RuntimeError("vLLM DSA reuse requires the native skip_topk execution path")
-        exit_stack.callback(setattr, attn_module.mla_attn, "skip_topk", attn_module.mla_attn.skip_topk)
+        exit_stack.callback(setattr, skip_owner, "skip_topk", skip_owner.skip_topk)
 
     def measure_and_log(skip_indexer):
         if has_reuse:
-            attn_module.mla_attn.skip_topk = skip_indexer
+            skip_owner.skip_topk = skip_indexer
 
-        # 5. Benchmark
-        def kernel_func():
-            attn_module.forward(positions, hidden_states, None)
-
-        # DSA context previously bypassed graphs to avoid retained scratch pools.
-        # Keep graph timing for small as well as large cases: eager launch gaps can
-        # dominate small module latency. The helper resets each graph, and the
-        # ExitStack releases vLLM's workspace after its forward contexts unwind.
+        # Graph timing for every MLA/DSA case. DSA context used to run eagerly to dodge a
+        # private-pool retention (~18 GiB flashmla-sparse scratch per capture, saturating
+        # at ~146 GiB per worker); that bought small cases a ~0.6 ms launch floor — 0.30
+        # rows at isl <= 1024 measured 1.6-8x the graph-timed values of the same cells
+        # (b200/l40s vs #404's B200 tables, 2026-10-10). benchmark_with_power
+        # (explicit_graph_cleanup) resets each graph and the ExitStack releases vLLM's
+        # workspace after the forward contexts unwind. FIXME(re-verify): confirm on 0.30
+        # with a small->large DSA context sweep that the retention is gone before a campaign.
         with benchmark_with_power(
             device=torch.device(device),
             kernel_func=kernel_func,
@@ -1174,7 +1464,9 @@ def run_mla_module(
         # Aligns with sdk/models.py which uses architectures[0] throughout.
         hf_cfg = vllm_config.model_config.hf_config
         architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
-        mla_layer = attn_module.mla_attn.mla_attn
+        # legacy generic module nests the layer (module.mla_attn.mla_attn);
+        # DeepseekV32Attention IS the MLAAttention layer itself
+        mla_layer = attn_module if not hasattr(attn_module, "mla_attn") else attn_module.mla_attn.mla_attn
         backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
         actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
 
@@ -1232,6 +1524,24 @@ def run_mla_module_worker(
     device: str = "cuda:0",
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
+    # FIXME(kernel-limit): on SM100/103 with FP8 KV, vLLM selects FLASHINFER_MLA_SPARSE for DSA and
+    # FlashInfer's auto backend has nothing for 64 < per-rank heads < 128: trtllm-gen refuses the head
+    # range, cute-dsl refuses sparse_mla_top_k ("auto: no backend supports this configuration", 11,442
+    # cases = every heads-96 fp8 cell, both phases, job 471043976). Serving fails identically (the same
+    # gap closes Kimi-K3 tp1 on sglang: finding sm100_probe_failures_recheck_2026_10_04 (i)). Raise
+    # before the module is built so the cell is a classified failure, not a 20 s load + crash.
+    if (
+        attn_type == "dsa"
+        and "fp8" in str(kv_cache_dtype)
+        and get_sm_version() in (100, 103)  # SM100 family (_DSA_SPARSE_DECODE_MIN_HEADS_SMS); inline so the
+        # worker stays self-contained for the CLI tests that load it alone
+        and 64 < num_heads < 128
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): vLLM FLASHINFER_MLA_SPARSE on SM100/103 has no decode backend for "
+            f"64 < per-rank heads < 128 with FP8 KV (num_heads={num_heads}); trtllm-gen rejects the head "
+            "range and cute-dsl rejects sparse_mla_top_k (flashinfer mla/_core.py:4271); serving fails identically"
+        )
     # Serving executes model forward under inference mode (vLLM dd10e03f9,
     # v1/worker/gpu_model_runner.py:4069-4070). Keep module initialization,
     # dry runs, graph warmup and timing in the SAME mode: FlashInfer 0.6.13

@@ -13,9 +13,10 @@ base_ops:
   - gemm
 description: >
   DeepSeek-V3-family model-centric collection plan. Includes shared base op cases
-  plus stock MoE and MLA cases. SGLang WideEP ops (moe_ep) require a separate
-  runtime and must be requested independently; trtllm moe_ep pins the same image
-  as stock trtllm and is activated below.
+  plus stock MoE and MLA cases. WideEP ops (moe_ep) live on their own runtime
+  pins (wideep_sglang 0.5.10, wideep_trtllm 1.3.0rc20 vs stock trtllm 1.3.0rc29)
+  and are requested independently of this plan on both backends (2026-10-04:
+  the trtllm same-pin assumption was dropped when stock trtllm moved to rc29).
 
 model_case_values:
   moe:
@@ -107,8 +108,6 @@ framework_specific_op_cases:
     mla_context_module:
       cases: all
     mla_generation_module:
-      cases: all
-    moe_ep:
       cases: all
   vllm:
     mla_context_module:

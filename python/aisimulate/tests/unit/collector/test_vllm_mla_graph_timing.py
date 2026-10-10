@@ -5,6 +5,7 @@
 
 import ast
 import math
+import os
 import sys
 from contextlib import ExitStack, contextmanager, nullcontext
 from functools import wraps
@@ -309,8 +310,13 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     monkeypatch.setitem(
         sys.modules, "vllm.utils.torch_utils", SimpleNamespace(set_default_torch_dtype=lambda dtype: nullcontext())
     )
+    # The generic serving-parity construction resolves the model class through
+    # vLLM's ModelRegistry; the stubs below cover the explicit-class path, so
+    # select it (AB-only switch) for this allocation check.
+    monkeypatch.setenv("AIS_DSA_LEGACY_MODULE", "1")
     namespace = {
         "math": math,
+        "os": os,
         "torch": SimpleNamespace(empty=empty, int32="int32", no_grad=nullcontext),
         "_resolve_model_path": lambda model: model,
         "create_vllm_config": create_config,
@@ -332,4 +338,7 @@ def test_indexer_output_budget_excludes_cached_prefix(monkeypatch, batch, query,
     )
     assert allocations == [(expected_tokens, 2048)]
     assert configs[0]["max_model_len"] == max(prefix + query, 4096)
-    assert configs[0]["num_gpu_blocks"] == max(1 + math.ceil((prefix + query + 1) / 64) * batch, 8192)
+    # The module is built before the backend (and its page) is known: the KV
+    # capacity is an upper bound at the smallest page (16) and is recomputed
+    # per selected page in _create_kv_cache_and_metadata.
+    assert configs[0]["num_gpu_blocks"] == max(1 + math.ceil((prefix + query + 1) / 16) * batch, 8192)

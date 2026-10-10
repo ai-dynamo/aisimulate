@@ -324,6 +324,7 @@ def _run_generation_case(
                 "fused_recurrent_gated_delta_rule_packed_decode"
             ),
             "_resolve_flashinfer_gdn_decode": resolve or (lambda _dtype: (flashinfer_kernel, flashinfer_error)),
+            "_resolve_fused_gdn_decode_conv": lambda: None,  # <0.5.21 split conv lane
             "benchmark_with_power": lambda *, kernel_func, **_kwargs: _FakeBenchmark(kernel_func),
             "log_perf": lambda **kwargs: logged.append(kwargs["kernel_source"]) or True,
         },

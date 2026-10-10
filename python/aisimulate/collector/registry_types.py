@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class PerfFile(str, Enum):
@@ -35,6 +36,12 @@ class PerfFile(str, Enum):
     KDA = "kda_perf.txt"
     MAMBA2 = "mamba2_perf.txt"
     COMPUTESCALE = "computescale_perf.txt"
+    # computescale's second table (dynamic-vs-static fp8 quant matrix): both
+    # backends have always written it and the SDK consumes
+    # scale_matrix_perf.parquet (aisimulate_core/sdk/common.py) — the enum
+    # entry was simply missing, which the fail-closed finalize rejected on
+    # the first full vllm computescale run (2026-09-21).
+    SCALE_MATRIX = "scale_matrix_perf.txt"
     WIDEEP_CONTEXT_MLA = "wideep_context_mla_perf.txt"
     WIDEEP_GENERATION_MLA = "wideep_generation_mla_perf.txt"
     WIDEEP_CONTEXT_MOE = "wideep_context_moe_perf.txt"
@@ -51,10 +58,11 @@ class PerfFile(str, Enum):
     DSA_GENERATION_MODULE = "dsa_generation_module_perf.txt"
     # GLM-5.2 shares one topk index across `index_topk_freq` layers: only 1
     # layer per group computes the indexer (mqa+topk+index-K store), the rest
-    # reuse it (skip_indexer). These names are worker selectors; skip rows
-    # share the canonical DSA phase tables above, distinguished by op_name.
-    DSA_CONTEXT_MODULE_SKIP_INDEXER = "dsa_context_module_skip_indexer_perf.txt"
-    DSA_GENERATION_MODULE_SKIP_INDEXER = "dsa_generation_module_skip_indexer_perf.txt"
+    # reuse it (skip_indexer). The skip-layer rows live in the SAME two DSA
+    # tables above, tagged by an op_name "_skip_indexer" suffix (the SDK reads
+    # them from there: sdk/database test_dsa_skip_indexer_fail_open), so the
+    # skip ops declare DSA_*_MODULE and select the variant through
+    # OpEntry.run_kwargs. per_layer = (1/freq)*full + (1-1/freq)*skip.
     # MiniMax-M3 MSA (block-sparse GQA) full-module data — same row schema as
     # the DSA module files, keyed by architecture.
     MSA_CONTEXT_MODULE = "msa_context_module_perf.txt"
@@ -104,9 +112,10 @@ class OpEntry:
     Exactly one of ``module`` (unversioned) or ``versions`` (versioned) must be
     provided.  This invariant is validated at construction time.
 
-    ``perf_filename`` is the physical output table. ``worker_perf_filename``
-    optionally overrides only the basename passed to the worker's legacy
-    ``perf_filename`` dispatch argument, preserving the output directory.
+    ``perf_filename`` is the physical output table. Ops that share one
+    run_func and one table in different modes select the mode with
+    ``run_kwargs`` (sglang dsa_*_module_skip_indexer); multi-table producers
+    name their extra tables in ``extra_perf_filenames``.
     """
 
     op: str
@@ -123,10 +132,46 @@ class OpEntry:
     #   unverified_sms=(120,)  — debugged elsewhere, not validated on these SMs
     unverified: bool = False
     unverified_sms: tuple[int, ...] = ()
-    worker_perf_filename: str | None = None
+    # Further tables the SAME run_func writes from one measurement (passed to
+    # it as ``extra_perf_filenames``); finalize binds every one of them to
+    # this producer's checkpoint. compute_scale is the only user so far
+    # (computescale_perf + scale_matrix_perf; owner decision 2026-09-28).
+    extra_perf_filenames: tuple[str, ...] = ()
+    # Fixed keyword arguments the executor binds to run_func (functools.partial,
+    # next to perf_filename / extra_perf_filenames). This is how one run_func
+    # serves several registry ops that write the SAME table in different modes:
+    # sglang dsa_*_module_skip_indexer passes skip_indexer=True and shares the
+    # dsa_*_module table with the full-module op. Before this field the worker
+    # inferred the mode from a "skip_indexer" perf_filename that no collector
+    # ever wrote, and --resume finalization (which trusts the declared table)
+    # raised "open checkpoint event has no regular staging table" on every
+    # skip_indexer shard (b200_sxm sglang 0.5.21, GitLab job 469988017,
+    # 2026-10-05). A tuple of (name, value) pairs keeps the entry hashable.
+    run_kwargs: tuple[tuple[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.module and not self.versions:
             raise ValueError(f"OpEntry '{self.op}': must specify 'module' or 'versions'")
         if self.module and self.versions:
             raise ValueError(f"OpEntry '{self.op}': cannot specify both 'module' and 'versions'")
+        names = [str(name) for name in self.perf_filenames]
+        if len(names) != len(set(names)):
+            raise ValueError(f"OpEntry '{self.op}': duplicate perf tables {names}")
+        keys = [pair[0] for pair in self.run_kwargs]
+        if any(not isinstance(key, str) or not key for key in keys) or len(keys) != len(set(keys)):
+            raise ValueError(f"OpEntry '{self.op}': run_kwargs must be unique non-empty names, got {keys}")
+        reserved = {"perf_filename", "extra_perf_filenames", "device"}
+        if reserved & set(keys):
+            raise ValueError(
+                f"OpEntry '{self.op}': run_kwargs may not rebind executor-owned {sorted(reserved & set(keys))}"
+            )
+
+    @property
+    def run_kwargs_dict(self) -> dict[str, Any]:
+        """The fixed keyword arguments as a dict (what the executor binds)."""
+        return dict(self.run_kwargs)
+
+    @property
+    def perf_filenames(self) -> tuple[str, ...]:
+        """Every table this producer writes, primary first."""
+        return (self.perf_filename, *self.extra_perf_filenames)

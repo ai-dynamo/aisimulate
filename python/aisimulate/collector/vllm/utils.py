@@ -116,13 +116,17 @@ def create_common_attn_metadata(
     # Calculate max query length
     max_query_len = max(batch_spec.query_lens)
 
+    # Serving population site: vllm/v1/worker/gpu/attn_utils.py:456-475@v0.30.0
+    # passes seq_lens + seq_lens_cpu_upper_bound (no private *_cpu fields — the
+    # 0.29 `_seq_lens_cpu` / `_num_computed_tokens_cpu` were removed in 0.30;
+    # computed-token counts derive from seq_lens and query_start_loc inside the
+    # dataclass). Version bump 2026-09-27 (opharness upgrade_op vllm 0.30.0).
+    del num_computed_tokens_cpu
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
         query_start_loc_cpu=query_start_loc_cpu,
         seq_lens=seq_lens,
         seq_lens_cpu_upper_bound=seq_lens_cpu,
-        _seq_lens_cpu=seq_lens_cpu,
-        _num_computed_tokens_cpu=num_computed_tokens_cpu,
         num_reqs=batch_spec.batch_size,
         num_actual_tokens=num_tokens,
         max_query_len=max_query_len,
@@ -164,7 +168,7 @@ def create_vllm_config(
     max_model_len: int = 1024,
     dtype: Union[ModelDType, torch.dtype] = "auto",
     num_gpu_blocks: int = 1000,
-    block_size: int = 16,
+    block_size: int | None = 16,
     max_num_seqs: int = 256,
     max_num_batched_tokens: int = 8192,
     enable_chunked_prefill: bool = True,
@@ -195,6 +199,11 @@ def create_vllm_config(
         hf_overrides=hf_overrides or {},
     )
 
+    # block_size=None is NOT "16": pydantic's CacheConfig marks any explicit value as
+    # user_specified_block_size, and the selector (v1/attention/selector.py:131-135) then
+    # filters backends by it exactly as --block-size would. Serving without --block-size
+    # selects unconstrained and derives the page from the chosen backend afterwards
+    # (utils.framework_kv_block_size); pass None to get that behaviour.
     cache_config = CacheConfig(
         block_size=block_size,
         cache_dtype="fp8" if use_fp8_kv_cache else "auto",
@@ -340,9 +349,11 @@ def create_and_prepopulate_kv_cache_mla(
         MLA KV cache tensor
     """
     batch_size = len(kv_c_contexts)
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()  # 0.30: property removed; seq_lens - query_lens on device (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 
@@ -452,9 +463,11 @@ def create_kv_cache_and_block_mappings(
         Tuple of the empty KV cache and flattened history slot mapping
     """
     batch_size = common_attn_metadata.num_reqs
-    seq_lens = common_attn_metadata.seq_lens_cpu
+    # 0.30 removed the seq_lens_cpu property; the CPU view serving carries is
+    # seq_lens_cpu_upper_bound (vllm/v1/worker/gpu/attn_utils.py:460@v0.30.0)
+    seq_lens = common_attn_metadata.seq_lens_cpu_upper_bound
     query_lens = common_attn_metadata.query_start_loc_cpu[1:] - common_attn_metadata.query_start_loc_cpu[:-1]
-    context_lens = common_attn_metadata.num_computed_tokens_cpu
+    context_lens = common_attn_metadata.compute_num_computed_tokens().cpu()  # 0.30: property removed; seq_lens - query_lens on device (utils.py CommonAttentionMetadata.compute_num_computed_tokens@v0.30.0)
     block_table = common_attn_metadata.block_table_tensor
     slot_mapping = common_attn_metadata.slot_mapping
 
@@ -636,3 +649,55 @@ def with_exit_stack(func):
             return func(stack, *args, **kwargs)
 
     return wrapper
+
+
+def framework_kv_block_size(backend_cls, *, user_block_size: int | None = None) -> int:
+    """The KV page the FRAMEWORK would run this backend with — asked, not tabled.
+
+    Mirrors serving (vllm 0.30.0): the cache manager block size is
+    ``backend.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)`` unless
+    the user passed --block-size (platforms/interface.py
+    update_block_size_for_backend, phase 1), and the kernel page is
+    ``select_common_block_size(cache_block_size, [backend])`` (v1/worker/utils.py:
+    the manager size when every backend accepts it, else the largest explicit
+    size that divides it). The per-SM table (kv_block_size) was the owner's
+    2026-09-30 interim; the B200 re-run on 2026-10-03 showed it is not
+    equivalent: with mla=32 the bf16 DSA cell selected the TRT-LLM FMHA sparse
+    cubin while serving ran FA-cute (page 64) — the page is a per-(backend, kv
+    dtype, head shape) decision, so it must come from the backend the case
+    actually selected. AIS_KV_BLOCK_SIZE stays the single-variable A/B hook.
+    """
+    import os
+
+    override = os.environ.get("AIS_KV_BLOCK_SIZE")
+    if override:
+        return int(override)
+    from vllm.config.cache import CacheConfig
+    from vllm.v1.worker.utils import select_common_block_size
+
+    cache_block = user_block_size if user_block_size else backend_cls.get_preferred_block_size(CacheConfig.DEFAULT_BLOCK_SIZE)
+    return int(select_common_block_size(int(cache_block), [backend_cls]))
+
+
+def kv_block_size(sm_version: int, op: str = "attention") -> int:
+    """KV-cache page size the collector builds its fake engine with, per SM.
+
+    Serving picks the page size per attention backend; SM90 backends (FA3,
+    FlashMLA, Triton) take 64 and the collectors used a 64 literal — which the
+    B200 campaign (2026-09-29) caught as a cross-arch defect: on SM100 vLLM
+    0.30 serves dense attention through the flashinfer TRT-LLM FMHA at page
+    16 (Llama/Qwen; Gemma-4 head-512 takes 64) and MLA decode at page 32, and
+    a 64-page collector cell ran a different cubin (attn_ctx P64 vs serving
+    P16; mla_gen_fp8 P64 vs P32). The A/B with page 16 aligned attn_ctx.
+    Owner decision 2026-09-30: branch by SM rather than query the framework
+    per case. SM120 keeps 64 (its 31 gates aligned with it). AIS_KV_BLOCK_SIZE
+    is the single-variable A/B hook and is never set in collection runs.
+    """
+    import os
+
+    override = os.environ.get("AIS_KV_BLOCK_SIZE")
+    if override:
+        return int(override)
+    if 100 <= sm_version < 120:
+        return 32 if op == "mla" else 16
+    return 64

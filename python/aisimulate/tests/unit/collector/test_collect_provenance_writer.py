@@ -7237,7 +7237,7 @@ def test_dsa_registry_producers_share_transaction_and_checkpoint_ownership(tmp_p
         tracker = collect_mod._resume_tracker_for_collection(
             collection, ctx, backend=BACKEND, checkpoint_dir=str(checkpoint_dir), sm_version=100
         )
-        assert collect_mod._registered_checkpoint_table(tracker._metadata, backend=BACKEND) == table
+        assert collect_mod._registered_checkpoint_tables(tracker._metadata, backend=BACKEND) == {table}
         case_id = f"{collection['type']}-case"
         tracker.mark_attempted(case_id)
         tracker.mark_passed(case_id)
@@ -7420,7 +7420,7 @@ def test_perf_journal_requires_attempts_for_each_table_in_a_batch(monkeypatch, s
     journal_path = output_root / collect_mod._PERF_TRANSACTION_FILENAME
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     for record in journal["checkpoints"]:
-        if record["table"] == "mla_bmm_perf":
+        if "mla_bmm_perf" in record["tables"]:
             record["attempted"] = []
     assert any(record["attempted"] for record in journal["checkpoints"])
     with pytest.raises(RuntimeError, match="tables lack attempted checkpoint case IDs"):

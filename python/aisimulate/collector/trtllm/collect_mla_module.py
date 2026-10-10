@@ -87,8 +87,18 @@ import weakref
 
 import tensorrt_llm
 import torch
-from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import (
@@ -259,13 +269,28 @@ def _build_module_test_cases(attn_type: str, mode: str):
     base_cases = get_context_test_cases(attn_type) if mode == "context" else get_generation_test_cases(attn_type)
     model_specs = get_mla_module_model_specs(attention_type=attn_type, backend="trtllm")
     cases = []
+    dropped_small_heads = 0
+    sm_version = get_sm_version()
     for model_spec in model_specs:
         for base_case in base_cases:
             s, b, h, kv_dtype, compute_dtype, gemm_type, *rest = base_case
+            if attn_type == "dsa" and sm_version in (100, 103) and h < 8:
+                # FIXME(kernel-limit): TRT-LLM's sparse-MLA path on SM100/103 falls back to the FMHA
+                # that requires "Num. rows must be a multiple of 8" — per-rank heads 1/2/4 (TP 32/64/128
+                # of a 128-head model) failed 15,408 of the b200 rc29 DSA cases after a full module load
+                # each (job 469988228); vLLM's trtllm-gen sparse decode has no kernel for the same cells
+                # (tileSizeQ < 8). No serving deployment reaches them. Dropped at plan time, counted.
+                dropped_small_heads += 1
+                continue
             case = [s, b, h, kv_dtype, compute_dtype, gemm_type, model_spec.model_path, attn_type]
             if rest:
                 case.append(rest[0])
             cases.append(case)
+    if dropped_small_heads:
+        print(
+            f"[trtllm-mla-module-cases] {attn_type}/{mode}: dropped {dropped_small_heads} cases with per-rank "
+            f"heads < 8 (SM{sm_version} sparse-MLA FMHA row-multiple-of-8 domain)"
+        )
     return cases
 
 
@@ -368,6 +393,12 @@ def _apply_gemm_type_quant(model_config, gemm_type: str, use_fp8_kv_cache: bool)
             _replace_quant_config(
                 model_config.quant_config,
                 quant_algo=QuantAlgo.NVFP4,
+                # NVFP4 scale blocks are 16 elements; without an explicit value the replaced
+                # config keeps the checkpoint's/fp8_block group_size=128 and 1.3.0rc29
+                # NVFP4LinearMethod.resolve_scaling_vector_size rejects module construction
+                # ("supports NVFP4 scale blocks of (16,) elements, but the checkpoint declares
+                # group_size=128" — B200 smoke 2026-10-04; nvfp4 is a platform floor on Hopper).
+                group_size=16,
                 kv_cache_quant_algo=kv_algo,
                 exclude_modules=None,
             ),
@@ -823,12 +854,15 @@ def run_mla_module(
     # (attentionOp.cpp:3097) / generation (:3091). Hardware-observed on L40
     # (SM89) 2026-07-26: module smoke 0/8, C++ SIGABRT per case; serving hits
     # the identical assert. Same fail-closed treatment as the stock MLA
-    # collector (collect_mla.py). Re-verify on the next framework version bump.
+    # collector (collect_mla.py). Re-verified on 1.3.0rc29 / L40 (SM89) 2026-10-04: with only this SM guard
+    # patched out, a bf16 DeepSeek-V3 MLA module cell still aborts in AttentionOp with "Deepseek should be
+    # supported by fmha in generation part" (attentionOp.cpp:3234 @1.3.0rc29; the assert moved from :3091), SIGSEGV
+    # in the worker (facts/mla_bypass_*.log). The wall is unchanged across rc20 -> rc29: keep failing closed.
     if attn_type == "mla" and get_sm_version() < 90:
         raise ValueError(
             f"TRT-LLM MLA has no pre-Hopper FMHA kernel; MLA modules are "
             f"unsupported on SM{get_sm_version()} "
-            f"(attentionOp.cpp:3091/:3097 assert @1.3.0rc20)"
+            f"(attentionOp.cpp:3234 assert @1.3.0rc29, :3091/:3097 @1.3.0rc20)"
         )
     # FIXME(kernel-limit): SM120 MLA context takes serving's dense-expand path
     # (forward_context_default, attention.py:2015-2040@1.3.0rc20 — SM100/103
@@ -924,6 +958,12 @@ def run_mla_module(
     _trtllm_utils._model_extra_attrs.attrs = model_config.extra_attrs
     _trtllm_utils._model_extra_attrs.attrs["attention_metadata"] = weakref.ref(attn_metadata)
 
+    # FIXME(kernel-limit): same 32-bit per-sequence offset boundary as
+    # collect_attn.py (H20 campaign 2026-10-02, rc29): DeepSeek-V3 context cells
+    # with (batch-1) * input_len * local_heads * 192 * 2 >= 2**31 (tp1: 81920+
+    # total tokens) fault with cudaErrorIllegalAddress while the TP-sharded rows
+    # of the same (batch, seq) pass. Unverified against the kernel source; left
+    # failing into the classified log.
     def kernel_func():
         attn_module.forward(position_ids, hidden_states, attn_metadata)
 

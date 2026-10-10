@@ -1,0 +1,49 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "gate_name": "attn_ctx_Llama-3.1-8B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx.json",
+ "capture_sha256": "ab2a92d534e0b8d3",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "d0eebc171e3d",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "f1ae759b169e",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa3",
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3",
+  "sgl_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

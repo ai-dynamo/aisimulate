@@ -1,0 +1,47 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "trtllm",
+ "version": "1.3.0rc29",
+ "gate_name": "attn_gen_fp8_Llama-3.1-8B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "fp8",
+ "op_hint": "attn|attention|fmha|mha|flash|xqa",
+ "capture_file": "facts/pathdiff/opcov_trt_attn_gen_fp8kv@1.3.0rc29.json",
+ "capture_sha256": "230d4a4de60c09ba",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "e4f44005acc0",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "bf7556fe9205",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "trtllm_mha"
+ ],
+ "serving_backends": [
+  "cublas",
+  "trtllm_mha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

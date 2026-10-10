@@ -19,12 +19,12 @@ from collections import defaultdict
 import tensorrt_llm
 import torch
 import torch.nn.functional as F
-from case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_case_specs
 from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
 
-from helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def pad_up(x: int, y: int) -> int:
@@ -167,7 +167,12 @@ def run_gemm(gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         group_size = 128
         qc = QuantConfig(quant_algo=QuantAlgo.FP8_BLOCK_SCALES, group_size=group_size)
     elif gemm_type == "nvfp4":
-        group_size = 128
+        # NVFP4 scale blocks are 16 elements (the weights above are quantized with
+        # fp4_quantize(..., 16, ...)); 1.3.0rc29 NVFP4LinearMethod.resolve_scaling_vector_size
+        # rejects any other declared group_size ("supports NVFP4 scale blocks of (16,) elements,
+        # but the checkpoint declares group_size=128" — first seen on B200 2026-10-04; on Hopper
+        # the nvfp4 lane is a platform floor and never constructed the module).
+        group_size = 16
         qc = QuantConfig(quant_algo=QuantAlgo.NVFP4, group_size=group_size)
     else:
         qc = None

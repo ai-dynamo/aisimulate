@@ -57,12 +57,12 @@ import torch
 try:
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from registry_types import PerfFile
 
-    from helper import benchmark_with_power, log_perf
+    from helper import benchmark_with_power, get_sm_version, log_perf
 
 
 ARCHITECTURE = "DeepseekV4ForCausalLM"
@@ -161,6 +161,25 @@ def _filter_shapes(mode: str, drops: dict[str, int] | None = None):
     return shapes
 
 
+def _serving_kv_cache_dtype() -> str:
+    """KV pool dtype the deployment actually serves DSV4 with on this SM.
+
+    Hopper (and the documented SM120/121 path) serve the packed fp8_ds_mla sparse-MLA pool.
+    On SM100 the generator's same facts (kv_cache_config.dtype fp8_ds_mla, page 128) are NOT
+    servable with 1.3.0rc29: the manager first demands tokens_per_block=256, then the fp8_ds_mla
+    sparse GENERATION step has no FMHA library ("No TRT-LLM attention FMHA library supports this
+    request"); the only configuration that boots is kv dtype auto -> bf16 (DeepseekV4CacheManager
+    BF16), which serves fmhaSm100f QkvBfloat16 ... DynamicTokenSparse cubins (B200 2026-10-04,
+    opharness finding sm100_trtllm_dsv4_facts_unservable_2026_10_04). Mirror that: the sm100
+    collector lane is bf16-KV; the perf row carries kv_cache_dtype accordingly.
+    AIS_DSV4_KV_CACHE_DTYPE=fp8|bf16 is the A/B hook.
+    """
+    override = os.environ.get("AIS_DSV4_KV_CACHE_DTYPE")
+    if override:
+        return override
+    return "fp8" if get_sm_version() in (90, 120, 121) else "bf16"
+
+
 def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
     cases: list[dict] = []
     tp_sizes = [1] if "--smoke" in sys.argv else _DSV4_MODULE_TP_SIZES
@@ -179,7 +198,7 @@ def _build_dsv4_test_cases(mode: str, attn_kind: str) -> list[dict]:
     for model_path in model_paths:
         for tp_size in tp_sizes:
             for bs, sl, prefix in shapes:
-                params = [sl, bs, tp_size, "fp8", "bfloat16", "fp8_block", model_path, attn_kind]
+                params = [sl, bs, tp_size, _serving_kv_cache_dtype(), "bfloat16", "fp8_block", model_path, attn_kind]
                 case_id = f"dsv4_{attn_kind}_{mode}_b{bs}_s{sl}_tp{tp_size}_{model_path.replace('/', '_')}"
                 if mode == "context":
                     params.append(prefix)
@@ -222,10 +241,12 @@ def get_dsv4_hca_generation_test_cases() -> list[dict]:
 # untouched, and reusing one module across batches is exactly what serving
 # does. Owner-approved perf change 2026-08-09.
 _MODULE_CACHE: dict = {}
+# Lower bound on the per-case KV token quota (see create_dsv4_kv_cache_and_metadata).
+_KV_POOL_MIN_TOKENS = 2 * 1024 * 1024
 
 
-def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int, device: str):
-    key = (model_path, attn_kind, int(tp_size), device)
+def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int, device: str, kv_cache_dtype: str = "fp8"):
+    key = (model_path, attn_kind, int(tp_size), device, kv_cache_dtype)
     hit = _MODULE_CACHE.get(key)
     if hit is not None:
         return hit
@@ -235,7 +256,8 @@ def _cached_dsv4_attention_module(model_path: str, attn_kind: str, tp_size: int,
         _MODULE_CACHE.clear()
         gc.collect()
         torch.cuda.empty_cache()
-    entry = create_dsv4_attention_module(model_path=model_path, attn_kind=attn_kind, tp_size=tp_size, device=device)
+    entry = create_dsv4_attention_module(model_path=model_path, attn_kind=attn_kind, tp_size=tp_size, device=device,
+                                         kv_cache_dtype=kv_cache_dtype)
     _MODULE_CACHE[key] = entry
     return entry
 
@@ -322,6 +344,7 @@ def create_dsv4_attention_module(
     attn_kind: str,
     tp_size: int,
     device: str = "cuda:0",
+    kv_cache_dtype: str = "fp8",
 ):
     """Build DeepseekV4Attention through TRT-LLM's own config path.
 
@@ -379,7 +402,11 @@ def create_dsv4_attention_module(
             "The framework dispatch contract changed; re-audit against the runtime version."
         )
 
-    _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=True)
+    # The KV quant algo follows the lane: fp8 (Hopper fp8_ds_mla pool) sets kv_cache_quant_algo=FP8 and the
+    # module runs the E4m3 FMHA cubins; bf16 (the only servable SM100 pool, see _serving_kv_cache_dtype)
+    # leaves it unset so the module runs the QkvBfloat16 cubins serving runs — with FP8 pinned here the
+    # sm100 bf16 pool still produced E4m3 kernels (B200 capture 2026-10-04).
+    _apply_gemm_type_quant(model_config, "fp8_block", use_fp8_kv_cache=(kv_cache_dtype == "fp8"))
 
     # Provenance: print the RESOLVED kernel-selection knobs (same auto-build
     # code path default serving takes when the user sets no
@@ -405,12 +432,43 @@ def create_dsv4_attention_module(
         )
     )
 
+    if get_sm_version() == 90:
+        # Serving publishes the requested pool dtype to the attention modules through the
+        # model's extra attrs (pyexecutor/model_loader.py:1934 extra_attrs['kv_cache_dtype']
+        # = kv_cache_config.dtype; read by attention/mla.py:341). On Hopper that is
+        # 'fp8_ds_mla' (see the KvCacheConfig below) and it also switches the DSV4 module
+        # OFF the fused Q-FP8/KV-norm prologue (sparse/deepseek_v4/module.py:470-480
+        # _is_fused_q_fp8_quant_enabled: "fp8_ds_mla does not use the fused Q FP8 path").
+        # Without it the module takes the fused path, hands the footer-scale cache a
+        # strided raw latent and mla_rope_inplace rejects it ("data must be contiguous",
+        # H20 ctx capture 2026-10-01) — a path serving never runs on Hopper.
+        model_config.extra_attrs["kv_cache_dtype"] = "fp8_ds_mla"
+
     aux_stream = torch.cuda.Stream(device=device)
-    attn_module = DeepseekV4Attention(
-        model_config=model_config,
-        layer_idx=0,
-        aux_stream=aux_stream,
-    )
+    import inspect
+
+    _ctor_params = inspect.signature(DeepseekV4Attention.__init__).parameters
+    if "aux_stream_dict" in _ctor_params:
+        # 1.3.0rc29: DeepseekV4Attention takes the model's per-purpose stream dict
+        # (modeling_deepseekv4.py:1371-1376, built by DeepseekV4ForCausalLM :1521-1570),
+        # as collect_mla_module already does for the MLA module.
+        from tensorrt_llm._torch.utils import AuxStreamType
+
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream_dict={
+                AuxStreamType.Attention: aux_stream,
+                AuxStreamType.MoeShared: aux_stream,
+                AuxStreamType.MoeChunkingOverlap: torch.cuda.Stream(device=device),
+            },
+        )
+    else:
+        attn_module = DeepseekV4Attention(
+            model_config=model_config,
+            layer_idx=0,
+            aux_stream=aux_stream,
+        )
 
     # Serving applies QuantConfig.exclude_modules before weight creation
     # (apply_quant_config_exclude_modules, modeling_utils.py @runtime version);
@@ -452,6 +510,7 @@ def create_dsv4_kv_cache_and_metadata(
     is_context: bool,
     prefix_len: int = 0,
     device: str = "cuda:0",
+    kv_cache_dtype_str: str = "fp8",
 ):
     """DSV4 cache manager + attention metadata, following the serving
     construction path with a DIRECT pinned citation on every hand-set field
@@ -474,11 +533,20 @@ def create_dsv4_kv_cache_and_metadata(
       (is_gen: req.prompt_len = token_num - 1; py_prompt_len = prompt_len),
       consumed at model_engine.py:4336
     """
-    from tensorrt_llm._torch.attention_backend.interface import (
-        AttentionRuntimeFeatures,
-        KVCacheParams,
-    )
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+    try:
+        from tensorrt_llm._torch.attention.backends.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.interface import (
+            AttentionRuntimeFeatures,
+            KVCacheParams,
+        )
+    try:
+        from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+    except ModuleNotFoundError:  # < rc29 layout
+        from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 
@@ -537,20 +605,69 @@ def create_dsv4_kv_cache_and_metadata(
     # equivalent byte quota directly (half of currently-free device memory,
     # matching the DSV4 example's free_gpu_memory_fraction=0.5,
     # examples/models/core/deepseek_v4/README.md:148-151 @v1.3.0rc23). A
-    # main-KV-shaped max_tokens cap under-counts on V2 (the byte quota spans
-    # main KV + SWA + compressor/indexer caches) and made large-KV shapes
-    # fail dummy-request allocation ("Request ID not found in IndexMapper",
-    # B200 smoke round 1 2026-08-06).
+    # collector-computed main-KV-shaped byte cap under-counted on V2 (the
+    # byte quota spans main KV + SWA + compressor/indexer caches) and made
+    # large-KV shapes fail dummy-request allocation ("Request ID not found in
+    # IndexMapper", B200 smoke round 1 2026-08-06) — hence the token cap below
+    # is handed to the manager's own arithmetic, never computed here.
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
-    kv_cache_config = KvCacheConfig(
+    # Pool size is a per-case cost, not a measurement input: the manager
+    # physically backs the whole quota at construction (runtime/
+    # kv_cache_manager_v2/_storage_manager.py:248-249 slot counts from the
+    # GPU-tier quota, expand_pool_group :826 @1.3.0rc29) and this collector
+    # builds and tears one down per case. Cap the quota at what this batch
+    # can touch via kv_cache_config.max_tokens — the manager converts it with
+    # its own DSV4 arithmetic (DeepseekV4CacheManager._get_quota_from_max_tokens,
+    # sparse/deepseek_v4/cache_manager.py:926-981 @1.3.0rc29: non-sliding KV +
+    # SWA per token/request + indexer/compress pools + per-type padding) and
+    # takes min(max_gpu_total_bytes, quota_from_max_tokens) (pyexecutor/kv_cache/
+    # kv_cache_manager_v2.py:1384-1398). The envelope is doubled and rounded
+    # to whole pages so dummy-request allocation never sits at the edge; a
+    # pool that is still too small fails allocation loudly (classified),
+    # never silently. The free-memory half stays as the upper bound, matching
+    # the DSV4 example's free_gpu_memory_fraction=0.5.
+    planned_tokens = batch_size * (max(max_seq, request_tokens) + tokens_per_block)
+    planned_tokens = -(-2 * planned_tokens // tokens_per_block) * tokens_per_block
+    # Floor: the pool must stay large enough that inductor emits the SAME
+    # kernels serving runs. footer_scale_kv.dequant_gather (fp8_ds_mla path,
+    # @maybe_compile(dynamic=True)) indexes the whole footer-scale pool; when
+    # that pool extent is < 2**31 bytes inductor generates int32-indexed
+    # triton kernels (xnumel i32), above it int64 — serving pools are tens of
+    # GiB, so serving always runs the int64 variant. H20 calibration
+    # (2026-10-03, DeepSeek-V4-Flash, b64 s128 p2048): quota from 1,048,576
+    # tokens = 11.4 GiB -> i32 (53.9 ms), 1,572,864 tokens = 17.1 GiB -> i64
+    # (45.8 ms); 2M tokens (22.7 GiB on Flash, i64 verified in the same sweep)
+    # sits 1.33x past the threshold, and every other DSV4 geometry carries more
+    # footer bytes per planned token than Flash, so the margin only grows. The
+    # footer row format is fixed (584 B/token), so the threshold is in tokens,
+    # not model geometry. 4M was tried first: on DeepSeek-V4-Pro it reproduced
+    # the campaign's free*0.5 pool size and left 20 GiB for the 262k-295k token
+    # context cells, whose forward allocates a 32 GiB intermediate -> OOM.
+    planned_tokens = max(planned_tokens, _KV_POOL_MIN_TOKENS)
+    kv_cache_kwargs = dict(
         tokens_per_block=tokens_per_block,
         max_gpu_total_bytes=int(free_bytes * 0.5),
+        max_tokens=int(planned_tokens),
         enable_block_reuse=False,
     )
+    if get_sm_version() == 90:
+        # 1.3.0rc29 on Hopper: DeepseekV4CacheManager refuses any pool but the packed
+        # FP8 sparse-MLA cache (attention/backends/sparse/deepseek_v4/cache_manager.py:
+        # 343-349 "DeepSeek-V4 on Hopper requires kv_cache_config.dtype='fp8_ds_mla'"),
+        # the option llm_args.py:4256-4262 documents for SM90/SM120/SM121; serving
+        # deployments on H20 carry kv_cache_config.dtype=fp8_ds_mla (harness targets
+        # customization, matrix pass+custom). Earlier rc KvCacheConfig has no such
+        # literal and used the plain FP8 pool — keep that path for them.
+        try:
+            kv_cache_config = KvCacheConfig(dtype="fp8_ds_mla", **kv_cache_kwargs)
+        except (ValueError, TypeError):
+            kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
+    else:
+        kv_cache_config = KvCacheConfig(**kv_cache_kwargs)
     kv_cache_manager_cls = get_kv_cache_manager_cls(model_config, kv_cache_config)
     # fp8 KV rows -> DataType.FP8, matching serving's kv_cache_dtype
     # resolution from kv_cache_quant_algo (set by _apply_gemm_type_quant).
-    kv_cache_dtype = DataType.FP8
+    kv_cache_dtype = DataType.BF16 if kv_cache_dtype_str == "bf16" else DataType.FP8
 
     # Serving construction site: pyexecutor/_util.py:1843-1867 @1.3.0rc23
     # (is_mla branch): CacheType.SELFKONLY :1846, num_kv_heads=1 :1848,
@@ -709,8 +826,8 @@ def run_dsv4_attn(
 
     if attn_kind not in ATTN_KIND_TO_COMPRESS_RATIO:
         raise ValueError(f"unsupported DSV4 attn_kind: {attn_kind}")
-    if kv_cache_dtype != "fp8":
-        raise ValueError(f"DSV4 module rows are fp8-KV only (got {kv_cache_dtype!r})")
+    if kv_cache_dtype not in ("fp8", "bf16"):
+        raise ValueError(f"DSV4 module rows are fp8-KV or bf16-KV only (got {kv_cache_dtype!r})")
     if compute_dtype != "bfloat16":
         raise ValueError(f"DSV4 module rows are bfloat16-compute only (got {compute_dtype!r})")
     if gemm_type != "fp8_block":
@@ -720,7 +837,7 @@ def run_dsv4_attn(
     torch_device = torch.device(device)
     torch.cuda.set_device(torch_device)
 
-    attn_module, model_config, head_info = _cached_dsv4_attention_module(model_path, attn_kind, tp_size, device)
+    attn_module, model_config, head_info = _cached_dsv4_attention_module(model_path, attn_kind, tp_size, device, kv_cache_dtype)
 
     # Ownership: the KV pool and the process-global extra-attrs slot are
     # released/restored on EVERY exit path (success, dry-run failure,
@@ -738,6 +855,7 @@ def run_dsv4_attn(
             is_context=is_context,
             prefix_len=prefix_len,
             device=device,
+            kv_cache_dtype_str=kv_cache_dtype,
         )
 
         hidden_size = model_config.pretrained_config.hidden_size

@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "gate_name": "mla_ctx_DeepSeek-V3",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_mla_ctx.json",
+ "capture_sha256": "ecd1dee284977dcf",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "fd43089dfc3f",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "81b787d8685e",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa3"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "fa3",
+  "sgl_kernel",
+  "triton_fused_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

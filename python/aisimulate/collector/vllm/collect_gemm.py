@@ -56,7 +56,7 @@ quantized-weight preparation, and selected-kernel reporting.
 # 322-363); NVFP4 still uses CT's factory and records the selected kernel
 # (schemes/compressed_tensors_w4a4_nvfp4.py:29-31,95-141). This adds the
 # exact 0.25.0 release to the existing lane, not 0.25.1/0.26.0/0.27.0.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 from types import SimpleNamespace
 
@@ -129,6 +129,19 @@ def get_gemm_test_cases():
 
 @with_exit_stack
 def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
+    if gemm_type == "fp8_block" and (n % 16 or k % 16):
+        # FIXME(kernel-limit): vLLM routes block-fp8 GEMMs whose weight dims are not multiples
+        # of 16 away from cutlass (_custom_ops.cutlass_scaled_mm: `cutlass_compatible_b =
+        # b.shape[0] % 16 == 0 and b.shape[1] % 16 == 0` @0.30.0:819) into triton_scaled_mm,
+        # whose scale-shape assert cannot take 128x128 block scales (triton_scaled_mm.py:201).
+        # Deterministic per shape: gb200 1,110 cases, every one N in {1,4,8,12,24} (pipeline
+        # 72343556; b200/b300 ~130 of the same shard). The ed9109ec attempt to classify by a
+        # pre-flight forward never ran: create_gemm()'s own dry run asserts first. Refuse before
+        # the layer is built; serving linears with these N take the same path.
+        raise RuntimeError(
+            f"FIXME(kernel-limit): vLLM fp8_block GEMM needs n and k multiples of 16 for cutlass_scaled_mm "
+            f"(n={n}, k={k}); the triton_scaled_mm fallback asserts on 128x128 block scales"
+        )
     setup_distributed(device)
 
     if envs.VLLM_BATCH_INVARIANT:

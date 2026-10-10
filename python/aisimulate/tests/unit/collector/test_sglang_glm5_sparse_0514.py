@@ -61,7 +61,8 @@ def test_glm5_flash_mla_keeps_the_production_topk_width():
 def test_glm5_sparse_collector_is_pinned_to_sglang_0514_dsa_api():
     source = SOURCE_PATH.read_text(encoding="utf-8")
 
-    assert '__compat__ = "sglang==0.5.14"' in source
+    # ported to the 0.5.21 pin on 2026-10-01 (same DSA module API, verified in collector/sglang/runtime_compat.py)
+    assert '__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"' in source
     assert "SGLANG_DSA_FUSE_TOPK" in source
     assert "SGLANG_NSA_FUSE_TOPK" not in source
 

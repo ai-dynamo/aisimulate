@@ -1,0 +1,60 @@
+{
+ "verdict": "aligned",
+ "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "dsv4_hca_ctx_DeepSeek-V4-Flash-FP8",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "fp8",
+ "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_dsv4_hca_ctx@0.30.0.json",
+ "capture_sha256": "b59acad596258d2b",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "0289ef2fc1f7",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "e9ed94fd249a",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "flashinfer_cutlass_fp4",
+  "sgl_kernel",
+  "tilelang",
+  "trtllm_gen_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 2,
+   "matched": 1
+  },
+  "dsa_indexer": {
+   "collector": 1,
+   "serving": 3,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

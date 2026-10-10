@@ -1,0 +1,17 @@
+# Customization retest record for trtllm 1.3.0rc29 on sm89 (L40, 2026-10-04).
+# Active on sm89: the DeepSeek-V4 {tokens_per_block 128, kv fp8_ds_mla} entries (no `sms`, inherited). The ten NVFP4 MoE
+# cells that first needed an sm89-scoped `moe_config.backend=MARLIN` customization are no longer customizations: the
+# generator renders MARLIN itself on l40s for NVFP4 MoE checkpoints (facts/hardware.yaml l40s moe_backend.trtllm.nvfp4,
+# facts/apply.quant_family_of) and the cells were re-probed with that render (matrix: plain pass / fail).
+# Bare evidence for that fact: the first roster probe (render = template default CUTLASS) failed every NVFP4 MoE cell with
+# "no MoE implementation can serve this layer ... CutlassFusedMoE NVFP4 only supports SM100/..."; A/B on an empty L40
+# (facts/ab_trt_moe_sm89): AUTO -> CUTLASS, TRITON SM90-only, DEEPGEMM SM100/103/107-only, VANILLA dies in graph capture,
+# MARLIN boots (raw 1ae319d4353f_MARLIN).
+deepseek-ai/DeepSeek-V4-Flash: still_needed  # not testable on sm89: model init raises "DeepSeek-V4 requires Hopper or newer GPUs, got SM89"; inherited from the sm90 evidence
+deepseek-ai/DeepSeek-V4-Flash-0731: still_needed  # same (Hopper-or-newer floor)
+deepseek-ai/DeepSeek-V4-Pro: still_needed  # same
+deepseek-ai/DeepSeek-V4-Pro-0813: still_needed  # same
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # same
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # same
+sgl-project/DeepSeek-V4-Flash-FP8: still_needed  # same
+sgl-project/DeepSeek-V4-Pro-FP8: still_needed  # same

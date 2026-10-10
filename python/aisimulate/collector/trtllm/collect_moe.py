@@ -26,7 +26,15 @@ import torch
 from tensorrt_llm._torch.autotuner import AutoTuner, autotune
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
-from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.moe.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
@@ -56,6 +64,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from collector.version_resolver import _check_compat
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
@@ -207,7 +216,9 @@ def get_moe_test_cases():
 
             min_latency_mode_options = [False]
 
-            if moe_type == "nvfp4" and get_sm_version() == 100 and common_moe_testcase.num_experts <= 256:
+            if moe_type == "nvfp4" and get_sm_version() in (100, 103) and common_moe_testcase.num_experts <= 256:
+                # SM103 treated as SM100 (owner decision 2026-10-05: "sm103 可以认为等价sm100" —
+                # same capability major, same trtllm-gen kernel family; re-verify on a B300 box).
                 # FIXME: recent version only supports SM100 for min-latency mode.
                 # current support, DS router only support up to 256 experts.
                 # Renormalize router only support <=128 experts. trtllmgen kernels only
@@ -270,6 +281,18 @@ def get_moe_test_cases():
     return test_cases
 
 
+def _declared_moe_routing(model_name: str):
+    """The model row's routing declaration (cases/models/*_cases.yaml
+    model_case_values.moe: sglang_moe_routing_method_type / _num_expert_group /
+    _topk_group / _routed_scaling_factor). Framework-neutral model facts despite
+    the sglang_ prefix: TensorRT-LLM reads the same numbers from the checkpoint
+    config (n_group, topk_group, routed_scaling_factor) when it builds the gate."""
+    for case in get_common_moe_test_cases():
+        if case.model_name == model_name:
+            return case
+    return None
+
+
 def run_moe_torch(
     moe_type,
     num_tokens_lists,
@@ -298,18 +321,37 @@ def run_moe_torch(
         print("MOE Allocated GDRAM:", torch.cuda.memory_allocated(device.index) / 1024**2, "MB")
         print("MOE Reserved GDRAM:", torch.cuda.memory_reserved(device) / 1024**2, "MB")
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
+    # ``dtype`` is the MODEL/activation dtype serving hands to create_moe
+    # (modeling_deepseekv3.py:798 ``dtype=config.torch_dtype`` -> DeepseekV3MoE
+    # -> create_moe(dtype=dtype) @1.3.0rc29; identical at rc23). Quantization
+    # travels in quant_config only. Passing float8 here (pre-rc29 habit) is
+    # rejected by rc29's MoE resolution ("CutlassFusedMoE FP8_BLOCK_SCALES
+    # requires torch.bfloat16, got torch.float8_e4m3fn") and never matched
+    # serving, where activations are bf16 and quantized inside the kernel path.
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
+    # FIXME(kernel-limit): TRT-LLM >= 1.3.0rc29 MoE resolution has no implementation for W4A16 on
+    # SM100/103 ("no MoE implementation can serve this layer ... CutlassFusedMoE: quant_unsupported
+    # (quant_algo=W4A16)", 114/114 int4_wo cases, b200 job 469988228). Serving cannot load the
+    # W4A16 checkpoint either (results/sm100/trtllm-1.3.0rc29.yaml: Kimi-K2.5 fail, finding
+    # sm100_probe_failures_recheck_2026_10_04 (g)). The lane is unreachable on this pin, not a
+    # per-shape failure; refuse before building weights.
+    if (
+        moe_type == "int4_wo"
+        and get_sm_version() in (100, 103)
+        and _check_compat("tensorrt_llm>=1.3.0rc29", _TRTLLM_VERSION)
+    ):
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM int4_wo (W4A16) MoE has no implementation on SM100/103 at "
+            f"{_TRTLLM_VERSION}; serving fails identically (Kimi-K2.5 identity probe)"
+        )
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-        dtype = torch.float8_e4m3fn
     elif moe_type == "w4afp8":
         quant_algo = QuantAlgo.W4A8_AWQ
-        dtype = torch.float8_e4m3fn
     elif moe_type == "fp8":
         quant_algo = QuantAlgo.FP8
-        dtype = torch.float8_e4m3fn
     elif moe_type == "int4_wo":
         quant_algo = QuantAlgo.W4A16
         int4_config = get_moe_quantization_module_config("trtllm", moe_type, model_name=model_name)
@@ -392,7 +434,7 @@ def run_moe_torch(
     # next framework version bump.
     if moe_type == "fp8_block" and (hidden_size % 128 != 0 or (inter_size // moe_tp_size) % 128 != 0):
         raise ValueError(
-            f"fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
+            f"FIXME(kernel-limit): fp8_block MoE requires 128-aligned hidden_size and TP-sharded intermediate "
             f"size (128x128-blocked weight scales; deepgemm layout.hpp:78 on SM90/100/103, "
             f"Triton block-scale on SM120); got hidden_size={hidden_size}, "
             f"inter_size={inter_size} / moe_tp={moe_tp_size} = {inter_size // moe_tp_size}"
@@ -400,7 +442,7 @@ def run_moe_torch(
 
     if moe_type == "w4afp8" and (inter_size // moe_tp_size) % 128 != 0:
         raise ValueError(
-            f"w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
+            f"FIXME(kernel-limit): w4afp8 MoE requires a 128-aligned TP-sharded intermediate size (grouped-GEMM "
             f"k alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"
         )
@@ -426,7 +468,7 @@ def run_moe_torch(
     native_mxfp4_padding = moe_type in _MXFP4_MOE_TYPES and 100 <= sm_version < 120
     if not native_mxfp4_padding and (inter_size // moe_tp_size) % (256 // _weight_bits) != 0:
         raise ValueError(
-            f"TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
+            f"FIXME(kernel-limit): TRT-LLM fused MoE requires the TP-sharded intermediate size to be a multiple "
             f"of 256/weight_bits = {256 // _weight_bits} for {moe_type} (TLLM_CHECK_WITH_INFO "
             f"weight-layout alignment); got inter_size={inter_size} / moe_tp={moe_tp_size} = "
             f"{inter_size // moe_tp_size}"
@@ -505,14 +547,38 @@ def run_moe_torch(
         ).routing_method
         router_logits_dtype = torch.float32
     else:
-        # for low latency mode in fp4, experts > 128 is not supported.
-        # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
-        # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
-        if is_gpt_oss:
+        declared = _declared_moe_routing(model_name)
+        if declared is not None and declared.sglang_moe_routing_method_type == "DeepSeekV3":
+            # Serving routes DeepSeek-V3-family / GLM / Nemotron-H MoE through
+            # DeepseekV3Gate.routing_method (noaux_tc, grouped top-k with the
+            # e_score_correction_bias; Deepseekv3RoutingImpl is_fused=True ->
+            # deepseek_v3_topk_kernel) built from the checkpoint's n_group /
+            # topk_group / routed_scaling_factor and the resolved moe_backend —
+            # modeling_deepseekv3.py:979-990, modeling_glm.py:273-285,
+            # modeling_nemotron_h.py:236 @1.3.0rc29. RenormalizeMoeRoutingMethod
+            # (customMoeRoutingKernel) is the softmax-top-k family (Qwen3-MoE,
+            # Mixtral, ...), and running it for DeepSeek-V3 diverged the
+            # moe_fp8block gate on H20 (2026-10-01). The router GEMM that feeds the
+            # gate (dsv3_router_gemm_op) stays outside this op, as before.
+            routing_method = DeepseekV3Gate(
+                hidden_size,
+                num_experts,
+                top_k=topk,
+                n_group=int(declared.sglang_moe_num_expert_group or 1),
+                topk_group=int(declared.sglang_moe_topk_group or 1),
+                routed_scaling_factor=float(declared.sglang_moe_routed_scaling_factor or 1.0),
+                dtype=dtype,
+                moe_backend=model_config.moe_backend,
+            ).routing_method
+            router_logits_dtype = torch.float32
+        elif is_gpt_oss:
+            # Native GPT-OSS uses BF16 routing weights for TRTLLM, FP32 otherwise:
+            # modeling_gpt_oss.py:159-162@1.3.0rc14 (93cb6518), :165-168@1.3.0rc20.
             routing_method = RenormalizeMoeRoutingMethod(
                 topk, output_dtype=torch.bfloat16 if model_config.moe_backend == "trtllm" else torch.float32
             )
         else:
+            # softmax top-k renormalized routing (fused custom routing kernel).
             routing_method = RenormalizeMoeRoutingMethod(topk)
 
     create_moe_kwargs = {
@@ -726,7 +792,13 @@ def run_moe_torch(
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":
         try:
-            from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+            try:
+                from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+            except ModuleNotFoundError:  # < rc29 layout
+                try:
+                    from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+                except ModuleNotFoundError:  # < rc29 layout
+                    from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 
             DeepGemmFusedMoE.buffers.buffers.clear()
         except (ImportError, AttributeError):

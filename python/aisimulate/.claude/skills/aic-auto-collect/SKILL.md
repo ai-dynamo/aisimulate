@@ -239,6 +239,37 @@ python3 collector/collect.py --backend <backend> --ops <op> \
   --checkpoint-dir "$COLLECTOR_CHECKPOINT_DIR/<backend>/<version>/<op>" --resume
 ```
 
+### Campaign mode (full plan, several GPUs) — use the checked-in launcher, do not hand-roll one
+
+Once an op's smoke/limited runs are clean, run the full retained plan through
+`tools/perf_database/collect_campaign.py`. It fixes the parameters that every
+hand-written launcher has drifted on (sm120 campaign 2026-09-30: `--keep-csv`
+skipped finalize for 13 shards; the official image lacked pyarrow):
+
+```bash
+# 1. image = the framework_manifest pin for (backend, op) + the finalize deps (pyarrow, pandas)
+python3 tools/perf_database/collect_campaign.py build-image --backend <backend> --op <op> [--build-arg http_proxy=...]
+# 2. declare the shards once (YAML: backend, sm, shards[{op, name, case_filter}]) — one shard = one
+#    output/checkpoint namespace <root>/<op>/<shard>/; case_filter is collect.py's substring filter
+# 3. run the GPU pool; re-run the same command after any interruption (DONE shards skip, others --resume)
+python3 tools/perf_database/collect_campaign.py run      --plan shards.yaml --root <ws>/collect --gpus 0,1,2,3
+python3 tools/perf_database/collect_campaign.py status   --plan shards.yaml --root <ws>/collect
+# 4. shards that were produced by hand with --keep-csv have no parquet: finalize them (resume-only re-entry)
+python3 tools/perf_database/collect_campaign.py finalize --plan shards.yaml --root <ws>/collect --gpus 0
+```
+
+Parameter rules the tool enforces (and that apply to any manual `collect.py` run too):
+
+- `--resume` always, `--keep-csv` never for data you intend to deliver: `--keep-csv` means
+  "keep CSV *instead of* finalizing" — no parquet, no `collection_meta.yaml`, no provenance.
+  Its only use is inspecting raw staging rows.
+- `--sm <sm>` explicit on every run (never rely on auto-detect inside a container).
+- Never point two concurrent runs at one cwd: staging files are named per table
+  (`gemm_perf.txt`) and would interleave. Shards of one op are merged at delivery
+  (playbook §8), not by sharing a directory.
+- The image is the manifest pin for the op (family pins can differ per op) — a
+  hand-typed tag is a review finding.
+
 Use a separate log directory per op when iterating:
 
 ```bash

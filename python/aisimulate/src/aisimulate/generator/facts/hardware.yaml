@@ -102,11 +102,19 @@ profiles:
       # src/aisimulate_core/systems/data/b200_sxm/moe/trtllm/
       # <version>/wideep_moe_perf.parquet data collected,
       # and cli/exps/deepseek_wideep_trtllm.yaml (gb200/b200 wideep configs).
-      trtllm: WIDEEP
+      # trtllm: WIDEEP   (disabled, see note below)
       # SGLang: deepep_moe is the default wideep-compatible MoE runner on Blackwell.
       # Source: cli/main.py _sglang_moe_backend_override and
       # cli/exps/deepseek_disagg_sglang.yaml.
-      sglang: deepep_moe
+      # sglang: deepep_moe   (disabled, see note below)
+      # 2026-10-04 (B200 probe, PR #228 sm100 round): NOT filled on Blackwell.
+      # `WIDEEP` is a TRT-LLM 1.0-era MoeConfig.backend literal; 1.3.0rc29 rejects it
+      # (pydantic literal_error) and sglang 0.5.21 rejects `--moe-runner-backend deepep_moe`
+      # (argparse invalid choice) — 156 trtllm + 150 sglang MoE renders failed to boot.
+      # Wide-EP is an EP-size/load-balancer deployment choice, not a per-layer MoE kernel
+      # backend; single-node MoE on sm100 boots and picks working kernels under the
+      # framework's AUTO (A/B: explicit CUTLASS fails DeepSeek FP8_BLOCK_SCALES on SM100).
+      # See collector/opharness/results/findings.yaml sm100_moe_backend_fact_rejected_2026_10_04.
 
   # ---------------------------------------------------------------------------
   # GB200 NVL72  —  Blackwell  sm100,  arm64 Grace-Blackwell
@@ -155,11 +163,19 @@ profiles:
       # (all gb200_wideep_* experiments),
       # src/aisimulate_core/systems/data/gb200/moe/trtllm/
       # <version>/wideep_moe_perf.parquet
-      trtllm: WIDEEP
+      # trtllm: WIDEEP   (disabled, see note below)
       # SGLang: deepep_moe for the wideep DeepEP path on GB200 NVLink fabric.
       # Source: cli/main.py _sglang_moe_backend_override and
       # cli/exps/deepseek_disagg_sglang.yaml.
-      sglang: deepep_moe
+      # sglang: deepep_moe   (disabled, see note below)
+      # 2026-10-04 (B200 probe, PR #228 sm100 round): NOT filled on Blackwell.
+      # `WIDEEP` is a TRT-LLM 1.0-era MoeConfig.backend literal; 1.3.0rc29 rejects it
+      # (pydantic literal_error) and sglang 0.5.21 rejects `--moe-runner-backend deepep_moe`
+      # (argparse invalid choice) — 156 trtllm + 150 sglang MoE renders failed to boot.
+      # Wide-EP is an EP-size/load-balancer deployment choice, not a per-layer MoE kernel
+      # backend; single-node MoE on sm100 boots and picks working kernels under the
+      # framework's AUTO (A/B: explicit CUTLASS fails DeepSeek FP8_BLOCK_SCALES on SM100).
+      # See collector/opharness/results/findings.yaml sm100_moe_backend_fact_rejected_2026_10_04.
 
   # ---------------------------------------------------------------------------
   # Intel Arc Pro B60  —  XPU
@@ -190,3 +206,76 @@ profiles:
         effect: NoSchedule
     moe_backend:
       trtllm: CUTLASS
+
+  # ---------------------------------------------------------------------------
+  # RTX PRO Blackwell (PCIe, 8-GPU hosts)  —  sm120
+  # Keyed by SM: the SDK carries several RTX PRO systems with the same hardware
+  # facts (rtx_pro_6000_server today; the RTX PRO 5000 campaign box will follow).
+  # Before this profile existed, resolve_facts() raised for every RTX render and
+  # the generator pipeline swallowed it, so NO model default (block-size,
+  # trust-remote-code, autotune flags) reached sm120 engine args
+  # (collector/opharness/results/findings.yaml:
+  #  rtx_systems_have_no_generator_facts_hardware_profile, 2026-10-01).
+  # ---------------------------------------------------------------------------
+  sm120:
+    node_selector:
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200);
+      # device string observed in systems/data/rtx_pro_6000_server/*/*_perf.parquet
+      # `device`: "NVIDIA RTX PRO 6000 Blackwell Server Edition".
+      nvidia.com/gpu.product: NVIDIA-RTX-PRO-6000-Blackwell-Server-Edition
+    arch: x86_64
+    # nccl_env: intentionally none. NCCL_CUMEM_ENABLE is unverified on sm120 and is
+    # not asserted. The sm120 campaign host routes cross-socket ring hops over
+    # NET/Socket by default (PCIe-only, two NUMA domains); the right interface
+    # setting is deployment-specific, not a hardware fact.
+    shared_memory:
+      # vLLM TP8 serving of GLM-5.2-NVFP4 on the 8x RTX PRO 5000 host ran with
+      # --shm-size 32g (2026-10-01, op-path vs forward-pass alignment run).
+      default: 32Gi
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # moe_backend: intentionally unset. trtllm WIDEEP needs the sm100 wide-EP
+    # fabric (PCIe sm120 has none; the typed builder defaults to CUTLASS when
+    # unset) and sglang deepep_moe is a wide-EP selection. vLLM picks its MoE
+    # backend from MODEL defaults (observed on sm120: FLASHINFER_CUTLASS NvFp4).
+
+  # ---------------------------------------------------------------------------
+  # L40S  —  Ada  sm89  (SDK system `l40s`)
+  # Product-keyed like h100 / h200 / h20 (the SM-keyed sm120 profile exists because several
+  # RTX PRO products share one set of facts; Ada does not — an L4 host would carry a
+  # different node_selector, so it gets its own profile when a campaign needs it).
+  # Before this profile existed resolve_facts() raised "Unknown hardware profile l40s" for
+  # every l40s render and the generator pipeline swallowed it ("Fact resolution failed;
+  # continuing without facts."), so no MODEL default (block-size, trust-remote-code,
+  # autotune flags) reached the engine args — the failure first found on sm120
+  # (findings: rtx_systems_have_no_generator_facts_hardware_profile; sm89 campaign 2026-10-04).
+  # ---------------------------------------------------------------------------
+  l40s:
+    node_selector:
+      # GPU product label pattern NVIDIA-${name// /-} (same derivation as b200); the SDK's
+      # l40s perf data carries device "NVIDIA L40S". (The 2026-10-04 opharness campaign box
+      # was an 8x L40 — same AD102 die, lower TDP — which the system id does not cover.)
+      nvidia.com/gpu.product: NVIDIA-L40S
+    arch: x86_64
+    # nccl_env: intentionally none (PCIe-only host, no NVLink; nothing verified to assert).
+    shared_memory:
+      # Not measured: every opharness probe on the L40 box (tp1 and tp4) ran with --shm-size 16g;
+      # 32Gi mirrors the other PCIe 8-GPU profile (sm120) as a conservative deployment default.
+      default: 32Gi
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    # moe_backend: keyed by the artifact's quantization family (facts/apply.quant_family_of) because
+    # one hardware-wide value cannot be right on Ada: trtllm 1.3.0rc29 serves NVFP4 MoE only through
+    # MARLIN (weight-only; A/B on an L40: AUTO resolves to CUTLASS, which refuses NVFP4 below SM100,
+    # TRITON is SM90-only, DEEPGEMM needs SM100/103/107, VANILLA dies in CUDA-graph capture), while
+    # MARLIN rejects bf16 / fp8 MoE layers that CUTLASS serves. FP8-block and MXFP4 MoE have no
+    # implementation on SM89 at all, so no key is given for them (the template default CUTLASS
+    # fails exactly as every alternative does). No wide-EP fabric on PCIe Ada: no WIDEEP /
+    # deepep_moe. Evidence: opharness findings sm89_trtllm_rc29_probe_2026_10_04.
+    moe_backend:
+      trtllm:
+        nvfp4: MARLIN

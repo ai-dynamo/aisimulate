@@ -1,0 +1,53 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-R1",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "mla_ctx_fp8_DeepSeek-R1",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "fp8",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|gemvx|cutlass|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_mla_ctx_fp8@0.30.0.json",
+ "capture_sha256": "fc642723cde7cf29",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "9a89d6f9d87b",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "4bfd32ea662a",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "deepgemm",
+  "fa_cute_sm100",
+  "sgl_kernel",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "deepgemm",
+  "fa_cute_sm100",
+  "sgl_kernel",
+  "trtllm_gen_moe",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

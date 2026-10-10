@@ -58,6 +58,87 @@ def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value
         move(module, "cpu")
 
 
+class _Rotary:
+    """Stand-in for vLLM's RotaryEmbeddingBase: a non-persistent cos/sin table built by a
+    device-free recipe in __init__ (rotary_embedding/base.py:60-63 @ v0.30.0)."""
+
+    def __new__(cls, torch, scale, dtype):
+        class Rotary(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.scale = scale
+                self.register_buffer("cos_sin_cache", self._compute_cos_sin_cache().to(dtype), persistent=False)
+
+            def _compute_cos_sin_cache(self):
+                return torch.arange(6, dtype=torch.float32).reshape(3, 2) * self.scale
+
+        return Rotary()
+
+
+def _meta_attention_module(torch):
+    # Serving-parity construction instantiates the model under torch.device("meta"): the
+    # two rotary tables (rotary_emb, indexer_rope_emb) and the KV-quant scale buffers that
+    # MLAAttention registers (attention.py:129-135,184 @ v0.30.0) are all meta.
+    with torch.device("meta"):
+        module = torch.nn.Module()
+        module.projection = torch.nn.Linear(4, 4)
+        module.rotary_emb = _Rotary(torch, 1.0, torch.bfloat16)
+        module.indexer_rope_emb = _Rotary(torch, 0.5, torch.float32)
+        module.mla_attn = torch.nn.Module()
+        for scale in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+            module.mla_attn.register_buffer(scale, torch.tensor(1.0, dtype=torch.float32))
+        module.mla_attn._k_scale_cpu = torch.tensor(1.0, dtype=torch.float32)
+        module.mla_attn._v_scale_cpu = torch.tensor(1.0, dtype=torch.float32)
+    return module
+
+
+def test_materialization_rebuilds_meta_rotary_tables_and_quant_scales_from_the_owner_recipe(torch):
+    module = _meta_attention_module(torch)
+    assert module.rotary_emb.cos_sin_cache.is_meta and module.mla_attn._k_scale.is_meta
+
+    move = _load_function("_move_module_preserving_buffers", torch)
+    moved = move(module, "cpu")
+
+    recipe = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    assert moved is module
+    assert not moved.projection.weight.is_meta
+    assert moved.rotary_emb.cos_sin_cache.dtype == torch.bfloat16
+    assert torch.equal(moved.rotary_emb.cos_sin_cache, recipe.to(torch.bfloat16))
+    assert moved.indexer_rope_emb.cos_sin_cache.dtype == torch.float32
+    assert torch.equal(moved.indexer_rope_emb.cos_sin_cache, recipe * 0.5)
+    assert "rotary_emb.cos_sin_cache" not in moved.state_dict()
+    for scale in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+        tensor = getattr(moved.mla_attn, scale)
+        assert not tensor.is_meta and tensor.dtype == torch.float32 and tensor.item() == 1.0
+        assert f"mla_attn.{scale}" in moved.state_dict()
+    assert moved.mla_attn._k_scale_cpu.device.type == "cpu" and moved.mla_attn._k_scale_cpu.item() == 1.0
+    assert moved.mla_attn._v_scale_cpu.item() == 1.0
+
+
+def test_materialization_handles_a_rotary_shared_between_attention_and_indexer(torch):
+    # get_rope() caches instances per argument tuple, so both names can hold one module.
+    with torch.device("meta"):
+        module = torch.nn.Module()
+        module.projection = torch.nn.Linear(4, 4)
+        shared = _Rotary(torch, 2.0, torch.bfloat16)
+        module.rotary_emb = shared
+        module.indexer_rope_emb = shared
+    move = _load_function("_move_module_preserving_buffers", torch)
+    moved = move(module, "cpu")
+    recipe = (torch.arange(6, dtype=torch.float32).reshape(3, 2) * 2.0).to(torch.bfloat16)
+    assert moved.rotary_emb is moved.indexer_rope_emb
+    assert torch.equal(moved.indexer_rope_emb.cos_sin_cache, recipe)
+
+
+def test_materialization_refuses_a_meta_buffer_whose_owner_has_no_recipe(torch):
+    module = _meta_attention_module(torch)
+    with torch.device("meta"):
+        module.register_buffer("block_table_cache", torch.zeros(4), persistent=False)
+    move = _load_function("_move_module_preserving_buffers", torch)
+    with pytest.raises(RuntimeError, match="uninitialized meta buffer.*block_table_cache"):
+        move(module, "cpu")
+
+
 @pytest.mark.parametrize("dtype_name", ["float8_e4m3fn", "float8_e5m2"])
 def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_or_rng(dtype_name, torch):
     def make_module():
@@ -179,9 +260,15 @@ def test_nvfp4_config_preserves_native_modelopt_without_projection_exclusions(mo
     }
 
 
-def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
+def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False, w4a16=False):
+    # vLLM 0.30: ModelOptLinearMethod carries a (weight, activation) QuantSpec and a
+    # CkptCtx; NVFP4 is recognized by spec.weight == kNvfp4Static, W4A16 has no
+    # activation scheme and therefore no input_scale (modelopt.py:1913-2028,2448-2476).
+    nvfp4_static = object()
+
     class NativeMethod:
-        quant_config = SimpleNamespace(group_size=16)
+        spec = SimpleNamespace(weight=nvfp4_static, activation=None if w4a16 else object())
+        ctx = SimpleNamespace(group_size=16)
 
     calls = []
 
@@ -207,16 +294,19 @@ def _nvfp4_fixture(monkeypatch, torch, *, invalid_scales=False):
     )
     monkeypatch.setitem(
         sys.modules,
-        "vllm.model_executor.layers.quantization.modelopt",
-        SimpleNamespace(ModelOptNvFp4LinearMethod=NativeMethod),
+        "vllm.model_executor.layers.quantization.utils.quant_utils",
+        SimpleNamespace(kNvfp4Static=nvfp4_static),
     )
     module = torch.nn.Module()
     layer = module.projection = torch.nn.Module()
     layer.quant_method = NativeMethod()
     layer.weight = torch.nn.Parameter(torch.zeros(1025, 512, dtype=torch.uint8), requires_grad=False)
-    layer.weight_scale = torch.nn.Parameter(torch.zeros(1025, 64, dtype=torch.float8_e4m3fn), requires_grad=False)
+    layer.weight_scale = torch.nn.Parameter(
+        torch.full((1025, 64), float("nan")).to(torch.float8_e4m3fn), requires_grad=False
+    )
     layer.weight_scale_2 = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
-    layer.input_scale = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
+    if not w4a16:
+        layer.input_scale = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
     module.other_weight = torch.nn.Parameter(torch.full((2, 2), 17.0), requires_grad=False)
     module.register_buffer("rotary", torch.tensor([0.3, 0.7]), persistent=False)
     return module, calls
@@ -257,3 +347,14 @@ def test_nvfp4_cannot_be_claimed_without_a_native_nvfp4_projection(monkeypatch, 
     module.projection.quant_method = object()
     with pytest.raises(RuntimeError, match="no native ModelOpt NVFP4 linear"):
         _load_function("_initialize_nvfp4_parameters", torch)(module)
+
+
+def test_nvfp4_w4a16_projection_is_populated_without_an_input_scale(monkeypatch, torch):
+    module, calls = _nvfp4_fixture(monkeypatch, torch, w4a16=True)
+    _load_function("_initialize_nvfp4_parameters", torch)(module)
+    layer = module.projection
+    assert not hasattr(layer, "input_scale")
+    assert [v.shape[0] for v, _ in calls] == [1024, 1]
+    assert torch.all(layer.weight == 0x12)
+    assert not torch.isnan(layer.weight_scale.float()).any()
+    assert torch.unique(layer.weight_scale_2).numel() == 1 and torch.all(layer.weight_scale_2 > 0)

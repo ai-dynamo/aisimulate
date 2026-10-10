@@ -1,0 +1,10 @@
+# Customization retest record for vllm 0.30.0 on sm89 (L40, 8x46 GiB probe box, 2026-10-04).
+# Verdict per repo: still_needed | dropped. Evidence: the harness customized probe (matrix cell pass+custom) vs the fp8-KV
+# variant of the same run, which carries the bare render's kv resolution (modelopt NVFP4 MLA -> fp8 KV).
+# Customizations active on sm89: Nemotron-H-56B (all SMs) + the four `sms: [sm120, sm89]` NVFP4 MLA entries. The sm120-only
+# Nemotron-3-Ultra entries are not active here (those cells fail on capacity before the mamba profile run matters).
+nvidia/Nemotron-H-56B-Base-8K: still_needed  # the cell fails on capacity with the customization too (mamba profile run asks 8 GiB with 3.5 GiB free on 44 GiB at gpu-memory-utilization 0.6); the bare 0.9 default is strictly worse, so the knob is not droppable; the cell stays a capacity fail on 46 GiB
+nvidia/DeepSeek-V3.1-NVFP4: still_needed  # fp8-KV variant fails TRITON_MLA smem 102400 > 101376 (raw 62d67a109598); --kv-cache-dtype bfloat16 boots (raw 6da3d656dea1); same failure and fix as sm120
+nvidia/Kimi-K2.5-NVFP4: still_needed  # fp8-KV variant smem failure (raw 0f3f22936055); bf16 KV boots (raw ee9f7f075eb4)
+nvidia/Kimi-K2.6-NVFP4: still_needed  # fp8-KV variant smem failure (raw a8c332a2e110); bf16 KV boots (raw dc45ccaead4c)
+nvidia/Kimi-K2.7-Code-NVFP4: still_needed  # fp8-KV variant smem failure (raw 40dfef8d27c5); bf16 KV boots (raw 3924e9cb23ea)

@@ -75,7 +75,7 @@ def test_externally_evaluated_engine_limits_are_preserved(backend: str, rule: st
 def test_default_vllm_rules_still_resize_unpinned_requests():
     result = apply_rule_plugins(_params(preserve=False), "vllm")
 
-    assert result["params"]["prefill"]["max_num_tokens"] == 1628
+    assert result["params"]["prefill"]["max_num_tokens"] == 1664  # 128 + 1500 = 1628, aligned up to 64
     assert result["params"]["decode"]["max_batch_size"] == 512
     assert result["params"]["decode"]["max_num_tokens"] == 512
 

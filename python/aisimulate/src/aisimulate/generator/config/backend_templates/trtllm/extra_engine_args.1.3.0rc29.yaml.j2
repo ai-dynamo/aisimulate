@@ -1,0 +1,84 @@
+{#
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+TRT-LLM >= 1.3.0rc29: copy of the rc23 template plus sparse_attention_config.algorithm
+(MiniMax-M3 requires algorithm=minimax_m3 to build its KV-cache manager; op-probe harness
+A/B 2026-10-01, facts/upgrade_rc29/ab_m3). Prior templates untouched.
+-#}
+backend: pytorch
+
+{% if is_moe is defined %}  # is_moe from sdk
+moe_expert_parallel_size: {{ moe_expert_parallel_size }}
+moe_tensor_parallel_size: {{ moe_tensor_parallel_size }}
+
+moe_config:
+{# moe_config.backend (facts / --generator-set params.agg.moe_config.backend) wins; the generic `moe_backend` param
+   (backend_config_mapping.yaml, the sglang --moe-runner-backend spelling) used to be silently dropped for trtllm —
+   it now feeds the same field, upper-cased to the TRT-LLM enum. #}
+    backend: {{ moe_config.backend | default((moe_backend | upper) if moe_backend is defined and moe_backend else 'CUTLASS') }} # MOE backend to use (CUTLASS, CUTEDSL, WIDEEP, TRTLLM, VANILLA, MARLIN, ...)
+    {% if moe_config.load_balancer is defined %}  # Configuration for MoE load balancing
+    load_balancer: {{ moe_config.load_balancer }} # moe load balancer
+    {% endif %}
+{% endif %}
+
+tensor_parallel_size: {{ tensor_parallel_size }}
+pipeline_parallel_size: {{ pipeline_parallel_size }}
+enable_attention_dp: {{ enable_attention_dp | default(false) }}
+enable_chunked_prefill: {{ enable_chunked_prefill | default(false) }}
+
+{% set _max_seq_len = max_seq_len | default(none) %}
+
+max_batch_size: {{ max_batch_size }}
+max_num_tokens: {{ max_num_tokens }}
+{% if _max_seq_len is not none and _max_seq_len != '' %}
+max_seq_len: {{ _max_seq_len }}
+{% endif %}
+
+kv_cache_config:
+  {% if kv_cache_config.free_gpu_memory_fraction is defined %}
+  free_gpu_memory_fraction: {{ kv_cache_config.free_gpu_memory_fraction }}  # Fraction of GPU memory usable for KV-cache
+  {% elif kv_cache_config.max_tokens is not defined %}
+  free_gpu_memory_fraction: 0.80  # Fraction of GPU memory usable for KV-cache
+  {% endif %}
+  {% if kv_cache_config.max_tokens is defined %}
+  max_tokens: {{ kv_cache_config.max_tokens }}
+  {% endif %}
+  dtype: {{ kv_cache_config.dtype | default('auto') }}
+  {% if kv_cache_config.tokens_per_block is defined %}
+  tokens_per_block: {{ kv_cache_config.tokens_per_block }}
+  {% endif %}
+  enable_block_reuse: {{ kv_cache_config.enable_block_reuse | default(false) }}
+
+{% if cache_transceiver_config.max_tokens_in_buffer is defined %}
+cache_transceiver_config:
+  backend: {{ cache_transceiver_config.backend | default('DEFAULT') }} # The communication backend type to use for the cache transceiver ("DEFAULT","UCX","NIXL","MPI")
+  max_tokens_in_buffer: {{ cache_transceiver_config.max_tokens_in_buffer }}
+{% endif %}
+
+cuda_graph_config:
+  enable_padding: {{ cuda_graph_config.enable_padding | default(false) }} # Pad CUDA graph
+  batch_sizes: [{% for s in cuda_graph_config.batch_sizes
+                               | default([1,2,4,8,16,32,64,128,256]) -%}
+                    {{- s }}{{ ',' if not loop.last else '' }} {%- endfor %}]
+
+disable_overlap_scheduler: {{ disable_overlap_scheduler | default(true) }}
+print_iter_log: {{ print_iter_log | default(false) }}
+
+{% if speculative_config.decoding_type is defined %}  # speculative decoding
+speculative_config:
+  decoding_type: {{ speculative_config.decoding_type }}
+  {% if speculative_config.decoding_type == 'MTP' and speculative_config.num_nextn_predict_layers is defined %}
+  num_nextn_predict_layers: {{ speculative_config.num_nextn_predict_layers }}
+  {% endif %}
+{% endif %}
+
+{% if msa_sparse_algorithm is defined or msa_sparse_implementation is defined %}  # MiniMax-M3 MSA
+sparse_attention_config:
+{% if msa_sparse_algorithm is defined %}
+  algorithm: {{ msa_sparse_algorithm }}  # required by rc29+ (modeling_minimaxm3.py:337) on every SM
+{% endif %}
+{% if msa_sparse_implementation is defined %}
+  implementation: {{ msa_sparse_implementation }}  # SM100-family: run the fmha_sm100 path the perf data represents
+{% endif %}
+{% endif %}

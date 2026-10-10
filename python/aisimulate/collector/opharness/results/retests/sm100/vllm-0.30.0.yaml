@@ -1,0 +1,8 @@
+# Customization retest record — vllm 0.30.0 on B200 / sm100 (campaign 2026-10-03, head d8d9aafb).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B on a verified-empty B200 (178.39 GiB) from
+# the 2026-09-29 B200 campaign on the same vllm pin (umb-b200-238, facts/ab_nemoh_bare/probe_bare.json): the
+# rendered default without --gpu-memory-utilization 0.6 OOMs in the profile run ("Tried to allocate 8.00 GiB …
+# 6.15 GiB is free"), the _state_passing_fwd class of the SM90 fact; the customized run passes (pass+custom here).
+# Not re-run on this box (all 8 GPUs committed to identity + collection in the 4h window) — same image digest,
+# same rendered budget (6016), same hardware; re-A/B on the next idle GPU if the owner wants same-box evidence.
+nvidia/Nemotron-H-56B-Base-8K: still_needed

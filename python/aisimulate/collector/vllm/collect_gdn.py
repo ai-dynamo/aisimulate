@@ -60,7 +60,7 @@ Input/output projection GEMMs remain covered by the GEMM collector.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm>=0.24.0,<=0.30.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 import gc
 import os
@@ -369,6 +369,9 @@ def run_gdn_context_benchmark(
             # present and source-unchanged, so the claim is not dangling, but
             # the bug reproduction itself is unconfirmed at this version.
             # Re-verify on the next vLLM bump or the first 0.27.1 GPU run.
+            # RE-VERIFIED on hardware at 0.30.0, SM89 (L40, 2026-10-04, clean GPU, container per op): a 40-case --shuffle sample of
+            # the gdn op failed 21 tasks, 17 of them CUDA faults (9 illegal memory access + 8 SIGABRT) in this same chunked prefill
+            # at the large-token sub-points, 3 the grid-y limit below, 1 capacity OOM — the family is unchanged from 0.24.0.
             def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _state=gdn_state):
                 chunk_gdn(
                     q=_q,

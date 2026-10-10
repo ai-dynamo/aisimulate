@@ -22,7 +22,8 @@ Usage:
         python collect_mla_module.py --mode generation --attn-type mla
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import argparse
 import gc
@@ -44,6 +45,8 @@ import types
 from importlib.metadata import version as get_version
 
 import torch
+
+from collector.sglang.runtime_compat import resolved_arg  # 0.5.21: derived server args live behind the resolving view
 
 try:
     from helper import benchmark_with_power, get_sm_version, log_perf
@@ -186,8 +189,8 @@ def _is_glm5_dsa_model(model_id: str) -> bool:
 
 
 # Set by run_mla_module() at the start of each benchmark subprocess from its
-# skip_indexer arg (threaded down from run_mla_module_worker, which derives it
-# from the op's perf_filename). Process-local: each subprocess runs exactly one
+# skip_indexer arg (threaded down from run_mla_module_worker, which receives it
+# from the registry entry's run_kwargs). Process-local: each subprocess runs exactly one
 # run_mla_module, so this is never shared across cases. Replaces the old
 # AIC_DSA_SKIP_INDEXER env that previously crossed the subprocess boundary.
 _SKIP_INDEXER_PASS = False
@@ -218,7 +221,7 @@ def _generation_cuda_graph_enabled_for_tokens(model_runner, num_tokens: int) -> 
     that coverage using sglang's own settings -- no AIC env override -- so the
     decode benchmark uses graph timing exactly where serve would.
     """
-    decode_config = model_runner.server_args.cuda_graph_config.decode
+    decode_config = resolved_arg(model_runner.server_args, "cuda_graph_config").decode
     if decode_config.backend == "disabled":
         return False
     capture_bs = decode_config.bs
@@ -788,7 +791,7 @@ def get_dsa_context_module_skip_indexer_test_cases():
     patched out (GLM-5.2 index_topk_freq>1 reuse layers).
 
     Same shapes as the full context module — the skip behaviour is applied in
-    the subprocess (run_func detects the skip_indexer perf_filename). Only emit
+    the subprocess (the registry binds skip_indexer=True via run_kwargs). Only emit
     cases for models that actually share the index across layers
     (index_topk_freq > 1); for freq==1 models the skip layer == full layer, so
     a separate file would just duplicate dsa_context_module.
@@ -1140,9 +1143,6 @@ def load_model_runner(
         server_args.json_model_override_args = json.dumps(override_args)
 
     _set_envs_and_config(server_args)
-    initialize_moe_config(server_args)
-    initialize_fp8_gemm_config(server_args)
-    initialize_fp4_gemm_config(server_args)
 
     nccl_port = 29500 + random.randint(0, 10000) + gpu_id * 100
 
@@ -1164,18 +1164,18 @@ def load_model_runner(
     if native_quant == "fp8_block":
         _ensure_fp8_block_quant_config(model_config.hf_config)
 
+    # parallel geometry / config publish / distributed bootstrap: one helper per sglang generation
+    from collector.sglang.runtime_compat import init_runtime_config
+
+    _runner_parallel_kwargs = init_runtime_config(server_args, gpu_id, nccl_port=nccl_port, model_config=model_config,
+                                                  tp_rank=gpu_id, tp_size=server_args.tp_size)
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=gpu_id,
-        tp_size=server_args.tp_size,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
         nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
     model_runner.alloc_memory_pool()
@@ -1380,7 +1380,10 @@ def _run_prefill(
     from array import array
 
     is_wideep_mla = attn_type == "mla" and not ordinary_mla
-    from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
+    try:  # sglang>=0.5.21: layers/layer_boundary/adapters/attention.py:45,167
+        from sglang.srt.layers.layer_boundary.adapters.attention import AttentionInputs, get_attn_tp_context
+    except ImportError:
+        from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache
@@ -1411,7 +1414,15 @@ def _run_prefill(
             req.prefix_indices = prefix_indices[i]
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = full_length
-            req.set_extend_input_len(seq_length if prefix_len else full_length)
+            # sglang 0.5.16 replaced Req.set_extend_input_len(n) with
+            # set_extend_range(start, end) (schedule_batch.py:1153: the extend
+            # window is the last n of fill_len tokens); keep the old call on
+            # pins that still have it.
+            _n = seq_length if prefix_len else full_length
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(_n)
+            else:
+                req.set_extend_range(full_length - _n, full_length)
             req.logprob_start_len = 0
             reqs.append(req)
 
@@ -1434,7 +1445,15 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
-        forward_batch = ForwardBatch.init_new(batch, model_runner)
+        # sglang 0.5.16 made return_hidden_states_before_norm a required
+        # keyword (ForwardBatch.init_new); older pins do not accept it —
+        # same dispatch collect_msa_module.py:1015 uses.
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})
+        forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 
         hidden_states = torch.randn(
@@ -2082,7 +2101,10 @@ def _run_decode(
     from array import array
 
     is_wideep_mla = attn_type == "mla"
-    from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
+    try:  # sglang>=0.5.21: layers/layer_boundary/adapters/attention.py:45,167
+        from sglang.srt.layers.layer_boundary.adapters.attention import AttentionInputs, get_attn_tp_context
+    except ImportError:
+        from sglang.srt.layers.communicator import AttentionInputs, get_attn_tp_context
     from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
     from sglang.srt.mem_cache.cache_init_params import CacheInitParams
     from sglang.srt.mem_cache.chunk_cache import ChunkCache
@@ -2111,7 +2133,10 @@ def _run_decode(
             req.prefix_indices = torch.empty((0,), dtype=torch.int64)
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = len(req.origin_input_ids)
-            req.set_extend_input_len(req.fill_len)
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(req.fill_len)
+            else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+                req.set_extend_range(0, req.fill_len)
             req.logprob_start_len = 0
             req.cached_tokens = 0
             req.already_computed = 0
@@ -2139,7 +2164,12 @@ def _run_decode(
         for req in batch.reqs:
             req.output_ids.append(0)
         batch.prepare_for_decode()
-        forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})  # sglang 0.5.16 required keyword (see the context path above)
+        forward_batch_decode = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
 
         decode_hidden = torch.randn(
@@ -2376,9 +2406,9 @@ def run_mla_module(
     (batch_size, seq_length) combos for the specified phase.
 
     ``skip_indexer`` selects the GLM-5.2 reuse-layer variant (the per-layer
-    indexer is patched out and rows are tagged ``_skip_indexer``). It mirrors
-    ``is_prefill``: the worker derives it from the op's perf_filename and passes
-    it down. Recorded in the ``_SKIP_INDEXER_PASS`` process global so the
+    indexer is patched out and rows are tagged ``_skip_indexer``). The worker
+    receives it from the registry entry's run_kwargs and passes it down.
+    Recorded in the ``_SKIP_INDEXER_PASS`` process global so the
     existing ``_dsa_skip_indexer_enabled`` call sites need no signature change.
     """
     global _SKIP_INDEXER_PASS
@@ -2742,6 +2772,7 @@ def run_mla_module_worker(
     perf_filename: str,
     device: str = "cuda:0",
     chunked_prefill_size: int | None = None,
+    skip_indexer: bool = False,
 ):
     """Worker-compatible wrapper used by collector/collect.py.
 
@@ -2755,7 +2786,10 @@ def run_mla_module_worker(
     For DSA test cases, it defaults to None and _get_backends() is used.
 
     perf_filename and device are keyword-only arguments supplied by
-    collect.py via functools.partial and the worker dispatch loop.
+    collect.py via functools.partial and the worker dispatch loop;
+    skip_indexer is bound the same way from the registry entry's run_kwargs
+    (dsa_*_module_skip_indexer ops), so the full and skip ops share one
+    table and one run_func and differ only in this explicit argument.
     """
     device_str = str(device) if not isinstance(device, str) else device
     gpu_id = int(device_str.split(":")[-1]) if ":" in device_str else 0
@@ -2766,9 +2800,9 @@ def run_mla_module_worker(
     # module; the only difference is (1) the per-layer indexer (mqa+topk) is
     # patched out via skip_topk in _run_prefill/_run_generation and (2) the rows
     # are tagged with an op_name "_skip_indexer" suffix in the same perf file.
-    # Derived from the op's perf_filename and threaded down as an explicit arg —
-    # exactly like is_prefill above; no env var crosses the subprocess boundary.
-    skip_indexer = "skip_indexer" in os.path.basename(perf_filename)
+    # Threaded down to the subprocess as an explicit arg; no env var crosses
+    # the subprocess boundary and nothing is inferred from the table name.
+    skip_indexer = bool(skip_indexer)
 
     print(f"\n{'=' * 60}")
     print(

@@ -17,13 +17,28 @@ import tensorrt_llm
 import torch
 from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionInputType,
-    MLAParams,
-    PositionalEmbeddingParams,
-    RopeParams,
-)
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionInputType,
+        MLAParams,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.bindings.executor import KvCacheConfig
@@ -208,8 +223,8 @@ def run_mla(
     # (cpp/kernels/fmha_v2/setup.py:6926-6931@v1.3.0rc20); the hand-added
     # sm89 576x512 generation cubin entry from 1.0.0 was dropped in the same
     # window. Layout-level, so it kills every dtype at once. Fail closed with
-    # a cited, classified raise (Gemma4/DSA precedent). Re-verify on the next
-    # framework version bump.
+    # a cited, classified raise (Gemma4/DSA precedent). Re-verified on 1.3.0rc29 / L40 2026-10-04 (the module
+    # collector's twin guard, collect_mla_module.py): same assert, now attentionOp.cpp:3234 — still SM89-less.
     if get_sm_version() < 90:
         phase = "context" if is_context_phase else "generation"
         raise ValueError(
@@ -247,6 +262,15 @@ def run_mla(
     assert num_heads % tp_size == 0, "num_heads != N * tp_size"
     num_heads = num_heads // tp_size
     num_kv_heads = num_heads
+    # FIXME(kernel-limit): TRT-LLM's MLA decode FMHA on SM100/103 tiles 16 q-heads per CTA and
+    # rejects head counts above 16 that are not a multiple of 16 ("Internal error numHeadsQ=24,
+    # numHeadsPerCta=16", 724 cases = every heads-24 decode cell of the 96-head model at tp4,
+    # b200 rc29 job 469988228). Classified before the layer is built.
+    if not is_context_phase and get_sm_version() in (100, 103) and num_heads > 16 and num_heads % 16:
+        raise RuntimeError(
+            "FIXME(kernel-limit): TRT-LLM MLA decode on SM100/103 needs per-rank heads <= 16 or a multiple "
+            f"of 16 (numHeadsPerCta=16); got {num_heads}"
+        )
 
     context_sequence_lengths = [input_len for _ in range(batch_size)]
 

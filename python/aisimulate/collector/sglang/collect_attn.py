@@ -9,14 +9,15 @@ shape intent should live in YAML; this file owns SGLang backend construction,
 KV-cache setup, backend dispatch, and perf logging for the SGLang runtime.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 import math
 import os
 from types import SimpleNamespace
 from typing import NamedTuple
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from sglang>=0.5.21 images
 import torch
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
@@ -41,6 +42,9 @@ class Timing(NamedTuple):
 
 # Mock objects to satisfy RadixAttention dependencies
 class MockModelConfig:
+    def get_max_num_attention_heads(self) -> int:  # model_config.py:1504 @0.5.21 (triton_backend.py:255)
+        return int(self.num_attention_heads)
+
     def __init__(
         self,
         num_attention_heads,
@@ -68,6 +72,11 @@ class MockModelConfig:
         self.is_multimodal = False
         self.hidden_size = num_attention_heads * head_dim
         self.is_local_attention_model = attention_chunk_size is not None
+        # sglang 0.5.16: configs/hybrid_arch.py:30-31 reads
+        # model_config.linear_attn_registry_result (ModelConfig property,
+        # model_config.py:707) to detect hybrid linear-attention archs; the
+        # dense-attention mock has none.
+        self.linear_attn_registry_result = None
 
         class MockHFConfig:
             def __init__(self, *, num_attention_heads, num_key_value_heads, head_dim, v_head_dim, architecture):
@@ -81,6 +90,13 @@ class MockModelConfig:
                 self.hidden_size = num_attention_heads * head_dim
                 self.attn_logit_softcapping = None
 
+            def get_text_config(self):
+                # HF PretrainedConfig API: sglang 0.5.16 unwraps multimodal
+                # configs through it (configs/hybrid_arch.py:49,
+                # linear_attn_model_registry.py:56); a text-only mock is its own
+                # text config.
+                return self
+
         self.hf_config = MockHFConfig(
             num_attention_heads=num_attention_heads,
             num_key_value_heads=num_key_value_heads,
@@ -91,7 +107,7 @@ class MockModelConfig:
         self.hf_text_config = self.hf_config
         self.dtype = torch.bfloat16
 
-    def get_num_kv_heads(self, tp_size):
+    def get_num_kv_heads(self, tp_size, dcp_size=1):  # model_config.py:1512 @0.5.21 adds dcp_size (DCP replicates KV)
         return self.num_key_value_heads // tp_size
 
 
@@ -121,9 +137,15 @@ class MockServerArgs:
         self.enable_two_batch_overlap = False
         self.disable_attn_tp_gather = False
         self.moe_dense_tp_size = None
+        # sglang 0.5.16: flashattention_backend.py:51 reads
+        # server_args.enable_prefill_cp (prefill context parallelism) — off
+        self.enable_prefill_cp = False
 
 
 class MockModelRunner:
+    def decode_num_tokens_per_req(self, *, num_draft_tokens=None) -> int:
+        return 1
+
     def __init__(
         self,
         device,
@@ -136,6 +158,7 @@ class MockModelRunner:
         architecture=None,
         runtime_window_size=-1,
         attention_chunk_size=None,
+        attn_backend_name=None,
     ):
         self.device = device
         self.req_to_token_pool = None
@@ -143,7 +166,42 @@ class MockModelRunner:
         self.attn_backend = None
         self.server_args = MockServerArgs(page_size=page_size)
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.21 TRTLLMHAAttnBackend (the dense backend sglang picks on SM100/103) reads
+        # model_runner.prefill_attention_backend_str / decode_attention_backend_str to decide its
+        # prefill/decode split; fa3/flashinfer on Hopper never asked (B200 smoke 2026-10-04:
+        # AttributeError 'MockModelRunner' object has no attribute 'prefill_attention_backend_str').
+        self.prefill_attention_backend_str = attn_backend_name
+        self.decode_attention_backend_str = attn_backend_name
+        # trtllm_mha_backend.py:310@0.5.21 scans model_runner.model.modules() for ENCODER_ONLY attention
+        # layers (expanded TARGET_VERIFY metadata); the collector has no model — an empty Module
+        # declares none, which is the dense-decoder answer.
+        self.model = torch.nn.Module()
+        # TRTLLMHAAttnBackend also sizes its workspaces from model_runner.max_running_requests
+        # (512 = the generator's --max-running-requests default).
+        self.max_running_requests = 512
+        # sglang 0.5.16 reads the parallel geometry from ``model_runner.ps``
+        # (flashattention_backend.py:183 attn_cp_size, :271-274 tp_size; the
+        # runner sets it at model_runner.py:262 from a ParallelState). Provide
+        # the real trivial ParallelState when the wrapper exists, else a
+        # namespace with the same fields (parallel_state_wrapper.py:6-24).
+        try:
+            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+            self.ps = ParallelState.trivial(gpu_id=0)
+        except ImportError:
+            from types import SimpleNamespace
+
+            self.ps = SimpleNamespace(
+                tp_rank=0, tp_size=1, pp_rank=0, pp_size=1, dp_rank=0, dp_size=1,
+                attn_tp_rank=0, attn_tp_size=1, attn_cp_rank=0, attn_cp_size=1,
+                attn_dp_rank=0, attn_dp_size=1, moe_ep_rank=0, moe_ep_size=1,
+                moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
+            )
         self.is_draft_worker = False
+        # sglang>=0.5.21 backends ask the runner for logits rows per decode slot
+        # (model_runner.py:796 decode_num_tokens_per_req; triton_backend.py:218,222);
+        # the kernel collectors never run speculative decoding -> 1
+        self.spec_algorithm = None
         self.model_is_mrope = False
         self.sliding_window_size = attention_chunk_size
         if self.sliding_window_size is None and runtime_window_size >= 0:
@@ -161,6 +219,11 @@ class MockModelRunner:
             attention_chunk_size,
         )
         self.kv_cache_dtype = kv_cache_dtype  # Default
+        # sglang>=0.5.21 FlashAttentionBackend reads the server-args string next to the
+        # torch dtype (flashattention_backend.py:192-194 kv_cache_dtype_str, drives the
+        # mxfp8 branch); serving sets it from server_args.kv_cache_dtype
+        # (model_runner.py:1481). The collector's kv_cache_dtype is that same string.
+        self.kv_cache_dtype_str = kv_cache_dtype
         self.page_size = page_size
         self.tp_size = 1
         self.is_hybrid = False
@@ -236,10 +299,19 @@ def get_context_attention_test_cases():
                             continue
                     if b * s * num_kv_heads * head_dim * 2 >= max_kv_elements:
                         continue
+                    # the backend this head config runs on (per-model map, else the SM default table) —
+                    # the same resolution run_attention_torch makes before refusing a combo
+                    lane = head_config.kernel_source or default_attention_backend(sm_version, head_config.has_attention_sink)
                     for precision_case in shape_sweep["precision_cases"]:
                         use_fp8_kv_cache = bool(precision_case["fp8_kv_cache"])
                         use_fp8_context_fmha = bool(precision_case["fp8_context_fmha"])
                         if skip_fp8 and use_fp8_kv_cache:
+                            continue
+                        if use_fp8_context_fmha and lane == "flashinfer":
+                            # FlashInfer has no FP8 prefill compute path (BF16 Q reads the FP8 cache through
+                            # descales), so run_attention_torch refuses this case by design; scheduling it on
+                            # the flashinfer SMs (sm89 / sm120) only made a third of the op's tasks fail
+                            # (sm89 sample 2026-10-04: 13 of 40). Not an SM gate: the fp8_kv_cache case stays.
                             continue
                         test_cases.append(
                             [
@@ -362,6 +434,72 @@ def get_generation_attention_test_cases():
     attn_dp_size=1,
     attn_dp_rank=0,
 )
+def default_attention_backend(sm_version: int, has_attention_sink: bool) -> str | None:
+    """SGLang's default dense-attention backend per SM (the table run_attention_torch documents
+    above its call site); None for SMs outside the supported set."""
+    return {
+        89: "triton" if has_attention_sink else "flashinfer",
+        90: "fa3",
+        100: "trtllm_mha",
+        103: "trtllm_mha",
+        120: "triton" if has_attention_sink else "flashinfer",
+    }.get(sm_version)
+
+
+_FLASHINFER_WORKSPACE_MIN_BYTES = 4 << 30
+
+
+def _ensure_flashinfer_workspace() -> int | None:
+    """Raise SGLang's FlashInfer workspace floor BEFORE the first backend of this
+    process is built, through the knob the pinned version actually reads.
+
+    0.5.21 sizes the shared decode/prefill plan buffer from
+    ``sglang.srt.environ.envs.SGLANG_FLASHINFER_WORKSPACE_SIZE`` (EnvInt, default
+    384 MiB) and allocates it ONCE per process via ``get_buffer("flashinfer_workspace")``
+    (flashinfer_backend.py:430-436); serving itself bumps the knob to 512 MiB for
+    Qwen2/Qwen3/MiMo architectures (:394-404). The decode sweep's wide cells need
+    more than the default — l40s 0.5.21: "Buffer overflow when allocating
+    batch_prefill_tmp_v with size 536870912 ... only 402653184 bytes available",
+    671 attention_generation cases (heads 128 / kv 1 / head_dim 128, batch 32 x isl
+    255..4095). ed9109ec wrote ``global_config.flashinfer_workspace_size``, an
+    attribute 0.5.21 no longer has — a no-op (pipeline 72343559 reproduced all 671).
+    Older series keep the global_config path as a fallback. Returns the floor
+    applied (bytes) or None when no knob was found.
+
+    Floor history: 1 GiB (5c0f54a5) cleared 447 of the 671 l40s failures (pipeline
+    72369799, job 475655072); the remaining 224 — all heads 128 / kv 1 / head_dim 128,
+    bf16 and fp8 KV alike, batch x isl from 32x255 up to 4x16383 — asked the tensor-core
+    decode planner for batch_prefill_tmp_v of 1.5-2.22 GiB ("only 1073741824 bytes
+    available"). 4 GiB covers the largest observed request with margin; the buffer is one
+    torch.empty per worker process, never touched beyond what the plan uses, and the
+    planner's split decision does not depend on the buffer size, so the measured kernels
+    are unchanged (flashinfer prefill planner sizes tmp_v from the split count, not the
+    workspace).
+    """
+    try:
+        from sglang.srt.environ import envs
+
+        knob = getattr(envs, "SGLANG_FLASHINFER_WORKSPACE_SIZE", None)
+        if knob is not None:
+            current = int(knob.get())
+            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
+                knob.set(_FLASHINFER_WORKSPACE_MIN_BYTES)
+            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
+    except Exception:
+        pass
+    try:
+        from sglang.global_config import global_config
+
+        current = getattr(global_config, "flashinfer_workspace_size", None)
+        if isinstance(current, int):
+            if current < _FLASHINFER_WORKSPACE_MIN_BYTES:
+                global_config.flashinfer_workspace_size = _FLASHINFER_WORKSPACE_MIN_BYTES
+            return max(current, _FLASHINFER_WORKSPACE_MIN_BYTES)
+    except Exception:
+        pass
+    return None
+
+
 def run_attention_torch(
     batch_size,
     input_len,
@@ -384,6 +522,10 @@ def run_attention_torch(
     device="cuda:0",
     page_size: int | None = None,
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
+    _ensure_flashinfer_workspace()
     if use_fp8_context_fmha:
         assert use_fp8_kv_cache, "If you want to use fp8 context fmha, kv cache must be fp8"
     kvtype = torch.float8_e4m3fn if use_fp8_kv_cache else torch.bfloat16
@@ -415,13 +557,7 @@ def run_attention_torch(
         # sglang_backends map as an explicit attn_backend_name, never through
         # this default table. SM80/86 are outside the
         # supported platform set {89, 90, 100, 103, 120} and fail closed below.
-        attn_backend_name = {
-            89: "triton" if has_attention_sink else "flashinfer",
-            90: "fa3",
-            100: "trtllm_mha",
-            103: "trtllm_mha",
-            120: "triton" if has_attention_sink else "flashinfer",
-        }.get(sm_version)
+        attn_backend_name = default_attention_backend(sm_version, has_attention_sink)
         if attn_backend_name is None:
             raise ValueError(f"No SGLang 0.5.14 attention backend mapping for SM{sm_version}")
     if page_size is None:
@@ -438,8 +574,15 @@ def run_attention_torch(
         architecture=architecture,
         runtime_window_size=runtime_window_size,
         attention_chunk_size=attention_chunk_size,
+        attn_backend_name=attn_backend_name,
     )
     model_runner.kv_cache_dtype = kvtype
+    # sglang>=0.5.21 backends ask the runner which backend serves each phase
+    # (model_runner.py:1020-1021 resolved.prefill/decode; flashinfer_backend.py:331-332
+    # gate the kv-access checks on it). One lane = one backend for both phases. Hopper's
+    # fa3 / Blackwell's trtllm_mha never read it, so only the sm89/sm120 flashinfer lane failed.
+    model_runner.prefill_attention_backend_str = attn_backend_name
+    model_runner.decode_attention_backend_str = attn_backend_name
 
     total_len = input_len if is_context_phase else input_len + 1
     # TRTLLM MHA sizes its page table from context_len.
@@ -474,10 +617,14 @@ def run_attention_torch(
         page_size=model_runner.page_size,
         get_kvcache=lambda: model_runner.token_to_kv_pool,
     )
+    from collector.sglang.runtime_compat import attach_kv_index_translator
+
+    attach_kv_index_translator(model_runner)
 
     if attn_backend_name == "flashinfer":
         from sglang.srt.layers.attention.flashinfer_backend import FlashInferAttnBackend
 
+        _ensure_flashinfer_workspace()  # the shared workspace is allocated by the first backend of the process
         attn_backend = FlashInferAttnBackend(model_runner)
     elif attn_backend_name == "trtllm_mha":
         from sglang.srt.layers.attention.trtllm_mha_backend import TRTLLMHAAttnBackend
@@ -640,7 +787,7 @@ def run_attention_torch(
         if is_context_phase:
             if use_fp8_context_fmha:
                 if attn_backend_name == "flashinfer":
-                    raise ValueError("SGLang 0.5.14 flashinfer has no FP8 prefill compute path")
+                    raise ValueError("SGLang flashinfer has no FP8 prefill compute path (plan-time skip missed this case)")
                 if attn_backend_name != "trtllm_mha":
                     q = q.to(kvtype)
                     k = k.to(kvtype)
@@ -707,7 +854,7 @@ def run_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source=attn_backend_name,

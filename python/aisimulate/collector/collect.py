@@ -11,6 +11,7 @@ modules own benchmark setup, while `model_cases.py` and YAML own case selection.
 
 import contextlib
 import functools
+import logging
 import os
 import warnings
 
@@ -120,9 +121,26 @@ from helper import (
     validate_restored_perf_publications,
 )
 
-logger = None
+# Module logger. ``setup_logging`` (main / workers) installs the configured
+# collector logger; until then this is the bare library logger so in-process
+# callers (fullnode finalization, unit tests, tooling) that reach the checkpoint
+# and provenance paths never trip on a None logger.
+logger = logging.getLogger("collector")
+_LOGGER_CONFIGURED = False
 RESUME_SCHEMA_VERSION = "collector-resume-v2"
 STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall warning
+# Seconds of ZERO progress with live workers before the executor gives up on the
+# op: dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill them,
+# record their in-flight tasks as WorkerStallTimeout and let the orphan path
+# close the op. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300 (2026-10-06)
+# sat 76 min at 0/58482 with no error until the pipeline watchdog cancelled the
+# whole job; a finite, diagnosable failure is worth more than an open-ended wait.
+STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
+# Seconds of zero progress after which the executor asks every live worker for a
+# stack dump (SIGUSR1 -> faulthandler) ONCE, without killing: the l40s sglang
+# moe/bf16 first case legitimately took minutes (JIT) and then the shard ran 2h23m
+# to completion — the diagnosis must not cost the run.
+STALL_DIAG_SEC = int(os.environ.get("AISIM_STALL_DIAG_SEC") or 600)
 # Failures of one (model, dtype) group within an op before the summary flags
 # it as systemic (a fix-me warning; nothing is skipped).
 SYSTEMIC_GROUP_THRESHOLD = 5
@@ -165,7 +183,7 @@ FPM_INPUT_ERRORS = (TypeError, ValueError, subprocess.CalledProcessError, FileNo
 @dataclass(frozen=True)
 class _ProducerCheckpointPlan:
     attestation: "_FileAttestation"
-    table: str
+    tables: tuple[str, ...]  # every registry-declared table this producer owns (sorted)
     identity: tuple[tuple[str, object], ...]
     done: frozenset[str]
     attempted: frozenset[str]
@@ -194,7 +212,7 @@ class _FileAttestation:
 @dataclass(frozen=True)
 class _ValidatedCheckpoint:
     attestation: _FileAttestation
-    table: str
+    tables: tuple[str, ...]
     attempted: frozenset[str]
     document: dict
 
@@ -1111,6 +1129,115 @@ def _get_test_cases_for_model(get_func, model_path: str | None):
         return get_func()
 
 
+class ReplaySpec:
+    """Failure replay (``--cases-from``): run exactly the cases an earlier run's failure
+    records name, plus an optional random control sample per op.
+
+    Selection is by exact case string — the same ``str(task)`` the failure records store
+    as ``task_params`` — never by substring and never by reconstructing tuples, so the
+    requested set is unambiguous. Nothing else about the run changes: same getter, same
+    run_func, same dispatch, same measurement, so a replay observes exactly what the
+    campaign observes. The run leaves ``collector_replay.json`` in the output root;
+    packaging must keep such a result out of shipped tables (it is a diagnosis, not a
+    dataset). This is a selection mechanism like ``--case-filter``: it decides WHICH
+    planned cases run, never whether a case may be skipped once queued.
+    """
+
+    MARKER = "collector_replay.json"
+
+    def __init__(self, source: str, wanted: set[str], control: int = 0):
+        self.source = source
+        self.wanted = set(wanted)
+        self.control = int(control)
+        self.matched: dict[str, set[str]] = {}
+        self.controls: dict[str, int] = {}
+
+    @staticmethod
+    def case_key(case) -> str:
+        """The string a failure record stores for this case (see collect_module_safe)."""
+        if isinstance(case, dict) and "id" in case and "params" in case:
+            return str(case["params"])
+        return str(case)
+
+    def select(self, op: str, cases: list, rng: random.Random) -> list:
+        wanted = [case for case in cases if self.case_key(case) in self.wanted]
+        self.matched[op] = {self.case_key(case) for case in wanted}
+        controls: list = []
+        if self.control > 0:
+            rest = [case for case in cases if self.case_key(case) not in self.wanted]
+            controls = rng.sample(rest, min(self.control, len(rest)))
+        self.controls[op] = len(controls)
+        return wanted + controls
+
+    def unmatched(self) -> list[str]:
+        seen: set[str] = set().union(*self.matched.values()) if self.matched else set()
+        return sorted(self.wanted - seen)
+
+    def report(self) -> dict:
+        return {
+            "source": self.source,
+            "requested": len(self.wanted),
+            "matched": sum(len(v) for v in self.matched.values()),
+            "matched_by_op": {op: len(v) for op, v in self.matched.items()},
+            "controls_by_op": dict(self.controls),
+            "unmatched": self.unmatched(),
+        }
+
+
+def load_replay_cases(path: "str | Path") -> set[str]:
+    """Case strings for ``--cases-from``: an ``errors_*.json[.gz]`` or
+    ``collection_summary_*.json[.gz]`` written by an earlier run (``task_params`` of every
+    entry that has one), a JSON list of case strings, or a text file with one case per line."""
+    import gzip
+
+    p = Path(path)
+    if p.suffix == ".gz":
+        with gzip.open(p, "rt", encoding="utf-8") as fh:
+            raw = fh.read()
+    else:
+        raw = p.read_text(encoding="utf-8")
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        doc = [line.strip() for line in raw.splitlines() if line.strip()]
+    if isinstance(doc, dict):
+        doc = doc.get("errors", [])
+    out: set[str] = set()
+    for item in doc:
+        if isinstance(item, str):
+            out.add(item)
+        elif isinstance(item, dict) and item.get("task_params") not in (None, "None", ""):
+            out.add(str(item["task_params"]))
+    if not out:
+        raise ValueError(f"--cases-from {path}: no case strings found")
+    return out
+
+
+def _load_replay_spec(args, log) -> "ReplaySpec | None":
+    if not getattr(args, "cases_from", None):
+        return None
+    wanted = load_replay_cases(args.cases_from)
+    spec = ReplaySpec(str(args.cases_from), wanted, control=args.replay_control or 0)
+    log.info(f"Replay mode: {len(wanted)} requested cases from {args.cases_from}; control sample {spec.control} per op")
+    return spec
+
+
+def _finish_replay(spec: "ReplaySpec | None", output_root: Path, log) -> None:
+    if spec is None:
+        return
+    report = spec.report()
+    (output_root / ReplaySpec.MARKER).write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
+    if report["unmatched"]:
+        log.warning(
+            f"Replay: {len(report['unmatched'])}/{report['requested']} requested cases are not in this run's "
+            f"case plan (first: {report['unmatched'][:3]})"
+        )
+    log.info(
+        f"Replay: matched {report['matched']}/{report['requested']} requested cases; "
+        f"{ReplaySpec.MARKER} written — this result is a diagnosis, not a dataset"
+    )
+
+
 def _requested_ops(ops: list[str] | None, case_plan=None) -> set[str]:
     if ops is not None:
         return set(ops)
@@ -1229,13 +1356,15 @@ class ResumeCheckpoint:
     def load_existing(self):
         """Load an existing checkpoint for resume.  Raises on mismatch."""
         if not self._path.parent.exists() and not self._path.parent.is_symlink():
-            logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
+            if logger is not None:
+                logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
             return
         with _locked_checkpoint_directory(self._path) as locked:
             canonical_path = _checkpoint_path_in_locked_directory(self._path, locked)
             _normalize_atomic_replace_state_at(locked.file_descriptor, canonical_path)
             if _entry_state_at(locked.file_descriptor, canonical_path.name) is None:
-                logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
+                if logger is not None:
+                    logger.info(f"{self.module_name}: no checkpoint found, starting fresh")
                 return
 
             try:
@@ -1276,7 +1405,8 @@ class ResumeCheckpoint:
         self._source_digest = snapshot.digest
         self._source_device = snapshot.device
         self._source_inode = snapshot.inode
-        logger.info(f"{self.module_name}: loaded checkpoint — {len(self._done)} passed, {len(self._failed)} failed")
+        if logger is not None:
+            logger.info(f"{self.module_name}: loaded checkpoint — {len(self._done)} passed, {len(self._failed)} failed")
 
     # -- public API -------------------------------------------------------
 
@@ -1438,6 +1568,21 @@ class ProfilerContext:
 
         logger.info("=" * 80)
         logger.info(f"Full profile saved to: {profile_file}")
+
+
+KERNEL_LIMIT_PREFIX = "FIXME(kernel-limit)"
+
+
+def _classify_exception(error: BaseException) -> str:
+    """How the error report labels a failed case.
+
+    ``kernel_limit``: the collector itself refused the cell with a cited,
+    deterministic framework limit (message starts with FIXME(kernel-limit) —
+    divisibility guards, missing kernels, unsupported head ranges). These are
+    expected on every rerun and must be counted apart from ``unexpected``
+    failures (pipeline summaries matched message text by hand until 2026-10-08).
+    """
+    return "kernel_limit" if str(error).lstrip().startswith(KERNEL_LIMIT_PREFIX) else "unexpected"
 
 
 def _failure_group(task) -> str | None:
@@ -1632,7 +1777,7 @@ def worker(
                 "task_params": str(task),
                 "error_type": type(e).__name__,
                 "error_message": str(e),
-                "classification": "unexpected",
+                "classification": _classify_exception(e),
                 "group": _failure_group(task),
                 "traceback": traceback.format_exc(),
                 "timestamp": datetime.now().isoformat(),
@@ -1873,9 +2018,54 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     # Monitor progress with error collection
     errors = []
 
+    def _dump_and_kill_stalled_workers(stalled_for: float):
+        """Stall watchdog: stacks first (SIGUSR1 -> faulthandler in the worker),
+        then SIGTERM/SIGKILL; the in-flight task of every worker becomes a
+        WorkerStallTimeout error and the orphan path below closes the op."""
+        live = [(i, p) for i, p in enumerate(processes) if p is not None and p.is_alive()]
+        logger.error(
+            f"{module_name}: no progress for {int(stalled_for)} s with {len(live)} live worker(s) "
+            f"(STALL_TIMEOUT_SEC={STALL_TIMEOUT_SEC}); dumping worker stacks and stopping the op"
+        )
+        for _, p in live:
+            try:
+                os.kill(p.pid, signal.SIGUSR1)
+            except Exception:
+                pass
+        time.sleep(5)  # let faulthandler write before the kill
+        for i, p in live:
+            active_task_id = current_task_ids.get(i)
+            if active_task_id is not None and active_task_id not in accounted:
+                errors.append(
+                    {
+                        "module": module_name,
+                        "device_id": i,
+                        "task_id": active_task_id,
+                        "task_params": None,
+                        "error_type": "WorkerStallTimeout",
+                        "error_message": f"worker made no progress for {int(stalled_for)} s; stacks dumped via SIGUSR1",
+                        "classification": "unexpected",
+                        "group": None,
+                        "traceback": "",
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                )
+                try:
+                    failed_tasks[active_task_id] = True
+                except Exception:
+                    pass
+            p.terminate()
+            p.join(timeout=10)
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=10)
+            processes[i] = None
+
     with tqdm(total=len(task_infos), desc=f"{module_name}", dynamic_ncols=True, leave=True) as pbar:
         last_progress = 0
         stall_count = 0
+        stall_since = None
+        stall_diag_sent = False
         last_error_count = 0
 
         if num_processes == 0:
@@ -1904,7 +2094,7 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                         "task_params": str(task_params),
                         "error_type": type(e).__name__,
                         "error_message": str(e),
-                        "classification": "unexpected",
+                        "classification": _classify_exception(e),
                         "group": _failure_group(task_params),
                         "traceback": traceback.format_exc(),
                         "timestamp": datetime.now().isoformat(),
@@ -1934,11 +2124,44 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
 
             if len(accounted) == last_progress:
                 stall_count += 1
+                stall_since = stall_since or time.time()
                 if stall_count > STALL_THRESHOLD:
-                    logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
+                    if not accounted:
+                        # the first case carries module import + JIT/autotune: slow is normal, silent is not
+                        logger.info(
+                            f"waiting for the first result ({int(time.time() - stall_since)} s, 0/{len(task_infos)}; "
+                            f"stacks dumped at {STALL_DIAG_SEC} s, op stopped at {STALL_TIMEOUT_SEC} s of no progress)"
+                        )
+                    else:
+                        logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
                     stall_count = 0
+                if (
+                    STALL_DIAG_SEC > 0
+                    and not stall_diag_sent
+                    and time.time() - stall_since > STALL_DIAG_SEC
+                ):
+                    stall_diag_sent = True
+                    live = [p for p in processes if p is not None and p.is_alive()]
+                    logger.warning(
+                        f"{module_name}: no progress for {int(time.time() - stall_since)} s; requesting thread "
+                        f"stacks from {len(live)} live worker(s) (SIGUSR1 -> faulthandler, workers keep running)"
+                    )
+                    for p in live:
+                        try:
+                            os.kill(p.pid, signal.SIGUSR1)
+                        except Exception:
+                            pass
+                if (
+                    STALL_TIMEOUT_SEC > 0
+                    and time.time() - stall_since > STALL_TIMEOUT_SEC
+                    and any(p is not None and p.is_alive() for p in processes)
+                ):
+                    _dump_and_kill_stalled_workers(time.time() - stall_since)
+                    stall_since = None
             else:
                 stall_count = 0
+                stall_since = None
+                stall_diag_sent = False
                 last_progress = len(accounted)
 
             # Check process health — only restart if there is still work
@@ -2068,6 +2291,14 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
         if p.is_alive():
             logger.warning(f"Process {p.pid} did not terminate, forcing...")
             p.terminate()
+            p.join(timeout=10)
+            if p.is_alive():
+                # a worker wedged in a CUDA call ignores SIGTERM; without SIGKILL the
+                # interpreter's multiprocessing atexit join waits forever (pipeline
+                # watchdogs had to reap collect.py itself, 2026-10-05 campaign)
+                logger.warning(f"Process {p.pid} survived SIGTERM, killing")
+                p.kill()
+                p.join(timeout=10)
 
     # Shutdown manager to clean up resources (semaphores, etc.)
     manager.shutdown()
@@ -2107,6 +2338,7 @@ def collect_ops(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ) -> list[dict]:
     """Run collection for a list of resolved collection entries.
 
@@ -2176,11 +2408,15 @@ def collect_ops(
 
             get_func = getattr(get_module, collection["get_func"])
             run_func = getattr(run_module, collection["run_func"])
-            perf_filename = collection["perf_filename"]
-            worker_filename = collection.get("worker_perf_filename")
-            if worker_filename is not None:
-                perf_filename = str(Path(perf_filename).with_name(worker_filename))
-            run_func = functools.partial(run_func, perf_filename=perf_filename)
+            run_func = functools.partial(run_func, perf_filename=collection["perf_filename"])
+            if collection.get("extra_perf_filenames"):
+                # a multi-table producer (registry OpEntry.extra_perf_filenames) receives
+                # every table it must write; finalize binds all of them to its checkpoint
+                run_func = functools.partial(run_func, extra_perf_filenames=tuple(collection["extra_perf_filenames"]))
+            if collection.get("run_kwargs"):
+                # registry OpEntry.run_kwargs: fixed mode arguments for a run_func shared by
+                # several ops (sglang dsa_*_module_skip_indexer -> skip_indexer=True)
+                run_func = functools.partial(run_func, **dict(collection["run_kwargs"]))
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
                 from collector.capabilities import filter_cases
@@ -2191,6 +2427,13 @@ def collect_ops(
                     before_count = len(cases)
                     cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
                     logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+                if replay is not None:
+                    before_count = len(cases)
+                    cases = replay.select(op, cases, random.Random(shuffle_seed))
+                    logger.info(
+                        f"{op}: replay selected {len(replay.matched[op])} requested + "
+                        f"{replay.controls[op]} control of {before_count} cases"
+                    )
                 if shuffle:
                     rng = random.Random(shuffle_seed)
                     rng.shuffle(cases)
@@ -2238,6 +2481,7 @@ def collect_sglang(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for SGLang with enhanced error tracking"""
     os.environ["FLASHINFER_LOG_LEVEL"] = "ERROR"
@@ -2297,6 +2541,7 @@ def collect_sglang(
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=case_filters,
+            replay=replay,
         )
 
     for collection in fullnode_collections:
@@ -2313,6 +2558,7 @@ def collect_sglang(
                 case_plan=case_plan,
                 sm_version=sm_version,
                 case_filters=case_filters,
+                replay=replay,
                 get_test_cases_for_model=_get_test_cases_for_model,
                 resume_checkpoint_cls=ResumeCheckpoint,
                 logger=logger,
@@ -2340,6 +2586,7 @@ def collect_vllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for vLLM"""
     from collector.version_resolver import build_collections
@@ -2397,6 +2644,7 @@ def collect_vllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        replay=replay,
     )
 
     generate_collection_summary(all_errors, "vllm", version)
@@ -2420,6 +2668,7 @@ def collect_trtllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    replay: ReplaySpec | None = None,
 ):
     """Collect performance data for TensorRT LLM with enhanced error tracking"""
     from collector.trtllm.registry import REGISTRY
@@ -2468,6 +2717,7 @@ def collect_trtllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        replay=replay,
     )
 
     generate_collection_summary(all_errors, "trtllm", version)
@@ -2569,7 +2819,15 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _git_collector_ref(repo_root: Path) -> str:
-    """The repo SHA the collector ran from (design §5), "unknown" outside a repo."""
+    """The repo SHA the collector ran from (design §5), "unknown" outside a repo.
+
+    ``AISIM_COLLECTOR_REF`` (legacy ``AIC_COLLECTOR_REF``) wins when set: the
+    framework images carry no git, so pipelines that check the collector out
+    by SHA pass it in (every b200 shard run of 2026-10-05 recorded 'unknown').
+    """
+    forced = (os.environ.get("AISIM_COLLECTOR_REF") or os.environ.get("AIC_COLLECTOR_REF") or "").strip()
+    if forced:
+        return forced
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -2731,8 +2989,24 @@ def _resume_tracker_for_collection(
     )
 
 
-def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
-    """Resolve a checkpoint producer to its registry-owned table."""
+def _collection_perf_filenames(collection: dict) -> list[str]:
+    """Every staged table a provenance collection entry declares (primary first)."""
+    return [str(collection["perf_filename"]), *(str(name) for name in collection.get("extra_perf_filenames") or ())]
+
+
+def _collection_tables(collection: dict) -> tuple[str, ...]:
+    return tuple(sorted(Path(name).stem for name in _collection_perf_filenames(collection)))
+
+
+def _registered_checkpoint_tables(identity: dict, *, backend: str) -> frozenset[str]:
+    """Resolve a checkpoint producer to the set of registry-owned tables it writes.
+
+    One producer (module + run_func) owns one or more tables — the primary
+    ``perf_filename`` plus any ``extra_perf_filenames`` its OpEntry declares
+    (owner decision 2026-09-28: compute_scale writes computescale_perf and
+    scale_matrix_perf from one measurement, so the executor binds both to the
+    same checkpoint instead of splitting the op).
+    """
     from collector.version_resolver import resolve_module
 
     if set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS) or identity.get("backend") != backend:
@@ -2756,16 +3030,16 @@ def _registered_checkpoint_table(identity: dict, *, backend: str) -> str:
         registry = list(registry_module.REGISTRY_XPU)
     else:
         registry = [*registry_module.REGISTRY, *_wideep_registry_for_backend(backend)]
-    owned_tables = {
-        Path(str(entry.perf_filename)).stem
+    owned_table_sets = {
+        frozenset(Path(str(name)).stem for name in entry.perf_filenames)
         for entry in registry
         if identity["module"] == f"{backend}.{entry.op}"
         and identity["run_func"] == entry.run_func
         and resolve_module(entry, framework_version) is not None
     }
-    if len(owned_tables) != 1:
-        raise RuntimeError(f"checkpoint producer has no unambiguous registered table: {identity!r}")
-    return owned_tables.pop()
+    if len(owned_table_sets) != 1:
+        raise RuntimeError(f"checkpoint producer has no unambiguous registered table set: {identity!r}")
+    return owned_table_sets.pop()
 
 
 def _load_selected_producer_checkpoint(
@@ -2796,14 +3070,14 @@ def _load_selected_producer_checkpoint(
             f"{context}: staged table {staging_path} has no checkpoint for selected producer "
             f"{resume_tracker.module_name} at {checkpoint_path}"
         )
-    if _registered_checkpoint_table(resume_tracker._metadata, backend=backend) != staging_path.stem:
+    if staging_path.stem not in _registered_checkpoint_tables(resume_tracker._metadata, backend=backend):
         raise RuntimeError(
             f"{context}: checkpoint producer {resume_tracker.module_name} does not own staged table {staging_path}"
         )
     return resume_tracker
 
 
-def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, table: str) -> _ProducerCheckpointPlan:
+def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, tables: Iterable[str]) -> _ProducerCheckpointPlan:
     if (
         resume_tracker._source_digest is None
         or resume_tracker._source_device is None
@@ -2817,7 +3091,7 @@ def _producer_checkpoint_plan(resume_tracker: ResumeCheckpoint, table: str) -> _
             device=resume_tracker._source_device,
             inode=resume_tracker._source_inode,
         ),
-        table=table,
+        tables=tuple(sorted(tables)),
         identity=tuple((field, resume_tracker._metadata[field]) for field in _CHECKPOINT_IDENTITY_FIELDS),
         done=frozenset(resume_tracker._done),
         attempted=frozenset(resume_tracker._attempted),
@@ -2847,7 +3121,7 @@ def _revalidate_producer_plan(producer_plan: dict[Path, _ProducerCheckpointPlan]
                 identity = {field: checkpoint.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
                 if (
                     identity != plan.identity_dict()
-                    or _registered_checkpoint_table(identity, backend=identity["backend"]) != plan.table
+                    or _registered_checkpoint_tables(identity, backend=identity["backend"]) != frozenset(plan.tables)
                 ):
                     raise RuntimeError("checkpoint producer identity changed after preflight")
                 if (
@@ -2881,16 +3155,18 @@ def _pending_resume_perf_outputs(
     """
     producers_by_output: dict[Path, list[dict]] = {}
     for collection in provenance_ctx.get("collections") or []:
-        perf_path = Path(str(collection["perf_filename"]))
-        if not perf_path.is_absolute():
-            perf_path = output_root / perf_path
-        if perf_path.name.endswith("_perf.txt"):
-            producers_by_output.setdefault(perf_path, []).append(collection)
+        for perf_filename in _collection_perf_filenames(collection):
+            perf_path = Path(perf_filename)
+            if not perf_path.is_absolute():
+                perf_path = output_root / perf_path
+            if perf_path.name.endswith("_perf.txt"):
+                producers_by_output.setdefault(perf_path, []).append(collection)
 
     pending_outputs: set[Path] = set()
     for perf_path, producers in producers_by_output.items():
         staging_present = perf_path.exists() or perf_path.is_symlink()
         has_pending_attempts = False
+        has_completed_cases = False
         for collection in producers:
             resume_tracker = _load_selected_producer_checkpoint(
                 collection,
@@ -2903,8 +3179,20 @@ def _pending_resume_perf_outputs(
                 context="resume finalization",
             )
             has_pending_attempts = has_pending_attempts or bool(resume_tracker and resume_tracker._attempted)
+            has_completed_cases = has_completed_cases or bool(resume_tracker and resume_tracker._done)
         if has_pending_attempts:
             if perf_path.is_symlink() or not perf_path.is_file():
+                if not has_completed_cases:
+                    # Every attempted case of every producer failed (e.g. a lane guard
+                    # rejecting the whole shard: sglang moe/int4_wo on 0.5.21/SM100,
+                    # job 469988017): there is legitimately nothing staged. The failures
+                    # are already in the error report; do not turn them into a
+                    # finalization crash that also hides the other tables of the run.
+                    logger.warning(
+                        f"resume finalization: {perf_path} has an open checkpoint event but no completed case "
+                        "and no staging table — all attempted cases failed; nothing to finalize for it"
+                    )
+                    continue
                 raise RuntimeError(
                     f"resume finalization: open checkpoint event has no regular staging table {perf_path}"
                 )
@@ -3042,10 +3330,11 @@ def _preflight_collector_finalization_inputs(
     }
     producers_by_path: dict[Path, list[dict]] = {}
     for collection in provenance_ctx.get("collections") or []:
-        staging_path = Path(str(collection["perf_filename"]))
-        if not staging_path.is_absolute():
-            staging_path = output_root / staging_path
-        producers_by_path.setdefault(staging_path, []).append(collection)
+        for perf_filename in _collection_perf_filenames(collection):
+            staging_path = Path(perf_filename)
+            if not staging_path.is_absolute():
+                staging_path = output_root / staging_path
+            producers_by_path.setdefault(staging_path, []).append(collection)
 
     producer_plan: dict[Path, _ProducerCheckpointPlan] = {}
     seen_attempted_case_ids: set[str] = set()
@@ -3067,7 +3356,7 @@ def _preflight_collector_finalization_inputs(
             )
             if resume_tracker is not None:
                 checkpoint_path = resume_tracker._path
-                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, staging_path.stem)
+                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, _collection_tables(collection))
                 prior_plan = producer_plan.get(checkpoint_path)
                 if prior_plan is None:
                     duplicate_case_ids = set(checkpoint_plan.attempted) & seen_attempted_case_ids
@@ -3234,7 +3523,7 @@ def _perf_checkpoint_record(record: _ProducerCheckpointPlan) -> dict:
         "digest": record.attestation.digest,
         "device": record.attestation.device,
         "inode": record.attestation.inode,
-        "table": record.table,
+        "tables": list(record.tables),
         "done": sorted(record.done),
         "failed": sorted(record.failed),
         "attempted": sorted(record.attempted),
@@ -3292,7 +3581,7 @@ def _validate_perf_transaction_document(
             "digest",
             "device",
             "inode",
-            "table",
+            "tables",
             "done",
             "failed",
             "attempted",
@@ -3300,6 +3589,14 @@ def _validate_perf_transaction_document(
         }
         if not isinstance(checkpoint, dict) or set(checkpoint) != expected_fields:
             raise RuntimeError(f"Invalid collector perf checkpoint record in {journal_path}")
+        recorded_tables = checkpoint["tables"]
+        if (
+            not isinstance(recorded_tables, list)
+            or not recorded_tables
+            or any(not isinstance(table, str) or not table for table in recorded_tables)
+            or len(recorded_tables) != len(set(recorded_tables))
+        ):
+            raise RuntimeError(f"Invalid collector perf checkpoint tables in {journal_path}")
         attestation = _attestation_from_record(
             {field: checkpoint[field] for field in ("path", "digest", "device", "inode")},
             None,
@@ -3310,8 +3607,8 @@ def _validate_perf_transaction_document(
         if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
             raise RuntimeError(f"Invalid collector perf checkpoint identity in {journal_path}")
         expected_path = _checkpoint_path(checkpoint_root, identity["module"])
-        table = _registered_checkpoint_table(identity, backend=backend)
-        if attestation.path != expected_path or checkpoint["table"] != table or table not in tables:
+        owned_tables = _registered_checkpoint_tables(identity, backend=backend)
+        if attestation.path != expected_path or set(recorded_tables) != owned_tables or not owned_tables <= tables:
             raise RuntimeError(f"Unowned collector perf checkpoint in {journal_path}: {attestation.path}")
         if attestation.path in seen_checkpoint_paths:
             raise RuntimeError(f"Duplicate collector perf checkpoint in {journal_path}: {attestation.path}")
@@ -3329,10 +3626,10 @@ def _validate_perf_transaction_document(
         if attempted & seen_attempted or (not attempted and not (checkpoint["done"] or checkpoint["failed"])):
             raise RuntimeError(f"Invalid collector perf checkpoint attempts in {journal_path}")
         if attempted:
-            attempted_tables.add(table)
+            attempted_tables.update(owned_tables)
         seen_checkpoint_paths.add(attestation.path)
         seen_attempted.update(attempted)
-    if {checkpoint["table"] for checkpoint in checkpoint_records} != tables:
+    if {table for checkpoint in checkpoint_records for table in checkpoint["tables"]} != tables:
         raise RuntimeError(f"Collector perf transaction tables lack checkpoint owners in {journal_path}")
     if attempted_tables != tables:
         raise RuntimeError(f"Collector perf transaction tables lack attempted checkpoint case IDs in {journal_path}")
@@ -3967,7 +4264,7 @@ def _validated_transaction_checkpoints(
                 raise ValueError("attempted case IDs must be unique across checkpoint participants")
             if not isinstance(identity, dict) or set(identity) != set(_CHECKPOINT_IDENTITY_FIELDS):
                 raise TypeError(f"checkpoint identity must contain exactly {_CHECKPOINT_IDENTITY_FIELDS!r}")
-            table = _registered_checkpoint_table(identity, backend=backend)
+            tables = tuple(sorted(_registered_checkpoint_tables(identity, backend=backend)))
             checkpoint_path = Path(path_text)
             expected_path = _checkpoint_path(checkpoint_root, identity["module"])
             if path_text != str(expected_path) or checkpoint_path in seen_checkpoint_paths:
@@ -3976,12 +4273,12 @@ def _validated_transaction_checkpoints(
             raise RuntimeError(f"Invalid checkpoint participant in {journal_path}: {error}") from error
         seen_checkpoint_paths.add(checkpoint_path)
         seen_attempted_case_ids.update(attempted_case_ids)
-        parsed_participants.append((checkpoint_path, identity, recorded_ledgers, attempted_case_ids, table))
+        parsed_participants.append((checkpoint_path, identity, recorded_ledgers, attempted_case_ids, tables))
 
     validated_participants: list[_ValidatedCheckpoint] = []
     with _locked_checkpoint_root(checkpoint_root) as locked:
         preflight_participants = []
-        for checkpoint_path, identity, recorded_ledgers, attempted_case_ids, table in parsed_participants:
+        for checkpoint_path, identity, recorded_ledgers, attempted_case_ids, tables in parsed_participants:
             try:
                 canonical_path = _checkpoint_path_in_locked_directory(checkpoint_path, locked)
                 effective_state = _effective_checkpoint_state_at(
@@ -4008,14 +4305,14 @@ def _validated_transaction_checkpoints(
             preflight_participants.append(
                 (
                     checkpoint_path,
-                    table,
+                    tables,
                     attempted_case_ids,
                     checkpoint,
                     effective_state,
                 )
             )
 
-        for checkpoint_path, table, attempted_case_ids, checkpoint, effective_state in preflight_participants:
+        for checkpoint_path, tables, attempted_case_ids, checkpoint, effective_state in preflight_participants:
             canonical_path = _checkpoint_path_in_locked_directory(checkpoint_path, locked)
             _require_effective_checkpoint_state_at(
                 locked.file_descriptor,
@@ -4035,7 +4332,7 @@ def _validated_transaction_checkpoints(
             validated_participants.append(
                 _ValidatedCheckpoint(
                     attestation=snapshot.attest(checkpoint_path),
-                    table=table,
+                    tables=tables,
                     attempted=frozenset(attempted_case_ids),
                     document=checkpoint,
                 )
@@ -4067,7 +4364,8 @@ def _validate_transaction_table_ownership(
     allowed_staging_by_table = {Path(str(perf_file)).stem: output_root / str(perf_file) for perf_file in PerfFile}
     checkpoints_by_table: dict[str, list[_ValidatedCheckpoint]] = {}
     for checkpoint in checkpoints:
-        checkpoints_by_table.setdefault(checkpoint.table, []).append(checkpoint)
+        for table in checkpoint.tables:
+            checkpoints_by_table.setdefault(table, []).append(checkpoint)
     if any(table not in allowed_staging_by_table for table in checkpoints_by_table):
         raise RuntimeError(f"Invalid table in collector sidecar transaction {journal_path}")
     expected_staging_paths = {allowed_staging_by_table[table] for table in checkpoints_by_table}
@@ -5385,7 +5683,8 @@ def _commit_collector_provenance_transaction(
         journal_attestation=journal_attestation,
         locked_output_root=locked_output_root,
     )
-    logger.info(f"Wrote collector provenance sidecar: {meta_path}")
+    if logger is not None:
+        logger.info(f"Wrote collector provenance sidecar: {meta_path}")
     for checkpoint in participants:
         _close_checkpoint_attempts(
             checkpoint.path,
@@ -5478,15 +5777,16 @@ def _write_collector_provenance(
     module_by_table: dict[str, str] = {}
     staging_by_table: dict[str, Path] = {}
     for collection in collections:
-        table = Path(str(collection["perf_filename"])).stem
         full_name = f"{collection['name']}.{collection['type']}"
-        ops_by_table.setdefault(table, []).append(full_name)
         collection_by_full_name[full_name] = collection
-        module_by_table.setdefault(table, collection["module"])
-        staging_path = Path(str(collection["perf_filename"]))
-        if not staging_path.is_absolute():
-            staging_path = output_root / staging_path
-        staging_by_table.setdefault(table, staging_path)
+        for perf_filename in _collection_perf_filenames(collection):
+            table = Path(perf_filename).stem
+            ops_by_table.setdefault(table, []).append(full_name)
+            module_by_table.setdefault(table, collection["module"])
+            staging_path = Path(perf_filename)
+            if not staging_path.is_absolute():
+                staging_path = output_root / staging_path
+            staging_by_table.setdefault(table, staging_path)
 
     module_failure_names = {e["module"] for e in run_errors if e.get("error_type") == "ModuleCollectionFailure"}
     checkpoint_root = _checkpoint_backend_root(checkpoint_dir, backend)
@@ -5506,7 +5806,8 @@ def _write_collector_provenance(
         full_names = ops_by_table.get(table)
         module = module_by_table.get(table)
         if not full_names or module is None:
-            logger.warning(f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry")
+            if logger is not None:
+                logger.warning(f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry")
             continue
 
         if parquet_path not in finalization_info:
@@ -5544,7 +5845,7 @@ def _write_collector_provenance(
                 )
                 if resume_tracker is None:
                     continue
-                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, table)
+                checkpoint_plan = _producer_checkpoint_plan(resume_tracker, _collection_tables(collection))
             else:
                 resume_tracker = _resume_tracker_for_collection(
                     collection,
@@ -5556,7 +5857,7 @@ def _write_collector_provenance(
                 checkpoint_plan = producer_plan.get(resume_tracker._path)
                 if (
                     checkpoint_plan is None
-                    or checkpoint_plan.table != table
+                    or table not in checkpoint_plan.tables
                     or checkpoint_plan.identity_dict() != resume_tracker._metadata
                 ):
                     raise RuntimeError(
@@ -5903,6 +6204,24 @@ def main():
         "Ephemeral healing filter — never persisted to YAML.",
     )
     parser.add_argument(
+        "--cases-from",
+        type=str,
+        default=None,
+        metavar="FILE",
+        help="Failure replay: run exactly the cases listed in FILE — an errors_*.json[.gz] or "
+        "collection_summary_*.json[.gz] from an earlier run, a JSON list of case strings, or one case per "
+        "line — matched by exact case string. Writes collector_replay.json beside the results; such a run "
+        "is a diagnosis and must never ship.",
+    )
+    parser.add_argument(
+        "--replay-control",
+        type=int,
+        default=0,
+        metavar="N",
+        help="With --cases-from: also run N random cases per op that were NOT requested (seed 42) as a "
+        "control group for before/after comparison.",
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Print the collector v2 case plan and exit without running collectors.",
@@ -5998,7 +6317,9 @@ def main():
         os.environ.pop("COLLECTOR_MODEL_PATH", None)
 
     # Setup logging - debug flag is handled inside setup_logging
-    if logger is None:
+    global _LOGGER_CONFIGURED
+    if not _LOGGER_CONFIGURED:
+        _LOGGER_CONFIGURED = True
         if args.model_cases_full:
             log_scope = ["model_cases_full"]
         else:
@@ -6112,6 +6433,8 @@ def main():
         resolved = path.resolve()
         return resolved not in existing_perf_outputs or path.stat().st_mtime_ns != existing_perf_outputs[resolved]
 
+    replay = _load_replay_spec(args, logger)
+
     # Use profiling context manager
     with ProfilerContext(args.backend, enabled=args.profile):
         collect_backend = {"trtllm": collect_trtllm, "sglang": collect_sglang, "vllm": collect_vllm}[args.backend]
@@ -6125,7 +6448,9 @@ def main():
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=args.case_filters,
+            replay=replay,
         )
+    _finish_replay(replay, output_root, logger)
 
     converted: list[Path] = []
     if args.keep_csv:
