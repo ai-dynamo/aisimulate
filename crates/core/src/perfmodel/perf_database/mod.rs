@@ -541,7 +541,7 @@ impl PerfDatabase {
                 oneccl_root,
                 &resolver,
             )?,
-            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?,
+            dsa: DsaTable::with_sources(data_root.clone(), &resolver)?.with_backend(backend),
             dsv4: Dsv4Table::with_sources(data_root.clone(), &resolver)?,
             // Exact backend/version only: V41 module provenance must not be
             // inherited from legacy or sibling runtime measurements.

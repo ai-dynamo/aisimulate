@@ -1,15 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: Accuracy Slack Daily
+name: Accuracy Slack Weekly
 
 on:
-  workflow_run:
-    workflows: [E2E Accuracy Matrix, FPM Accuracy Matrix]
-    types: [completed]
   schedule:
-    # 09:00 Los Angeles is 16:00 UTC in summer, 17:00 in winter.
-    # The script checks the actual local deadline. Rechecks resume interrupted delivery.
-    - cron: "0,30 16-18 * * *"
+    # One Monday report; rechecks resume interrupted delivery without reposting.
+    - cron: "0,30 9-11 * * 1"
+      timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
       mode:
@@ -41,10 +38,7 @@ jobs:
       ((github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'dry-run' || github.ref == 'refs/heads/main')) ||
        (vars.SLACK_ACCURACY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
-        (github.event_name == 'schedule' ||
-         (github.event.workflow_run.event == 'schedule' &&
-          github.event.workflow_run.head_branch == 'main' &&
-          github.event.workflow_run.head_repository.full_name == github.repository))))
+        github.event_name == 'schedule'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

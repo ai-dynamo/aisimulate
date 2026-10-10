@@ -4730,6 +4730,7 @@ mod tests {
                 0,
                 op.num_heads as i64,
                 skip,
+                engine.database().dsa.reuse_sol_policy,
                 flops,
             )
         };

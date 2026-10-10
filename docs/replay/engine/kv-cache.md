@@ -237,9 +237,10 @@ the request recomputes the missing part instead. Each time this happens
 
 ## State cache
 
-Models with recurrent layers (such as Kimi K3's KDA layers) keep a fixed-size
-state per request in addition to per-token KV. `state_cache` reserves that state
-in the same G1 pool. The fragment below goes under
+Hybrid-KV models keep a fixed-size state per request in addition to per-token
+KV: the recurrent state of Kimi K3's KDA layers, or the sliding-window KV and
+compressor states of DeepSeek V4. `state_cache` reserves that state in the same
+G1 pool. The fragment below goes under
 `engine.workers.aggregated`, or under both `prefill` and `decode` for P/D:
 
 ```yaml
@@ -256,7 +257,8 @@ This gives eight 1024-byte blocks. Each request's state takes two blocks
 | Knob | Default | Rules |
 |---|---|---|
 | `state_cache.bytes_per_request` | Inferred | State bytes per request per rank. When set, `block_size` and numeric `bytes_per_token` must also be set. |
-| `state_cache.mamba_cache_dtype` | `auto` | `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
+| `state_cache.mamba_cache_dtype` | `auto` | Kimi K3 only. `auto` (model dtype), `float16` or `float32`. Used when bytes are inferred. |
+| `state_cache.indexer_cache_dtype` | `auto` | DeepSeek V4 only. `auto` (vLLM's FP8), `fp8` or `mxfp4`; vLLM supports `mxfp4` only on Blackwell datacenter GPUs. Used when bytes are inferred. |
 | `prefix_match_unit` | Unset (`block_size`) | Positive divisor of `block_size`. Lets prefixes match at a finer granularity than the physical block. |
 
 `state_cache: {}` infers Kimi K3 geometry from the model. `block_size` is then
@@ -269,6 +271,21 @@ from aisimulate_core.sdk import estimate_state_cache
 
 state = estimate_state_cache("moonshotai/Kimi-K3", tp_size=8, kvcache_quant_mode="fp8", block_size=128)
 ```
+
+For DeepSeek V4, `state_cache: {}` follows vLLM's allocation. vLLM stores
+`fp8_ds_mla` KV and gives every cache group the same pool row, as wide as the
+widest group. A request holds one row per 256 tokens of compressed KV and
+indexer keys (`block_size` 256, `bytes_per_token` one row per 256 tokens), plus
+a 26-row state for its sliding-window groups (SWA KV and compressor states). For
+DeepSeek-V4-Flash, 1,002,240-byte rows give 3915 bytes per token and a
+26,058,240-byte state on every TP rank.
+Leave `block_size` and `bytes_per_token` unset. Speculative decoding (`nextn`
+or `speculation`) widens each sliding window by the draft tokens, so one draft
+token gives 30 rows. These are modeling assumptions: 26 rows is vLLM's decode
+peak (it dips to 24 between window blocks), vLLM also holds sliding-window slots
+for every token of a prefill chunk until the next step (3,360 rows for an
+8,192-token chunk), and a prefix hit restores 22 of the 26 rows. None of these
+is modeled.
 
 Prefix reuse resumes from a stored state snapshot, so it does not land on every
 matching token. With `block_size: 1536` and `prefix_match_unit: 128`, a cold
@@ -287,7 +304,8 @@ than the padded `bytes_per_request` for Kimi K3 at TP8), transfers it after all
 but the last prompt token and recomputes that token on the decode worker. Replay
 transfers the state for the whole prompt and does not model the recompute.
 
-Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`.
+Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
+inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
 Rejected: `recommend`, G2/G3 offload, and speculative decoding with
 `prefix_match_unit`.
 

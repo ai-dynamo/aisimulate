@@ -3,6 +3,7 @@
 """Build the pinned Dynamo replay adapter against one exact AISimulate checkout."""
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -12,6 +13,48 @@ from pathlib import Path
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
 
 
+# Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 handoff adapter:
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/handoff.rs
+# Modifies only the CI-built legacy token-KV DTO conversion, not engine scheduling.
+def patch_handoff_timing(core: Path, dynamo: Path) -> dict:
+    path = dynamo / "lib/mocker/src/common/handoff.rs"
+    original = path.read_bytes()
+    if hashlib.sha256(original).hexdigest() != "99a2097d671f4a26dbd1761a44858a19f62ced37dd9209858627b2a289d7937d":
+        raise ValueError("pinned Dynamo handoff adapter differs from reviewed source")
+    api = (core / "src/engine/handoff.rs").read_text()
+    match = re.search(r"pub struct HandoffTransferTiming\s*\{([^{}]*)\}", api)
+    fields = dict(re.findall(r"^\s*pub (\w+): ([^\n,]+),\s*$", match[1], re.MULTILINE)) if match else {}
+    legacy = {
+        "mode": "TransferTimingMode",
+        "full_prompt_tokens": "usize",
+        "kv_bytes_per_token": "Option<usize>",
+        "bandwidth_gb_s": "Option<f64>",
+    }
+    if fields not in (legacy, legacy | {"state_bytes": "usize"}):
+        raise ValueError("unreviewed AISimulate handoff API; update the pinned adapter")
+    patched = original
+    if "state_bytes" in fields:
+        anchor = b"        kv_bytes_per_token: timing.kv_bytes_per_token,\n"
+        if original.count(anchor) != 1:
+            raise ValueError("pinned handoff conversion anchor is not unique")
+        patched = original.replace(
+            anchor,
+            anchor
+            + (
+                b"        // Modified by AISimulate CI: this legacy DTO models token KV only.\n"
+                b"        state_bytes: 0,\n"
+            ),
+        )
+        path.write_bytes(patched)
+    return {
+        "path": str(path.relative_to(dynamo)),
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(patched).hexdigest(),
+        "token_only_state_bytes": 0,
+        "api_has_state_bytes": "state_bytes" in fields,
+    }
+
+
 def build(source: Path, dynamo: Path, output: Path) -> None:
     source, dynamo, output = source.resolve(), dynamo.resolve(), output.resolve()
     revision = subprocess.check_output(["git", "-C", str(dynamo), "rev-parse", "HEAD"], text=True).strip()
@@ -19,6 +62,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
         raise ValueError("unexpected Dynamo revision")
     subprocess.run(["git", "-C", str(dynamo), "diff", "--exit-code", "HEAD"], check=True)
     core = source / "crates/core"
+    handoff_compatibility = patch_handoff_timing(core, dynamo)
     bindings = dynamo / "lib/bindings/python"
     for manifest, options in (
         (dynamo / "Cargo.toml", ""),
@@ -74,6 +118,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
                     ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
                 ).strip(),
                 "features": ["ais-forward-pass"],
+                "handoff_compatibility": handoff_compatibility,
             },
             indent=2,
         )
