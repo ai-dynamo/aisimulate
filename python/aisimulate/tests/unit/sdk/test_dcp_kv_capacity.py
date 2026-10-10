@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aisimulate_core.sdk.memory import kv_cache as memory
+from aisimulate_core.sdk import memory
 
 pytestmark = pytest.mark.unit
 

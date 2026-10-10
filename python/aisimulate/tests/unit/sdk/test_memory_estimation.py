@@ -30,7 +30,7 @@ pytestmark = pytest.mark.unit
 # extension (e.g. the FPM pyclass).
 pytest.importorskip("aisimulate_core")
 
-from aisimulate.sdk.memory import kv_cache as memory
+from aisimulate.sdk import memory
 
 _GIB = 1 << 30
 

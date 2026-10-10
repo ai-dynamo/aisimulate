@@ -13,10 +13,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, fpm_profile, utils
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, fpm_profile, memory, utils
 from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
-from aisimulate_core.sdk.memory import kv_cache as memory
 
 pytestmark = pytest.mark.unit
 
