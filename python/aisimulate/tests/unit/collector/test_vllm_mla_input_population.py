@@ -58,6 +58,87 @@ def test_materialization_rejects_meta_runtime_buffer_without_a_constructor_value
         move(module, "cpu")
 
 
+class _Rotary:
+    """Stand-in for vLLM's RotaryEmbeddingBase: a non-persistent cos/sin table built by a
+    device-free recipe in __init__ (rotary_embedding/base.py:60-63 @ v0.30.0)."""
+
+    def __new__(cls, torch, scale, dtype):
+        class Rotary(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.scale = scale
+                self.register_buffer("cos_sin_cache", self._compute_cos_sin_cache().to(dtype), persistent=False)
+
+            def _compute_cos_sin_cache(self):
+                return torch.arange(6, dtype=torch.float32).reshape(3, 2) * self.scale
+
+        return Rotary()
+
+
+def _meta_attention_module(torch):
+    # Serving-parity construction instantiates the model under torch.device("meta"): the
+    # two rotary tables (rotary_emb, indexer_rope_emb) and the KV-quant scale buffers that
+    # MLAAttention registers (attention.py:129-135,184 @ v0.30.0) are all meta.
+    with torch.device("meta"):
+        module = torch.nn.Module()
+        module.projection = torch.nn.Linear(4, 4)
+        module.rotary_emb = _Rotary(torch, 1.0, torch.bfloat16)
+        module.indexer_rope_emb = _Rotary(torch, 0.5, torch.float32)
+        module.mla_attn = torch.nn.Module()
+        for scale in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+            module.mla_attn.register_buffer(scale, torch.tensor(1.0, dtype=torch.float32))
+        module.mla_attn._k_scale_cpu = torch.tensor(1.0, dtype=torch.float32)
+        module.mla_attn._v_scale_cpu = torch.tensor(1.0, dtype=torch.float32)
+    return module
+
+
+def test_materialization_rebuilds_meta_rotary_tables_and_quant_scales_from_the_owner_recipe(torch):
+    module = _meta_attention_module(torch)
+    assert module.rotary_emb.cos_sin_cache.is_meta and module.mla_attn._k_scale.is_meta
+
+    move = _load_function("_move_module_preserving_buffers", torch)
+    moved = move(module, "cpu")
+
+    recipe = torch.arange(6, dtype=torch.float32).reshape(3, 2)
+    assert moved is module
+    assert not moved.projection.weight.is_meta
+    assert moved.rotary_emb.cos_sin_cache.dtype == torch.bfloat16
+    assert torch.equal(moved.rotary_emb.cos_sin_cache, recipe.to(torch.bfloat16))
+    assert moved.indexer_rope_emb.cos_sin_cache.dtype == torch.float32
+    assert torch.equal(moved.indexer_rope_emb.cos_sin_cache, recipe * 0.5)
+    assert "rotary_emb.cos_sin_cache" not in moved.state_dict()
+    for scale in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+        tensor = getattr(moved.mla_attn, scale)
+        assert not tensor.is_meta and tensor.dtype == torch.float32 and tensor.item() == 1.0
+        assert f"mla_attn.{scale}" in moved.state_dict()
+    assert moved.mla_attn._k_scale_cpu.device.type == "cpu" and moved.mla_attn._k_scale_cpu.item() == 1.0
+    assert moved.mla_attn._v_scale_cpu.item() == 1.0
+
+
+def test_materialization_handles_a_rotary_shared_between_attention_and_indexer(torch):
+    # get_rope() caches instances per argument tuple, so both names can hold one module.
+    with torch.device("meta"):
+        module = torch.nn.Module()
+        module.projection = torch.nn.Linear(4, 4)
+        shared = _Rotary(torch, 2.0, torch.bfloat16)
+        module.rotary_emb = shared
+        module.indexer_rope_emb = shared
+    move = _load_function("_move_module_preserving_buffers", torch)
+    moved = move(module, "cpu")
+    recipe = (torch.arange(6, dtype=torch.float32).reshape(3, 2) * 2.0).to(torch.bfloat16)
+    assert moved.rotary_emb is moved.indexer_rope_emb
+    assert torch.equal(moved.indexer_rope_emb.cos_sin_cache, recipe)
+
+
+def test_materialization_refuses_a_meta_buffer_whose_owner_has_no_recipe(torch):
+    module = _meta_attention_module(torch)
+    with torch.device("meta"):
+        module.register_buffer("block_table_cache", torch.zeros(4), persistent=False)
+    move = _load_function("_move_module_preserving_buffers", torch)
+    with pytest.raises(RuntimeError, match="uninitialized meta buffer.*block_table_cache"):
+        move(module, "cpu")
+
+
 @pytest.mark.parametrize("dtype_name", ["float8_e4m3fn", "float8_e5m2"])
 def test_synthetic_fp8_weights_produce_nonzero_queries_without_changing_buffers_or_rng(dtype_name, torch):
     def make_module():

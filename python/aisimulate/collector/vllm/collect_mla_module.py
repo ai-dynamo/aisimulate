@@ -462,12 +462,57 @@ def _create_gemm_quant_config(gemm_type: str):
 
 
 def _move_module_preserving_buffers(module, device):
-    """Materialize meta weights without discarding initialized runtime buffers."""
+    """Materialize meta weights without discarding initialized runtime buffers.
+
+    Two construction paths reach here. The explicit-class path builds the
+    module on the host, so only serialized block-scaled FP8 weights are meta
+    and every buffer already holds its constructor value. The serving-parity
+    path instantiates the framework's whole model under torch.device("meta")
+    (_create_attention_module), so its buffers are meta as well, and each is
+    rebuilt from its owner's own constructor recipe:
+
+    - rotary cos/sin tables: `rotary_emb` and `indexer_rope_emb` on
+      DeepseekV32Attention (models/deepseek_v32/attention.py:272-283
+      @ v0.30.0), registered non-persistent by rotary_embedding/base.py:60-63
+      and deepseek_scaling_rope.py:241-242 from a device-free recipe
+      (_compute_cos_sin_cache: torch.arange / einsum on the default device),
+      cast to the dtype the constructor chose (the meta tensor carries it);
+    - KV-quant scales `_k_scale/_v_scale/_q_scale/_prob_scale` that
+      MLAAttention registers through _init_kv_cache_quant ->
+      set_default_quant_scales(register_buffer=True) as 1.0 fp32
+      (layers/attention/attention.py:129-135,184 @ v0.30.0), together with
+      the `<name>_cpu` host copies the same call keeps beside them.
+
+    Any other meta buffer is refused rather than filled: a filled table
+    silently changes what the kernels see (the pre-#404 collector filled RoPE
+    with 0.01 and these scales with 0.5).
+    """
     if not any(parameter.is_meta for parameter in module.parameters()):
         return module.to(device)
-    buffers = dict(module.named_buffers())
-    if any(buffer.is_meta for buffer in buffers.values()):
-        raise RuntimeError("Cannot preserve an uninitialized meta buffer in the attention module")
+    buffers = {}
+    for name, buffer in module.named_buffers():
+        if buffer.is_meta:
+            parent_name, _, local_name = name.rpartition(".")
+            owner = module.get_submodule(parent_name) if parent_name else module
+            recompute = getattr(owner, "_compute_cos_sin_cache", None)
+            if local_name in ("_k_scale", "_v_scale", "_q_scale", "_prob_scale"):
+                buffer = torch.ones(buffer.shape, dtype=buffer.dtype)
+                host_name = f"{local_name}_cpu"
+                if getattr(getattr(owner, host_name, None), "is_meta", False):
+                    setattr(owner, host_name, torch.ones((), dtype=torch.float32))
+            elif local_name.startswith("cos_sin_cache") and callable(recompute):
+                table = recompute()
+                if table.is_meta or tuple(table.shape) != tuple(buffer.shape):
+                    raise RuntimeError(
+                        f"Rotary table rebuilt for {name} is {tuple(table.shape)} on {table.device}; "
+                        f"the constructor registered {tuple(buffer.shape)}"
+                    )
+                buffer = table.to(dtype=buffer.dtype)
+            else:
+                raise RuntimeError(
+                    f"Cannot preserve an uninitialized meta buffer in the attention module: {name}"
+                )
+        buffers[name] = buffer
     module = module.to_empty(device=torch.device(device))
     for name, buffer in buffers.items():
         parent_name, _, local_name = name.rpartition(".")
@@ -789,7 +834,10 @@ def _create_attention_module(
 
     # Serialized block-scaled FP8 creates weight params on meta device;
     # to_empty() also discards already-initialized buffers. Preserve their
-    # constructor values, including nonpersistent RoPE tables, across it.
+    # constructor values, including nonpersistent RoPE tables, across it. On
+    # the serving-parity path above the whole module is meta, so the RoPE
+    # tables and KV-quant scales are rebuilt from their owners' constructor
+    # recipe instead of preserved.
     attn_module = _move_module_preserving_buffers(attn_module, device)
     attn_module.eval()
     attn_module.requires_grad_(False)
