@@ -16,7 +16,8 @@ from types import SimpleNamespace
 import pytest
 
 import aisimulate.sdk.models.helpers as helpers
-from aisimulate.sdk import common, config, inference_session, memory, models, pareto_analysis, sweep
+from aisimulate.sdk import common, config, inference_session, models, pareto_analysis, sweep
+from aisimulate.sdk.memory import kv_cache as memory
 from aisimulate.sdk.models import resolve_context_fmha_by_data
 from aisimulate_core.sdk import models as canonical_models
 

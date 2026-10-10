@@ -34,7 +34,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from .common import indexer_cache_entry_bytes
+from ..common import indexer_cache_entry_bytes
 
 VLLM_REVISION = "c5c116138267ac738bc262495326d28ffff834a2"
 # FlashMLA and the indexer support only 256-token kernel blocks, and the

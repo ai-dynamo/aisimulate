@@ -29,7 +29,7 @@ def resolve_state_size(engine: EnginePredictionConfig, worker: WorkerPredictionC
             pp_size=worker.parallelism.pipeline,
             block_size=cache.block_size,
             kv_bytes_per_token=None if cache.bytes_per_token == "auto" else cache.bytes_per_token,
-            kvcache_quant_mode=engine.kvcache_quant_mode,
+            kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
             mamba_cache_dtype=sizing.mamba_cache_dtype,
             indexer_cache_dtype=sizing.indexer_cache_dtype,
             num_speculative_tokens=engine.speculation.num_speculative_tokens if engine.speculation else engine.nextn,

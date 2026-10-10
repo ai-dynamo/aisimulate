@@ -1821,7 +1821,7 @@ def test_replay_policy_alias_requires_a_boolean(field):
 
 
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aisimulate_core.sdk import memory
+    from aisimulate_core.sdk.memory import kv_cache as memory
 
     calls = []
     estimate = {

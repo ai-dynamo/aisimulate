@@ -1080,7 +1080,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 ## vLLM Kimi KDA state sizing
 
-`src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
+`src/aisimulate_core/sdk/memory/kimi_k3.py` and the cache-dtype controls in
 `src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
@@ -1102,7 +1102,7 @@ https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc3
 
 ## vLLM DeepSeek V4 cache sizing
 
-`src/aisimulate_core/sdk/deepseek_v4_state.py` and the indexer cache-dtype
+`src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
 control in `src/aisimulate/config/engine.py` are adapted and modified from vLLM
 commit `c5c116138267ac738bc262495326d28ffff834a2`. Original paths:
 `vllm/models/deepseek_v4/attention.py`, `vllm/models/deepseek_v4/compressor.py`,

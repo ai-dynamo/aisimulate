@@ -177,7 +177,7 @@ def test_sweeper_capacity_preserves_source_through_model_config(monkeypatch):
     from aisimulate.sweeper import kv_estimate
     from aisimulate.sweeper.parallel_enum import ParallelShape
     from aisimulate.sweeper.search_space import _engine_memory_kwargs
-    from aisimulate_core.sdk import memory
+    from aisimulate_core.sdk.memory import kv_cache as memory
 
     space = SearchSpace(model_name="Qwen/Qwen3-30B-A3B", hardware_sku="b200_sxm", moe_kernel_source=SOURCE)
     captured = {}

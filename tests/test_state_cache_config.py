@@ -608,6 +608,22 @@ def test_auto_dsv4_geometry_reaches_native_wire(
     assert EngineReplayRunnerFactory().create(0).run(spec).metrics["completed_requests"] == 1
 
 
+@pytest.mark.parametrize(("global_dtype", "worker_dtype"), [("bfloat16", "fp8"), ("fp8", "bfloat16")])
+def test_auto_state_sizes_the_worker_kv_dtype(auto_dsv4_payload, forbid_estimators, global_dtype, worker_dtype):
+    # The worker's dtype overrides the global one, as it does for compute.
+    auto_dsv4_payload["engine"].update(hardware="b200_sxm", kvcache_quant_mode=global_dtype)
+    worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
+    worker.update(timing={"type": "default", "kvcache_quant_mode": worker_dtype})
+    worker["parallelism"]["moe_expert"] = 8
+    config = CorePredictionConfig.model_validate(auto_dsv4_payload)
+    if worker_dtype != "fp8":
+        with pytest.raises(ValueError, match="fp8_ds_mla"):
+            prediction_to_replay_spec(config)
+        return
+    args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+    assert args["state_cache"] == {"bytes_per_request": 26058240}
+
+
 def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estimators):
     # MTP needs default timing; B200 has the DeepSeek V4 vLLM data.
     auto_dsv4_payload["engine"].update(hardware="b200_sxm", nextn=1, nextn_accepted=1.0)
