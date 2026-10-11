@@ -13,6 +13,7 @@ __compat__ = "trtllm>=1.3.0rc20"
 
 import gc
 import glob
+import importlib
 import inspect
 import json
 import os
@@ -70,6 +71,45 @@ aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 
 moe_tune_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "moe_tuned_cache_path")
 _TRTLLM_VERSION = tensorrt_llm.__version__
+
+
+_DEEPGEMM_WORKSPACE_POOL_WARNED = False
+
+
+def _clear_deepgemm_moe_workspaces() -> None:
+    """Drop DeepGEMM's fp8_block MoE workspace pool between token counts.
+
+    DeepGemmFusedMoE sizes its workspaces per num_tokens and parks every size
+    in the memory_buffer_utils pool (``DeepGemmFusedMoE.buffers``); left alone
+    over the 27-token-count sweep the pool reached 251 GB on gb300 and the
+    next 63 GiB request OOMed (2026-10-11: gb300 60 / gb200 108 fp8_block
+    cases, Kimi-K2 / DeepSeek-V3 geometries). 1.3.0rc29 moved the module from
+    ``_torch.modules.fused_moe`` to ``_torch.moe.fused_moe``; the previous
+    single-path import failed silently inside a try/except and the pool was
+    never cleared. Both layouts are tried here and an unreachable pool is
+    reported once instead of swallowed.
+    """
+    global _DEEPGEMM_WORKSPACE_POOL_WARNED
+    cls = None
+    for module_name in (
+        "tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm",  # >= 1.3.0rc29
+        "tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm",  # < rc29
+    ):
+        try:
+            cls = importlib.import_module(module_name).DeepGemmFusedMoE
+            break
+        except (ImportError, AttributeError):
+            continue
+    pool = getattr(getattr(cls, "buffers", None), "buffers", None)
+    if pool is None:
+        if not _DEEPGEMM_WORKSPACE_POOL_WARNED:
+            _DEEPGEMM_WORKSPACE_POOL_WARNED = True
+            print(
+                "[trtllm-moe] DeepGemmFusedMoE workspace pool is not reachable on this TRT-LLM build; "
+                "fp8_block MoE workspaces will accumulate across token counts"
+            )
+        return
+    pool.clear()
 
 
 def _moe_model_behavior(model_name: str) -> str:
@@ -791,18 +831,7 @@ def run_moe_torch(
 
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":
-        try:
-            try:
-                from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-            except ModuleNotFoundError:  # < rc29 layout
-                try:
-                    from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-                except ModuleNotFoundError:  # < rc29 layout
-                    from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-
-            DeepGemmFusedMoE.buffers.buffers.clear()
-        except (ImportError, AttributeError):
-            pass
+        _clear_deepgemm_moe_workspaces()
         torch.cuda.empty_cache()
 
     for num_tokens in num_tokens_lists:
@@ -919,12 +948,7 @@ def run_moe_torch(
             del actual_logits
         del hidden_states
         if moe_type == "fp8_block" and num_tokens != max_tokens:
-            try:
-                from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
-
-                DeepGemmFusedMoE.buffers.buffers.clear()
-            except (ImportError, AttributeError):
-                pass
+            _clear_deepgemm_moe_workspaces()
             torch.cuda.empty_cache()
 
     if os.getenv("TRTLLM_MOE_RESTART_WORKER", "1") != "0":

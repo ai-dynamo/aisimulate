@@ -90,6 +90,7 @@ from inspect import Parameter, signature
 from pathlib import Path
 
 from helper import (
+    EXIT_CODE_OPS_NOT_IN_PLAN,
     EXIT_CODE_RESTART,
     PERF_TRANSACTION_FILENAME,
     SIDECAR_STAGING_FILENAME,
@@ -6291,9 +6292,16 @@ def main():
             ops = [op for op in planned_ops if op in requested_ops]
             missing_ops = requested_ops - set(ops)
             if missing_ops:
-                parser.error(
-                    "Requested ops are not present in the collector v2 case plan: " + ", ".join(sorted(missing_ops))
+                # Not a usage error: the op is registered but the model plan keeps it
+                # registry-only (or the caller's shard plan is stale). A dedicated exit
+                # code lets a scheduler mark the shard terminal instead of retrying an
+                # argparse 2 until max_attempts (2026-10-11, sm100 shard plans).
+                print(
+                    f"{parser.prog}: error: Requested ops are not present in the collector v2 case plan: "
+                    + ", ".join(sorted(missing_ops)),
+                    file=sys.stderr,
                 )
+                sys.exit(EXIT_CODE_OPS_NOT_IN_PLAN)
 
         if (args.model_path or args.model_architecture) and not case_plan.model_cases_paths:
             logger_message = (

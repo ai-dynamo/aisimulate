@@ -40,6 +40,10 @@ import numpy as np
 
 # Exit codes
 EXIT_CODE_RESTART = 10  # Exit code to indicate restart is needed
+# collect.py exits with this when --ops names an op the collector v2 case plan does not
+# contain (registry-only op, or a stale shard plan). Distinct from argparse's 2 so a
+# scheduler can mark the shard terminal instead of retrying it.
+EXIT_CODE_OPS_NOT_IN_PLAN = 3
 PERF_TRANSACTION_FILENAME = ".perf-finalization.transaction.json"
 SIDECAR_TRANSACTION_FILENAME = ".collection_meta.transaction.json"
 SIDECAR_STAGING_FILENAME = ".collection_meta.pending.yaml"
@@ -1923,6 +1927,7 @@ def _prepare_perf_file(
         snapshot_file.seek(0)
         table = pc_csv.read_csv(snapshot_file)
     _validate_moe_default_eligibility(table, parquet_path, pa=pa)
+    table, _duplicate_rows = _dedupe_staged_perf_rows(table, parquet_path, pa=pa, pc=pc_compute)
     new_rows = table.num_rows
     merged_existing = False
     merge_target = None
@@ -2576,6 +2581,47 @@ def _validate_moe_default_eligibility(table, parquet_path: Path, *, pa):
         for eligible, source in zip(flags.to_pylist(), sources, strict=True)
     ):
         raise ValueError(f"{parquet_path}: default_eligible=false requires a nonblank string kernel_source")
+
+
+def _dedupe_staged_perf_rows(table, parquet_path: Path, *, pa, pc):
+    """Keep the last row per identity key within one staging file.
+
+    The staging ``*_perf.txt`` is opened in append mode and kept across resumed
+    windows, and ``--resume --resume-retry-failed`` re-runs a task that failed
+    after logging some of its rows, so those rows are appended a second time
+    (2026-10-11: rtxpro msa_context 10,342 of 13,972 rows, gb200 moe/fp8_block
+    2,590 pairs). The merge-with-existing path already dedupes on the identity
+    key; this applies the same rule to the rows of the staging file itself,
+    keeping the newest measurement and the original row order. Identity = every
+    column except the measured metrics and MoE eligibility metadata.
+    """
+    metadata_columns = {"default_eligible"} if parquet_path.name == "moe_perf.parquet" else set()
+    identity = [c for c in table.column_names if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    if table.num_rows < 2 or not identity:
+        return table, 0
+    index_name = "__staged_row_index__"
+    while index_name in table.column_names:
+        index_name = "_" + index_name
+    keyed = table.select(identity)
+    # group_by cannot hash an all-null (null-typed) column; its values carry no identity anyway
+    for i, field in enumerate(keyed.schema):
+        if pa.types.is_null(field.type):
+            keyed = keyed.set_column(i, field.name, keyed.column(i).cast(pa.string()))
+    keyed = keyed.append_column(index_name, pa.array(range(table.num_rows), type=pa.int64()))
+    last = keyed.group_by(identity).aggregate([(index_name, "max")])
+    keep = last.column(f"{index_name}_max")
+    keep = pc.take(keep, pc.sort_indices(keep))
+    deduped = table.take(keep)
+    dropped = table.num_rows - deduped.num_rows
+    if dropped:
+        logging.getLogger(__name__).info(
+            "convert_perf_csv_to_parquet: %s: dropped %d re-appended duplicate rows "
+            "(%d identity keys kept the newest measurement)",
+            parquet_path.name,
+            dropped,
+            deduped.num_rows,
+        )
+    return deduped, dropped
 
 
 def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):

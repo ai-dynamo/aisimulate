@@ -1067,3 +1067,58 @@ def test_finalize_keeps_power_disabled_schema_column_free(tmp_path):
     [parquet] = finalize_perf_files([perf])
 
     assert pq.read_table(parquet).column_names == ["shape", "latency"]
+
+
+def test_finalize_drops_rows_re_appended_by_a_retried_task_keeping_the_newest(tmp_path, caplog):
+    """The staging CSV is append-only across resumed windows and a task retried with
+    --resume-retry-failed logs its successful rows again (rtxpro msa_context: 10,342 of
+    13,972 rows were such re-appends). Finalization keeps the newest row per identity
+    key, in the original order, like the merge-with-existing path already did."""
+    perf = tmp_path / "gemm_perf.txt"
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s2", 2.0), ("s1", 1.5), ("s3", 3.0), ("s2", 2.5)])
+
+    with caplog.at_level("INFO", logger="collector.helper"):
+        [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    table = pq.read_table(parquet)
+    assert table.column("shape").to_pylist() == ["s1", "s3", "s2"]
+    assert table.column("latency").to_pylist() == [1.5, 3.0, 2.5]
+    assert "dropped 2 re-appended duplicate rows" in caplog.text
+
+
+def test_finalize_keeps_rows_that_differ_in_a_non_metric_column(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    perf.write_text("op,shape,power,latency\nmatmul,s1,100.0,1.0\nmatmul,s1,120.0,1.1\nmatmul,s2,100.0,2.0\n")
+
+    [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    # power is a metric, so the two s1 rows share one identity: the newer one wins
+    assert pq.read_table(parquet).column("latency").to_pylist() == [1.1, 2.0]
+
+
+def test_finalize_dedupe_ignores_moe_eligibility_metadata_and_tolerates_empty_columns(tmp_path):
+    perf = tmp_path / "moe_perf.txt"
+    perf.write_text(
+        "op,shape,kernel_source,note,default_eligible,latency\n"
+        "moe,s1,cutlass,,true,1.0\n"
+        "moe,s1,cutlass,,false,1.2\n"
+        "moe,s2,cutlass,,true,2.0\n"
+    )
+
+    [parquet] = finalize_perf_files([perf], delete_source=False)
+
+    table = pq.read_table(parquet)
+    assert table.column("shape").to_pylist() == ["s1", "s2"]
+    assert table.column("default_eligible").to_pylist() == [False, True]
+    assert table.column("latency").to_pylist() == [1.2, 2.0]
+
+
+def test_finalize_reports_deduplicated_row_count(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s1", 1.5)])
+    finalization_info = {}
+
+    finalize_perf_files([perf], delete_source=False, finalization_info=finalization_info)
+
+    [info] = finalization_info.values()
+    assert info.new_rows == 1
