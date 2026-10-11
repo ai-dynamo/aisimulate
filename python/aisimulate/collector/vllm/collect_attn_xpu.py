@@ -43,8 +43,6 @@ try:
 except ImportError:
     from vllm.utils.import_utils import resolve_obj_by_qualname  # type: ignore
 
-from vllm.config import set_current_vllm_config
-
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -60,6 +58,7 @@ from collector.vllm.utils_xpu import (
     get_attention_backend,
     with_exit_stack,
 )
+from vllm.config import set_current_vllm_config
 
 
 class MockAttentionLayer:
