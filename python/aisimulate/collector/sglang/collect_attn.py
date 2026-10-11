@@ -787,7 +787,10 @@ def run_attention_torch(
         if is_context_phase:
             if use_fp8_context_fmha:
                 if attn_backend_name == "flashinfer":
-                    raise ValueError("SGLang flashinfer has no FP8 prefill compute path (plan-time skip missed this case)")
+                    raise ValueError(
+                        "FIXME(kernel-limit): SGLang flashinfer has no FP8 prefill compute path "
+                        "(plan-time skip missed this case)"
+                    )
                 if attn_backend_name != "trtllm_mha":
                     q = q.to(kvtype)
                     k = k.to(kvtype)
@@ -796,7 +799,7 @@ def run_attention_torch(
                 attn_backend_name == "trtllm_mha" or (attn_backend_name == "fa3" and head_dim <= 256)
             ):
                 raise ValueError(
-                    f"SGLang 0.5.14 {attn_backend_name} quantizes Q to FP8 internally when the KV cache "
+                    f"FIXME(kernel-limit): SGLang {attn_backend_name} quantizes Q to FP8 internally when the KV cache "
                     "is FP8, so a BF16-compute prefill on an FP8 KV cache does not exist; this "
                     "combination is the fp8_context_fmha case"
                 )

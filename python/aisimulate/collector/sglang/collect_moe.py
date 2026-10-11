@@ -1423,10 +1423,21 @@ def run_moe_torch(
             f"to be divisible by 8, got hidden_size={hidden_size}, local_inter_size={local_inter_size}"
         )
     activation_vector_size = 16 if sm_version >= 100 else 8
-    if moe_backend == "triton" and is_gated and activation == "gelu" and local_inter_size % activation_vector_size != 0:
+    if (
+        moe_backend == "triton"
+        and is_gated
+        and activation in ("gelu", "silu")
+        and local_inter_size % activation_vector_size != 0
+    ):
+        # sgl-kernel JIT silu_and_mul / gelu_and_mul: activation.cuh:186
+        # RuntimeCheck(hidden_size % kVecSize == 0, "hidden size must be divisible
+        # by vector size"), kVecSize = kMaxVecBytes / sizeof(T) (16 bf16 on SM100+,
+        # 8 below). 2026-10-11: silu hit it on b200/gb300 (1,053 each) and rtxpro
+        # (1,377) at local_inter_size 168/84/40 (Nemotron-3-Super inter 2688 at TP16+).
         raise ValueError(
-            "FIXME(kernel-limit): SGLang Triton gated BF16 GELU requires local_inter_size "
-            f"to be divisible by {activation_vector_size}, got local_inter_size={local_inter_size}"
+            "FIXME(kernel-limit): SGLang Triton gated BF16 GELU/SiLU (sgl-kernel act_and_mul, "
+            f"activation.cuh:186) requires local_inter_size to be divisible by {activation_vector_size}, "
+            f"got local_inter_size={local_inter_size} (activation={activation})"
         )
     if (
         moe_type == "w4a16_mxfp4"
