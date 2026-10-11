@@ -266,6 +266,23 @@ common_case_values:
       - 1
     context:
       max_tokens: 131072
+      # MSA (MiniMax-M3) on TRT-LLM has two implementations: the fmha_sm100
+      # kernels (implementation="msa", SM100/103 only — msa_availability.py
+      # ensure_msa_available@1.3.0rc29 raises everywhere else, SM120 included)
+      # and the Triton reference (implementation="triton", the only path on
+      # SM89/SM90/SM120). The reference computes the block-sparse GQA as a
+      # masked DENSE FP32 attention with per-query K/V expansion
+      # (triton_backend.py:_sparse_gqa_masked@1.3.0rc29), so its context cost
+      # is quadratic per sequence: 64 heads, isl 32768, b=1 takes 24.5 s per
+      # forward on rtxpro6000 and 18 s on h200_sxm (fmha_sm100 on gb200: 9 ms),
+      # and b*isl=131072 OOMs on the unchunked FP32 index-score slab (64 GiB).
+      # Owner decision 2026-10-11: on the Triton reference path cap context at
+      # batch*isl <= 32768 (isl 32768 itself stays, at b=1); the fmha_sm100
+      # systems keep the shared 131072. Applied by collect_msa_module's
+      # context getter where the collector resolves implementation="triton";
+      # re-verify on every TRT-LLM version bump (a real sparse prefill kernel
+      # for these SMs lifts it).
+      msa_triton_max_tokens: 32768
       prefix_lengths:
         - 0
         - 128

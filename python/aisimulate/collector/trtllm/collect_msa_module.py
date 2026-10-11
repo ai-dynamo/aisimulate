@@ -145,6 +145,18 @@ def _get_precision_combos(phase: str):
     ]
 
 
+def _msa_implementation(sm_version: int) -> str:
+    """Which MiniMax-M3 sparse implementation TRT-LLM can run on this SM.
+
+    "msa" = the fmha_sm100 kernels, hard-gated to the SM100 family
+    (msa_availability.py:ensure_msa_available@1.3.0rc29 raises off SM100/103,
+    SM120 included); everything else runs the Triton reference
+    (triton_backend.py). Single source of truth for the plan-time budget
+    below and the layer construction in build_msa_layer.
+    """
+    return "msa" if sm_version in (100, 103) else "triton"
+
+
 def get_context_test_cases():
     """Context-phase test cases.
 
@@ -154,11 +166,25 @@ def get_context_test_cases():
     cases = []
     sweep = get_mla_module_sweep_spec("trtllm")
     head_counts = get_msa_head_counts("trtllm")  # native // tp of the declared shards, not the shared head grid
+    # Declared budget for the Triton reference implementation
+    # (mla_module.yaml mla_module_trtllm.context.msa_triton_max_tokens): its
+    # masked-dense FP32 prefill is quadratic per sequence (24.5 s per forward
+    # at 64 heads / isl 32768 on rtxpro6000) and OOMs at b*isl=131072, so the
+    # SMs that only have it stop at 32K tokens; fmha_sm100 keeps the shared cap.
+    sm_version = get_sm_version()
+    max_tokens = sweep.context_max_tokens
+    triton_max_tokens = sweep.context_msa_triton_max_tokens
+    if triton_max_tokens and _msa_implementation(sm_version) == "triton":
+        max_tokens = min(max_tokens, triton_max_tokens)
+    dropped_triton_budget = 0
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context"):
         for num_heads in head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
                     if b * s > sweep.context_max_tokens:
+                        continue
+                    if b * s > max_tokens:
+                        dropped_triton_budget += len(sweep.context_prefix_lengths)
                         continue
                     if (
                         sweep.context_large_sequence_min
@@ -168,6 +194,12 @@ def get_context_test_cases():
                         continue
                     for prefix_len in sweep.context_prefix_lengths:
                         cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
+    if dropped_triton_budget:
+        print(
+            f"[trtllm-msa-module-cases] context: dropped {dropped_triton_budget} cases with batch*isl > "
+            f"{max_tokens} (SM{sm_version} runs the Triton reference implementation; "
+            "mla_module_trtllm.context.msa_triton_max_tokens)"
+        )
     return cases
 
 
@@ -375,7 +407,7 @@ def create_msa_attention_layer(
     # elsewhere. kernel_source records which one actually ran. Field-presence
     # probe keeps rc19/rc20 (no such field, pydantic strict) working.
     if "implementation" in getattr(MiniMaxM3SparseAttentionConfig, "model_fields", {}):
-        sparse_kwargs["implementation"] = "msa" if get_sm_version() in (100, 103) else "triton"
+        sparse_kwargs["implementation"] = _msa_implementation(get_sm_version())
     sparse_attention_config = MiniMaxM3SparseAttentionConfig(**sparse_kwargs)
 
     # NOTE: sparse_attention_config is intentionally NOT passed as a

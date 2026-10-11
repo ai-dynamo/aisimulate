@@ -733,6 +733,12 @@ class MLAModuleSweepSpec:
     # memory contract (their guard tests pin it). None -> fall back to
     # generation_max_tokens.
     generation_msa_max_tokens: int | None = None
+    # Optional MSA context budget for the TRT-LLM Triton reference
+    # implementation (cases/base_ops/mla_module.yaml mla_module_trtllm.context
+    # .msa_triton_max_tokens): the collector applies it only where it resolves
+    # implementation="triton" (off SM100/103); fmha_sm100 systems keep
+    # context_max_tokens. None -> no extra cap.
+    context_msa_triton_max_tokens: int | None = None
     # Optional DSA-specific context budget: DSA context follows serving's
     # chunked-prefill shape (new-token budget = chunk size, long context via
     # prefix). None on all three -> the DSA branch falls back to the shared
@@ -1045,6 +1051,7 @@ def get_mla_module_sweep_spec(backend: str | None = None) -> MLAModuleSweepSpec:
         context_max_tokens=int(context["max_tokens"]),
         context_large_sequence_min=_optional_int(context.get("large_sequence_min")),
         context_large_sequence_max_batch_size=_optional_int(context.get("large_sequence_max_batch_size")),
+        context_msa_triton_max_tokens=_optional_int(context.get("msa_triton_max_tokens")),
         generation_max_tokens=int(generation["max_tokens"]),
         generation_msa_max_tokens=_optional_int(generation.get("msa_max_tokens")),
         generation_large_sequence_min=_optional_int(generation.get("large_sequence_min")),
