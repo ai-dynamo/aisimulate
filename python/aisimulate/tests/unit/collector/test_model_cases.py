@@ -1636,7 +1636,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_generation_module",
     }
-    registry_only_ops = {"dsv4_hca_attn_module", "mhc_module"}
+    registry_only_ops = {"dsv4_hca_attn_module"}
     plan = build_collection_case_plan(backend="vllm", model_path="sgl-project/DeepSeek-V4-Pro-FP8")
 
     assert plan.ops == [
@@ -1646,6 +1646,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_hca_generation_module",
         "dsv4_paged_mqa_logits_module",  # consumed by the SDK CP chunk walk; shipped for vllm 0.24/0.25
         "gemm",
+        "mhc_module",  # SDK queries mhc pre/post on every backend; scheduled again 2026-10-11
         "moe",
     ]
     assert consumed_dsv4_ops <= plan.selected_ops
