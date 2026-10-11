@@ -167,6 +167,13 @@ def run_gdn_context_benchmark(
     conv_weight = torch.randn(conv_channels, d_conv, dtype=dtype, device=device)
     conv_bias = torch.randn(conv_channels, dtype=dtype, device=device)
 
+    # Every cell is timed under CUDA-graph replay; a failed capture raises
+    # (benchmark_with_power default allow_graph_fail=False) and the cell is
+    # counted below, so the case ends as a classified failure instead of an
+    # eager-timed row whose latency floor is the Python launch loop.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
     for batch_size in batch_size_list:
         for seq_len in seq_len_list:
             if aic_debug:
@@ -228,7 +235,6 @@ def run_gdn_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -257,7 +263,6 @@ def run_gdn_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -314,7 +319,6 @@ def run_gdn_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -363,7 +367,6 @@ def run_gdn_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -383,10 +386,20 @@ def run_gdn_context_benchmark(
                     del input_pool, conv_state
                 gc.collect()
                 torch.cuda.empty_cache()
+                successful_points += 1
 
             except Exception as e:
+                failed_points += 1
+                failures.append(f"batch_size={batch_size}, seq_len={seq_len}: {type(e).__name__}: {e}")
                 print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
                 continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"GDN context summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM GDN context collection failed strict completeness: {summary}; failed cells: {'; '.join(failures)}"
+        )
 
 
 def _bench_serving_decode_entry(
@@ -450,7 +463,6 @@ def _bench_serving_decode_entry(
         num_warmups=num_warmups,
         num_runs=num_runs,
         repeat_n=1,
-        allow_graph_fail=True,
     ) as results:
         log_perf(
             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -502,6 +514,11 @@ def run_gdn_generation_benchmark(
     conv_weight = torch.randn(conv_channels, d_conv, dtype=dtype, device=device)
     conv_bias = torch.randn(conv_channels, dtype=dtype, device=device)
 
+    # CUDA-graph replay only (see run_gdn_context_benchmark): a failed capture
+    # raises and the batch is counted as a failed cell below.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
     for batch_size in batch_size_list:
         if aic_debug:
             print(f"  Benchmarking batch_size={batch_size}")
@@ -560,7 +577,6 @@ def run_gdn_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -606,7 +622,6 @@ def run_gdn_generation_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -656,7 +671,6 @@ def run_gdn_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -706,7 +720,6 @@ def run_gdn_generation_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -726,10 +739,20 @@ def run_gdn_generation_benchmark(
                 del input_pool, conv_state, gdn_state
             gc.collect()
             torch.cuda.empty_cache()
+            successful_points += 1
 
         except Exception as e:
+            failed_points += 1
+            failures.append(f"batch_size={batch_size}: {type(e).__name__}: {e}")
             print(f"  Error at batch_size={batch_size}: {e}")
             continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"GDN generation summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM GDN generation collection failed strict completeness: {summary}; failed cells: {'; '.join(failures)}"
+        )
 
 
 def run_gdn_torch(
