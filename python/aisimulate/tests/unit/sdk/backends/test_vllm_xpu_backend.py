@@ -286,12 +286,35 @@ def test_compute_tpot_blends_mix_and_genonly_steps(monkeypatch) -> None:
         model=MagicMock(),
         database=MagicMock(),
         runtime_config=MagicMock(),
-        **_tpot_kwargs(num_mix_steps=5, mix_step_latency_ms=4.0, genonly_step_latency_ms=1.0),
+        # base: osl=10 decode iterations, 5 mix steps -> 5 decode-only steps
+        **_tpot_kwargs(num_mix_steps=5, num_genonly_steps=5, mix_step_latency_ms=4.0, genonly_step_latency_ms=1.0),
     )
     prefillers = max(1.0, ctx / isl)  # 2.0
     nmix_eff = min(5 * (8 - prefillers) / 8, float(osl))  # 3.75
     expected = (4.0 * nmix_eff + 1.0 * (osl - nmix_eff)) / osl
     assert got == pytest.approx(expected)
+
+
+def test_compute_tpot_all_mix_when_base_has_no_decode_only_steps(monkeypatch) -> None:
+    # Prefill spans every decode iteration: every token is in a mix step, so TPOT is the mix step.
+    backend = VLLMXPUBackend()
+    monkeypatch.setattr(VLLMXPUBackend, "_effective_decode_bs", lambda self, *a, **k: 1)
+    got = backend._compute_tpot(
+        b=2,
+        isl=1024,
+        osl=2,
+        ctx_tokens=512,
+        model=MagicMock(),
+        database=MagicMock(),
+        runtime_config=MagicMock(),
+        **_tpot_kwargs(num_mix_steps=4, num_genonly_steps=0, mix_step_latency_ms=15.0, genonly_step_latency_ms=0.0),
+    )
+    assert got == pytest.approx(15.0)
+
+
+def test_decode_tpot_all_mix_returns_mix_step() -> None:
+    # Same rule for the TTFT admission wait.
+    assert VLLMXPUBackend._decode_tpot_ms(15.0, 0.0, 1, 1024, 2, 512, 4, all_mix=True) == pytest.approx(15.0)
 
 
 # ---------------------------------------------------------------------------
@@ -342,3 +365,73 @@ def test_run_mixed_reserves_decode_slots_from_the_budget(monkeypatch) -> None:
     # steady_running = round(1000*100/200)=500; cap = min(500, 3) = 3.
     assert captured["step"].num_decode_requests == 3
     assert captured["step"].context_tokens == 1000 - 3
+
+
+def test_prefill_heavy_boundary_prices_decode_steps() -> None:
+    # ceil(isl*b/ctx) >= osl: base prices no decode-only steps (0 ms); the XPU blend must still price them.
+    from aisimulate.legacy_cli.api import cli_estimate
+
+    r = cli_estimate(
+        model_path="Qwen/Qwen3-0.6B",
+        system_name="b60",
+        backend_name="vllm",
+        backend_version="0.28.0",
+        batch_size=2,
+        isl=1024,
+        osl=2,
+        ctx_tokens=512,
+    )
+    assert r.tpot > 0
+    assert r.request_latency > r.ttft  # decode time included
+
+
+@pytest.mark.parametrize("raises", [False, True])
+def test_run_agg_scopes_kv_slot_state_to_the_call(monkeypatch, raises) -> None:
+    # The stashed util/ctx must not outlive run_agg (even on error), or later run_mixed calls read stale values.
+    backend = VLLMXPUBackend()
+
+    def fake_base_run_agg(self, model, database, runtime_config, **kwargs):
+        self._resolve_agg_kwargs(kwargs, isl=1024, osl=128, backend_version="0.28.0")
+        assert self._agg_ctx_tokens == 4096  # visible while the call runs
+        if raises:
+            raise RuntimeError("boom")
+        return "summary"
+
+    monkeypatch.setattr(VLLMBackend, "run_agg", fake_base_run_agg)
+    if raises:
+        with pytest.raises(RuntimeError):
+            backend.run_agg(MagicMock(), MagicMock(), MagicMock(), ctx_tokens=4096, free_gpu_memory_fraction=0.5)
+    else:
+        assert backend.run_agg(MagicMock(), MagicMock(), MagicMock(), ctx_tokens=4096, free_gpu_memory_fraction=0.5)
+    assert backend._agg_ctx_tokens is None and backend._agg_free_gpu_frac is None
+
+
+def test_direct_run_mixed_kv_cap_is_independent_of_call_history(monkeypatch) -> None:
+    # Outside run_agg, the KV cap uses the step's own ctx budget, not a previous run_agg's.
+    backend = VLLMXPUBackend()
+    seen = []
+    monkeypatch.setattr(VLLMXPUBackend, "_visual_context_tokens", lambda self, *a, **k: 0)
+    monkeypatch.setattr(
+        VLLMXPUBackend,
+        "_get_memory_usage",
+        lambda self, *a, num_tokens, **k: seen.append(num_tokens)
+        or {"weights": 0.0, "activations": 0.0, "nccl": 0.0, "others": 0.0},
+    )
+    monkeypatch.setattr(VLLMBackend, "run_mixed", lambda self, m, d, rc, step: step)
+
+    def fake_base_run_agg(self, model, database, runtime_config, **kwargs):
+        self._resolve_agg_kwargs(kwargs, isl=1024, osl=128, backend_version="0.28.0")
+        return "summary"
+
+    monkeypatch.setattr(VLLMBackend, "run_agg", fake_base_run_agg)
+    model = MagicMock()
+    model.get_kvcache_bytes_per_sequence.return_value = 1
+    database = SimpleNamespace(system_spec={"gpu": {"mem_capacity": 1 << 30}}, version="0.28.0")
+    rc = SimpleNamespace(isl=1024, osl=128)
+    step = MixedStepInput(context_tokens=1000, num_decode_requests=4)
+
+    first = backend.run_mixed(model, database, rc, step)
+    backend.run_agg(model, database, rc, ctx_tokens=8192)  # a prior call with a different ctx budget
+    second = backend.run_mixed(model, database, rc, step)
+    assert seen == [1000, 1000]
+    assert first == second

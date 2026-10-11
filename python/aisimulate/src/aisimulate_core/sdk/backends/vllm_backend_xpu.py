@@ -71,7 +71,14 @@ class VLLMXPUBackend(VLLMBackend):
         if eff_bs < b:
             # admission-limited: b-eff_bs requests queue for a slot (Little's law).
             tpot = self._decode_tpot_ms(
-                step.latency_ms, genonly_step_latency_ms, eff_bs, isl, osl, ctx_tokens, steps_to_finish_ctx
+                step.latency_ms,
+                genonly_step_latency_ms,
+                eff_bs,
+                isl,
+                osl,
+                ctx_tokens,
+                steps_to_finish_ctx,
+                all_mix=steps_to_finish_ctx >= decode_iterations,
             )
             ttft = own_prefill_ms + (b - eff_bs) / eff_bs * (own_prefill_ms + osl * tpot)
         else:
@@ -96,10 +103,12 @@ class VLLMXPUBackend(VLLMBackend):
         return full_attn + (step.latency_ms - ctx_attn) * (isl / ctx_eff) + self._prefill_dispatch_overhead_ms(model)
 
     @staticmethod
-    def _decode_tpot_ms(mix_lat, genonly_lat, b, isl, osl, ctx_tokens, steps_to_finish_ctx) -> float:
+    def _decode_tpot_ms(mix_lat, genonly_lat, b, isl, osl, ctx_tokens, steps_to_finish_ctx, all_mix=False) -> float:
         """Per-token decode time: the mix+genonly blend a request sees (mirrors _compute_tpot)."""
         if osl <= 0:
             return 0.0
+        if all_mix:
+            return mix_lat
         prefillers = max(1.0, ctx_tokens / isl)
         nmix = min(steps_to_finish_ctx * max(0.0, b - prefillers) / b, float(osl))
         return (mix_lat * nmix + genonly_lat * (osl - nmix)) / osl
@@ -118,7 +127,16 @@ class VLLMXPUBackend(VLLMBackend):
         self._agg_ctx_tokens = kwargs.get("ctx_tokens")
         return extra
 
-    def _max_kv_slots(self, model: BaseModel, database: PerfDatabase, isl: int, osl: int) -> int:
+    def run_agg(self, model, database, runtime_config, **kwargs):
+        # Scope the stash to this call so direct run_mixed callers never see a stale value.
+        try:
+            return super().run_agg(model, database, runtime_config, **kwargs)
+        finally:
+            self._agg_free_gpu_frac = self._agg_ctx_tokens = None
+
+    def _max_kv_slots(
+        self, model: BaseModel, database: PerfDatabase, isl: int, osl: int, ctx_tokens: int | None = None
+    ) -> int:
         """KV-cache capacity cap on concurrent decoders: how many sequences' KV fit in the memory
         left after the non-KV footprint (weights + activation + nccl + others). Binds only on
         KV-tight configs (small GPU / long isl+osl / high bs); else Little's law caps first."""
@@ -128,7 +146,7 @@ class VLLMXPUBackend(VLLMBackend):
             or 0.9
         )
         mem_cap = database.system_spec["gpu"]["mem_capacity"]
-        ctx = int(getattr(self, "_agg_ctx_tokens", None) or 1)
+        ctx = int(getattr(self, "_agg_ctx_tokens", None) or ctx_tokens or 1)
 
         mem = self._get_memory_usage(model, database, batch_size=1, beam_width=1, isl=1, osl=1, num_tokens=ctx)
         non_kv = (mem["weights"] + mem["activations"] + mem["nccl"] + mem["others"]) * (1 << 30)
@@ -188,6 +206,9 @@ class VLLMXPUBackend(VLLMBackend):
                 genonly_step_latency_ms=genonly_step_latency_ms,
             )
 
+        # prefill spans every decode iteration: base has no decode-only steps, so every token is in a mix step
+        if num_genonly_steps == 0:
+            return mix_step_latency_ms
         # recomputed here (not handed via instance state) so a reused backend can't leak a stale value
         eff_bs = self._effective_decode_bs(model, database, runtime_config, b, ctx_tokens)
         prefillers_per_step = max(1.0, ctx_tokens / isl)
@@ -269,7 +290,7 @@ class VLLMXPUBackend(VLLMBackend):
         osl = int(runtime_config.osl or 0)
         if isl > 0 and osl > 0:
             steady_running = max(1, round(step.context_tokens * osl / (isl + osl)))
-            kv_slots = self._max_kv_slots(model, database, isl, osl)
+            kv_slots = self._max_kv_slots(model, database, isl, osl, ctx_tokens=step.context_tokens)
             cap = min(steady_running, kv_slots)
             if step.num_decode_requests > cap:
                 step = replace(step, num_decode_requests=cap)
