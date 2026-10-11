@@ -12,6 +12,8 @@ mocking, runtime dispatch, and perf logging.
 # 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
 __compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
+import contextlib
+import inspect
 import math
 import os
 import random
@@ -268,11 +270,91 @@ def create_req_to_token_pool(
     return pool, token_matrix.contiguous()
 
 
-def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, use_cuda_graph: bool = True, **kwargs):
-    # Use benchmark_with_power context manager. use_cuda_graph=False times eagerly: the SM100 trtllm_mla
-    # PREFILL kernel (flashinfer.prefill.trtllm_ragged_attention_deepseek) refuses CUDA-graph capture unless
-    # q_seq_lens_cpu/kv_seq_lens_cpu are passed, and sglang 0.5.21's _run_prefill_kernel does not pass them —
-    # serving never graph-captures prefill either (B200 2026-10-04).
+def _extend_seq_lens_cpu(forward_batch):
+    """CPU int32 mirror of the per-request extend lengths of a plain EXTEND batch, else None.
+
+    The values are sglang's own ``forward_batch.extend_seq_lens_cpu`` — the list its
+    trtllm_mla backend already reads for ``max_seq_len`` (trtllm_mla_backend.py:850
+    @v0.5.21) — so nothing is reconstructed, only mirrored into a CPU tensor.
+    """
+    if forward_batch.forward_mode != ForwardMode.EXTEND:
+        return None
+    extend_seq_lens = getattr(forward_batch, "extend_seq_lens_cpu", None)
+    if not extend_seq_lens:
+        return None
+    return torch.tensor([int(n) for n in extend_seq_lens], dtype=torch.int32, device="cpu")
+
+
+@contextlib.contextmanager
+def _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
+    """Hand flashinfer the CPU length mirrors that keep trtllm_ragged_attention_deepseek capturable.
+
+    flashinfer 0.6.18 (sglang 0.5.21's pin) takes optional ``q_seq_lens_cpu`` /
+    ``kv_seq_lens_cpu`` (prefill.py:4797-4798). Without them the wrapper derives
+    the per-row lengths from the device indptrs with a host sync and refuses to
+    run under CUDA-graph capture ("q_seq_lens_cpu and kv_seq_lens_cpu must be
+    provided during CUDA graph capture", prefill.py:5083-5091); with them it
+    validates the mirrors on the host (prefill.py:5053-5077) and launches the
+    same trtllm-gen kernel with the same device arguments. Older flashinfer
+    builds without the parameters never synchronized here and are left alone.
+    """
+    import flashinfer.prefill as flashinfer_prefill
+
+    original = flashinfer_prefill.trtllm_ragged_attention_deepseek
+    parameters = inspect.signature(original).parameters
+    if "q_seq_lens_cpu" not in parameters or "kv_seq_lens_cpu" not in parameters:
+        yield
+        return
+
+    def _with_cpu_seq_lens(*args, **kwargs):
+        kwargs.setdefault("q_seq_lens_cpu", seq_lens_cpu)
+        kwargs.setdefault("kv_seq_lens_cpu", seq_lens_cpu)
+        return original(*args, **kwargs)
+
+    flashinfer_prefill.trtllm_ragged_attention_deepseek = _with_cpu_seq_lens
+    try:
+        yield
+    finally:
+        flashinfer_prefill.trtllm_ragged_attention_deepseek = original
+
+
+class _GraphCapturableTRTLLMMLABackend(TRTLLMMLABackend):
+    """sglang's trtllm_mla backend with a CUDA-graph-capturable prefill kernel call.
+
+    Serving never graph-captures prefill, so sglang 0.5.21's
+    ``TRTLLMMLABackend._run_prefill_kernel`` (trtllm_mla_backend.py:1098-1141)
+    calls ``flashinfer.prefill.trtllm_ragged_attention_deepseek`` without the
+    CPU length mirrors and flashinfer refuses the capture (see
+    ``_ragged_prefill_with_cpu_seq_lens``). The collector times the kernel under
+    graph replay — eager timing of this lane floors at the Python launch loop
+    (0.13 ms on B200, 0.29 ms on GB200 for every isl <= 1024 cell; data
+    validation 2026-10-11) — so the no-prefix prefill call gets the mirrors
+    here. This changes how the kernel is invoked, never which kernel runs: the
+    chunked-prefix calls (their own ``cum_seq_lens_kv``) and every other
+    backend path go through sglang unchanged.
+    """
+
+    _prefill_seq_lens_cpu = None
+
+    def init_forward_metadata(self, forward_batch):
+        super().init_forward_metadata(forward_batch)
+        self._prefill_seq_lens_cpu = _extend_seq_lens_cpu(forward_batch)
+
+    def _run_prefill_kernel(self, *args, **kwargs):
+        seq_lens_cpu = self._prefill_seq_lens_cpu
+        cum_seq_lens_q = kwargs.get("cum_seq_lens_q")
+        cum_seq_lens_kv = kwargs.get("cum_seq_lens_kv")
+        if seq_lens_cpu is None or cum_seq_lens_q is None or cum_seq_lens_kv is not cum_seq_lens_q:
+            return super()._run_prefill_kernel(*args, **kwargs)
+        with _ragged_prefill_with_cpu_seq_lens(seq_lens_cpu):
+            return super()._run_prefill_kernel(*args, **kwargs)
+
+
+def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, **kwargs):
+    # CUDA-graph replay for every lane: a capture failure raises (helper default
+    # allow_graph_fail=False) and an eager result is refused below, so a kernel
+    # that stops being capturable fails the case instead of shipping its launch
+    # floor (sglang mla_context on B200/GB200, data validation 2026-10-11).
     device = q.device
 
     def kernel_func():
@@ -290,10 +372,11 @@ def benchmark_layer(layer, forward_batch, q, k, v, q_rope, k_rope, use_cuda_grap
         num_warmups=3,
         num_runs=20,
         repeat_n=1,
-        use_cuda_graph=use_cuda_graph,
     ) as results:
         pass
 
+    if results.get("used_cuda_graph") is not True:
+        raise RuntimeError("SGLang MLA requires CUDA graph timing; refusing to publish eager timing")
     return results["latency_ms"], results["power_stats"]
 
 
@@ -531,7 +614,7 @@ def run_mla(
         import gc
 
         gc.collect()
-        attn_backend = TRTLLMMLABackend(model_runner)
+        attn_backend = _GraphCapturableTRTLLMMLABackend(model_runner)
         kernel_source = "trtllm_mla"
     elif selected_backend == "triton":
         attn_backend = TritonAttnBackend(model_runner)
@@ -686,8 +769,6 @@ def run_mla(
     forward_batch.attn_backend = attn_backend
     attn_backend.init_forward_metadata(forward_batch)
 
-    # eager timing for the SM100 trtllm_mla prefill kernel (see benchmark_layer)
-    _eager_prefill = selected_backend == "trtllm_mla" and is_context_phase
     latency, power_stats = benchmark_layer(
         layer,
         forward_batch,
@@ -696,7 +777,6 @@ def run_mla(
         v,
         q_rope_arg,
         k_rope_arg,
-        use_cuda_graph=not _eager_prefill,
         **extra_kwargs,
     )
 
