@@ -75,7 +75,7 @@ async def check_collection_provenance(page, url, data):
             normalized["rows"][0]["collection"]["serving_layouts"] = layouts
             await page.goto(url + tab + "?branch=main")
             await expect(page.locator(".overview-config-row .overview-serving-cell").first).to_have_text(expected)
-            await expect(page.locator(".overview-model-row .overview-serving-cell").first).to_have_text(expected)
+            await expect(page.locator(".overview-model-row .overview-serving-cell").first).to_be_empty()
         await page.locator('[data-sort="serving"]').click()
         await expect(page.locator('[data-sort="serving"]').locator("..")).to_have_attribute("aria-sort", "descending")
     await page.unroute(pattern)

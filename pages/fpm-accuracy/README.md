@@ -106,7 +106,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   deployment evidence stays Unknown; request-chart availability does not determine
   serving layout.
   Overview and Predictors include a sortable Serving column using layouts from
-  contributing collection runs. Model rows list all represented layouts. Unknown
+  contributing collection runs. Values appear only on parallelism/configuration rows;
+  model-row Serving cells stay empty. Unknown
   or absent metadata displays `Agg*`, with a visible footnote identifying this as
   a display default, not recorded evidence. Explicitly not-applicable layouts show
   `N/A`. Stored metadata remains unchanged; legacy summaries without layout fields
