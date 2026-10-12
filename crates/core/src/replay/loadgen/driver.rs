@@ -2898,8 +2898,10 @@ impl WorkloadDriver {
 mod tests {
     use super::*;
     use crate::replay::loadgen::{
-        AgenticDependency, AgenticDependencyRelation, AgenticDependencyTrigger, AgenticNode,
-        AgenticPlay, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+        AgenticDependencyRelation, AgenticDependencyTrigger, AgenticMooncakeHeader,
+        AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticSourceProvenance, AgenticTrace,
+        SessionTrace, Trace, TurnTrace,
     };
 
     fn agentic_node(
@@ -2967,6 +2969,48 @@ mod tests {
             delay_ms,
             relation,
         }
+    }
+
+    // Pins agentic prompt hash IDs: numbered first-seen over request_id order
+    // ("r1" < "r10" < "r2" < "r3"), independent of row order and raw values.
+    #[test]
+    fn agentic_prompt_hash_ids_are_numbered_first_seen_in_request_order() {
+        let header = serde_json::from_value::<AgenticMooncakeHeader>(serde_json::json!({
+            "schema": AGENTIC_MOONCAKE_SCHEMA, "version": AGENTIC_MOONCAKE_VERSION,
+            "block_size": 4, "hash_id_scope": "local",
+            "source": {"format": "test", "digest": "fixture"}
+        }))
+        .unwrap();
+        let row = |request_id: &str, hash_ids: &[u64]| {
+            serde_json::from_value::<AgenticMooncakeRow>(serde_json::json!({
+                "request_id": request_id, "play_id": request_id, "session_id": request_id,
+                "model": "model", "not_before_ms": 0.0, "input_length": 4 * hash_ids.len(),
+                "output_length": 1, "hash_ids": hash_ids
+            }))
+            .unwrap()
+        };
+        let large = 9_000_000_000_u64;
+        let rows = vec![
+            row("r2", &[large, 7, 42]),
+            row("r10", &[42, 5]),
+            row("r1", &[5, large]),
+            row("r3", &[7, 7, u64::MAX, 5]),
+        ];
+        let trace = AgenticTrace::from_agentic_mooncake_rows(header, rows).unwrap();
+
+        let driver = WorkloadDriver::new_agentic_trace_with_options(trace, 4, false, None).unwrap();
+        let prompts: Vec<_> = driver
+            .sessions
+            .iter()
+            .map(|session| match &session.turns[0].prompt_tokens {
+                PromptTokens::Deferred { hash_ids, .. } => hash_ids.clone(),
+                PromptTokens::Materialized(_) => panic!("agentic prompts stay deferred"),
+            })
+            .collect();
+        assert_eq!(
+            prompts,
+            [vec![0, 1], vec![2, 0], vec![1, 3, 2], vec![3, 3, 4, 0]]
+        );
     }
 
     fn assert_deterministic_output_plan(
