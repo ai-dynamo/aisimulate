@@ -263,30 +263,31 @@ for execution and cache combinations.
 
 ### KV precision and token capacity
 
-Omitting `engine.kvcache_quant_mode` does not mean BF16. Without a profile,
-FP8/FP8-block/NVFP4 checkpoint normalization can infer FP8 KV storage even when
-the checkpoint has no KV precision declaration. An FPM profile supplies its
-recorded `kv_cache_dtype`. These are simulation assumptions; align them with
-the serving deployment's actual cache precision.
+An explicit `engine.kvcache_quant_mode` or worker timing override takes precedence,
+subject to model/backend and profile validation. An FPM profile supplies its
+recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
 
-Ordinary `predict` output reports the effective KV precision for each role whose
-native or profile capacity estimate establishes it. JSON stdout and the
-`prediction.json` summary include `kv_cache_precision`, mapping each role to
-`dtype` and `source`. Sources are `user_override`, `checkpoint` (an explicit KV
-declaration matching the effective mode), `fpm_profile`, and `aisimulate_policy`
-(including inference from weight quantization when the KV declaration is missing
-or null). This is the precision used for capacity, not the checkpoint's weight dtype.
+| Checkpoint metadata | Inferred KV precision |
+|---|---|
+| DeepSeek V4/V4.1 architecture | FP8 |
+| `kv_cache_quant_algo: fp8` | FP8 |
+| `kv_cache_quant_algo: "none"` | BF16 |
+| KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
+| Other supported configurations | BF16 |
 
-`predict --detail memory` also reports `kvcache_quant_mode` beside the capacity
-estimate. FP8 uses one byte
-per KV element and BF16 uses two: with the same byte budget, linear FP8 KV can
-hold twice as many tokens. This does not imply twice the throughput.
-The naive fallback and roles without a capacity estimate omit this disclosure
-because they do not establish a quantization mode.
+These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+does not prevent FP8 KV inference. To require BF16, pass
+`--set engine.kvcache_quant_mode=bfloat16` or set it in YAML.
 
-To size a BF16 cache explicitly, set `engine.kvcache_quant_mode: bfloat16` in
-the YAML or pass `--set engine.kvcache_quant_mode=bfloat16`. Explicit choices
-remain subject to the model/backend and profile's precision constraints.
+Ordinary `predict` output shows each known role's effective KV dtype and source.
+JSON stdout and `prediction.json` summaries expose `kv_cache_precision.<role>`
+with `dtype` and `source`: `user_override`, `checkpoint` (a matching explicit KV
+declaration), `fpm_profile`, or `aisimulate_policy`. `--detail memory` also includes
+`kvcache_quant_mode` beside capacity. Naive fallback and roles without a capacity
+estimate omit this disclosure.
+
+FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
+FP8 KV holds twice as many tokens. This does not imply twice the throughput.
 
 ## Migrating saved configuration
 
