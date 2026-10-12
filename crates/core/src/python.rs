@@ -21,7 +21,7 @@ use crate::replay::{
         AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
         LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
-        load_agentic_mooncake, load_weka_agentic_graph_with_options,
+        load_agentic_mooncake, load_weka_agentic_graph_cached,
     },
 };
 use crate::{
@@ -69,6 +69,9 @@ struct RuntimeTraffic {
     trace_block_size: Option<usize>,
     #[serde(default)]
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    /// Keep the loaded Weka graph for later runs in this process (sweeps).
+    #[serde(default)]
+    trace_graph_cache: bool,
     #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
@@ -1563,12 +1566,13 @@ fn build_runtime_input(
                 "Weka agentic trace does not support concurrency load"
             );
             let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
-            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+            let (trace, resolved_basis, _cache_hit) = load_weka_agentic_graph_cached(
                 &paths[0],
                 traffic.trace_block_size,
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
                 },
+                traffic.trace_graph_cache,
             )?;
             return Ok(BuiltRuntimeInput {
                 input: ReplayRuntimeInput::Workload(build_agentic_driver(
