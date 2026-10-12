@@ -24,7 +24,6 @@ from urllib.parse import quote
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.async_api import async_playwright, expect
-
 from scripts.fpm_accuracy.contract import artifact_key
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -90,7 +89,7 @@ async def check_collection_provenance(page, url, data):
             "seed": 42,
             "warmup": {"ramp_s": 3, "settling_s": 30},
         },
-        serving={"layout": "pd_disaggregated", "topology": "1P1D"},
+        serving={"layout": "disagg", "topology": "1P1D"},
         availability="available",
         reason=None,
         measurement_count=10,
@@ -110,8 +109,23 @@ async def check_collection_provenance(page, url, data):
         },
     )
 
-    other = dict(run, id="run-b", availability="unavailable", charts=None, reason="No matching request trace.")
-    sweep = dict(run, id="run-c", availability="not_applicable", charts=None, reason="Self-benchmark point sweep.")
+    other = dict(
+        run,
+        id="run-b",
+        availability="unavailable",
+        charts=None,
+        reason="No matching request trace.",
+        serving={"layout": "pd_disaggregated", "topology": "1P1D"},
+    )
+    sweep = dict(
+        run,
+        id="run-c",
+        collection_type="self_benchmark",
+        availability="not_applicable",
+        charts=None,
+        reason="Self-benchmark point sweep.",
+        serving={"layout": "agg", "topology": None},
+    )
     collection = {"runs": [run, other, sweep], "unattributed_measurements": 0}
     details = json.loads((ROOT / "tests/fpm_accuracy/fixtures/dashboard/synthetic-details.json").read_text())
     for row in details["rows"]:
@@ -125,6 +139,7 @@ async def check_collection_provenance(page, url, data):
         "4 session trees · Trace replay · 2026-09-17 12:00 UTC"
     )
     await expect(page.locator("#collection-settings")).to_contain_text("1P1D")
+    await expect(page.locator("#collection-settings")).to_contain_text("PD disaggregated")
     await expect(page.locator("#collection-settings")).to_contain_text("ramp s: 3")
     await expect(page.locator("#collection-settings")).to_contain_text("random seed: 42")
     await expect(page.locator("#request-charts")).not_to_contain_text("NaN")
@@ -134,6 +149,7 @@ async def check_collection_provenance(page, url, data):
         await page.get_by_role("button", name=re.compile("Switch to .* theme")).click()
         await expect(page.locator("#request-charts svg")).to_have_count(4)
     await page.locator("#collection-run").select_option("run-b")
+    await expect(page.locator("#collection-settings")).to_contain_text("PD disaggregated")
     assert "collection_run=run-b" in page.url
     await expect(page.locator("#request-charts")).to_contain_text("No matching request trace.")
     await expect(page.locator("#request-charts .workload-banner")).to_have_count(1)
@@ -144,6 +160,7 @@ async def check_collection_provenance(page, url, data):
     await page.locator("#collection-run").focus()
     await expect(page.locator("#collection-run")).to_be_focused()
     await page.locator("#collection-run").select_option("run-c")
+    await expect(page.locator("#collection-settings")).to_contain_text("Aggregated")
     await expect(page.locator("#request-charts .workload-banner")).to_contain_text("not applicable")
     await expect(page.locator("#request-charts .request-chart")).to_have_count(0)
     await page.locator("#collection-run").select_option("run-a")

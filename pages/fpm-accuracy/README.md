@@ -100,6 +100,11 @@ Details and 3D Visualization are separate tabs with independent controls.
   recorded workload settings remain visible. Missing collection metadata also
   uses a single banner. Percentiles and FPM iterations never stand in for
   request traces. MAPE and evaluation membership remain unchanged.
+  Serving layout is independent of collection type, including self-benchmarks:
+  HF `agg` and `disagg` display as Aggregated and PD disaggregated. Older pinned
+  evaluations retain support for `aggregated` and `pd_disaggregated`. Unknown
+  deployment evidence stays Unknown; request-chart availability does not determine
+  serving layout.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;

@@ -4,7 +4,7 @@
 (() => {
   'use strict';
   const escape = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'})[c]);
-  const names = {self_benchmark:'Self-benchmark', static_serving:'Static serving', trace_replay:'Trace replay', unknown:'Unknown', not_applicable:'Not applicable', agentic_replay:'Agentic replay', pd_disaggregated:'PD disaggregated', aggregated:'Aggregated', session_trees:'session trees', sessions:'sessions', requests:'requests'};
+  const names = {self_benchmark:'Self-benchmark', static_serving:'Static serving', trace_replay:'Trace replay', unknown:'Unknown', not_applicable:'Not applicable', agentic_replay:'Agentic replay', agg:'Aggregated', disagg:'PD disaggregated', pd_disaggregated:'PD disaggregated', aggregated:'Aggregated', session_trees:'session trees', sessions:'sessions', requests:'requests'};
   const label = value => value == null ? 'Unknown' : names[value] || String(value).replaceAll('_',' ');
   const number = value => value == null ? 'Unknown' : Number(value).toLocaleString('en-US', {maximumFractionDigits:2});
   const titles = {input:'Input sequence length distribution', output:'Output sequence length distribution', interactivity:'Interactivity over time', ttft:'TTFT over time'};
