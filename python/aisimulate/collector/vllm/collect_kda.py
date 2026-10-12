@@ -41,12 +41,15 @@ Output:
     kda_perf.txt — same column layout as the sglang kda collector.
 """
 
-# Pinned to the manifest default (0.30.0) since the kda family pin on the
-# kimi-k3 preview image was retired 2026-09-28: 0.30's DS-layout probe
-# (is_fused_kda_decode_supported, now with recurrent_state_dtype) selects
-# fused_kda_decode for the non-spec decode, and the packed conv-update +
-# recurrence pair is measured alongside as the spec-decode serving path.
-__compat__ = "vllm>=0.30.0,<=0.30.0"
+# Pinned to the manifest default (0.31.0 since the 2026-10-12 bump; 0.30.0
+# before) since the kda family pin on the kimi-k3 preview image was retired
+# 2026-09-28: 0.30's DS-layout probe (is_fused_kda_decode_supported, now with
+# recurrent_state_dtype) selects fused_kda_decode for the non-spec decode, and
+# the packed conv-update + recurrence pair is measured alongside as the
+# spec-decode serving path. 0.31.0 moved the KDA Triton ops into the
+# `ops/third_party/kda/` package (chunk.py / fused_recurrent.py) and keeps
+# re-exporting both names from the package root.
+__compat__ = "vllm>=0.31.0,<=0.31.0"
 
 import gc
 import os

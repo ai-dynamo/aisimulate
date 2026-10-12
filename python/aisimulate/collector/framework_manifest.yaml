@@ -100,9 +100,13 @@ frameworks:
   vllm:
     source_repo: "https://github.com/vllm-project/vllm.git"
     default:
-      version: "0.30.0"
+      version: "0.31.0"
+      # v0.31.0 (released 2026-10-04) ships CUDA 13 as the default tag; there is
+      # no -cu130 variant any more (cu129 is the alternative). Multi-arch
+      # manifest-list digest (amd64 a4a4c043…, arm64 3f7dd5b7… underneath).
+      # Previous pin: v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90
       images:
-        default: "vllm/vllm-openai:v0.30.0@sha256:8a69ffad015f138d7170c4ddc429e230a3bc1c1719f67e14324749df200a4b90"
+        default: "vllm/vllm-openai:v0.31.0@sha256:c1c9f6fd5c109ba7f0546a59f5b2f15fb87f64c77782e90a27b648b42a8e67c3"
     # kda family pin RETIRED (owner decision 2026-09-28): the family ran on the
     # kimi-k3 preview image (0.1.dev19262) while the consumer's fused-decode
     # pricing did not match 0.27's packed-decode serving path (review #1559).

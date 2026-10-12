@@ -10,7 +10,7 @@
 #
 # Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
 # Copyright contributors to the vLLM project. Modified for collector execution.
-__compat__ = "vllm>=0.30.0,<=0.30.0"
+__compat__ = "vllm>=0.31.0,<=0.31.0"
 
 """
 MLA Module Collector for vLLM — unified MLA and DSA benchmarking.
