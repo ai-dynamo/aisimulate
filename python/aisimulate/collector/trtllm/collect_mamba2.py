@@ -173,6 +173,53 @@ def _run_prefill_conv_token_major(
     )
 
 
+# Both SSM kernels take the output buffer from the caller: serving hands them a
+# view of one preallocated per-forward buffer (mamba2_mixer.py:453-457 alloc,
+# :634 prefill `out=`, :906 decode `out=` @1.3.0rc29; rc20 :335/:403/:629) and
+# neither kernel allocates one when it is missing — ssd_chunk_scan.py:667
+# `assert out.shape == x.shape` and selective_state_update.py `out.dim()`
+# (rc20 :85, rc29 same) both fail on None. The collector omitted `out` until
+# 2026-10-12, so every scan/state-update cell raised and the per-cell except
+# dropped the lane: no shipped mamba2 table has those rows.
+
+# Decode SSM state update: serving picks FlashInfer's kernel or TRT-LLM's own
+# Triton kernel per layer geometry — Mamba2Mixer.__init__ (mamba2_mixer.py:
+# 284-293 gate, :322-328 selection @1.3.0rc29; rc20 mixer :14-23 had the ratio
+# list [1, 8, 16]). The collector measures the full (unsharded) layer, i.e. the
+# TP=1 geometry the gate sees as tp_nheads / tp_ngroups.
+# FIXME(re-verify): re-check the three lists on every TRT-LLM version bump.
+_FLASHINFER_SSU_HEAD_DIMS = (64, 128)
+_FLASHINFER_SSU_HEAD_GROUP_RATIOS = (1, 2, 4, 8, 16, 32, 64)
+_FLASHINFER_SSU_D_STATES = (64, 128, 256)
+SSU_KERNEL_SOURCE_FLASHINFER = "selective_state_update_flashinfer"
+SSU_KERNEL_SOURCE_TRITON = "selective_state_update_triton"
+
+
+def _serving_selects_flashinfer_ssu(nheads: int, n_groups: int, head_dim: int, d_state: int) -> bool:
+    head_group_ratio = nheads // n_groups if n_groups > 0 else 0
+    return (
+        head_dim in _FLASHINFER_SSU_HEAD_DIMS
+        and head_group_ratio in _FLASHINFER_SSU_HEAD_GROUP_RATIOS
+        and d_state in _FLASHINFER_SSU_D_STATES
+    )
+
+
+def _decode_state_update_kernel(nheads: int, n_groups: int, head_dim: int, d_state: int):
+    """The (callable, kernel_source) serving's Mamba2Mixer runs for this layer's decode.
+
+    kernel_source records the function serving calls (`selective_state_update_fi`
+    from flashinfer.mamba, or TRT-LLM's own Triton `selective_state_update`), the
+    way the GDN tables record `chunk_gated_delta_rule_{flashinfer,triton}`. No
+    fallback: if the FlashInfer import fails, serving fails identically at mixer
+    import (mamba2_mixer.py:23 @1.3.0rc29).
+    """
+    if _serving_selects_flashinfer_ssu(nheads, n_groups, head_dim, d_state):
+        from flashinfer.mamba import selective_state_update as selective_state_update_flashinfer
+
+        return selective_state_update_flashinfer, SSU_KERNEL_SOURCE_FLASHINFER
+    return selective_state_update, SSU_KERNEL_SOURCE_TRITON
+
+
 def run_mamba2_context_benchmark(
     d_model: int,
     d_state: int,
@@ -194,7 +241,9 @@ def run_mamba2_context_benchmark(
 
     This benchmarks:
     1. causal_conv1d_fn - Conv1D for context phase
-    2. mamba_chunk_scan_combined - SSM scan
+    2. mamba_chunk_scan_combined - SSM scan (the one entry point serving calls;
+       it routes to FlashInfer's SSD on SM100-family parts itself,
+       ssd_combined.py:469-497 @1.3.0rc29)
 
     Together these represent the core compute of a Mamba2 layer
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).
@@ -315,6 +364,9 @@ def run_mamba2_context_benchmark(
                         )
 
                     # --- Benchmark mamba_chunk_scan_combined ---
+                    # Caller-owned output, as serving's preallocated buffer view
+                    # (mamba2_mixer.py:634 @1.3.0rc29); the kernel asserts on it.
+                    ssm_out = torch.empty_like(x)
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
                         x,
@@ -328,10 +380,11 @@ def run_mamba2_context_benchmark(
                         dt_bias=dt_bias,
                         dt_softplus=True,
                         return_final_states=True,
+                        out=ssm_out,
                     )
                     torch.cuda.synchronize()
 
-                    def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C):
+                    def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C, _out=ssm_out):
                         mamba_chunk_scan_combined(
                             _x,
                             _dt,
@@ -344,6 +397,7 @@ def run_mamba2_context_benchmark(
                             dt_bias=dt_bias,
                             dt_softplus=True,
                             return_final_states=True,
+                            out=_out,
                         )
 
                     with benchmark_with_power(
@@ -441,6 +495,9 @@ def run_mamba2_context_benchmark(
                         )
 
                     # --- Benchmark mamba_chunk_scan_combined ---
+                    # One caller-owned output buffer for every iteration, as
+                    # serving's preallocated view (mamba2_mixer.py:634 @1.3.0rc29).
+                    ssm_out = torch.empty_like(input_pool["x"][0])
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
                         input_pool["x"][0],
@@ -454,12 +511,13 @@ def run_mamba2_context_benchmark(
                         dt_bias=dt_bias,
                         dt_softplus=True,
                         return_final_states=True,
+                        out=ssm_out,
                     )
                     torch.cuda.synchronize()
 
                     ssm_iter_idx = [0]
 
-                    def run_ssm_scan(_pool=input_pool, _idx=ssm_iter_idx):
+                    def run_ssm_scan(_pool=input_pool, _idx=ssm_iter_idx, _out=ssm_out):
                         idx = _idx[0] % total_iters
                         _idx[0] += 1
 
@@ -475,6 +533,7 @@ def run_mamba2_context_benchmark(
                             dt_bias=dt_bias,
                             dt_softplus=True,
                             return_final_states=True,
+                            out=_out,
                         )
 
                     with benchmark_with_power(
@@ -497,9 +556,9 @@ def run_mamba2_context_benchmark(
 
                 # Cleanup
                 if aic_cached_inputs:
-                    del x, dt, B, C, xbc_input, conv_state
+                    del x, dt, B, C, xbc_input, conv_state, ssm_out
                 else:
-                    del input_pool, conv_state
+                    del input_pool, conv_state, ssm_out
                 gc.collect()
                 torch.cuda.empty_cache()
                 successful_points += 1
@@ -537,7 +596,9 @@ def run_mamba2_generation_benchmark(
 
     This benchmarks:
     1. causal_conv1d_update - Conv1D state update for decode
-    2. selective_state_update - SSM state update
+    2. the SSM state update serving selects for this geometry: FlashInfer's
+       selective_state_update or TRT-LLM's Triton one (see
+       _decode_state_update_kernel); kernel_source names the one that ran
 
     Together these represent the core compute of a Mamba2 layer during decode
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).
@@ -572,6 +633,12 @@ def run_mamba2_generation_benchmark(
     D = repeat(d_base, "h -> h p", p=head_dim)  # noqa: N806
     dt_bias = repeat(dt_bias_base, "h -> h p", p=head_dim)
 
+    # The decode kernel serving's gate selects for this geometry, and its label.
+    ssu_func, ssu_kernel_source = _decode_state_update_kernel(nheads, n_groups, head_dim, d_state)
+    # Serving casts dt to fp32 before the non-replay decode kernels
+    # (mamba2_mixer.py:743-746 @1.3.0rc29); FlashInfer JIT-specialises on it.
+    dt_dtype = torch.float32
+
     # Same contract as the context runner: graph-timed or counted as failed.
     successful_points = 0
     failed_points = 0
@@ -590,6 +657,11 @@ def run_mamba2_generation_benchmark(
 
             # SSM state: [batch, nheads, head_dim, d_state]
             ssm_state = torch.randn(batch_size, nheads, head_dim, d_state, dtype=dtype, device=device)
+            # Serving addresses the state cache through slot indices and hands
+            # the kernel a view of its preallocated output buffer
+            # (mamba2_mixer.py:901-907 @1.3.0rc29); the state here is dense, so
+            # the slots are the identity.
+            state_batch_indices = torch.arange(batch_size, dtype=torch.int32, device=device)
 
             if aic_cached_inputs:
                 # Common log data for both kernels
@@ -610,9 +682,10 @@ def run_mamba2_generation_benchmark(
                 # Cached mode: use same inputs for all iterations (saves memory)
                 xbc_input = torch.randn(batch_size, conv_dim, dtype=dtype, device=device)
                 x = torch.randn(batch_size, nheads, head_dim, dtype=dtype, device=device)
-                dt = torch.randn(batch_size, nheads, head_dim, dtype=dtype, device=device)
+                dt = torch.randn(batch_size, nheads, head_dim, dtype=dt_dtype, device=device)
                 B = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
                 C = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
+                ssu_out = torch.empty_like(x)
 
                 # --- Benchmark causal_conv1d_update ---
                 torch.cuda.synchronize()
@@ -640,9 +713,9 @@ def run_mamba2_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark selective_state_update ---
+                # --- Benchmark the serving-selected selective_state_update ---
                 torch.cuda.synchronize()
-                selective_state_update(
+                ssu_func(
                     ssm_state,
                     x,
                     dt,
@@ -653,11 +726,13 @@ def run_mamba2_generation_benchmark(
                     z=None,
                     dt_bias=dt_bias,
                     dt_softplus=True,
+                    state_batch_indices=state_batch_indices,
+                    out=ssu_out,
                 )
                 torch.cuda.synchronize()
 
-                def run_state_update(_ssm_state=ssm_state, _x=x, _dt=dt, _b=B, _c=C):
-                    selective_state_update(
+                def run_state_update(_ssm_state=ssm_state, _x=x, _dt=dt, _b=B, _c=C, _out=ssu_out):
+                    ssu_func(
                         _ssm_state,
                         _x,
                         _dt,
@@ -668,6 +743,8 @@ def run_mamba2_generation_benchmark(
                         z=None,
                         dt_bias=dt_bias,
                         dt_softplus=True,
+                        state_batch_indices=state_batch_indices,
+                        out=_out,
                     )
 
                 with benchmark_with_power(
@@ -683,7 +760,7 @@ def run_mamba2_generation_benchmark(
                         version=tensorrt_llm.__version__,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="mamba2",
-                        kernel_source="selective_state_update",
+                        kernel_source=ssu_kernel_source,
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     )
@@ -716,6 +793,8 @@ def run_mamba2_generation_benchmark(
                     dtype,
                     device,
                 )
+                input_pool["dt"] = [tensor.to(dtype=dt_dtype) for tensor in input_pool["dt"]]
+                ssu_out = torch.empty_like(input_pool["x"][0])
 
                 # --- Benchmark causal_conv1d_update ---
                 torch.cuda.synchronize()
@@ -747,9 +826,9 @@ def run_mamba2_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark selective_state_update ---
+                # --- Benchmark the serving-selected selective_state_update ---
                 torch.cuda.synchronize()
-                selective_state_update(
+                ssu_func(
                     ssm_state,
                     input_pool["x"][0],
                     input_pool["dt"][0],
@@ -760,15 +839,17 @@ def run_mamba2_generation_benchmark(
                     z=None,
                     dt_bias=dt_bias,
                     dt_softplus=True,
+                    state_batch_indices=state_batch_indices,
+                    out=ssu_out,
                 )
                 torch.cuda.synchronize()
 
                 ssm_iter_idx = [0]
 
-                def run_state_update(_pool=input_pool, _ssm_state=ssm_state, _idx=ssm_iter_idx):
+                def run_state_update(_pool=input_pool, _ssm_state=ssm_state, _idx=ssm_iter_idx, _out=ssu_out):
                     idx = _idx[0] % total_iters
                     _idx[0] += 1
-                    selective_state_update(
+                    ssu_func(
                         _ssm_state,
                         _pool["x"][idx],
                         _pool["dt"][idx],
@@ -779,6 +860,8 @@ def run_mamba2_generation_benchmark(
                         z=None,
                         dt_bias=dt_bias,
                         dt_softplus=True,
+                        state_batch_indices=state_batch_indices,
+                        out=_out,
                     )
 
                 with benchmark_with_power(
@@ -794,16 +877,16 @@ def run_mamba2_generation_benchmark(
                         version=tensorrt_llm.__version__,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="mamba2",
-                        kernel_source="selective_state_update",
+                        kernel_source=ssu_kernel_source,
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     )
 
             # Cleanup
             if aic_cached_inputs:
-                del ssm_state, conv_state, x, dt, B, C, xbc_input
+                del ssm_state, conv_state, x, dt, B, C, xbc_input, ssu_out, state_batch_indices
             else:
-                del ssm_state, conv_state, input_pool
+                del ssm_state, conv_state, input_pool, ssu_out, state_batch_indices
             gc.collect()
             torch.cuda.empty_cache()
             successful_points += 1

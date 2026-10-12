@@ -1,16 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""The trtllm Mamba2 collector publishes CUDA-graph-timed rows only and never
-drops a kernel lane silently.
+"""The trtllm Mamba2 collector publishes CUDA-graph-timed rows only, never
+drops a kernel lane silently, and runs the SSM kernels the way serving does.
 
 Until 2026-10-12 every benchmark_with_power call in collector/trtllm/collect_mamba2.py
-passed allow_graph_fail=True, and each (batch, seq) cell sat in a bare
-`except Exception: continue`. The shipped rc20 mamba2 tables of all eight
+passed allow_graph_fail=True, each (batch, seq) cell sat in a bare
+`except Exception: continue`, and neither SSM kernel received the caller-owned
+`out` buffer TRT-LLM requires (ssd_chunk_scan.py:667, selective_state_update.py
+`out.dim()` @1.3.0rc20/rc29). The shipped rc20 mamba2 tables of all eight
 systems and the rc29 b200 package contain only the causal_conv1d lanes: the
 mamba_chunk_scan_combined / selective_state_update lanes vanished with zero
-failure records. Capture failures now raise, every failed cell is counted, and
-the case ends as a classified strict-completeness failure (the GDN contract)."""
+failure records. Capture failures now raise, every failed cell is counted, the
+case ends as a classified strict-completeness failure (the GDN contract), both
+SSM calls carry `out=`, and the decode state update is the kernel serving's
+Mamba2Mixer gate selects (FlashInfer or TRT-LLM's Triton), labelled as such."""
 
 import ast
 from contextlib import contextmanager
@@ -33,11 +37,13 @@ def _function(name):
     return next(node for node in _tree().body if isinstance(node, ast.FunctionDef) and node.name == name)
 
 
+def _callee(node):
+    return ast.unparse(node.func)
+
+
 def test_trtllm_mamba2_benchmarks_never_fall_back_to_eager_timing():
     calls = [
-        node
-        for node in ast.walk(_tree())
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "benchmark_with_power"
+        node for node in ast.walk(_tree()) if isinstance(node, ast.Call) and _callee(node) == "benchmark_with_power"
     ]
     assert len(calls) == 8
     for call in calls:
@@ -55,6 +61,71 @@ def test_trtllm_mamba2_phase_runners_end_in_a_strict_completeness_raise(function
     ]
     assert raises, f"{function_name} swallows cell failures without a final raise"
     assert "strict completeness" in ast.unparse(raises[-1])
+
+
+def test_every_ssm_kernel_call_hands_over_the_caller_owned_out_buffer():
+    # TRT-LLM's chunk scan asserts on `out` and its state update calls
+    # `out.dim()`; the missing keyword is what emptied the SSM lanes.
+    scan_calls = [
+        node
+        for node in ast.walk(_function("run_mamba2_context_benchmark"))
+        if isinstance(node, ast.Call) and _callee(node) == "mamba_chunk_scan_combined"
+    ]
+    update_calls = [
+        node
+        for node in ast.walk(_function("run_mamba2_generation_benchmark"))
+        if isinstance(node, ast.Call) and _callee(node) == "ssu_func"
+    ]
+    assert len(scan_calls) == 4  # cached + pooled, warm-up call + timed closure
+    assert len(update_calls) == 4
+    for call in scan_calls + update_calls:
+        assert any(keyword.arg == "out" for keyword in call.keywords), ast.unparse(call)
+    for call in update_calls:
+        assert any(keyword.arg == "state_batch_indices" for keyword in call.keywords), ast.unparse(call)
+
+
+def test_generation_runner_never_calls_the_triton_state_update_directly():
+    # The decode kernel comes from the serving gate, never from a hard-coded name.
+    direct = [
+        node
+        for node in ast.walk(_function("run_mamba2_generation_benchmark"))
+        if isinstance(node, ast.Call) and _callee(node) == "selective_state_update"
+    ]
+    assert direct == []
+    for literal in ("selective_state_update", "selective_state_update_flashinfer", "selective_state_update_triton"):
+        assert all(
+            not (isinstance(node, ast.Constant) and node.value == literal)
+            for node in ast.walk(_function("run_mamba2_generation_benchmark"))
+        ), f"{literal!r} is hard-coded in the generation runner"
+
+
+def _load_gate():
+    tree = _tree()
+    body = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.Assign) and ast.unparse(node.targets[0]).startswith("_FLASHINFER_SSU_"))
+        or (isinstance(node, ast.FunctionDef) and node.name == "_serving_selects_flashinfer_ssu")
+    ]
+    namespace = {}
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), namespace)
+    return namespace["_serving_selects_flashinfer_ssu"]
+
+
+@pytest.mark.parametrize(
+    ("nheads", "n_groups", "head_dim", "d_state", "flashinfer"),
+    [
+        (64, 8, 64, 128, True),  # Nemotron-3 Nano / generic 4K: ratio 8
+        (256, 8, 64, 256, True),  # Nemotron-H 56B: ratio 32, d_state 256
+        (16, 4, 64, 64, True),  # generic 1K: ratio 4 (rc29 widened the list; rc20 had [1, 8, 16])
+        (64, 8, 80, 128, False),  # Nemotron-v2-Nano head_dim 80: no FlashInfer kernel
+        (48, 16, 64, 128, False),  # ratio 3
+        (64, 8, 64, 32, False),  # d_state 32
+        (64, 0, 64, 128, False),  # no groups
+    ],
+)
+def test_decode_kernel_gate_mirrors_the_rc29_mixer(nheads, n_groups, head_dim, d_state, flashinfer):
+    assert _load_gate()(nheads, n_groups, head_dim, d_state) is flashinfer
 
 
 class _Tensor:
@@ -89,6 +160,7 @@ def _fake_torch():
     return SimpleNamespace(
         bfloat16="bf16",
         float32="fp32",
+        int32="i32",
         device=lambda name: name,
         set_default_device=lambda _device: None,
         cuda=SimpleNamespace(
@@ -100,16 +172,28 @@ def _fake_torch():
         randn=_factory,
         rand=_factory,
         zeros=_factory,
+        arange=lambda n, **_kwargs: _Tensor((n,)),
         empty_like=lambda tensor: _Tensor(tensor.shape),
     )
 
 
-def _load_runner(name, benchmark_with_power, log_perf):
+def _fake_input_pool(shapes, count, _dtype, _device):
+    return {name: [_Tensor(shape) for _ in range(count)] for name, shape in shapes.items()}
+
+
+def _load_runner(
+    name, benchmark_with_power, log_perf, *, cached_inputs=1, ssu_label="selective_state_update_flashinfer"
+):
+    ssu_calls = []
+
+    def ssu(*args, **kwargs):
+        ssu_calls.append(kwargs)
+
     namespace = {
         "torch": _fake_torch(),
         "gc": SimpleNamespace(collect=lambda: None),
         "aic_debug": 0,
-        "aic_cached_inputs": 1,
+        "aic_cached_inputs": cached_inputs,
         "benchmark_with_power": benchmark_with_power,
         "log_perf": log_perf,
         "repeat": lambda tensor, _pattern, **_axes: tensor,
@@ -118,14 +202,15 @@ def _load_runner(name, benchmark_with_power, log_perf):
         "causal_conv1d_update": lambda *args, **kwargs: None,
         "mamba_chunk_scan_combined": lambda *args, **kwargs: None,
         "selective_state_update": lambda *args, **kwargs: None,
+        "_decode_state_update_kernel": lambda *geometry: (ssu, ssu_label),
         "_token_major_prefill_conv": lambda: False,
         "_prefill_conv_token_major_inputs": None,
         "_run_prefill_conv_token_major": None,
-        "_make_input_pool": None,
+        "_make_input_pool": _fake_input_pool,
     }
     module = ast.Module(body=[_function(name)], type_ignores=[])
     exec(compile(module, str(SOURCE), "exec"), namespace)
-    return namespace[name]
+    return namespace[name], ssu_calls
 
 
 def _failing_on(call_index):
@@ -134,10 +219,11 @@ def _failing_on(call_index):
     logged = []
 
     @contextmanager
-    def benchmark_with_power(**_kwargs):
+    def benchmark_with_power(**kwargs):
         calls["bench"] += 1
         if calls["bench"] == call_index:
             raise RuntimeError("CUDA graph capture failed: operation not permitted when stream is capturing")
+        kwargs["kernel_func"]()  # the real helper runs the closure for its warmups and the capture
         yield {"latency_ms": 0.01, "power_stats": None, "used_cuda_graph": True}
 
     def log_perf(**kwargs):
@@ -164,7 +250,7 @@ _LAYER = {
 def test_trtllm_mamba2_context_scan_capture_failure_fails_the_case_instead_of_dropping_the_lane():
     # The shipped-data failure mode: a cell's conv row ships, then its scan lane raises.
     benchmark_with_power, log_perf, logged = _failing_on(2)
-    run = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf)
+    run, _ = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf)
     expected = r"strict completeness: ok=1 error=1 skip=0.*seq_len=32: RuntimeError"
     with pytest.raises(RuntimeError, match=expected) as info:
         run(batch_size_list=[1], seq_len_list=[32, 64], **_LAYER)
@@ -173,24 +259,39 @@ def test_trtllm_mamba2_context_scan_capture_failure_fails_the_case_instead_of_dr
     assert logged == ["causal_conv1d_fn", "causal_conv1d_fn", "mamba_chunk_scan_combined"]
 
 
-def test_trtllm_mamba2_context_all_cells_captured_returns_quietly():
+@pytest.mark.parametrize("cached_inputs", [1, 0])
+def test_trtllm_mamba2_context_all_cells_captured_returns_quietly(cached_inputs):
     benchmark_with_power, log_perf, logged = _failing_on(0)
-    run = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf)
+    run, _ = _load_runner("run_mamba2_context_benchmark", benchmark_with_power, log_perf, cached_inputs=cached_inputs)
     assert run(batch_size_list=[1, 2], seq_len_list=[32], **_LAYER) is None
     assert logged == ["causal_conv1d_fn", "mamba_chunk_scan_combined"] * 2
 
 
 def test_trtllm_mamba2_generation_state_update_capture_failure_fails_the_case():
     benchmark_with_power, log_perf, logged = _failing_on(4)
-    run = _load_runner("run_mamba2_generation_benchmark", benchmark_with_power, log_perf)
+    run, _ = _load_runner("run_mamba2_generation_benchmark", benchmark_with_power, log_perf)
     expected = r"strict completeness: ok=1 error=1 skip=0.*batch_size=2: RuntimeError"
     with pytest.raises(RuntimeError, match=expected):
         run(batch_size_list=[1, 2], **_LAYER)
-    assert logged == ["causal_conv1d_update", "selective_state_update", "causal_conv1d_update"]
+    assert logged == ["causal_conv1d_update", "selective_state_update_flashinfer", "causal_conv1d_update"]
 
 
-def test_trtllm_mamba2_generation_all_cells_captured_returns_quietly():
+@pytest.mark.parametrize("cached_inputs", [1, 0])
+@pytest.mark.parametrize("ssu_label", ["selective_state_update_flashinfer", "selective_state_update_triton"])
+def test_trtllm_mamba2_generation_labels_the_rows_with_the_kernel_serving_selected(cached_inputs, ssu_label):
     benchmark_with_power, log_perf, logged = _failing_on(0)
-    run = _load_runner("run_mamba2_generation_benchmark", benchmark_with_power, log_perf)
+    run, ssu_calls = _load_runner(
+        "run_mamba2_generation_benchmark",
+        benchmark_with_power,
+        log_perf,
+        cached_inputs=cached_inputs,
+        ssu_label=ssu_label,
+    )
     assert run(batch_size_list=[1], **_LAYER) is None
-    assert logged == ["causal_conv1d_update", "selective_state_update"]
+    assert logged == ["causal_conv1d_update", ssu_label]
+    # warm-up call + the timed closure; every call carries the serving-shaped extras
+    assert len(ssu_calls) == 2
+    for kwargs in ssu_calls:
+        assert kwargs["out"].shape == (1, 128, 64)
+        assert kwargs["state_batch_indices"].shape == (1,)
+        assert kwargs["dt_softplus"] is True and kwargs["z"] is None
