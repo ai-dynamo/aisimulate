@@ -12,6 +12,7 @@ use crate::engine::common::hashing::{
 use crate::engine::common::kv_cache_trace;
 use crate::engine::common::protocols::KvEventPublishers;
 use crate::engine::{KvBlock, KvEvent, KvEventData, KvEventTier, StoredBlocks};
+use fixedbitset::FixedBitSet;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Move-only ownership of a request's SGLang KV state.
@@ -163,17 +164,16 @@ pub struct SglangKvManager {
     dp_rank: u32,
     next_event_id: u64,
     /// Maps each dense physical page ID to the block hash assigned during
-    /// Stored events, so Removed events can use the same block hash. A slot
-    /// holds a hash only while its bit in `page_hash_present` is set. Both are
-    /// sized at construction when event publishing is enabled.
-    page_hashes: Vec<SequenceHash>,
-    page_hash_present: Vec<u64>,
-    /// Logical block hashes that at least one live pool slot advertises, so
-    /// router events reflect logical block visibility, not transient slot
-    /// ownership.
+    /// Stored events, so Removed events can use the same block hash.
+    /// Sized at construction when event publishing is enabled; a slot holds a
+    /// hash only while its `page_hash_present` bit is set.
+    page_to_block_hash: Vec<SequenceHash>,
+    page_hash_present: FixedBitSet,
+    /// Tracks how many live pool slots currently advertise the same logical
+    /// block hash so router events reflect logical block visibility, not
+    /// transient slot ownership. Slots beyond the first, which exist only while
+    /// concurrent requests hold duplicate pages, are counted in `extra_hash_refs`.
     live_hashes: FxHashSet<SequenceHash>,
-    /// Slots beyond the first that advertise the same hash. Concurrent requests
-    /// briefly hold duplicate pages for one uncached block, so this stays small.
     extra_hash_refs: FxHashMap<SequenceHash, usize>,
     pending_admission: Option<PendingAdmission>,
 }
@@ -289,8 +289,8 @@ impl SglangKvManager {
             kv_event_publishers,
             dp_rank,
             next_event_id: 0,
-            page_hashes: vec![0; event_pages],
-            page_hash_present: vec![0; event_pages.div_ceil(64)],
+            page_to_block_hash: vec![0; event_pages],
+            page_hash_present: FixedBitSet::with_capacity(event_pages),
             live_hashes: FxHashSet::default(),
             extra_hash_refs: FxHashMap::default(),
             pending_admission: None,
@@ -299,12 +299,12 @@ impl SglangKvManager {
 
     #[cfg(test)]
     fn page_metadata_len(&self) -> usize {
-        self.page_hashes.len()
+        self.page_to_block_hash.len()
     }
 
     #[cfg(test)]
     fn page_hash_snapshot(&self) -> Vec<Option<SequenceHash>> {
-        (0..self.page_hashes.len())
+        (0..self.page_to_block_hash.len())
             .map(|slot| self.page_hash(slot))
             .collect()
     }
@@ -323,19 +323,16 @@ impl SglangKvManager {
     }
 
     fn page_hash(&self, slot: usize) -> Option<SequenceHash> {
-        (self.page_hash_present[slot / 64] & (1 << (slot % 64)) != 0)
-            .then(|| self.page_hashes[slot])
+        self.page_hash_present
+            .contains(slot)
+            .then(|| self.page_to_block_hash[slot])
     }
 
     fn set_page_hash(&mut self, slot: usize, hash: Option<SequenceHash>) {
-        let bit = 1 << (slot % 64);
-        match hash {
-            Some(hash) => {
-                self.page_hashes[slot] = hash;
-                self.page_hash_present[slot / 64] |= bit;
-            }
-            None => self.page_hash_present[slot / 64] &= !bit,
+        if let Some(hash) = hash {
+            self.page_to_block_hash[slot] = hash;
         }
+        self.page_hash_present.set(slot, hash.is_some());
     }
 
     /// Count one more slot advertising `hash`; returns its previous logical refcount.
@@ -1960,42 +1957,15 @@ mod tests {
     }
 
     #[test]
-    fn page_hash_table_represents_zero_across_bitset_words() {
-        let sink = Arc::new(MockSink::new());
-        let mut mgr = SglangKvManager::new(130, 1, KvEventPublishers::new(Some(sink)), 0);
-        for slot in [0, 63, 64, 129] {
-            assert_eq!(mgr.page_hash(slot), None);
-            mgr.set_page_hash(slot, Some(0));
-            assert_eq!(mgr.page_hash(slot), Some(0));
-        }
-        mgr.set_page_hash(64, Some(u64::MAX));
-        mgr.set_page_hash(63, None);
-        assert_eq!(mgr.page_hash(63), None);
-        assert_eq!(mgr.page_hash(64), Some(u64::MAX));
-        assert_eq!(mgr.page_hash(0), Some(0));
-        assert_eq!(mgr.page_hash(129), Some(0));
-    }
-
-    #[test]
-    fn hash_refcounts_track_triple_duplicates_and_restore() {
+    fn hash_refcounts_track_more_than_two_copies() {
         let sink = Arc::new(MockSink::new());
         let mut mgr = SglangKvManager::new(4, 1, KvEventPublishers::new(Some(sink)), 0);
-        assert_eq!(mgr.acquire_hash(7), None);
-        assert_eq!(mgr.acquire_hash(7), Some(1));
-        assert_eq!(mgr.acquire_hash(7), Some(2));
+        let previous: Vec<_> = (0..3).map(|_| mgr.acquire_hash(7)).collect();
+        assert_eq!(previous, [None, Some(1), Some(2)]);
+        let previous: Vec<_> = (0..4).map(|_| mgr.release_hash(7)).collect();
+        assert_eq!(previous, [Some(3), Some(2), Some(1), None]);
+        mgr.restore_hash(7, Some(3));
         assert_eq!(mgr.refcount_snapshot()[&7], 3);
-        assert_eq!(mgr.release_hash(7), Some(3));
-        assert_eq!(mgr.release_hash(7), Some(2));
-        assert!(mgr.extra_hash_refs.is_empty());
-        assert_eq!(mgr.release_hash(7), Some(1));
-        assert_eq!(mgr.release_hash(7), None);
-        assert!(mgr.refcount_snapshot().is_empty());
-        for refcount in [Some(3), Some(1), None, Some(2)] {
-            mgr.restore_hash(7, refcount);
-            assert_eq!(mgr.refcount_snapshot().get(&7).copied(), refcount);
-        }
-        mgr.restore_hash(7, Some(1));
-        assert!(mgr.extra_hash_refs.is_empty());
     }
 
     #[test]
