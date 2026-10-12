@@ -1939,7 +1939,7 @@ def _prepare_perf_file(
             merge_target_was_absent = True
         else:
             old_table, merge_target = _read_attested_parquet(parquet_path, pq=pq, locked_root=locked_root)
-            table, merged_existing, new_rows = _merge_perf_rows(table, old_table, parquet_path, pa=pa)
+            table, merged_existing, new_rows = _merge_perf_rows(table, old_table, parquet_path, pa=pa, pc=pc_compute)
     table = _normalize_power_metrics(table, pa=pa, pc=pc_compute)
 
     temporary = perf_preparation_path(parquet_path)
@@ -2597,9 +2597,30 @@ def _dedupe_staged_perf_rows(table, parquet_path: Path, *, pa, pc):
     """
     metadata_columns = {"default_eligible"} if parquet_path.name == "moe_perf.parquet" else set()
     identity = [c for c in table.column_names if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    deduped, dropped = _keep_last_row_per_identity(table, identity, pa=pa, pc=pc)
+    if dropped:
+        logging.getLogger(__name__).info(
+            "convert_perf_csv_to_parquet: %s: dropped %d re-appended duplicate rows "
+            "(%d identity keys kept the newest measurement)",
+            parquet_path.name,
+            dropped,
+            deduped.num_rows,
+        )
+    return deduped, dropped
+
+
+def _keep_last_row_per_identity(table, identity: list[str], *, pa, pc):
+    """Keep the last row per identity key, in the original order of the kept rows.
+
+    pyarrow only: the collector images ship pyarrow (the harness installs it
+    into ``pyarrow-site``) but not pandas, and the merge path used to need
+    pandas — the second finalize of a shard (resume / retry-failed) died with
+    ``No module named 'pandas'`` (b200 vllm dsa_context_module, 2026-10-12).
+    Returns ``(deduped_table, dropped_rows)``.
+    """
     if table.num_rows < 2 or not identity:
         return table, 0
-    index_name = "__staged_row_index__"
+    index_name = "__row_index__"
     while index_name in table.column_names:
         index_name = "_" + index_name
     keyed = table.select(identity)
@@ -2612,25 +2633,21 @@ def _dedupe_staged_perf_rows(table, parquet_path: Path, *, pa, pc):
     keep = last.column(f"{index_name}_max")
     keep = pc.take(keep, pc.sort_indices(keep))
     deduped = table.take(keep)
-    dropped = table.num_rows - deduped.num_rows
-    if dropped:
-        logging.getLogger(__name__).info(
-            "convert_perf_csv_to_parquet: %s: dropped %d re-appended duplicate rows "
-            "(%d identity keys kept the newest measurement)",
-            parquet_path.name,
-            dropped,
-            deduped.num_rows,
-        )
-    return deduped, dropped
+    return deduped, table.num_rows - deduped.num_rows
 
 
-def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
+def _identity_keys(table, identity: list[str]) -> list[tuple]:
+    """One hashable key per row, in row order."""
+    columns = [table.column(name).to_pylist() for name in identity]
+    return list(zip(*columns, strict=True)) if columns else [()] * table.num_rows
+
+
+def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa, pc):
     """Merge freshly-collected rows into an existing perf parquet, keeping the
     newest row per identity key. Returns ``(table, merged_existing,
     current_event_rows)``; schema incompatibility returns the new table with
-    ``merged_existing=False`` and its unchanged row count."""
-    import pandas as pd
-
+    ``merged_existing=False`` and its unchanged row count. pyarrow only — see
+    ``_keep_last_row_per_identity``."""
     log = logging.getLogger(__name__)
     _validate_moe_default_eligibility(old_table, parquet_path, pa=pa)
 
@@ -2653,8 +2670,8 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
             )
 
     # Compare (name, type) pairs for IDENTITY columns only: matching names
-    # with drifted types would otherwise round-trip through pandas and
-    # silently rewrite the parquet under a different schema. Metric columns
+    # with drifted types would otherwise be concatenated and silently rewrite
+    # the parquet under a different schema. Metric columns
     # are exempt from the type check — pyarrow.csv infers an all-empty
     # optional metric column as `null` while populated runs infer `double`,
     # and treating that drift as a mismatch made the merge silently OVERWRITE
@@ -2662,13 +2679,14 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the finalizer then casts power metrics to double and replaces nulls with
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
     # (the merge realigns column order below); Arrow metadata is ignored
-    # (pandas round-trips change it).
+    # (parquets written by the pandas-based merges before 2026-10-12 carry
+    # pandas metadata).
     # `string` and `large_string` are one logical type: pyarrow.csv infers
-    # `string`, but a parquet that already went through one pandas merge comes
-    # back as `large_string`, so the THIRD finalize of a table (run -> resume
-    # -> retry-failed) used to read as a schema mismatch and OVERWRITE the
-    # accumulated rows (sm120 attention_generation fp8kv, 2026-10-01: 27,303
-    # rows replaced by 5,067). Compare the logical string type.
+    # `string`, but a parquet that went through one of those pandas merges
+    # comes back as `large_string`, so the THIRD finalize of a table (run ->
+    # resume -> retry-failed) used to read as a schema mismatch and OVERWRITE
+    # the accumulated rows (sm120 attention_generation fp8kv, 2026-10-01:
+    # 27,303 rows replaced by 5,067). Compare the logical string type.
     def _logical(type_str: str) -> str:
         return {"large_string": "string", "large_binary": "binary"}.get(type_str, type_str)
 
@@ -2723,30 +2741,39 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
                 new_table.schema.get_field_index(f.name), f.name, new_table.column(f.name).cast(f.type)
             )
 
-    new_df = new_table.to_pandas()
-    old_df = old_table.to_pandas()
-
-    new_df = new_df[old_df.columns.tolist()]  # align column order
-    identity = [c for c in old_df.columns if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    new_table = new_table.select(old_table.column_names)  # align column order
+    identity = [c for c in old_table.column_names if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
     if inherit_eligibility:
-        annotations = old_df.drop_duplicates(subset=identity, keep="last")[identity + ["default_eligible"]]
-        new_df = new_df.drop(columns="default_eligible").merge(annotations, on=identity, how="left", sort=False)
-        flags = new_df["default_eligible"]
-        new_df["default_eligible"] = flags.where(flags.notna(), True).astype(bool)
-        new_df = new_df[old_df.columns.tolist()]
-    current_event_rows = len(new_df.drop_duplicates(subset=identity, keep="last"))
-    combined = pd.concat([old_df, new_df], ignore_index=True)
-    deduped = combined.drop_duplicates(subset=identity, keep="last").reset_index(drop=True)
+        # newest existing annotation per identity key; keys the existing table
+        # never annotated (or annotated null) stay eligible
+        annotations: dict[tuple, bool] = {}
+        existing_flags = old_table.column("default_eligible").to_pylist()
+        for key, flag in zip(_identity_keys(old_table, identity), existing_flags, strict=True):
+            annotations[key] = True if flag is None else bool(flag)
+        flags = [annotations.get(key, True) for key in _identity_keys(new_table, identity)]
+        new_table = new_table.set_column(
+            new_table.schema.get_field_index("default_eligible"),
+            "default_eligible",
+            pa.array(flags, type=pa.bool_()),
+        )
+    current_event_rows = _keep_last_row_per_identity(new_table, identity, pa=pa, pc=pc)[0].num_rows
+    # Drop schema metadata on both sides: a parquet written by an earlier
+    # pandas-based merge carries pandas index metadata that would otherwise
+    # make concat_tables see two different schemas (and be re-published).
+    old_table = old_table.replace_schema_metadata(None)
+    new_table = new_table.replace_schema_metadata(None)
+    combined = pa.concat_tables([old_table, new_table], promote_options="default")
+    deduped, replaced = _keep_last_row_per_identity(combined, identity, pa=pa, pc=pc)
     log.info(
         "convert_perf_csv_to_parquet: merged %s: %d existing + %d new -> %d rows "
         "(%d identity keys replaced by newer measurements)",
         parquet_path.name,
-        len(old_df),
-        len(new_df),
-        len(deduped),
-        len(combined) - len(deduped),
+        old_table.num_rows,
+        new_table.num_rows,
+        deduped.num_rows,
+        replaced,
     )
-    return pa.Table.from_pandas(deduped, preserve_index=False), True, current_event_rows
+    return deduped, True, current_event_rows
 
 
 def find_perf_csv_outputs(output_root: str | os.PathLike = ".", *, recursive: bool = False) -> list[Path]:

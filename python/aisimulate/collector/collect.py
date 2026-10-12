@@ -130,13 +130,23 @@ logger = logging.getLogger("collector")
 _LOGGER_CONFIGURED = False
 RESUME_SCHEMA_VERSION = "collector-resume-v2"
 STALL_THRESHOLD = 30  # iterations (x 0.5 s sleep = 15 s) before logging a stall warning
-# Seconds of ZERO progress with live workers before the executor gives up on the
-# op: dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill them,
-# record their in-flight tasks as WorkerStallTimeout and let the orphan path
-# close the op. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300 (2026-10-06)
-# sat 76 min at 0/58482 with no error until the pipeline watchdog cancelled the
-# whole job; a finite, diagnosable failure is worth more than an open-ended wait.
+# Seconds of ZERO progress with live workers before the stall watchdog acts:
+# dump every worker's thread stacks (SIGUSR1 -> faulthandler), kill the workers,
+# record their in-flight tasks as WorkerStallTimeout and restart the workers so
+# the queue keeps draining. 0 disables. sglang 0.5.21 moe/bf16 on l40s/b300
+# (2026-10-06) sat 76 min at 0/58482 with no error until the pipeline watchdog
+# cancelled the whole job; a finite, diagnosable failure is worth more than an
+# open-ended wait.
 STALL_TIMEOUT_SEC = int(os.environ.get("AISIM_STALL_TIMEOUT_SEC") or os.environ.get("AIC_STALL_TIMEOUT_SEC") or 1800)
+# Consecutive stall rounds (kill + restart) with NO task finished by a worker in
+# between before the executor closes the op (abandons the worker slots; the
+# never-dispatched tasks are recorded as WorkerOrphanedTask, not as failed).
+# 1 = close on the first stall. b200 vllm dsa_context_module s256 (job
+# 481670367, 2026-10-11): the first stall at 13,002/21,960 — eight workers each
+# wedged on a poison shape — closed the op and wrote the 8,950 undispatched
+# tasks into the failed ledger, so the retry-failed resume re-ran all of them
+# behind the same poison shapes and stalled again; two full loops were burnt.
+STALL_MAX_ROUNDS = max(1, int(os.environ.get("AISIM_STALL_MAX_ROUNDS") or 3))
 # Seconds of zero progress after which the executor asks every live worker for a
 # stack dump (SIGUSR1 -> faulthandler) ONCE, without killing: the l40s sglang
 # moe/bf16 first case legitimately took minutes (JIT) and then the shard ran 2h23m
@@ -2019,14 +2029,24 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
     # Monitor progress with error collection
     errors = []
 
-    def _dump_and_kill_stalled_workers(stalled_for: float):
+    # Worker slots the stall watchdog killed on purpose. The health check below
+    # restarts them through start_process without recording a WorkerSignalCrash:
+    # their in-flight task is already a WorkerStallTimeout failure.
+    watchdog_killed: set[int] = set()
+
+    def _dump_and_kill_stalled_workers(stalled_for: float, *, stall_round: int, close_op: bool):
         """Stall watchdog: stacks first (SIGUSR1 -> faulthandler in the worker),
-        then SIGTERM/SIGKILL; the in-flight task of every worker becomes a
-        WorkerStallTimeout error and the orphan path below closes the op."""
+        then SIGTERM/SIGKILL. The in-flight task of every live worker becomes a
+        WorkerStallTimeout failure; the killed workers are restarted by the
+        health check and the queue keeps draining. Only when ``close_op`` is set
+        (STALL_MAX_ROUNDS consecutive rounds with nothing finished in between)
+        are the slots abandoned so the orphan path below closes the op."""
         live = [(i, p) for i, p in enumerate(processes) if p is not None and p.is_alive()]
+        action = "closing the op" if close_op else "restarting the workers"
         logger.error(
             f"{module_name}: no progress for {int(stalled_for)} s with {len(live)} live worker(s) "
-            f"(STALL_TIMEOUT_SEC={STALL_TIMEOUT_SEC}); dumping worker stacks and stopping the op"
+            f"(STALL_TIMEOUT_SEC={STALL_TIMEOUT_SEC}, stall round {stall_round}/{STALL_MAX_ROUNDS}); "
+            f"dumping worker stacks, failing the in-flight tasks and {action}"
         )
         for _, p in live:
             try:
@@ -2055,18 +2075,32 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                     failed_tasks[active_task_id] = True
                 except Exception:
                     pass
+            try:
+                current_task_ids[i] = None
+            except Exception:
+                pass
             p.terminate()
             p.join(timeout=10)
             if p.is_alive():
                 p.kill()
                 p.join(timeout=10)
-            processes[i] = None
+            if p.is_alive():
+                # wedged beyond SIGKILL (driver call): its GPU cannot serve a
+                # replacement worker either, so the slot is abandoned
+                logger.error(f"Process {i} ({p.pid}) survived SIGKILL; abandoning its worker slot")
+                processes[i] = None
+            elif close_op:
+                processes[i] = None
+            else:
+                watchdog_killed.add(i)
 
     with tqdm(total=len(task_infos), desc=f"{module_name}", dynamic_ncols=True, leave=True) as pbar:
         last_progress = 0
         stall_count = 0
         stall_since = None
         stall_diag_sent = False
+        stall_rounds = 0
+        accounted_after_stall_kill = None
         last_error_count = 0
 
         if num_processes == 0:
@@ -2131,16 +2165,13 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                         # the first case carries module import + JIT/autotune: slow is normal, silent is not
                         logger.info(
                             f"waiting for the first result ({int(time.time() - stall_since)} s, 0/{len(task_infos)}; "
-                            f"stacks dumped at {STALL_DIAG_SEC} s, op stopped at {STALL_TIMEOUT_SEC} s of no progress)"
+                            f"stacks dumped at {STALL_DIAG_SEC} s, workers restarted at {STALL_TIMEOUT_SEC} s of no "
+                            f"progress, op stopped after {STALL_MAX_ROUNDS} such rounds without progress)"
                         )
                     else:
                         logger.warning(f"Progress stalled at {len(accounted)}/{len(task_infos)}")
                     stall_count = 0
-                if (
-                    STALL_DIAG_SEC > 0
-                    and not stall_diag_sent
-                    and time.time() - stall_since > STALL_DIAG_SEC
-                ):
+                if STALL_DIAG_SEC > 0 and not stall_diag_sent and time.time() - stall_since > STALL_DIAG_SEC:
                     stall_diag_sent = True
                     live = [p for p in processes if p is not None and p.is_alive()]
                     logger.warning(
@@ -2157,8 +2188,21 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                     and time.time() - stall_since > STALL_TIMEOUT_SEC
                     and any(p is not None and p.is_alive() for p in processes)
                 ):
-                    _dump_and_kill_stalled_workers(time.time() - stall_since)
+                    # Rounds are consecutive only while no task has been finished
+                    # (by a worker) since the previous round's kill.
+                    if accounted_after_stall_kill is not None and len(accounted) == accounted_after_stall_kill:
+                        stall_rounds += 1
+                    else:
+                        stall_rounds = 1
+                    _dump_and_kill_stalled_workers(
+                        time.time() - stall_since,
+                        stall_round=stall_rounds,
+                        close_op=stall_rounds >= STALL_MAX_ROUNDS,
+                    )
+                    sync_done_to_checkpoint()  # the WorkerStallTimeout tasks are accounted from here on
+                    accounted_after_stall_kill = len(accounted)
                     stall_since = None
+                    stall_diag_sent = False
             else:
                 stall_count = 0
                 stall_since = None
@@ -2209,7 +2253,13 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                         with lock:
                             progress_value.value += 1
 
-                    crash_error = create_process_exit_error(i, exit_code)
+                    if i in watchdog_killed:
+                        # killed by the stall watchdog on purpose: the in-flight
+                        # task is already a WorkerStallTimeout failure
+                        watchdog_killed.discard(i)
+                        crash_error = None
+                    else:
+                        crash_error = create_process_exit_error(i, exit_code)
                     if crash_error:
                         errors.append(crash_error)
                         process_stats[i]["errors"].append("process_exit")
@@ -2232,13 +2282,18 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                         processes[i] = None
 
             # Escape hatch: every worker slot is permanently gone (restart
-            # limit, consumed sentinel, or no remaining work to justify a
-            # restart) while tasks are still unaccounted — e.g. a worker was
-            # SIGKILLed after queue.get() but before it recorded anything in
-            # done_tasks/current_task_ids. Without this the monitor loop
-            # would spin at 0.5s forever with nothing able to make progress.
-            # Record the orphaned ids as failures so the summary and resume
-            # checkpoint stay complete, then stop the loop.
+            # limit, consumed sentinel, stall watchdog closing the op, or no
+            # remaining work to justify a restart) while tasks are still
+            # unaccounted — e.g. a worker was SIGKILLed after queue.get() but
+            # before it recorded anything in done_tasks/current_task_ids.
+            # Without this the monitor loop would spin at 0.5s forever with
+            # nothing able to make progress. The orphaned ids are recorded in
+            # the error report (WorkerOrphanedTask) for the summary and the
+            # harness, but NOT in the failed ledger: nothing ran them, so a
+            # plain --resume must queue them again. 2026-10-11, b200 vllm
+            # dsa_context_module: 8,950 orphans written as failed were re-run
+            # by --resume-retry-failed behind the poison shapes that had
+            # stalled the op, which stalled it again.
             if all(p is None for p in processes) and len(accounted) < len(task_infos):
                 while not error_queue.empty():
                     error = error_queue.get()
@@ -2249,7 +2304,8 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                 if orphaned:
                     logger.error(
                         f"All workers exited with {len(orphaned)} task(s) unaccounted; "
-                        f"recording them as failed (orphaned by worker death) and stopping the monitor loop."
+                        f"recording them as WorkerOrphanedTask (never dispatched — left out of the failed "
+                        f"ledger so a plain --resume runs them) and stopping the monitor loop."
                     )
                     for task_id in orphaned:
                         errors.append(
@@ -2259,14 +2315,14 @@ def parallel_run(tasks, func, num_processes, module_name="unknown", resume_optio
                                 "task_id": task_id,
                                 "task_params": None,
                                 "error_type": "WorkerOrphanedTask",
-                                "error_message": "all workers exited before this task was accounted",
+                                "error_message": "all workers exited before this task was dispatched; "
+                                "not recorded as failed — a plain --resume queues it again",
                                 "classification": "unexpected",
                                 "group": None,
                                 "traceback": "",
                                 "timestamp": datetime.now().isoformat(),
                             }
                         )
-                        failed_tasks[task_id] = True
                     sync_done_to_checkpoint()
                 break
 
@@ -3120,10 +3176,9 @@ def _revalidate_producer_plan(producer_plan: dict[Path, _ProducerCheckpointPlan]
                 )
                 checkpoint = json.loads(snapshot.contents)
                 identity = {field: checkpoint.get(field) for field in _CHECKPOINT_IDENTITY_FIELDS}
-                if (
-                    identity != plan.identity_dict()
-                    or _registered_checkpoint_tables(identity, backend=identity["backend"]) != frozenset(plan.tables)
-                ):
+                if identity != plan.identity_dict() or _registered_checkpoint_tables(
+                    identity, backend=identity["backend"]
+                ) != frozenset(plan.tables):
                     raise RuntimeError("checkpoint producer identity changed after preflight")
                 if (
                     _checkpoint_case_ids(checkpoint, "done") != set(plan.done)
@@ -5808,7 +5863,9 @@ def _write_collector_provenance(
         module = module_by_table.get(table)
         if not full_names or module is None:
             if logger is not None:
-                logger.warning(f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry")
+                logger.warning(
+                    f"collection_meta: {table} has no registry mapping this run; skipping its provenance entry"
+                )
             continue
 
         if parquet_path not in finalization_info:

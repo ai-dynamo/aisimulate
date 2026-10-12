@@ -10,6 +10,10 @@ Covers:
 - Sentinel balance under repeated restarts (the core bug-fix scenario)
 - Lost progress tick: worker dies after recording done but before its
   progress_value tick (the 99/100 hang, H20 2026-07-19)
+- Stall watchdog: wedged workers are killed and restarted, the queue keeps
+  draining; only consecutive rounds without progress close the op, and the
+  never-dispatched tasks are not written into the failed ledger
+  (b200 vllm dsa_context_module, 2026-10-11)
 """
 
 import json
@@ -18,6 +22,7 @@ import multiprocessing as mp
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -76,6 +81,13 @@ def _task_fn(label, behavior, device):
         os.kill(os.getpid(), signal.SIGABRT)
     elif behavior == "error":
         raise ValueError(f"simulated: {label}")
+    elif behavior == "hang":
+        # a wedged kernel: never returns (Event.wait is immune to the shortened
+        # time.sleep the parent patched before forking, and survives SIGUSR1)
+        threading.Event().wait()
+    elif behavior.startswith("hang_unless:"):
+        if not os.path.exists(behavior.split(":", 1)[1]):
+            threading.Event().wait()
     elif behavior == "oom":
         raise sys.modules["torch"].OutOfMemoryError(f"simulated: {label}")
     # "normal": return silently
@@ -562,6 +574,71 @@ class TestLostProgressTickRecovery:
         assert _load_failed_ids(tmp_path, module_name) == set()
         # The worker death itself is still surfaced as a crash observation.
         assert len(_crash_errors(errors)) >= 1
+
+
+class TestStallWatchdog:
+    """STALL_TIMEOUT_SEC of zero progress kills and restarts the workers; only
+    STALL_MAX_ROUNDS consecutive rounds without progress close the op, and the
+    tasks nobody dispatched stay out of the failed ledger."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_stall(self, monkeypatch):
+        monkeypatch.setattr(_collect_mod, "STALL_THRESHOLD", 1)
+        monkeypatch.setattr(_collect_mod, "STALL_DIAG_SEC", 0)
+        monkeypatch.setattr(_collect_mod, "STALL_TIMEOUT_SEC", 2)
+
+    @staticmethod
+    def _ids(errors, error_type):
+        return {e["task_id"] for e in errors if e.get("error_type") == error_type}
+
+    def test_stall_kill_restarts_workers_and_the_queue_keeps_draining(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_collect_mod, "STALL_MAX_ROUNDS", 3)
+        module_name = "stall_restart"
+        # both workers take a wedged task first; the six normal tasks queue behind them
+        tasks = _tasks([("h0", "hang"), ("h1", "hang")] + [(f"n{i}", "normal") for i in range(6)])
+
+        errors = _run(tasks, 2, tmp_path, module_name=module_name)
+
+        assert self._ids(errors, "WorkerStallTimeout") == {"h0", "h1"}
+        assert self._ids(errors, "WorkerOrphanedTask") == set()
+        assert _crash_errors(errors) == []  # a watchdog kill is not a crash
+        assert _load_done_ids(tmp_path, module_name) == {f"n{i}" for i in range(6)}
+        assert _load_failed_ids(tmp_path, module_name) == {"h0", "h1"}
+
+    def test_consecutive_stall_rounds_close_the_op_and_orphans_are_not_failed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_collect_mod, "STALL_MAX_ROUNDS", 2)
+        module_name = "stall_close"
+        release = tmp_path / "release"
+        tasks = _tasks([(f"h{i}", f"hang_unless:{release}") for i in range(6)])
+
+        errors = _run(tasks, 2, tmp_path, module_name=module_name)
+
+        # round 1: h0/h1 wedged -> killed, workers restarted; round 2: h2/h3
+        # wedged with nothing finished in between -> op closed. h4/h5 were
+        # never dispatched: reported, but neither failed nor attempted.
+        stalled = self._ids(errors, "WorkerStallTimeout")
+        orphaned = self._ids(errors, "WorkerOrphanedTask")
+        assert stalled == {"h0", "h1", "h2", "h3"}
+        assert orphaned == {"h4", "h5"}
+        assert _load_done_ids(tmp_path, module_name) == set()
+        assert _load_failed_ids(tmp_path, module_name) == stalled
+        assert _load_attempted_ids(tmp_path, module_name) & orphaned == set()
+
+        # a plain --resume (no retry-failed) runs exactly the orphans
+        release.touch()
+        resumed = parallel_run(
+            tasks,
+            _task_fn,
+            num_processes=2,
+            module_name=module_name,
+            resume_options={"checkpoint_dir": str(tmp_path / ".checkpoint"), "resume": True},
+        )
+        assert _load_done_ids(tmp_path, module_name) == {"h4", "h5"}
+        assert _load_failed_ids(tmp_path, module_name) == stalled
+        assert self._ids(resumed, "WorkerOrphanedTask") == set()
+        assert self._ids(resumed, "WorkerStallTimeout") == set()
+        unresolved = [e for e in resumed if e.get("error_type") == "UnresolvedFailures"]
+        assert len(unresolved) == 1 and "4 unresolved" in unresolved[0]["error_message"]
 
 
 class TestResumeIntegrity:

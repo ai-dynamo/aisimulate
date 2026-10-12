@@ -903,6 +903,62 @@ def test_finalize_third_merge_survives_large_string_round_trip(tmp_path):
     assert _rows_by_key(parquet) == {"s1": 1.0, "s2": 2.0, "s3": 3.0}
 
 
+@contextmanager
+def _pandas_unavailable(monkeypatch):
+    """The collector images ship pyarrow (harness ``pyarrow-site``) but no pandas."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise ModuleNotFoundError("No module named 'pandas'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    try:
+        yield
+    finally:
+        monkeypatch.setattr(builtins, "__import__", real_import)
+
+
+def test_finalize_merge_does_not_need_pandas(tmp_path, monkeypatch):
+    """The second finalize of a shard (resume / retry-failed) merges into the
+    existing parquet; it died with ``No module named 'pandas'`` on the vllm
+    image (b200 dsa_context_module job 481670367 window 2, 2026-10-12)."""
+    perf = tmp_path / "gemm_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    _write_keyed_perf_csv(perf, [("s1", 1.0), ("s2", 2.0)])
+    finalize_perf_files([perf])
+
+    with _pandas_unavailable(monkeypatch):
+        _write_keyed_perf_csv(perf, [("s1", 9.0), ("s3", 3.0)])
+        finalize_perf_files([perf])
+
+    assert _rows_by_key(parquet) == {"s1": 9.0, "s2": 2.0, "s3": 3.0}
+    table = pq.read_table(parquet)
+    assert [r["shape"] for r in table.to_pylist()] == ["s2", "s1", "s3"]  # kept rows keep their order
+    assert not table.schema.metadata  # no pandas index metadata in the published parquet
+
+
+def test_finalize_moe_legacy_merge_does_not_need_pandas(tmp_path, monkeypatch):
+    perf = tmp_path / "moe_perf.txt"
+    parquet = perf.with_suffix(".parquet")
+    perf.write_text("kernel_source,shape,latency,default_eligible\nexact,s1,1.0,false\nexact,s2,2.0,false\n")
+    finalize_perf_files([perf])
+
+    with _pandas_unavailable(monkeypatch):
+        perf.write_text("kernel_source,shape,latency\nexact,s1,3.0\nexact,s3,4.0\n")  # legacy recollection
+        finalize_perf_files([perf])
+
+    rows = {r["shape"]: r for r in pq.read_table(parquet).to_pylist()}
+    assert {k: (v["latency"], v["default_eligible"]) for k, v in rows.items()} == {
+        "s1": (3.0, False),  # re-measured, keeps its annotation
+        "s2": (2.0, False),
+        "s3": (4.0, True),  # new key: eligible by default
+    }
+
+
 def test_finalize_merge_falls_back_to_overwrite_on_schema_mismatch(tmp_path):
     perf = tmp_path / "gemm_perf.txt"
     parquet = perf.with_suffix(".parquet")
