@@ -203,6 +203,7 @@ def _load_runner(
         "mamba_chunk_scan_combined": lambda *args, **kwargs: None,
         "selective_state_update": lambda *args, **kwargs: None,
         "_decode_state_update_kernel": lambda *geometry: (ssu, ssu_label),
+        "_decode_dt": lambda batch_size, nheads, head_dim, _device: _Tensor((batch_size, nheads, head_dim)),
         "_token_major_prefill_conv": lambda: False,
         "_prefill_conv_token_major_inputs": None,
         "_run_prefill_conv_token_major": None,
@@ -295,3 +296,41 @@ def test_trtllm_mamba2_generation_labels_the_rows_with_the_kernel_serving_select
         assert kwargs["out"].shape == (1, 128, 64)
         assert kwargs["state_batch_indices"].shape == (1,)
         assert kwargs["dt_softplus"] is True and kwargs["z"] is None
+
+
+def test_generation_runner_builds_dt_only_through_the_serving_layout_helper():
+    # Both input modes take dt from _decode_dt; no dense (batch, nheads, head_dim) dt is made.
+    runner = _function("run_mamba2_generation_benchmark")
+    helper_calls = [node for node in ast.walk(runner) if isinstance(node, ast.Call) and _callee(node) == "_decode_dt"]
+    assert len(helper_calls) == 2
+    dt_assignments = [
+        node
+        for node in ast.walk(runner)
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "dt" for t in node.targets)
+    ]
+    assert dt_assignments, "cached-input mode no longer binds dt"
+    for assignment in dt_assignments:
+        assert isinstance(assignment.value, ast.Call) and _callee(assignment.value) == "_decode_dt"
+
+
+def test_decode_dt_is_an_fp32_per_head_tensor_broadcast_over_head_dim():
+    # FlashInfer's binding requires dt.stride(1) == 1 and dt.stride(2) == 0
+    # (csrc/selective_state_update.cu:187-188 @v0.6.18); serving gets there with
+    # fp32 (batch, nheads) + einops.repeat "b h -> b h p" (mamba2_mixer.py:764 @rc29).
+    seen = {}
+
+    def randn(*shape, dtype=None, device=None):
+        seen["randn"] = (shape, dtype)
+        return _Tensor(shape)
+
+    def repeat(tensor, pattern, **axes):
+        seen["repeat"] = (tensor.shape, pattern, axes)
+        return _Tensor(tensor.shape + (axes["p"],))
+
+    namespace = {"torch": SimpleNamespace(randn=randn, float32="fp32", Tensor=object), "repeat": repeat}
+    module = ast.Module(body=[_function("_decode_dt")], type_ignores=[])
+    exec(compile(module, str(SOURCE), "exec"), namespace)
+    dt = namespace["_decode_dt"](4, 128, 64, "cuda:0")
+    assert seen["randn"] == ((4, 128), "fp32")
+    assert seen["repeat"] == ((4, 128), "b h -> b h p", {"p": 64})
+    assert dt.shape == (4, 128, 64)

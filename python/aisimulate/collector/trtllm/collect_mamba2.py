@@ -220,6 +220,22 @@ def _decode_state_update_kernel(nheads: int, n_groups: int, head_dim: int, d_sta
     return selective_state_update, SSU_KERNEL_SOURCE_TRITON
 
 
+def _decode_dt(batch_size: int, nheads: int, head_dim: int, device) -> torch.Tensor:
+    """Decode dt laid out the way serving hands it to the state-update kernel.
+
+    Serving casts the per-head dt to fp32 and broadcasts it over head_dim with
+    einops.repeat (mamba2_mixer.py:743-746 and :764 @1.3.0rc29): an expanded
+    VIEW with strides (nheads, 1, 0), like the A / D / dt_bias buffers. FlashInfer's
+    binding checks exactly that layout (csrc/selective_state_update.cu:187-188
+    @v0.6.18: dt.stride(1) == 1, dt.stride(2) == 0 — the b200 diagnostic on
+    76ce215e failed every decode cell with "dt.stride(1) must be 1, got 64"), and
+    TRT-LLM's Triton kernel keys its tie_hdim fast path off dt.stride(-1) == 0.
+    A dense (batch, nheads, head_dim) tensor is rejected by the former and
+    mis-tuned for the latter.
+    """
+    return repeat(torch.randn(batch_size, nheads, dtype=torch.float32, device=device), "b h -> b h p", p=head_dim)
+
+
 def run_mamba2_context_benchmark(
     d_model: int,
     d_state: int,
@@ -635,9 +651,6 @@ def run_mamba2_generation_benchmark(
 
     # The decode kernel serving's gate selects for this geometry, and its label.
     ssu_func, ssu_kernel_source = _decode_state_update_kernel(nheads, n_groups, head_dim, d_state)
-    # Serving casts dt to fp32 before the non-replay decode kernels
-    # (mamba2_mixer.py:743-746 @1.3.0rc29); FlashInfer JIT-specialises on it.
-    dt_dtype = torch.float32
 
     # Same contract as the context runner: graph-timed or counted as failed.
     successful_points = 0
@@ -682,7 +695,7 @@ def run_mamba2_generation_benchmark(
                 # Cached mode: use same inputs for all iterations (saves memory)
                 xbc_input = torch.randn(batch_size, conv_dim, dtype=dtype, device=device)
                 x = torch.randn(batch_size, nheads, head_dim, dtype=dtype, device=device)
-                dt = torch.randn(batch_size, nheads, head_dim, dtype=dt_dtype, device=device)
+                dt = _decode_dt(batch_size, nheads, head_dim, device)
                 B = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
                 C = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
                 ssu_out = torch.empty_like(x)
@@ -785,7 +798,6 @@ def run_mamba2_generation_benchmark(
                     {
                         "xbc": (batch_size, conv_dim),
                         "x": (batch_size, nheads, head_dim),
-                        "dt": (batch_size, nheads, head_dim),
                         "B": (batch_size, n_groups, d_state),
                         "C": (batch_size, n_groups, d_state),
                     },
@@ -793,7 +805,7 @@ def run_mamba2_generation_benchmark(
                     dtype,
                     device,
                 )
-                input_pool["dt"] = [tensor.to(dtype=dt_dtype) for tensor in input_pool["dt"]]
+                input_pool["dt"] = [_decode_dt(batch_size, nheads, head_dim, device) for _ in range(total_iters)]
                 ssu_out = torch.empty_like(input_pool["x"][0])
 
                 # --- Benchmark causal_conv1d_update ---
