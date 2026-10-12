@@ -387,6 +387,7 @@ class EngineReplayRunnerFactory:
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
+            supports_tokenization=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -553,6 +554,10 @@ class EngineReplayRunner:
             execution_spec["determinism"] = self.determinism
         if self.trace_graph_cache and "traffic" in execution_spec:
             execution_spec["traffic"]["trace_graph_cache"] = True
+        if spec.backend_deployment.tokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,

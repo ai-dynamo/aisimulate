@@ -153,6 +153,8 @@ class BackendDeploymentSpec:
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
     forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
+    # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
+    tokenization: dict[str, JSONValue] | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +337,7 @@ class RunnerCapabilities:
     supports_state_cache: bool = False
     supports_agentic_profile: bool = False
     supports_grouped_kv_cache: bool = False
+    supports_tokenization: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -468,6 +471,13 @@ class RunnerCapabilities:
                     raise ValueError(
                         "runner does not support state_cache; select a stack that advertises this capability"
                     )
+        if deployment.tokenization is not None:
+            if not self.supports_tokenization:
+                raise ValueError("runner does not support engine.tokenization; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("engine.tokenization requires offline replay")
+            if spec.workload.get("trace_format") in {"weka", "agentic_mooncake"} or spec.workload.get("agentic_lanes"):
+                raise ValueError("engine.tokenization is not supported with agentic workloads")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:

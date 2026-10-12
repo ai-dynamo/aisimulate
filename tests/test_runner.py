@@ -2553,3 +2553,128 @@ def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomi
     assert ("native_report" in report.metadata) == retain_raw
     if retain_raw:
         assert report.metadata["native_report"]["prediction_provenance"]["aggregated"] == provenance
+
+
+def _tokenization_prediction(tokenization: dict | None) -> CorePredictionConfig:
+    engine = {
+        "model": "example/model",
+        "hardware": "h200_sxm",
+        "context_length": 1024,
+        "workers": {"aggregated": {}},
+    }
+    if tokenization is not None:
+        engine["tokenization"] = tokenization
+    return CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize(
+    ("tokenization", "expected"),
+    [
+        (None, None),
+        ({}, None),
+        ({"workers": 4, "base_ms": 0, "per_input_token_us": 0}, None),
+        (
+            {"base_ms": 0.71, "per_input_token_us": 1.615},
+            {"workers": 1, "base_ms": 0.71, "per_input_token_ms": 0.001615},
+        ),
+        ({"workers": 8, "per_input_token_us": 2}, {"workers": 8, "base_ms": 0.0, "per_input_token_ms": 0.002}),
+    ],
+)
+def test_prediction_compiler_carries_tokenization(tokenization, expected) -> None:
+    deployment = prediction_to_replay_spec(_tokenization_prediction(tokenization)).backend_deployment
+
+    assert deployment.tokenization == (pytest.approx(expected) if expected else None)
+
+
+@pytest.mark.parametrize(
+    "tokenization",
+    [
+        {"workers": 0, "base_ms": 1},
+        {"workers": 1.5, "base_ms": 1},
+        {"base_ms": -1},
+        {"per_input_token_us": -0.5},
+        {"base_ms": math.inf},
+        {"latency_ms": 1},
+    ],
+)
+def test_prediction_rejects_invalid_tokenization(tokenization) -> None:
+    with pytest.raises(ValidationError):
+        _tokenization_prediction(tokenization)
+
+
+def test_recommendation_rejects_tokenization() -> None:
+    from aisimulate.config.engine import EngineRecommendationConfig
+
+    with pytest.raises(ValidationError, match="tokenization"):
+        EngineRecommendationConfig.model_validate(
+            {"model": "example/model", "hardware": "h200_sxm", "tokenization": {"base_ms": 1}}
+        )
+
+
+def _tokenization_deployment(tokenization: dict, num_workers: int = 2) -> BackendDeploymentSpec:
+    return BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=_engine_args(),
+        num_workers=num_workers,
+        tokenization=tokenization,
+    )
+
+
+def test_engine_runner_sends_tokenization_in_the_execution_envelope() -> None:
+    runtime = RecordingRuntime()
+    tokenization = {"workers": 1, "base_ms": 0.71, "per_input_token_ms": 0.001615}
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=_tokenization_deployment(tokenization)))
+
+    assert runtime.execution_spec["tokenization"] == tokenization
+    assert runtime.execution_spec["spec"]["topology"]["kind"] == "aggregated"
+
+
+def test_engine_runner_omits_tokenization_when_unset() -> None:
+    runtime = RecordingRuntime()
+
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec())
+
+    assert "tokenization" not in runtime.execution_spec
+    assert "spec" not in runtime.execution_spec
+
+
+def test_tokenization_requires_capability_offline_and_non_agentic_traffic() -> None:
+    from aisimulate.sweeper import RunnerCapabilities
+
+    deployment = _tokenization_deployment({"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}, 1)
+    spec = _spec(deployment=deployment)
+    with pytest.raises(ValueError, match="does not support engine.tokenization"):
+        RunnerCapabilities(supported_backend_topologies=(("*", "*"),)).require_compatible(spec)
+    engine = EngineReplayRunnerFactory(runtime=RecordingRuntime()).capabilities()
+    engine.require_compatible(spec)
+    with pytest.raises(ValueError, match="offline"):
+        replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
+            replace(spec, execution_mode="online")
+        )
+    agentic = _spec(
+        deployment=deployment,
+        workload={"trace_format": "agentic_mooncake", "source_type": "trace", "agentic_lanes": 1},
+    )
+    with pytest.raises(ValueError, match="agentic"):
+        engine.require_compatible(agentic)
+
+
+def test_native_replay_tokenizes_on_the_placed_worker() -> None:
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            _spec(deployment=_tokenization_deployment({"workers": 1, "base_ms": 3.0, "per_input_token_ms": 0.5}, 1)),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        )
+    )
+
+    (record,) = report.metadata["native_report"]["per_request"]
+    # 3 ms + 0.5 ms x 8 input tokens.
+    assert record["arrival_time_ms"] == 0.0
+    assert record["tokenized_ms"] == 7.0
+    assert record["first_admit_ms"] == 7.0
+    assert record["ttft_ms"] > 7.0

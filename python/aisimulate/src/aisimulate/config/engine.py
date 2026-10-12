@@ -422,6 +422,12 @@ class KvTransferConfig(StrictModel):
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 
 
+class TokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_input_token_us: NonNegativeFloat = 0.0
+
+
 class EstimatorPolicyConfig(StrictModel):
     nextn: NonNegativeInt = Field(default=0, le=5)
     nextn_accepted: NonNegativeFloat | None = None
@@ -554,6 +560,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
+    tokenization: TokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -582,6 +589,8 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
                 raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
+        if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
+            raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:
