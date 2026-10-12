@@ -269,12 +269,20 @@ the checkpoint has no KV precision declaration. An FPM profile supplies its
 recorded `kv_cache_dtype`. These are simulation assumptions; align them with
 the serving deployment's actual cache precision.
 
-`predict --detail memory` reports the resolved `kvcache_quant_mode` beside each
-native or profile capacity estimate in table output and JSON. FP8 uses one byte
+Ordinary `predict` output reports the effective KV precision for each role whose
+native or profile capacity estimate establishes it. JSON stdout and the
+`prediction.json` summary include `kv_cache_precision`, mapping each role to
+`dtype` and `source`. Sources are `user_override`, `checkpoint` (an explicit KV
+declaration matching the effective mode), `fpm_profile`, and `aisimulate_policy`
+(including inference from weight quantization when the KV declaration is missing
+or null). This is the precision used for capacity, not the checkpoint's weight dtype.
+
+`predict --detail memory` also reports `kvcache_quant_mode` beside the capacity
+estimate. FP8 uses one byte
 per KV element and BF16 uses two: with the same byte budget, linear FP8 KV can
 hold twice as many tokens. This does not imply twice the throughput.
-The naive fallback omits this field because its byte-width heuristic does not
-establish a quantization mode.
+The naive fallback and roles without a capacity estimate omit this disclosure
+because they do not establish a quantization mode.
 
 To size a BF16 cache explicitly, set `engine.kvcache_quant_mode: bfloat16` in
 the YAML or pass `--set engine.kvcache_quant_mode=bfloat16`. Explicit choices

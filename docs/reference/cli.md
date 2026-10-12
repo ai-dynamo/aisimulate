@@ -225,8 +225,12 @@ aisimulate predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
-`--detail` selects additional reports on `predict`. With no selector, stdout and durable
-reports retain their existing shape. With a selector, JSON stdout contains `summary` and
+Ordinary prediction output includes effective KV precision and its source for roles
+with native or profile capacity estimates. JSON summaries expose this as
+`kv_cache_precision.<role>.{dtype,source}`; see
+[KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
+
+`--detail` selects additional reports on `predict`. With a selector, JSON stdout contains `summary` and
 `details`; the same versioned `details` object is added to `prediction.json` and follows the
 [prediction-details schema](schemas/prediction-details.schema.json). Table output appends selected
 sections and skipped-section reasons to the normal prediction summary.

@@ -791,7 +791,7 @@ def _apply_model_quant_defaults(
         model_config.comm_quant_mode = common.CommQuantMode.half
 
     if applied:
-        logger.debug("Using model-provided quantization defaults: %s", ", ".join(applied))
+        logger.debug("Using inferred quantization defaults: %s", ", ".join(applied))
 
     # Legacy FMHA guards for direct get_model() callers that bypass Task /
     # estimate-path resolution.  They apply ONLY when fmha arrived unset (i.e.

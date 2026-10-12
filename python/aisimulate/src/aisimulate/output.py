@@ -146,6 +146,10 @@ def format_prediction_stdout(
             + "\n\n"
             + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
         )
+    precision_lines = [
+        f"KV cache ({role}): {precision['dtype']} (source: {precision['source']})"
+        for role, precision in summary.get("kv_cache_precision", {}).items()
+    ]
     if summary.get("metric_semantics") == "analytical_epd_overlay":
         lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
@@ -161,10 +165,13 @@ def format_prediction_stdout(
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
         lines.append(format_power_summary(summary))
+        lines.extend(precision_lines)
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return "\n".join(lines)
 
     table = format_report_table(summary)
+    if precision_lines:
+        table += "\n" + "\n".join(precision_lines)
     if summary.get("agentic_qualification") == "functional_only":
         return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
     return table

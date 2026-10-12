@@ -1800,6 +1800,7 @@ def test_memory_detail_reuses_capacity_calculation_without_changing_execution(mo
     calls = []
     estimate = {
         "source": "native",
+        "kvcache_quant_mode": "fp8",
         "total_gpu_capacity_bytes": 4096,
         "total_kv_size_bytes": 1024,
         "total_kv_size_tokens": 128,
@@ -1837,6 +1838,7 @@ def test_memory_detail_reuses_capacity_calculation_without_changing_execution(mo
     assert data["status"] == "available"
     assert data["scope"] == "capacity_estimate_per_rank"
     assert data["memory_breakdown"] == estimate["memory_breakdown"]
+    assert data["kvcache_quant_mode"] == "fp8"
     assert data["estimated_num_gpu_blocks"] == detail_runtime.execution_spec["engine"]["rank"]["num_gpu_blocks"] == 32
 
 

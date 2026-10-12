@@ -319,6 +319,63 @@ def test_run_prediction_returns_structured_result() -> None:
     assert runner.closed is True
 
 
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize(
+    "raw,override,role_override,mode,capacity_source,expected_source",
+    [
+        ({"quant_algo": "fp8"}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"quant_algo": "fp8", "kv_cache_quant_algo": None}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"kv_cache_quant_algo": "fp8"}, None, None, "fp8", "native", "checkpoint"),
+        ({"kv_cache_quant_algo": "none"}, None, None, "bfloat16", "native", "checkpoint"),
+        ({"kv_cache_quant_algo": "bfloat16"}, None, None, "fp8", "native", "aisimulate_policy"),
+        ({"quant_algo": "fp8"}, "bfloat16", None, "bfloat16", "native", "user_override"),
+        ({}, "bfloat16", "fp8", "fp8", "native", "user_override"),
+        ({}, None, None, "fp8", "profile", "fpm_profile"),
+    ],
+)
+def test_predict_discloses_kv_precision_without_detail(
+    tmp_path, monkeypatch, capsys, output_format, raw, override, role_override, mode, capacity_source, expected_source
+):
+    class MemoryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            if self.output_requirements.capture_memory_diagnostics:
+                report.metadata["native_report"]["memory_diagnostics"] = {
+                    "aggregated": {"kvcache_quant_mode": mode, "source": capacity_source}
+                }
+            return report
+
+    runner = MemoryRunner()
+
+    class MemoryFactory(_Factory):
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("vllm", "agg"),),
+                supported_engine_model_controls=("kvcache_quant_mode",),
+            )
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: MemoryFactory(runner))
+    monkeypatch.setattr("aisimulate.predict._get_model_info", lambda _: {"raw_config": raw}, raising=False)
+    config = _prediction_config().model_dump(mode="json", exclude_none=True)
+    if override is not None:
+        config["engine"]["kvcache_quant_mode"] = override
+    if role_override is not None:
+        config["engine"]["workers"]["aggregated"]["timing"]["kvcache_quant_mode"] = role_override
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
+    stdout = capsys.readouterr().out
+    saved = json.loads((output / "prediction.json").read_text())
+    expected = {"aggregated": {"dtype": mode, "source": expected_source}}
+    assert saved["summary"]["kv_cache_precision"] == expected
+    assert "memory_diagnostics" not in saved
+    if output_format == "json":
+        assert json.loads(stdout)["kv_cache_precision"] == expected
+    else:
+        assert f"KV cache (aggregated): {mode} (source: {expected_source})" in stdout
+
+
 @pytest.mark.parametrize(
     "detail,expected",
     [
@@ -1723,7 +1780,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     expected = {"all": {"summary", "time", "energy", "source"}, "time,time": {"time"}, "memory": set()}[selector]
     assert set(details["sections"]) == expected
     assert ("memory" in details["skipped"]) == (selector != "time,time")
-    assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
+    assert runner.output_requirements.capture_memory_diagnostics
     if "time" in expected:
         assert details["sections"]["time"]["serving_metrics"] == {
             "mean_ttft_ms": 2.0,
