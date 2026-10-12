@@ -170,6 +170,22 @@ def test_summary_counts_distinct_recorded_concurrency_with_units():
     assert workload_summary({"runs": [], "unattributed_measurements": 0})["concurrency_settings"] == []
 
 
+def test_summary_preserves_serving_layouts_without_defaulting_unknown():
+    runs = [run("run-a", None, "self_benchmark"), run("run-b", None)]
+    runs[0]["serving"]["layout"] = "agg"
+    runs[1]["serving"]["layout"] = "disagg"
+    details = {"runs": runs, "unattributed_measurements": 1}
+    assert workload_summary(details)["serving_layouts"] == ["agg", "disagg", "unknown"]
+    details["unattributed_measurements"] = 0
+    assert workload_summary(details)["serving_layouts"] == ["agg", "disagg"]
+    assert (
+        workload_summary({"runs": [], "unattributed_measurements": 0})[
+            "serving_layouts"
+        ]
+        == []
+    )
+
+
 @pytest.mark.parametrize("mutation", ["overlap", "helper", "request", "duplicate", "negative"])
 def test_corrupt_collection_references_fail_closed(mutation):
     manifest = {

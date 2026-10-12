@@ -8,7 +8,7 @@
   const labels = { warmup: "FPM (KV warmup on)", nowarmup: "FPM (KV warmup off)", regression: "Regression" };
   const displayMethods = ["regression", "warmup", "nowarmup"];
   const comparison = document.querySelector('[data-table-view]').dataset.tableView === 'predictors';
-  const columns = comparison ? 7 : 5;
+  const columns = comparison ? 8 : 6;
   const body = document.getElementById("overview-body");
   const branchSelect = document.getElementById("branch");
   const collapsed = new Set();
@@ -92,6 +92,17 @@
     }).join("");
   }
 
+  function serving(rows) {
+    const layouts = new Set(rows.flatMap(row => row.collection?.serving_layouts?.length
+      ? row.collection.serving_layouts : ['unknown']));
+    const values = [];
+    if (layouts.has('unknown')) values.push('Agg*');
+    else if (layouts.has('agg') || layouts.has('aggregated')) values.push('Agg');
+    if (layouts.has('disagg') || layouts.has('pd_disaggregated')) values.push('Disagg');
+    if (layouts.has('not_applicable')) values.push('N/A');
+    return values.join(' / ');
+  }
+
   function cards(rows) {
     const averages = comparison ? displayMethods : ['overall'];
     for (const method of averages) {
@@ -118,6 +129,7 @@
     const result = [...byModel].map(([model, rows]) => ({ model, rows,
       gpu: [...new Set(rows.map((row) => row.gpu))].sort().join(", "),
       framework: [...new Set(rows.map((row) => row.framework))].sort().join(", "),
+      serving: serving(rows),
       measurements: rows.reduce((sum, row) => sum + row.measurement_count, 0),
     }));
     const value = (group) => sort.key === 'best' ? bestAggregate(group.rows).mape
@@ -133,11 +145,11 @@
     const models = groups();
     body.innerHTML = models.map((group) => {
       const expanded = !collapsed.has(group.model);
-      const model = `<tr class="overview-model-row model-row"><th scope="rowgroup"><button class="overview-model-button" data-model="${escape(group.model)}" aria-expanded="${expanded}"><span class="overview-chevron" aria-hidden="true">›</span><span>${escape(group.model)}</span><span class="overview-model-count">${group.rows.length}</span></button></th><td>${escape(group.gpu)}</td><td>${escape(group.framework)}</td><td class="overview-measurement-cell"><strong>${integer(group.measurements)}</strong><span>observations</span></td>${cells(group.rows)}</tr>`;
+      const model = `<tr class="overview-model-row model-row"><th scope="rowgroup"><button class="overview-model-button" data-model="${escape(group.model)}" aria-expanded="${expanded}"><span class="overview-chevron" aria-hidden="true">›</span><span>${escape(group.model)}</span><span class="overview-model-count">${group.rows.length}</span></button></th><td>${escape(group.gpu)}</td><td>${escape(group.framework)}</td><td class="overview-serving-cell" aria-describedby="serving-note">${escape(group.serving)}</td><td class="overview-measurement-cell"><strong>${integer(group.measurements)}</strong><span>observations</span></td>${cells(group.rows)}</tr>`;
       return model + [...group.rows].sort((a, b) => [a.gpu, a.framework, a.framework_version, a.parallelism].join().localeCompare([b.gpu, b.framework, b.framework_version, b.parallelism].join())).map((row) => {
         const measurement = row.status === "ready" ? `${integer(row.measurement_count)} observations` : row.status.replaceAll("_", " ");
         const skipped = row.skipped_count ? `<span>${integer(row.skipped_count)} excluded or unavailable</span>` : "";
-        return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(phaseLabel(row))}</span><div class="collection-note" data-configuration="${escape(row.configuration_id)}"></div><a href="evaluation-detail.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}&amp;run=${summary.snapshot.run_id}-${summary.snapshot.run_attempt}">Details →</a> <a href="3d-visualization.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}">3D Viz →</a><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "🤗 Configuration")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
+        return `<tr class="overview-config-row gpu-row" ${expanded ? "" : "hidden"}><th scope="row"><span class="overview-config-name">${escape(row.parallelism.toUpperCase())} · ${escape(phaseLabel(row))}</span><div class="collection-note" data-configuration="${escape(row.configuration_id)}"></div><a href="evaluation-detail.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}&amp;run=${summary.snapshot.run_id}-${summary.snapshot.run_attempt}">Details →</a> <a href="3d-visualization.html?branch=${encodeURIComponent(summary.snapshot.branch)}&amp;configuration=${encodeURIComponent(row.configuration_id)}&amp;snapshot=${encodeURIComponent(row.snapshot_id)}">3D Viz →</a><div class="overview-slice-tags">${link(hf(summary.snapshot, row.configuration_manifest), "🤗 Configuration")}</div></th><td>${escape(row.gpu)}</td><td><strong>${escape(row.framework)}</strong><span class="overview-cell-note">${escape(row.framework_version)}</span></td><td class="overview-serving-cell" aria-describedby="serving-note">${escape(serving([row]))}</td><td class="overview-measurement-cell"><strong>${escape(measurement)}</strong>${skipped}${link(hf(summary.snapshot, row.measurement_manifest), "Measurements ↗")}</td>${cells([row])}</tr>`;
       }).join("");
     }).join("") || `<tr><td colspan="${columns}" class="empty-cell">No measurements available</td></tr>`;
     const rows = new Map(summary.rows.map(row => [row.configuration_id, row]));

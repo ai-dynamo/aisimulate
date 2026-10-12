@@ -105,6 +105,12 @@ Details and 3D Visualization are separate tabs with independent controls.
   evaluations retain support for `aggregated` and `pd_disaggregated`. Unknown
   deployment evidence stays Unknown; request-chart availability does not determine
   serving layout.
+  Overview and Predictors include a sortable Serving column using layouts from
+  contributing collection runs. Model rows list all represented layouts. Unknown
+  or absent metadata displays `Agg*`, with a visible footnote identifying this as
+  a display default, not recorded evidence. Explicitly not-applicable layouts show
+  `N/A`. Stored metadata remains unchanged; legacy summaries without layout fields
+  also display `Agg*`.
 - The E2E accuracy page's compact AISimulate header, branch selector, summary
   cards and table. Light/dark mode shares the `sm-theme`
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;

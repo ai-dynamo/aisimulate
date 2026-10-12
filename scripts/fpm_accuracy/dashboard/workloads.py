@@ -160,6 +160,10 @@ def workload_summary(details):
         "types": sorted({r["collection_type"] for r in runs}),
         "datasets": sorted({r["dataset"]["name"] for r in runs if r["dataset"]["name"]}),
         "run_count": len(runs),
+        "serving_layouts": sorted(
+            {r.get("serving", {}).get("layout") or "unknown" for r in runs}
+            | ({"unknown"} if details["unattributed_measurements"] else set())
+        ),
         "concurrency_settings": [{"unit": unit, "value": value} for unit, value in sorted(settings)],
         "unattributed_measurements": details["unattributed_measurements"],
     }

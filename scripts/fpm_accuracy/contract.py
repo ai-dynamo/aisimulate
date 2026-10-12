@@ -126,6 +126,7 @@ def validate_summary(summary):
                     "run_count",
                     "unattributed_measurements",
                     *(("concurrency_settings",) if "concurrency_settings" in collection else ()),
+                    *(("serving_layouts",) if "serving_layouts" in collection else ()),
                 ),
             )
             require(
@@ -140,6 +141,15 @@ def validate_summary(summary):
             )
             for field in ("run_count", "unattributed_measurements"):
                 require(type(collection[field]) is int and collection[field] >= 0, "invalid collection count")
+            if "serving_layouts" in collection:
+                layouts = collection["serving_layouts"]
+                require(
+                    isinstance(layouts, list)
+                    and all(isinstance(layout, str) for layout in layouts)
+                    and set(layouts)
+                    <= {"agg", "disagg", "aggregated", "pd_disaggregated", "unknown", "not_applicable"},
+                    "invalid serving layouts",
+                )
             if "concurrency_settings" in collection:
                 settings = collection["concurrency_settings"]
                 require(isinstance(settings, list), "invalid concurrency settings")

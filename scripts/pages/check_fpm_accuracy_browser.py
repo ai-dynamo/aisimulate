@@ -24,6 +24,7 @@ from urllib.parse import quote
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from playwright.async_api import async_playwright, expect
+
 from scripts.fpm_accuracy.contract import artifact_key
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,8 @@ async def check_collection_provenance(page, url, data):
     await expect(page.locator(".collection-note").first).to_have_text("Dataset and workload")
     await expect(page.locator(".collection-note details")).to_have_count(0)
     await expect(page.locator(".collection-note a")).to_have_count(0)
+    await expect(page.locator(".overview-config-row .overview-serving-cell").first).to_have_text("Agg*")
+    await expect(page.locator("#serving-note")).to_contain_text("unknown")
     # Versioned metadata arrives with the evaluation; no HF request is needed.
     normalized = copy.deepcopy(data)
     normalized["schema_version"] = 2
@@ -61,6 +64,20 @@ async def check_collection_provenance(page, url, data):
     await expect(page.locator(".collection-note").first).to_have_text(
         "Trace replay · Recorded dataset · 4 concurrency settings · 4 / 16 / 32 / 64 session trees"
     )
+    for tab in ("", "predictors.html"):
+        for layouts, expected in (
+            (["agg"], "Agg"),
+            (["disagg"], "Disagg"),
+            (["aggregated", "pd_disaggregated"], "Agg / Disagg"),
+            (["disagg", "unknown"], "Agg* / Disagg"),
+            (["not_applicable"], "N/A"),
+        ):
+            normalized["rows"][0]["collection"]["serving_layouts"] = layouts
+            await page.goto(url + tab + "?branch=main")
+            await expect(page.locator(".overview-config-row .overview-serving-cell").first).to_have_text(expected)
+            await expect(page.locator(".overview-model-row .overview-serving-cell").first).to_have_text(expected)
+        await page.locator('[data-sort="serving"]').click()
+        await expect(page.locator('[data-sort="serving"]').locator("..")).to_have_attribute("aria-sort", "descending")
     await page.unroute(pattern)
     await page.goto(url + "evaluation-detail.html?branch=main")
     await expect(page.locator("#dataset-workload")).to_contain_text("Unknown")
@@ -260,7 +277,7 @@ async def check_predictor_views(page, url, data, screenshot):
     await expect(page.locator('.fpm-tabs [aria-current="page"]')).to_have_text("Predictors")
     await check_evaluation_banner(page)
     await expect(page.locator(".summary-card")).to_have_count(3)
-    await expect(page.locator("thead th")).to_have_count(7)
+    await expect(page.locator("thead th")).to_have_count(8)
     await expect(page.locator("#overview-body")).not_to_contain_text("predicted")
     await expect(page.locator("#overview-body")).not_to_contain_text("coverage")
     await expect(page.locator("#regression-value")).to_have_text("20.83%")
@@ -442,7 +459,7 @@ async def check():
                 await expect(page.locator(".evaluation-banner #evaluation-run")).to_have_attribute(
                     "href", "https://github.com/ai-dynamo/aisimulate/actions/runs/123/attempts/1"
                 )
-                await expect(page.locator("thead th")).to_have_count(5)
+                await expect(page.locator("thead th")).to_have_count(6)
                 assert not await page.locator('a[href*="coverage.html"]').count()
                 await expect(page.locator(".fpm-tabs a")).to_have_count(5)
                 assert "op-based" not in await page.locator("body").inner_text()
