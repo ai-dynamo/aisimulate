@@ -570,6 +570,9 @@ class EngineReplayRunner:
             report = json.loads(report_json)
         except json.JSONDecodeError as exc:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
+        # The parsed report replaces the transport string, which can be as large as
+        # the per-request records it carries.
+        del report_json
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
         resolved_basis = report.get("weka_nested_timestamp_basis")

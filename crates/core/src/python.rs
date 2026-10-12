@@ -2519,24 +2519,73 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         );
     }
     if record_per_request || !report.per_request.is_empty() {
-        let object = report_json
+        // Holds the key's place in the map; the records are written there during
+        // serialization, one `Value` at a time.
+        report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
-        object.insert(
-            "per_request".to_string(),
-            serde_json::to_value(&report.per_request)
-                .context("serializing AISimulate per-request report records")?,
-        );
+            .context("AISimulate replay report did not serialize as an object")?
+            .insert("per_request".to_string(), serde_json::Value::Null);
     }
-    let output = if let Some(artifacts) = artifacts {
-        serde_json::json!({
+    let report_json = ReportWithRecords {
+        report: &report_json,
+        records: &report.per_request,
+    };
+    if let Some(artifacts) = artifacts {
+        let output = serde_json::json!({
             "report": report_json,
             "artifacts": artifacts,
-        })
-    } else {
-        report_json
-    };
-    serde_json::to_string(&output).context("serializing AISimulate replay output")
+        });
+        return serde_json::to_string(&output).context("serializing AISimulate replay output");
+    }
+    serde_json::to_string(&report_json).context("serializing AISimulate replay output")
+}
+
+/// The report object with its `per_request` placeholder serialized as the
+/// records, each converted to `Value` on its own. The output equals inserting
+/// `serde_json::to_value(records)` and serializing the whole `Value`, without a
+/// `Value` tree for every record at once.
+struct ReportWithRecords<'a> {
+    report: &'a serde_json::Value,
+    records: &'a [crate::replay::PerRequestRecord],
+}
+
+impl serde::Serialize for ReportWithRecords<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let serde_json::Value::Object(object) = self.report else {
+            return self.report.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(object.len()))?;
+        for (key, value) in object {
+            if key == "per_request" {
+                map.serialize_entry(key, &RecordValues(self.records))?;
+            } else {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+struct RecordValues<'a>(&'a [crate::replay::PerRequestRecord]);
+
+impl serde::Serialize for RecordValues<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeSeq};
+
+        let mut records = serializer.serialize_seq(Some(self.0.len()))?;
+        for record in self.0 {
+            records.serialize_element(&serde_json::to_value(record).map_err(S::Error::custom)?)?;
+        }
+        records.end()
+    }
 }
 
 fn replay_python_error(error: anyhow::Error) -> PyErr {
@@ -4845,6 +4894,24 @@ mod tests {
         assert_eq!(record["session_id"], "session-a");
         assert_eq!(record["turn_index"], 2);
         assert_eq!(record["metadata"]["caller_tag"], "binding");
+
+        // Streamed records serialize exactly like the whole report `Value`.
+        let replayed = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        let mut summary = serde_json::to_value(&replayed).unwrap();
+        summary["per_request"] = serde_json::Value::Null;
+        let mut whole = summary.clone();
+        whole["per_request"] = serde_json::to_value(&replayed.per_request).unwrap();
+        let streamed = ReportWithRecords {
+            report: &summary,
+            records: &replayed.per_request,
+        };
+        assert_eq!(
+            serde_json::to_string(&streamed).unwrap(),
+            serde_json::to_string(&whole).unwrap()
+        );
 
         let captured: serde_json::Value =
             serde_json::from_str(&execute_json(&payload, true).unwrap()).unwrap();
