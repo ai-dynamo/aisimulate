@@ -125,7 +125,6 @@ def get_mamba2_test_cases():
     return test_cases
 
 
-
 def _token_major_prefill_conv() -> bool:
     """Serving's prefill conv layout at this runtime.
 
@@ -138,8 +137,10 @@ def _token_major_prefill_conv() -> bool:
     """
     import inspect
 
-    return ("out" in inspect.signature(causal_conv1d_fn).parameters
-            and os.environ.get("TRTLLM_MAMBA_TOKEN_MAJOR_CONV", "1") == "1")
+    return (
+        "out" in inspect.signature(causal_conv1d_fn).parameters
+        and os.environ.get("TRTLLM_MAMBA_TOKEN_MAJOR_CONV", "1") == "1"
+    )
 
 
 def _prefill_conv_token_major_inputs(xbc_batched, batch_size, seq_len, device):
@@ -156,7 +157,9 @@ def _prefill_conv_token_major_inputs(xbc_batched, batch_size, seq_len, device):
     return x_tm, out_tm, cu_seqlens, cache_indices, has_initial_state
 
 
-def _run_prefill_conv_token_major(x_tm, out_tm, conv_weight, conv_bias, conv_state, cu_seqlens, cache_indices, has_initial_state):
+def _run_prefill_conv_token_major(
+    x_tm, out_tm, conv_weight, conv_bias, conv_state, cu_seqlens, cache_indices, has_initial_state
+):
     causal_conv1d_fn(
         x_tm.t(),
         conv_weight,
@@ -221,6 +224,17 @@ def run_mamba2_context_benchmark(
     D = torch.randn(nheads, device=device)  # noqa: N806
     dt_bias = torch.rand(nheads, device=device) - 4.0
 
+    # Every cell is timed under CUDA-graph replay; a failed capture raises
+    # (benchmark_with_power default allow_graph_fail=False) and the cell is
+    # counted as failed below. Until 2026-10-12 allow_graph_fail=True timed the
+    # Python launch loop eagerly and shipped that floor as the kernel latency,
+    # and the per-cell `except` dropped a failed kernel lane with no failure
+    # record: every shipped mamba2 table (rc20, all eight systems) and the rc29
+    # b200 package carry only the causal_conv1d lanes.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
+
     # Sweep over batch_size x seq_len combinations
     for batch_size in batch_size_list:
         for seq_len in seq_len_list:
@@ -268,7 +282,9 @@ def run_mamba2_context_benchmark(
                         )
                         del xbc_input
 
-                        def run_conv1d(_x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init):
+                        def run_conv1d(
+                            _x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init
+                        ):
                             _run_prefill_conv_token_major(_x, _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
 
                     else:
@@ -286,7 +302,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -337,7 +352,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -378,11 +392,20 @@ def run_mamba2_context_benchmark(
                         input_pool["xbc"] = tm_pool  # channel-major originals released
                         out_tm = torch.empty_like(tm_pool[0])
 
-                        def run_conv1d(_pool=tm_pool, _o=out_tm, _conv_state=conv_state, _idx=conv1d_iter_idx,
-                                       _cu=cu_seqlens, _ci=cache_idx, _hi=has_init):
+                        def run_conv1d(
+                            _pool=tm_pool,
+                            _o=out_tm,
+                            _conv_state=conv_state,
+                            _idx=conv1d_iter_idx,
+                            _cu=cu_seqlens,
+                            _ci=cache_idx,
+                            _hi=has_init,
+                        ):
                             idx = _idx[0] % total_iters
                             _idx[0] += 1
-                            _run_prefill_conv_token_major(_pool[idx], _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
+                            _run_prefill_conv_token_major(
+                                _pool[idx], _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi
+                            )
 
                     else:
 
@@ -405,7 +428,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -461,7 +483,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -481,10 +502,21 @@ def run_mamba2_context_benchmark(
                     del input_pool, conv_state
                 gc.collect()
                 torch.cuda.empty_cache()
+                successful_points += 1
 
             except Exception as e:
+                failed_points += 1
+                failures.append(f"batch_size={batch_size}, seq_len={seq_len}: {type(e).__name__}: {e}")
                 print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
                 continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"Mamba2 context summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM Mamba2 context collection failed strict completeness: {summary}; "
+            f"failed cells: {'; '.join(failures)}"
+        )
 
 
 def run_mamba2_generation_benchmark(
@@ -540,6 +572,11 @@ def run_mamba2_generation_benchmark(
     D = repeat(d_base, "h -> h p", p=head_dim)  # noqa: N806
     dt_bias = repeat(dt_bias_base, "h -> h p", p=head_dim)
 
+    # Same contract as the context runner: graph-timed or counted as failed.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
+
     for batch_size in batch_size_list:
         if aic_debug == 1:
             print(f"  Benchmarking batch_size={batch_size}")
@@ -591,7 +628,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -640,7 +676,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -700,7 +735,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -753,7 +787,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -773,10 +806,21 @@ def run_mamba2_generation_benchmark(
                 del ssm_state, conv_state, input_pool
             gc.collect()
             torch.cuda.empty_cache()
+            successful_points += 1
 
         except Exception as e:
+            failed_points += 1
+            failures.append(f"batch_size={batch_size}: {type(e).__name__}: {e}")
             print(f"  Error at batch_size={batch_size}: {e}")
             continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"Mamba2 generation summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM Mamba2 generation collection failed strict completeness: {summary}; "
+            f"failed cells: {'; '.join(failures)}"
+        )
 
 
 def _make_input_pool(

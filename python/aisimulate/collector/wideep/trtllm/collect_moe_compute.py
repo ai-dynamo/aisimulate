@@ -1210,28 +1210,26 @@ def run_moe_ep(
                     moe_ref.forward(hidden_states, actual_logits, do_finalize=not min_latency_mode)
 
         # =====================================================================
-        # Benchmark with automatic power measurement and graph fallback
-        # (same pattern as collect_moe.py)
+        # Benchmark under CUDA-graph replay with automatic power measurement
+        # (same contract as collect_moe.py: a failed capture fails the case)
         # =====================================================================
         num_warmups = 1 if distributed == "power_law" else 3
         num_runs = 1 if distributed == "power_law" else 6
 
+        # CUDA-graph timing is mandatory: a failed capture raises
+        # (benchmark_with_power default allow_graph_fail=False) and the case
+        # fails classified; the moe_ep row has no column that could record an
+        # eager-timed measurement.
         with benchmark_with_power(
             device=device,
             kernel_func=run_forward_pass,
             num_warmups=num_warmups,
             num_runs=num_runs,
             repeat_n=1,
-            allow_graph_fail=True,
         ) as results:
             # Calculate per-iteration latency (accounting for internal iterations)
             latency = results["latency_ms"] / num_iter
             power_stats = results["power_stats"]
-
-            # Always print CUDA graph status for debugging
-            print(f"[DEBUG] used_cuda_graph={results['used_cuda_graph']}, latency_ms={results['latency_ms']:.4f}")
-            if not results["used_cuda_graph"]:
-                print(f"CUDA graph capture failed for {num_tokens} tokens, used eager execution fallback")
 
         # Determine source name
         if min_latency_mode:

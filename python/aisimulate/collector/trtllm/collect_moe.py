@@ -867,28 +867,27 @@ def run_moe_torch(
                 moe.forward(hidden_states, actual_logits, do_finalize=not min_latency_mode)  # noqa: F821
 
         # ═══════════════════════════════════════════════════════════════════════════════
-        # Benchmark with automatic power measurement and graph fallback
+        # Benchmark under CUDA-graph replay with automatic power measurement
         # ═══════════════════════════════════════════════════════════════════════════════
         # Determine base warmups and runs based on distribution mode
         num_warmups = 1 if distributed == "power_law" else 3
         num_runs = 1 if distributed == "power_law" else 6
 
-        # Use benchmark_with_power with graceful graph fallback
+        # CUDA-graph timing is mandatory: a failed capture raises
+        # (benchmark_with_power default allow_graph_fail=False) and the case
+        # fails classified. The moe row has no column that could record an
+        # eager-timed measurement, and the fallback used until 2026-10-12
+        # shipped the Python launch-loop floor as kernel latency.
         with benchmark_with_power(
             device=device,
             kernel_func=run_forward_pass,
             num_warmups=num_warmups,
             num_runs=num_runs,
             repeat_n=1,
-            allow_graph_fail=True,  # Enable graceful fallback to eager execution
         ) as results:
             # Calculate per-iteration latency (accounting for internal iterations)
             latency = results["latency_ms"] / num_iter
             power_stats = results["power_stats"]
-
-            # Log if CUDA graph capture failed (for debugging)
-            if not results["used_cuda_graph"] and aic_debug == 1:
-                print(f"CUDA graph capture failed for {num_tokens} tokens, used eager execution fallback")
 
         if moe_type == "fp8_block" and is_sm_100f(sm_version):
             source = "deepgemm"
