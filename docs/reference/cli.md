@@ -234,7 +234,11 @@ sections and skipped-section reasons to the normal prediction summary.
 - `summary`: existing serving metrics.
 - `memory`: the existing initial per-rank memory capacity estimate, including components when
   available, with sizes in bytes and token counts in tokens. The only current `stage` value is
-  `before_native_capacity_adjustments`; `estimated_num_gpu_blocks` is captured at this stage,
+  `before_native_capacity_adjustments`. Native and profile estimates include the resolved
+  `kvcache_quant_mode`: compare it with the deployment before interpreting token capacity.
+  An omitted engine override can infer FP8; see [KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
+  The field is omitted when the estimator cannot establish the quantization mode.
+  `estimated_num_gpu_blocks` is captured at this stage,
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,
   and unsupported providers/topologies may have no exported estimate.

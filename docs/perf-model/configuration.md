@@ -247,7 +247,8 @@ These additional public YAML fields are concrete controls:
 
 | Field | Meaning |
 | --- | --- |
-| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
 | `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
@@ -259,6 +260,25 @@ and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
 for execution and cache combinations.
+
+### KV precision and token capacity
+
+Omitting `engine.kvcache_quant_mode` does not mean BF16. Without a profile,
+FP8/FP8-block/NVFP4 checkpoint normalization can infer FP8 KV storage even when
+the checkpoint has no KV precision declaration. An FPM profile supplies its
+recorded `kv_cache_dtype`. These are simulation assumptions; align them with
+the serving deployment's actual cache precision.
+
+`predict --detail memory` reports the resolved `kvcache_quant_mode` beside each
+native or profile capacity estimate in table output and JSON. FP8 uses one byte
+per KV element and BF16 uses two: with the same byte budget, linear FP8 KV can
+hold twice as many tokens. This does not imply twice the throughput.
+The naive fallback omits this field because its byte-width heuristic does not
+establish a quantization mode.
+
+To size a BF16 cache explicitly, set `engine.kvcache_quant_mode: bfloat16` in
+the YAML or pass `--set engine.kvcache_quant_mode=bfloat16`. Explicit choices
+remain subject to the model/backend and profile's precision constraints.
 
 ## Migrating saved configuration
 

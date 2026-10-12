@@ -1799,7 +1799,8 @@ def test_detail_schema_rejects_incomplete_or_unsupported_sections(section):
         validate({"schema_version": "1.0", "sections": section, "skipped": {}}, _detail_schema())
 
 
-def test_detail_partial_memory_preserves_unavailable_role_reason():
+@pytest.mark.parametrize("kv_mode", ["fp8", "bfloat16"])
+def test_detail_partial_memory_preserves_unavailable_role_reason(kv_mode):
     from jsonschema import ValidationError, validate
 
     from aisimulate.detail import build_prediction_details, format_prediction_details
@@ -1809,6 +1810,7 @@ def test_detail_partial_memory_preserves_unavailable_role_reason():
         "scope": "capacity_estimate_per_rank",
         "stage": "before_native_capacity_adjustments",
         "source": "native",
+        "kvcache_quant_mode": kv_mode,
         "total_gpu_capacity_bytes": 4096,
         "total_kv_size_bytes": 1024,
         "total_kv_size_tokens": 128,
@@ -1830,6 +1832,7 @@ def test_detail_partial_memory_preserves_unavailable_role_reason():
     validate(result, _detail_schema())
     assert result["sections"]["memory"]["status"] == "partial"
     assert "explicit KV blocks" in format_prediction_details(result)
+    assert f"kvcache_quant_mode: {kv_mode}" in format_prediction_details(result)
     assert result["skipped"] == {}
     result["sections"]["memory"]["status"] = "available"
     with pytest.raises(ValidationError):
