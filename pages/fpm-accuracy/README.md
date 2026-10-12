@@ -107,7 +107,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   serving layout.
   Overview and Predictors include a sortable Serving column using layouts from
   contributing collection runs. Values appear only on parallelism/configuration rows;
-  model-row Serving cells stay empty. Unknown
+  model-row Serving cells stay empty. Multiple layouts use commas, e.g. `Agg*, Disagg`. Unknown
   or absent metadata displays `Agg*`, with a visible footnote identifying this as
   a display default, not recorded evidence. Explicitly not-applicable layouts show
   `N/A`. Stored metadata remains unchanged; legacy summaries without layout fields

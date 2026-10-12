@@ -100,7 +100,7 @@
     else if (layouts.has('agg') || layouts.has('aggregated')) values.push('Agg');
     if (layouts.has('disagg') || layouts.has('pd_disaggregated')) values.push('Disagg');
     if (layouts.has('not_applicable')) values.push('N/A');
-    return values.join(' / ');
+    return values.join(', ');
   }
 
   function cards(rows) {

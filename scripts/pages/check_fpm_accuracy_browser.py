@@ -68,8 +68,8 @@ async def check_collection_provenance(page, url, data):
         for layouts, expected in (
             (["agg"], "Agg"),
             (["disagg"], "Disagg"),
-            (["aggregated", "pd_disaggregated"], "Agg / Disagg"),
-            (["disagg", "unknown"], "Agg* / Disagg"),
+            (["aggregated", "pd_disaggregated"], "Agg, Disagg"),
+            (["disagg", "unknown"], "Agg*, Disagg"),
             (["not_applicable"], "N/A"),
         ):
             normalized["rows"][0]["collection"]["serving_layouts"] = layouts
