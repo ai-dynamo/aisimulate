@@ -147,8 +147,16 @@ def _cold_trace_scan_cache():
     resources._clear_trace_scan_cache()
 
 
-@pytest.mark.parametrize("observable", [True, False])
-def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeypatch, observable):
+@pytest.mark.parametrize(
+    "outcome,peak_mib",
+    [
+        ("replayed", 300),
+        # 1.5x this peak exceeds the headroom of two candidates, and even of one.
+        ("replayed", 6 * 1024),
+        ("failed", 300),
+    ],
+)
+def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeypatch, outcome, peak_mib):
     from concurrent.futures import Future
     from pathlib import Path
 
@@ -193,7 +201,7 @@ def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeyp
     def run(spec):
         index = spec.workload["index"]
         # Only a completed replay measures the trace; a failed one keeps waves serial.
-        return index if observable else SimpleNamespace(outcome="failed", index=index)
+        return index if outcome == "replayed" else SimpleNamespace(outcome=outcome, index=index)
 
     factory = GuardedRunnerFactory(
         SimpleNamespace(create=lambda worker: SimpleNamespace(run=run, close=lambda: None)),
@@ -231,21 +239,26 @@ def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeyp
     monkeypatch.setattr(resources.ijson, "parse", parse)
     monkeypatch.setattr(GuardedRunnerFactory, "admit_wave", admit)
     monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
-    monkeypatch.setattr(scheduler, "_peak_rss_bytes", lambda: 300 * resources.MIB)
+    monkeypatch.setattr(scheduler, "_peak_rss_bytes", lambda: peak_mib * resources.MIB)
     monkeypatch.setattr(scheduler, "checkpoint", lambda *args: None)
     monkeypatch.setattr(scheduler, "mark_execution_ready", lambda: None)
     monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
     monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: pytest.fail("no runtime interruption expected"))
     results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=evaluate, workers=8, timeout=10))
     assert {index: getattr(result, "index", result) for index, result in results.items()} == {i: i for i in range(8)}
-    if observable:
+    if outcome == "failed":
+        assert attempts == [8] + [1] * 8  # No 4- or 2-candidate attempts, and later waves stay serial.
+        assert pools == [1] * 8
+        assert scans == {"coordinator": 9, "worker": 8}
+    elif peak_mib == 300:
         # One serial probe measures the trace; the remaining candidates share one wave.
         assert attempts == [8, 1, 7]
         assert pools == [1, 7]
+        assert scans == {"coordinator": 9, "worker": 8}
     else:
-        assert attempts == [8] + [1] * 8  # No 4- or 2-candidate attempts, and later waves stay serial.
+        # The observed margin only narrows parallel waves; each candidate still
+        # runs alone on the baseline plus the lower bound, like the first probe.
         assert pools == [1] * 8
-    assert scans == {"coordinator": 9, "worker": 8}
     assert len(parses) == 1  # Every coordinator and worker estimate reuses one trace scan.
 
 

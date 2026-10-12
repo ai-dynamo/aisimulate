@@ -237,10 +237,14 @@ replay. The coordinator keeps the largest observation per trace identity
 (format, configured block size and paths). Later candidates of that trace
 reserve the larger of the baseline plus the lower bound and 1.5 times the
 observed peak, so waves return to the requested parallelism. The margin is
-admission policy, not a model of native allocations. Failed replays do not
-record observations. Candidates that differ in engine shape share an
-observation; one that needs more memory than the first is covered by the
-margin, then by live-pressure interruption and the scheduler's halving retry.
+admission policy, not a model of native allocations, and it sizes only waves of
+several candidates. A lone candidate is admitted like the first replay, on the
+baseline plus the lower bound, so a peak whose margin exceeds the headroom
+narrows the sweep to serial waves instead of refusing candidates. Failed
+replays do not record observations. Candidates that differ in engine shape
+share an observation; one that needs more memory than the first is covered by
+the margin, then by live-pressure interruption and the scheduler's halving
+retry.
 All configured agentic lanes and simulated workers are retained. The monitor
 covers metadata inspection and replay, but allocations can outpace its
 sampling; this is not an OOM guarantee. A single `predict` has no observed
@@ -261,7 +265,7 @@ energy, or GPU capacity. Their provenance and qualification are:
 | Native Weka traces | Separate per-play import and replay phases; see below. | Uses the native importer/driver contracts, including real output arrays and synthesized hashes. Covers snapshot and warmup storage; ordinary finite Weka on the Dynamo stack uses the finite trace lower bound and observed peak instead. |
 | Process allowances | 256 MiB within the native Weka peak model; 512 MiB for other built-in worker reservations; coordinator RSS plus 256 MiB. | Engineering reserves, not calibrated platform-specific measurements. |
 | Finite trace arrays | Maximum of retained source `Vec<u64>` hashes plus authored `Vec<u32>` outputs, prepared `Vec<u32>` hash/output storage, and the largest `Vec<u32>` input prompt. Covers every finite trace format on both stacks except native-engine Weka, without file-size, block-size or lane multipliers. | Array widths are concrete. Other allocations, including importer temporary storage, are excluded: this is a lower bound, not a peak RSS estimate. Snapshot, warmup and profile modes are excluded. |
-| Observed trace peaks | The largest `getrusage` high-water RSS of completed replays of the same trace, times 1.5. | Measured on the executing host and code, so it needs no recalibration when native allocations change. The first replay of a trace runs alone under supervision; the margin is policy headroom. |
+| Observed trace peaks | The largest `getrusage` high-water RSS of completed replays of the same trace, times 1.5. | Measured on the executing host and code, so it needs no recalibration when native allocations change. The first replay of a trace runs alone under supervision; the margin is policy headroom that sizes parallel waves only. |
 | Admission and recovery | The sum of candidate estimates must fit one live budget; observed pressure stops workers before bounded retry. | Budget/accounting invariants tested with bounded fixtures and real owned subprocesses. |
 
 The resource tests exercise arithmetic boundaries, combined-wave accounting,

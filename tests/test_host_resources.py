@@ -1054,6 +1054,25 @@ def test_observed_peaks_admit_parallel_waves_for_the_same_trace(tmp_path, monkey
             factory.admit_wave([spec, unobserved])
 
 
+def test_observed_margin_never_refuses_a_lone_candidate(tmp_path, monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    path = tmp_path / "requests.jsonl"
+    path.write_text(json.dumps(_dynamo_row(input_length=1024, contextual=False)) + "\n")
+    spec = SimpleNamespace(workload={"trace_path": str(path), "trace_format": "dynamo"}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    factory.record_peak(spec, 6 * GB)  # 1.5 x 6 GB exceeds the 8 GB budget.
+
+    # Like the unobserved probe, a lone candidate reserves the baseline plus the lower bound.
+    wave = factory.admit_wave([spec])
+    assert wave["reserved_bytes"] == [resources.WORKER_BASELINE_BYTES + 4 * 1024]
+    assert wave["observed_peak_bytes"] == [6 * GB]
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec, spec])
+    assert not isinstance(caught.value, resources._SerialAdmissionRequired)
+    assert caught.value.plan["reserved_bytes"] == [9 * GB, 9 * GB]
+
+
 @pytest.mark.parametrize("trace_format,stack", [("weka", "dynamo"), ("dynamo", "engine"), ("dynamo", "dynamo")])
 @pytest.mark.parametrize("input_oversized", [False, True])
 def test_added_agentic_formats_reject_oversized_arrays(

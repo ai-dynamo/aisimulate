@@ -1179,9 +1179,11 @@ class GuardedRunnerFactory:
                     plan={"status": "resource_limited", "workers": len(specs), "candidates": plans},
                 )
             require_plan(plan)
+            # The observed margin only sizes parallel waves. A lone candidate is
+            # admitted like the unobserved probe, so it is never refused for it.
             reservations.append(
                 observed
-                if observed is not None
+                if observed is not None and len(specs) > 1
                 else _reserved_bytes(estimate["estimated_peak_bytes"], estimate["lower_bound_bytes"], external=external)
             )
         budget = resolve_budget(self.policy, host)
