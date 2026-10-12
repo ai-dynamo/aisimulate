@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from aisimulate_core.sdk.models.helpers import _get_model_info
+from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
 from .compiler import prediction_to_replay_spec
 from .config.cli import CorePredictionConfig
@@ -46,7 +46,7 @@ class PredictionResult:
         native: The full native report with ``summary`` merged in.
         replay_spec: The compiled replay spec that was executed (e.g. for AFD
             qualification artifacts).
-        report: The raw :class:`ReplayReport` returned by the runner.
+        report: The runner's :class:`ReplayReport`, retaining requested diagnostics.
     """
 
     summary: dict[str, Any]
@@ -129,6 +129,12 @@ def run_prediction(
     # Capacity is already computed by the runner. Retain its resolved precision
     # for ordinary output too, without recomputing a model or its memory budget.
     capture_memory_details = output_requirements.capture_memory_diagnostics
+    retain_native_report = (
+        output_requirements.include_raw_report
+        or output_requirements.capture_per_request
+        or capture_memory_details
+        or output_requirements.capture_performance_diagnostics
+    )
     output_requirements = replace(output_requirements, capture_memory_diagnostics=True)
     runner = runner_factory.create(0)
     try:
@@ -146,6 +152,21 @@ def run_prediction(
     finally:
         runner.close()
     native = report.metadata.get("native_report")
+    memory_diagnostics = (
+        native.get("memory_diagnostics", {})
+        if isinstance(native, dict)
+        else report.metadata.get("memory_diagnostics", {})
+    )
+    metadata = dict(report.metadata)
+    if not capture_memory_details:
+        metadata.pop("memory_diagnostics", None)
+        if isinstance(native, dict):
+            native = {key: value for key, value in native.items() if key != "memory_diagnostics"}
+            metadata["native_report"] = native
+    if not retain_native_report:
+        metadata.pop("native_report", None)
+        native = None
+    report = replace(report, metadata=metadata)
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
     if epd:
@@ -162,7 +183,7 @@ def run_prediction(
         native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     summary = prediction_summary(native)
     kv_precision = {}
-    for role, memory in native.get("memory_diagnostics", {}).items():
+    for role, memory in memory_diagnostics.items():
         mode = memory.get("kvcache_quant_mode")
         worker = getattr(config.engine.workers, role, None)
         if mode is None or worker is None:
@@ -175,15 +196,13 @@ def run_prediction(
         else:
             # Reuse the cached, normalized checkpoint metadata read during model
             # construction. Weight quantization alone is not a KV declaration.
-            raw = _get_model_info(config.engine.model).get("raw_config", {})
+            raw = get_model_config_from_model_path(config.engine.model).get("raw_config", {})
             declared = raw.get("kv_cache_quant_algo")
             declared = "bfloat16" if declared == "none" else declared
             source = "checkpoint" if declared == mode else "aisimulate_policy"
         kv_precision[role] = {"dtype": mode, "source": source}
     if kv_precision:
         summary["kv_cache_precision"] = kv_precision
-    if not capture_memory_details:
-        native = {key: value for key, value in native.items() if key != "memory_diagnostics"}
     summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:
         native = {**native, "summary": summary}

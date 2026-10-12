@@ -18,7 +18,7 @@ from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output
 from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
-from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
+from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplayReport, RunnerCapabilities
 
 
 class _RecommendationResult:
@@ -320,6 +320,7 @@ def test_run_prediction_returns_structured_result() -> None:
 
 
 @pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("roles", [("aggregated",), ("prefill", "decode")])
 @pytest.mark.parametrize(
     "raw,override,role_override,mode,capacity_source,expected_source",
     [
@@ -331,17 +332,31 @@ def test_run_prediction_returns_structured_result() -> None:
         ({"quant_algo": "fp8"}, "bfloat16", None, "bfloat16", "native", "user_override"),
         ({}, "bfloat16", "fp8", "fp8", "native", "user_override"),
         ({}, None, None, "fp8", "profile", "fpm_profile"),
+        ({}, None, None, None, "naive_fallback", None),
     ],
 )
 def test_predict_discloses_kv_precision_without_detail(
-    tmp_path, monkeypatch, capsys, output_format, raw, override, role_override, mode, capacity_source, expected_source
+    tmp_path,
+    monkeypatch,
+    capsys,
+    output_format,
+    roles,
+    raw,
+    override,
+    role_override,
+    mode,
+    capacity_source,
+    expected_source,
 ):
+    modes = {role: override if role_override and role != roles[-1] else mode for role in roles}
+
     class MemoryRunner(_Runner):
         def run(self, *args, **kwargs):
             report = super().run(*args, **kwargs)
             if self.output_requirements.capture_memory_diagnostics:
                 report.metadata["native_report"]["memory_diagnostics"] = {
-                    "aggregated": {"kvcache_quant_mode": mode, "source": capacity_source}
+                    role: {"source": capacity_source, **({"kvcache_quant_mode": dtype} if dtype else {})}
+                    for role, dtype in modes.items()
                 }
             return report
 
@@ -350,30 +365,76 @@ def test_predict_discloses_kv_precision_without_detail(
     class MemoryFactory(_Factory):
         def capabilities(self):
             return RunnerCapabilities(
-                supported_backend_topologies=(("vllm", "agg"),),
+                supported_backend_topologies=(("vllm", "agg"), ("vllm", "disagg")),
                 supported_engine_model_controls=("kvcache_quant_mode",),
             )
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: MemoryFactory(runner))
-    monkeypatch.setattr("aisimulate.predict._get_model_info", lambda _: {"raw_config": raw}, raising=False)
+    monkeypatch.setattr("aisimulate.predict.get_model_config_from_model_path", lambda _: {"raw_config": raw})
     config = _prediction_config().model_dump(mode="json", exclude_none=True)
+    worker = config["engine"]["workers"]["aggregated"]
+    config["engine"]["workers"] = {role: deepcopy(worker) for role in roles}
+    config["engine"]["mode"] = "aggregated" if roles == ("aggregated",) else "disaggregated"
     if override is not None:
         config["engine"]["kvcache_quant_mode"] = override
     if role_override is not None:
-        config["engine"]["workers"]["aggregated"]["timing"]["kvcache_quant_mode"] = role_override
+        config["engine"]["workers"][roles[-1]]["timing"]["kvcache_quant_mode"] = role_override
     path = tmp_path / "prediction.yaml"
     path.write_text(yaml.safe_dump(config))
     output = tmp_path / "out"
     assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
     stdout = capsys.readouterr().out
     saved = json.loads((output / "prediction.json").read_text())
-    expected = {"aggregated": {"dtype": mode, "source": expected_source}}
-    assert saved["summary"]["kv_cache_precision"] == expected
     assert "memory_diagnostics" not in saved
+    if mode is None:
+        assert "kv_cache_precision" not in saved["summary"]
+        assert "kv_cache_precision" not in stdout
+        assert "KV cache (" not in stdout
+        return
+    expected = {role: {"dtype": dtype, "source": expected_source} for role, dtype in modes.items()}
+    assert saved["summary"]["kv_cache_precision"] == expected
     if output_format == "json":
         assert json.loads(stdout)["kv_cache_precision"] == expected
     else:
-        assert f"KV cache (aggregated): {mode} (source: {expected_source})" in stdout
+        for role, dtype in modes.items():
+            assert f"KV cache ({role}): {dtype} (source: {expected_source})" in stdout
+
+
+@pytest.mark.parametrize(
+    "requirements,retain_raw,retain_memory",
+    [
+        (None, True, False),
+        (ReplayOutputRequirements(include_raw_report=False), False, False),
+        (ReplayOutputRequirements(include_raw_report=True), True, False),
+        (ReplayOutputRequirements(capture_memory_diagnostics=True), True, True),
+        (ReplayOutputRequirements(capture_per_request=True), True, False),
+        (ReplayOutputRequirements(capture_performance_diagnostics=True), True, False),
+    ],
+)
+def test_run_prediction_retains_only_requested_diagnostics(requirements, retain_raw, retain_memory):
+    class MemoryRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            native = report.metadata["native_report"]
+            native["raw_only_field"] = "native data"
+            if self.output_requirements.capture_memory_diagnostics:
+                native["memory_diagnostics"] = {"aggregated": {"source": "profile", "kvcache_quant_mode": "fp8"}}
+            return report
+
+    runner = MemoryRunner()
+    result = run_prediction(
+        _prediction_config(), stack="engine", runner_factory=_Factory(runner), output_requirements=requirements
+    )
+    assert result.summary["kv_cache_precision"] == {"aggregated": {"dtype": "fp8", "source": "fpm_profile"}}
+    assert ("native_report" in result.report.metadata) == retain_raw
+    assert ("raw_only_field" in result.native) == retain_raw
+    assert ("memory_diagnostics" in result.native) == retain_memory
+    if retain_raw:
+        assert ("memory_diagnostics" in result.report.metadata["native_report"]) == retain_memory
+    else:
+        assert result.native == {"summary": result.summary}
+        for key, value in result.report.metrics.items():
+            assert result.summary[key] == value
 
 
 @pytest.mark.parametrize(
