@@ -206,10 +206,14 @@ The counters follow each format's loader:
   `input_length`/`input_tokens`, `output_length`/`output_tokens`, `hash_ids`
   and authored `output_token_ids`, ignoring `input_sequence_hashes` and nested
   provenance. Mooncake-family loaders convert source hashes row by row, so their
-  bound omits the source-hash term.
-- Applied-compute agentic counts `num_turns + 1` requests per session, its
-  assistant and final response lengths, and its initial prompt. The loader
-  synthesizes hashes, so the bound counts none.
+  bound omits the source-hash term. A Mooncake or Mooncake-delta row without
+  an input length is sized as its hash count times the configured block size,
+  as the loader does. Mooncake-delta setup synthesizes every turn's prompt, so
+  its bound counts 4 bytes per input token of every row with the planned outputs.
+- Applied-compute agentic counts `num_turns + 1` requests per session and its
+  assistant and final response lengths. Each turn's prompt adds the previous
+  response and tool output, so the final cumulative prompt is the largest. The
+  loader synthesizes hashes, so the bound counts none.
 - Dynamo-stack Weka counts normal, streaming, and nested subagent requests in JSON, JSONL,
   and directories. Its graph has `ceil(input_length / block_size)` hashes per
   request, including generated hashes absent from the source. Inspection first

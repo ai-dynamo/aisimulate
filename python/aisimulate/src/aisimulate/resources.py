@@ -487,16 +487,23 @@ class _TraceCounters:
     # Dynamo, Agentic Mooncake and Weka loaders hold every u64 source hash
     # array at once. Mooncake-family loaders convert each row as it is read.
     retains_source_hashes: bool
+    # Mooncake-delta setup replaces each turn's hashes with its synthesized prompt.
+    materializes_inputs: bool = False
     hashes: int = 0
     authored_outputs: int = 0
     outputs: int = 0
     largest_input: int = 0
+    total_input: int = 0
     requests: int = 0
 
     @property
     def lower_bound(self) -> int:
         loaded = 8 * self.hashes + 4 * self.authored_outputs if self.retains_source_hashes else 0
-        return max(loaded, 4 * (self.hashes + self.outputs), 4 * self.largest_input)
+        if self.materializes_inputs:
+            prepared = max(4 * self.hashes, 4 * (self.total_input + self.outputs))
+        else:
+            prepared = 4 * (self.hashes + self.outputs)
+        return max(loaded, prepared, 4 * self.largest_input)
 
 
 class _InspectionStopped(Exception):
@@ -530,8 +537,11 @@ _MOONCAKE_OUTPUTS = frozenset({"output_length", "output_tokens"})
 
 def _scan_mooncake(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
     """Count Mooncake, Mooncake-delta and Agentic Mooncake rows by their top-level fields."""
+    # Mooncake loaders size an omitted prompt from its hashes; Agentic Mooncake requires it.
+    block_size = state["omitted_input_block_size"]
     hashes = authored = 0
     row = False
+    row_input = None
     for prefix, event, value in events:
         if prefix == "hash_ids.item":
             if event == "number":
@@ -544,14 +554,18 @@ def _scan_mooncake(events: Any, counters: _TraceCounters, state: dict[str, Any],
         elif prefix == "":
             if event == "start_map":
                 row = False
+                row_input = None
             elif event == "end_map":
+                length = hashes * block_size if row_input is None else row_input
+                counters.largest_input = max(counters.largest_input, length)
+                counters.total_input += length
                 counters.hashes += hashes
                 counters.authored_outputs += authored
                 hashes = authored = 0
                 counters.requests += int(row)
                 _check_headroom(counters, limit)
         elif prefix in _MOONCAKE_INPUTS:
-            counters.largest_input = max(counters.largest_input, _token_length(value))
+            row_input = _token_length(value)
             row = True
         elif prefix in _MOONCAKE_OUTPUTS:
             counters.outputs += _token_length(value)
@@ -559,16 +573,29 @@ def _scan_mooncake(events: Any, counters: _TraceCounters, state: dict[str, Any],
 
 
 def _scan_applied_compute(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
-    """Count sessions without the synthetic hashes the loader derives from lengths."""
+    """Count sessions without the synthetic hashes the loader derives from lengths.
+
+    Each turn's prompt adds the previous response and tool output, so the final
+    turn carries the session's largest prompt.
+    """
+    prompt = 0
     for prefix, event, value in events:
-        if prefix == "assistant_response_length.item" or prefix == "final_assistant_response_length":
+        if prefix == "assistant_response_length.item":
+            length = _token_length(value)
+            counters.outputs += length
+            prompt += length
+        elif prefix == "tool_call_output_length.item" or prefix == "input_prompt_length":
+            prompt += _token_length(value)
+        elif prefix == "final_assistant_response_length":
             counters.outputs += _token_length(value)
-        elif prefix == "input_prompt_length":
-            counters.largest_input = max(counters.largest_input, _token_length(value))
         elif prefix == "num_turns":
             counters.requests += _token_length(value) + 1
-        elif prefix == "" and event == "end_map":
-            _check_headroom(counters, limit)
+        elif prefix == "":
+            if event == "start_map":
+                prompt = 0
+            elif event == "end_map":
+                counters.largest_input = max(counters.largest_input, prompt)
+                _check_headroom(counters, limit)
 
 
 _DYNAMO_HASHES = "request.replay.input_sequence_hashes.item"
@@ -697,11 +724,18 @@ def _trace_files(workload: Mapping[str, Any], format_name: str) -> list[Path] | 
     return files
 
 
-def _scan_finite_trace(files: list[Path], format_name: str, inspection_budget_bytes: int | None) -> _TraceCounters:
-    counters = _TraceCounters(retains_source_hashes=format_name in {"agentic_mooncake", "dynamo", "weka"})
+def _scan_finite_trace(
+    files: list[Path], format_name: str, configured_block_size: int, inspection_budget_bytes: int | None
+) -> _TraceCounters:
+    counters = _TraceCounters(
+        retains_source_hashes=format_name in {"agentic_mooncake", "dynamo", "weka"},
+        materializes_inputs=format_name == "mooncake-delta",
+    )
     limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
     scan = _TRACE_SCANNERS[format_name]
-    state: dict[str, Any] = {}
+    state: dict[str, Any] = {
+        "omitted_input_block_size": configured_block_size if format_name in {"mooncake", "mooncake-delta"} else 0
+    }
     for path in files:
         if format_name == "weka" and "block_size" not in state:
             state["block_size"] = _weka_block_size(path)
@@ -746,7 +780,8 @@ def _estimate_finite_trace(
             if counters is not None:
                 _TRACE_SCAN_CACHE.move_to_end(key)
         if counters is None:
-            counters = _scan_finite_trace(files, format_name, inspection_budget_bytes)
+            block_size = int(workload.get("trace_block_size") or 512)
+            counters = _scan_finite_trace(files, format_name, block_size, inspection_budget_bytes)
             if counters.requests:
                 with _TRACE_SCAN_CACHE_LOCK:
                     _TRACE_SCAN_CACHE[key] = counters

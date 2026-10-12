@@ -504,16 +504,22 @@ def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, mo
 @pytest.mark.parametrize("trace_format", ["mooncake", "mooncake-delta"])
 def test_mooncake_traces_bound_compact_arrays_and_observe_their_peak(tmp_path, trace_format):
     trace = tmp_path / "trace.jsonl"
-    trace.write_text((json.dumps({"input_length": 100, "output_length": 10, "hash_ids": [1, 2]}) + "\n") * 5)
+    rows = [{"input_length": 100, "output_length": 10, "hash_ids": [1, 2]}] * 4
+    rows.append({"output_length": 10, "hash_ids": [1, 2, 3]})  # The loader sizes this prompt as 3 x 64 tokens.
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
     estimate = estimate_workload(
         {"trace_path": str(trace), "trace_block_size": 64, "trace_format": trace_format}, stack="engine"
     )
     assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
     assert estimate.estimated_peak_bytes is None  # Measured from a completed replay instead.
     assert estimate.request_count == 5
-    # Rows convert u64 source hashes one at a time, so only the compact
-    # hashes, planned outputs and one expanded prompt are unavoidable.
-    assert estimate.lower_bound_bytes == max(4 * (10 + 50), 4 * 100)
+    if trace_format == "mooncake":
+        # Rows convert u64 source hashes one at a time, so only the compact
+        # hashes, planned outputs and one expanded prompt are unavoidable.
+        assert estimate.lower_bound_bytes == max(4 * (11 + 50), 4 * 192)
+    else:
+        # Delta setup synthesizes every prompt and plans every output.
+        assert estimate.lower_bound_bytes == 4 * (4 * 100 + 192 + 50)
 
 
 def test_applied_compute_counts_turns_and_responses(tmp_path):
@@ -530,7 +536,26 @@ def test_applied_compute_counts_turns_and_responses(tmp_path):
     estimate = estimate_workload({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine")
     assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
     assert estimate.request_count == 6  # Each session replays num_turns + 1 requests.
-    assert estimate.lower_bound_bytes == max(4 * 2 * (5 + 7 + 9), 4 * 300)
+    # The final prompt adds both responses and tool outputs to the initial prompt.
+    assert estimate.lower_bound_bytes == max(4 * 2 * (5 + 7 + 9), 4 * (300 + 5 + 7 + 11 + 13))
+
+
+def test_applied_compute_tool_output_grows_the_final_prompt(tmp_path, host, monkeypatch):
+    trace = tmp_path / "sessions.jsonl"
+    row = {
+        "num_turns": 1,
+        "input_prompt_length": 1,
+        "assistant_response_length": [1],
+        "tool_call_output_length": [10**12],
+        "tool_call_latency": [0.0],
+        "final_assistant_response_length": 1,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    _supervised(monkeypatch)
+    plan = build_plan({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["lower_bound_bytes"] == 4 * (2 + 10**12)
+    assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
 
 
 def test_fixed_capacity_kv_domain_has_a_conservative_count_bound(host):
