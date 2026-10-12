@@ -581,8 +581,15 @@ impl RadixCache {
 
     /// Read-only prefix match using page hashes already owned by the request.
     pub(crate) fn prefix_match_hashes_len(&self, page_keys: &[LocalBlockHash]) -> usize {
+        self.prefix_match_hashes_budget(page_keys).0
+    }
+
+    /// Matched tokens and the evictable tokens a lock on that path would protect.
+    /// This read-only query also handles a match ending partway through a radix node.
+    pub(crate) fn prefix_match_hashes_budget(&self, page_keys: &[LocalBlockHash]) -> (usize, usize) {
         let mut current = self.root;
         let mut matched_pages: usize = 0;
+        let mut unlocked_pages: usize = 0;
 
         while matched_pages < page_keys.len() {
             let child_id = match self.nodes[current]
@@ -596,6 +603,9 @@ impl RadixCache {
 
             let child_key = &self.nodes[child_id].key;
             let common_len = Self::key_match(child_key, &page_keys[matched_pages..]);
+            if self.nodes[child_id].lock_ref == 0 {
+                unlocked_pages += common_len;
+            }
 
             if common_len < child_key.len() {
                 matched_pages += common_len;
@@ -606,7 +616,7 @@ impl RadixCache {
             current = child_id;
         }
 
-        matched_pages * self.page_size
+        (matched_pages * self.page_size, unlocked_pages * self.page_size)
     }
 
     /// Insert a token sequence into the tree. Key is page-aligned before insertion.

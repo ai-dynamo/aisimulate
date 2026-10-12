@@ -53,9 +53,8 @@ pub(super) fn get_new_batch_prefill(
             remaining_output as f64 * new_token_ratio
         })
         .sum();
-    // PagePool already removes the full physical footprint of every active
-    // partial page from available capacity, so page slack must not be charged
-    // a second time here.
+    // Existing allocations are already removed. Native 0.5.19 additionally reserves
+    // one page for each request admitted by this PrefillAdder, before batch allocation.
     let mut rem_total_tokens =
         (cache.available_tokens() + cache.evictable_size) as f64 - reserved_decode_output;
     let mut rem_input_tokens = config.max_prefill_tokens as f64;
@@ -79,7 +78,7 @@ pub(super) fn get_new_batch_prefill(
         // without the tree cache and never re-match; the request simply continues from the tokens
         // it already owns. Zero-output (prefix-only) replay requests keep the full match: they
         // have no first token to sample, so a fully cached prompt is no forward-pass work.
-        let cached_prefix = if req.materialized_tokens == 0 && config.enable_prefix_caching {
+        let (cached_prefix, newly_locked_prefix) = if req.materialized_tokens == 0 && config.enable_prefix_caching {
             req.kv_lease
                 .ensure_page_hashes(&req.sequence_tokens, config.block_size);
             let match_len = if req.max_output_tokens == 0 {
@@ -91,9 +90,9 @@ pub(super) fn get_new_batch_prefill(
             let pages = (match_len / config.block_size).min(page_hashes.len());
             kv_manager
                 .cache()
-                .prefix_match_hashes_len(&page_hashes[..pages])
+                .prefix_match_hashes_budget(&page_hashes[..pages])
         } else {
-            0
+            (0, 0)
         };
         let start = req.materialized_tokens.max(cached_prefix);
         // SGLang `extend_input_len`: tokens left to compute beyond the matched/owned prefix.
@@ -103,39 +102,67 @@ pub(super) fn get_new_batch_prefill(
             break;
         }
 
-        let chunk_tokens =
-            if ceil_to_block(extend_input, config.block_size) as f64 <= rem_chunk_tokens {
-                extend_input
-            } else {
-                let chunk = (rem_chunk_tokens as usize / config.block_size) * config.block_size;
-                if chunk == 0 {
-                    rejected.push_back(req);
-                    break;
-                }
-                chunk.min(extend_input)
-            };
-
-        // Budgets are charged for computed tokens only (`PrefillAdder._update_prefill_budget`),
-        // not for the cached prefix.
-        let charged_input_tokens = ceil_to_block(chunk_tokens, config.block_size) as f64;
-        let output_reserve = if chunk_tokens < extend_input {
-            0
-        } else {
-            req.remaining_budget_tokens()
-                .min(config.clip_max_new_tokens)
-        };
-        if charged_input_tokens + output_reserve as f64 >= rem_total_tokens {
+        let first_admission = req.materialized_tokens == 0;
+        // SGLang 0.5.19 checks full untruncated input + remaining requested
+        // output + one page, BEFORE chunking and again after locking the prefix.
+        // A prefix-only replay has no native sampled token; preserve that seam's
+        // zero-work admission without inventing an extra native page reservation.
+        let native_generation = req.max_output_tokens > 0;
+        let page_overhead = if native_generation { config.block_size } else { 0 };
+        let candidate_budget = rem_total_tokens - newly_locked_prefix as f64;
+        let full_requirement = extend_input
+            + req.remaining_budget_tokens().min(config.clip_max_new_tokens)
+            + page_overhead;
+        if first_admission && native_generation && full_requirement as f64 >= candidate_budget {
             batch_is_full = true;
             rejected.push_back(req);
             break;
         }
-        if charged_input_tokens > rem_input_tokens || charged_input_tokens > rem_chunk_tokens {
+
+        // An already-owned chunk must continue. Native add_chunked_req limits it
+        // by the remaining total budget, but falls back to the chunk budget when
+        // that total is nonpositive; it does not repeat add_one_req's full gate.
+        let chunk_limit = if !first_admission && native_generation {
+            let remaining = rem_chunk_tokens.min(rem_total_tokens.floor());
+            if remaining > 0.0 { remaining } else { rem_chunk_tokens }
+        } else {
+            rem_chunk_tokens
+        };
+        let chunk_tokens = if ceil_to_block(extend_input, config.block_size) as f64 <= chunk_limit {
+            extend_input
+        } else {
+            let chunk = if first_admission {
+                (chunk_limit as usize / config.block_size) * config.block_size
+            } else {
+                chunk_limit as usize
+            };
+            if chunk == 0 {
+                rejected.push_back(req);
+                break;
+            }
+            chunk.min(extend_input)
+        };
+
+        let charged_input_tokens = ceil_to_block(chunk_tokens, config.block_size) as f64;
+        // Native _update_prefill_budget uses the original requested maximum on
+        // the final chunk, including re-admissions; its candidate check above
+        // separately subtracts output already generated.
+        let output_reserve = if chunk_tokens < extend_input {
+            0
+        } else {
+            req.max_new_tokens.min(config.clip_max_new_tokens)
+        };
+        if !native_generation && charged_input_tokens + output_reserve as f64 >= candidate_budget {
+            batch_is_full = true;
+            rejected.push_back(req);
+            break;
+        }
+        if first_admission && (charged_input_tokens > rem_input_tokens || charged_input_tokens > rem_chunk_tokens) {
             rejected.push_back(req);
             break;
         }
 
         let chunk_end = start + chunk_tokens;
-        let first_admission = req.materialized_tokens == 0;
         let mut lease = std::mem::take(&mut req.kv_lease);
         let alloc_tokens = req.sequence_prefix(chunk_end);
 
@@ -190,7 +217,8 @@ pub(super) fn get_new_batch_prefill(
 
         total_isl += chunk_end;
         total_prefix += prefix_len;
-        rem_total_tokens -= charged_input_tokens + output_reserve as f64;
+        rem_total_tokens -= charged_input_tokens + output_reserve as f64
+            + page_overhead as f64 + newly_locked_prefix as f64;
         rem_input_tokens -= charged_input_tokens;
         rem_chunk_tokens -= charged_input_tokens;
         can_run.push(req);

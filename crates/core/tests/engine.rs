@@ -183,7 +183,9 @@ fn backends_reserve_only_context_capped_output(
     });
     config.rank.backend = backend;
     config.rank.max_model_len = Some(8);
-    config.rank.num_gpu_blocks = 5;
+    // SGLang also reserves a page per admitted request (4 + 4 + 4 tokens here),
+    // so the two requests are admitted together only from seven pages.
+    config.rank.num_gpu_blocks = if backend == Backend::Sglang { 7 } else { 5 };
     config.rank.enable_prefix_caching = false;
     let mut replay = spec(config);
     replay.requests = vec![request("a", 0.0, 4, 100), request("b", 0.0, 4, 100)];
@@ -891,7 +893,9 @@ fn sglang_interval_zero_duration_chunk_replay_makes_deterministic_progress() {
 #[test]
 fn sglang_interval_does_not_hide_an_impossible_request_after_countdown() {
     let mut config = impossible_sglang_config();
-    config.rank.num_gpu_blocks = 2;
+    // Three pages: the first request's native reservation (4 + 1 tokens and a
+    // page) fits, and the second's (12 + 2 tokens and a page) never does.
+    config.rank.num_gpu_blocks = 3;
     config.rank.prefill_decode_interval = 1025;
     config.rank.sglang.schedule_conservativeness = 0.0;
     let mut replay = spec(config);
@@ -1765,7 +1769,10 @@ fn disaggregated_prefill_does_not_reserve_or_generate_the_decode_output_length()
         let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine.clone()).unwrap();
         let prefill = config.prefill.as_mut().unwrap();
         prefill.rank.block_size = 4;
-        prefill.rank.num_gpu_blocks = 2;
+        // SGLang also reserves a page per admitted request: the prefill-only
+        // reservation (3 + 1 tokens and a page) fits in three pages, and one
+        // for the decode output length (3 + 8 tokens and a page) would not.
+        prefill.rank.num_gpu_blocks = if backend == Backend::Sglang { 3 } else { 2 };
         let decode = config.decode.as_mut().unwrap();
         decode.rank.block_size = 4;
         decode.rank.num_gpu_blocks = 64;

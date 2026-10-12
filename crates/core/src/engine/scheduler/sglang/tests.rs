@@ -602,9 +602,10 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let args = test_args(8, 4, 16);
     let config = SglangConfig::from_args(&args);
     let (buffer, sink) = capture_kv_event_sink();
-    // Three pages. The cached prompt spans two; SGLang's `input_len - 1` match cap means the
+    // Four pages leave native admission's extra-page headroom. The cached prompt spans two;
+    // SGLang's `input_len - 1` match cap means the
     // admitted request reuses only the first cached page and owns a fresh page for the rest.
-    let mut kv_manager = SglangKvManager::new(15, 4, KvEventPublishers::new(Some(sink)), 0);
+    let mut kv_manager = SglangKvManager::new(16, 4, KvEventPublishers::new(Some(sink)), 0);
     let prompt = vec![1, 2, 3, 4, 5, 6, 7, 8];
 
     let cached = kv_manager.allocate_for_request(&prompt).unwrap();
@@ -631,22 +632,22 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     assert_eq!(req.kv_pages()[..1], cached_pages[..1]);
     assert_eq!(req.kv_pages().len(), 2);
 
-    // The three-token blocker owns a complete physical page (it evicts the second, no longer
-    // referenced cached page to get it). With three pages total there is no free capacity, so the
+    // The seven-token blocker owns two physical pages (evicting the unused cached page).
+    // With four pages total there is no free capacity, so the
     // cache-hit request is retracted while the blocker can fill the remainder of its own page.
-    let blocker_tokens = vec![9, 10, 11];
+    let blocker_tokens = vec![9, 10, 11, 12, 13, 14, 15];
     let blocker_alloc = kv_manager.allocate_for_request(&blocker_tokens).unwrap();
     let blocker = SglangRequest {
         is_decode_handoff: false,
         uuid: Uuid::from_u128(90_003),
         sequence_tokens: blocker_tokens,
-        prompt_len: 3,
+        prompt_len: 7,
         max_output_tokens: 1,
         max_new_tokens: 1,
         planned_output_ids: None,
         kv_lease: blocker_alloc.lease,
-        materialized_tokens: 3,
-        allocated_tokens: 4,
+        materialized_tokens: 7,
+        allocated_tokens: 8,
     };
     buffer.drain();
 
@@ -1447,7 +1448,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_chunked_prefill_admits_next_chunk_when_full_prompt_does_not_fit() {
+    fn test_fresh_chunk_waits_when_full_prompt_and_reserve_do_not_fit() {
         let config = SglangConfig {
             chunked_prefill_size: 8,
             ..SglangConfig::from_args(
@@ -1473,8 +1474,10 @@ mod core_behavior {
         }]);
 
         let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].materialized_tokens, 8);
+        assert!(admit.can_run.is_empty());
+        assert!(admit.batch_is_full);
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(kv_manager.cache().available_tokens(), 12);
     }
 
     #[test]
@@ -2654,10 +2657,13 @@ mod forward_pass_metrics {
 
     #[test]
     fn test_single_token_requests_finish_in_the_prefill_pass_without_kv_slots() {
-        // Two 4-token prompts with `max_output_tokens = 1` fill two of three pages. SGLang finishes
+        // Two 4-token prompts with `max_output_tokens = 1` need five pages for native
+        // admission headroom, but physically occupy only two. SGLang finishes
         // them in `process_batch_result_prefill` → `check_finished()`: the sampled token never gets
         // a KV slot, so there is no decode forward and no memory pressure at all.
-        let mut core = SglangCore::new(three_page_args());
+        let mut args = three_page_args();
+        args.num_gpu_blocks = 5;
+        let mut core = SglangCore::new(args);
         let r1 = Uuid::from_u128(1);
         let r2 = Uuid::from_u128(2);
         for (uuid, tokens) in [(r1, (0..4).collect::<Vec<_>>()), (r2, (100..104).collect())] {
@@ -3009,7 +3015,10 @@ mod admission_validation_rollback {
                 Ok(0.1)
             }
         }
-        let mut args = test_args(4, 4, 32);
+        // Five pages: SGLang charges each admitted request a page on top of
+        // its input and clipped output (4 + 1 + 4 tokens), so both requests
+        // fit, and growing both to a third page still forces a retraction.
+        let mut args = test_args(5, 4, 32);
         args.max_num_seqs = Some(2);
         args.sglang.as_mut().unwrap().clip_max_new_tokens = Some(1);
         let mut core = SglangCore::new(args);
@@ -3333,9 +3342,11 @@ mod admission_validation_rollback {
 
     #[test]
     fn continuation_failure_restores_cache_eviction_leases_queue_order_and_trace() {
-        let mut core = SglangCore::new_with_kv_capture(test_args(12, 4, 32), 0);
+        // Extra native page reservations need 56 tokens for co-admission; a 24-token
+        // cached seed still forces eviction, preserving this rollback test's purpose.
+        let mut core = SglangCore::new_with_kv_capture(test_args(14, 4, 32), 0);
         let mut collector = crate::engine::trace::TraceCollector::default();
-        let seed: Vec<u32> = (1000..1016).collect();
+        let seed: Vec<u32> = (1000..1024).collect();
         core.receive(direct_request(seed.clone(), 0));
         core.try_execute_pass(&mut collector, 0.0).unwrap();
         let running = core.receive(direct_request((100..104).collect(), 8));
@@ -3358,7 +3369,7 @@ mod admission_validation_rollback {
         let capacity_before = capacity(&core);
         let snapshots =
             [running, continuation, fresh].map(|id| format!("{:?}", collector.snapshot(id)));
-        assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 16);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 24);
         assert!(core.drain_kv_events().is_empty());
 
         for now_ms in [3.0, 4.0] {
@@ -3366,7 +3377,7 @@ mod admission_validation_rollback {
             assert_eq!(format!("{:?}", core.waiting), waiting_before);
             assert_eq!(format!("{:?}", core.running), running_before);
             assert_eq!(capacity(&core), capacity_before);
-            assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 16);
+            assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 24);
             assert!(core.drain_kv_events().is_empty());
             assert_eq!(
                 [running, continuation, fresh].map(|id| format!("{:?}", collector.snapshot(id))),
@@ -3499,4 +3510,83 @@ fn indexed_ids_follow_chunk_cancel_completion_and_reuse() {
     assert!(core.is_empty());
     core.apply_command(SchedulerCommand::Submit(request()))
         .unwrap();
+}
+
+#[test]
+fn fresh_prefill_rechecks_budget_after_locking_an_evictable_prefix() {
+    let config = SglangConfig::from_args(&test_args(6, 4, 16));
+    let mut manager = SglangKvManager::new(24, 4, KvEventPublishers::default(), 0);
+    let prefix: Vec<u32> = (0..16).collect();
+    let cached = manager.allocate_for_request(&prefix).unwrap();
+    manager.finish(&prefix, cached.lease);
+    let mut prompt = prefix.clone();
+    prompt.extend(100..108);
+    let req = SglangRequest::new(direct_request(prompt, 1), 4, 1);
+    let mut waiting = WaitingQueue::from([req]);
+    // 8 + 1 + 4 fits before locking, but the 16-token lock leaves only 8.
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    assert!(admitted.can_run.is_empty());
+    assert!(admitted.batch_is_full);
+    assert_eq!(manager.cache().evictable_size, 16);
+    assert_eq!(manager.cache().available_tokens(), 8);
+}
+
+#[test]
+fn earlier_prefill_locks_and_page_reservations_reduce_later_candidate_budget() {
+    let config = SglangConfig::from_args(&test_args(16, 4, 32));
+    let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+    let prefix: Vec<u32> = (0..24).collect();
+    let cached = manager.allocate_for_request(&prefix).unwrap();
+    manager.finish(&prefix, cached.lease);
+    let mut first = prefix;
+    first.extend(100..104);
+    let mut waiting = WaitingQueue::from([
+        SglangRequest::new(direct_request(first, 1), 4, 1),
+        SglangRequest::new(direct_request((200..224).collect(), 4), 4, 4),
+    ]);
+    // First request leaves 64 - 24 locked - 4 input - 1 output - 4 page = 31.
+    // Second requires 24 + 4 + 4 = 32, so it must wait without allocating.
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    assert_eq!(admitted.can_run.len(), 1);
+    assert!(admitted.batch_is_full);
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(manager.cache().available_tokens(), 36);
+}
+
+#[test]
+fn owned_chunk_continues_without_repeating_the_full_admission_gate() {
+    let config = SglangConfig::from_args(&test_args(8, 4, 8));
+    let mut manager = SglangKvManager::new(32, 4, KvEventPublishers::default(), 0);
+    let req = SglangRequest::new(direct_request((0..20).collect(), 1), 4, 1);
+    let mut waiting = WaitingQueue::from([req]);
+    let first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[]);
+    assert_eq!(first.can_run[0].materialized_tokens, 8);
+    for request in first.can_run {
+        waiting.push_back(request);
+    }
+    // Isolate the reservation calculation: a running request reserves 20,
+    // leaving 4 for this already-admitted continuation, whose full tail is 12.
+    let running = vec![SglangRequest::new(direct_request(vec![], 20), 4, 20)];
+    let second = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &running);
+    assert_eq!(second.can_run.len(), 1);
+    assert_eq!(second.can_run[0].materialized_tokens, 12);
+    assert!(second.admissions.is_empty());
+}
+
+
+#[test]
+fn read_only_prefix_budget_counts_only_newly_locked_matching_pages() {
+    let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+    let tokens: Vec<u32> = (0..12).collect();
+    let cached = manager.allocate_for_request(&tokens).unwrap();
+    manager.finish(&tokens, cached.lease);
+    let hashes = compute_block_hash_for_seq(&tokens, 4);
+    let nodes = manager.cache().num_nodes();
+    assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes[..1]), (4, 4));
+    assert_eq!(manager.cache().num_nodes(), nodes, "a query must not split the radix node");
+    let active = manager.allocate_for_request(&tokens[..8]).unwrap();
+    assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes), (12, 4));
+    assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes[..2]), (8, 0));
+    manager.finish(&tokens[..8], active.lease);
+    assert_eq!(manager.cache().prefix_match_hashes_budget(&hashes), (12, 12));
 }
