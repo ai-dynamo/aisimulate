@@ -1668,7 +1668,7 @@ mod core_behavior {
         }
         // Native stable descending (output_len, -prompt_len), then pop the end.
         assert_eq!(retracted(&[(4,4),(4,4)]),2,"latest exact tie leaves first");
-        assert_eq!(retracted(&[(4,4),(8,4)]),2,"longer prompt leaves first at equal progress");
+        assert_eq!(retracted(&[(8,4),(4,4)]),1,"longer prompt leaves first at equal progress");
         assert_eq!(retracted(&[(2,2),(4,4)]),1,"least decode progress has first priority");
     }
 
@@ -3671,4 +3671,89 @@ fn retraction_evicts_unlocked_prefix_for_survivor_headroom() {
     // unlocked four-token prefix must still leave the radix cache.
     assert_eq!(manager.cache().prefix_match_len(&victim_tokens), 0);
     assert_eq!(manager.cache().available_tokens(), 8);
+}
+
+
+#[test]
+fn overlap_completion_keeps_the_terminal_page_for_the_next_turn() {
+    for overlap in [false, true] {
+        let mut args = test_args(32, 4, 32);
+        args.sglang.as_mut().unwrap().overlap_schedule = overlap;
+        let mut core = SglangCore::new(args);
+        let mut sequence: Vec<u32> = (0..4).collect();
+        let output: Vec<u32> = (100..104).collect();
+        core.receive(DirectRequest {
+            tokens: sequence.clone(), max_output_tokens: 4,
+            output_token_ids: Some(output.clone()), ..Default::default()
+        });
+        for step in 0..4 { core.execute_hidden_pass(step as f64); }
+        assert!(core.is_empty());
+        sequence.extend(output);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&sequence), if overlap { 8 } else { 4 });
+        // The later call appends one token, permitting reuse of all old pages.
+        sequence.push(200);
+        let id = core.receive(direct_request(sequence, 2));
+        let pass = core.execute_hidden_pass(10.0);
+        let admission = pass.admissions.iter().find(|a| a.uuid == id).unwrap();
+        assert_eq!(admission.reused_input_tokens, if overlap { 8 } else { 4 });
+    }
+}
+
+#[test]
+fn decode_completion_reopens_admission_after_native_filter_delay() {
+    for (overlap, extra_decode_passes) in [(false, 1), (true, 2)] {
+        let mut args = test_args(256, 4, 64);
+        args.max_num_seqs = Some(2);
+        args.sglang.as_mut().unwrap().overlap_schedule = overlap;
+        let mut core = SglangCore::new(args);
+        let short = core.receive(direct_request(vec![1, 2, 3, 4], 3));
+        core.receive(direct_request(vec![5, 6, 7, 8], 30));
+        let queued = core.receive(direct_request(vec![9, 10, 11, 12], 10));
+        let mut now = 0.0;
+        loop {
+            let pass = core.execute_hidden_pass(now);
+            now = pass.end_ms;
+            if pass.output_signals.iter().any(|s| s.uuid == short && s.completed) { break; }
+        }
+        for _ in 0..extra_decode_passes {
+            let pass = core.execute_hidden_pass(now); now = pass.end_ms;
+            assert!(!core.running.iter().any(|r| r.uuid == queued));
+            assert_eq!(core.waiting.len(), 1);
+        }
+        core.execute_hidden_pass(now);
+        assert!(core.running.iter().any(|r| r.uuid == queued));
+    }
+}
+
+#[test]
+fn accepted_last_readmission_latches_exhausted_original_output_budget() {
+    let config = SglangConfig::from_args(&test_args(8, 4, 32));
+    let mut manager = SglangKvManager::new(32, 4, KvEventPublishers::default(), 0);
+    let mut req = SglangRequest::new(direct_request((0..8).collect(), 16), 4, 16);
+    req.sequence_tokens.extend(100..108); // eight previously sampled tokens, KV retracted
+    let mut waiting = WaitingQueue::from([req]);
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    // Gate: 16 input + 8 remaining output + 4 page = 28 < 32.
+    // Charge: 16 input + 16 ORIGINAL output cap + 4 page = 36 >= 32.
+    assert_eq!(admitted.can_run.len(), 1);
+    assert!(waiting.is_empty());
+    assert!(admitted.batch_is_full);
+}
+
+#[test]
+fn whole_leaf_eviction_can_free_more_than_the_requested_pages() {
+    for (whole, flushed) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
+        manager.set_whole_lru_leaf_eviction(whole);
+        if flushed {
+            // A cache flush keeps the eviction mode.
+            manager.flush_cache();
+        }
+        let tokens: Vec<u32> = (0..16).collect();
+        let cached = manager.allocate_for_request(&tokens).unwrap();
+        manager.finish(&tokens, cached.lease);
+        let (evicted, _) = manager.cache_mut().evict(4);
+        assert_eq!(evicted, if whole { 16 } else { 4 });
+        assert_eq!(manager.cache().prefix_match_len(&tokens), if whole { 0 } else { 12 });
+    }
 }

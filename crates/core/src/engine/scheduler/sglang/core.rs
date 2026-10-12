@@ -59,6 +59,7 @@ pub(crate) struct SglangCore {
     // SGLang 0.5.19 stops retrying a full batch until completion/retraction.
     // Ratio decay alone does not reopen admission. Chunk continuations may run.
     batch_is_full: bool,
+    completion_latch_decode_passes: usize,
     pub(super) kv_manager: SglangKvManager,
     belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
@@ -197,6 +198,11 @@ impl SglangCore {
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
 
+        let mut kv_manager = SglangKvManager::new_with_prefix_caching(
+            total_tokens, args.block_size, kv_event_publishers, dp_rank,
+            args.enable_prefix_caching, args.emit_kv_token_ids,
+        );
+        kv_manager.set_whole_lru_leaf_eviction(config.evict_whole_lru_leaves);
         Self {
             config,
             dp_rank,
@@ -206,14 +212,8 @@ impl SglangCore {
             running: Vec::new(),
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
             batch_is_full: false,
-            kv_manager: SglangKvManager::new_with_prefix_caching(
-                total_tokens,
-                args.block_size,
-                kv_event_publishers,
-                dp_rank,
-                args.enable_prefix_caching,
-                args.emit_kv_token_ids,
-            ),
+            completion_latch_decode_passes: 0,
+            kv_manager,
             belady: None,
             speculative_sampler,
             kv_event_buffer,
@@ -616,6 +616,7 @@ impl SglangCore {
         self.source_holds.remove_request(request_id);
         self.active_destination_handoffs.remove_request(request_id);
         if capacity_improved {
+            self.completion_latch_decode_passes = 0;
             self.batch_is_full = false;
             self.bump_capacity_generation();
         }
@@ -624,7 +625,7 @@ impl SglangCore {
 
     fn cleanup_completed_prefill(&mut self, payload: HeldSglangPrefill) {
         let mut request = payload.request;
-        cleanup_completed_request(&mut request, &mut self.kv_manager, self.config.block_size);
+        cleanup_completed_request(&mut request, &mut self.kv_manager, self.config.block_size, self.config.overlap_schedule);
     }
 
     #[cfg(test)]
@@ -898,6 +899,12 @@ impl SglangCore {
                 .collect::<Vec<_>>();
             (self.kv_manager.begin_admission(), waiting)
         });
+        // An empty running batch starts a new admission epoch. A delayed
+        // completion reset from the old batch must not reopen the new batch.
+        if self.running.is_empty() {
+            self.batch_is_full = false;
+            self.completion_latch_decode_passes = 0;
+        }
         let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let chunk_continuation = self.waiting.iter().any(|req| req.materialized_tokens > 0);
@@ -1111,8 +1118,24 @@ impl SglangCore {
             self.running = stalled;
         }
 
-        if !decode.requests.is_empty() || decode.output_signals.iter().any(|s| s.completed) {
+        let completed = decode.output_signals.iter().any(|s| s.completed);
+        if !decode.requests.is_empty() || (prefill_pass && completed) {
+            // Retractions and prefill completions reopen immediately.
             self.batch_is_full = false;
+            self.completion_latch_decode_passes = 0;
+        } else if !prefill_pass {
+            // Admission precedes filtering finished decode requests. Overlap
+            // processing is another batch behind. Keep this admission delay
+            // explicit without pretending to model the whole overlap pipeline.
+            if self.completion_latch_decode_passes > 0 {
+                self.completion_latch_decode_passes -= 1;
+                if self.completion_latch_decode_passes == 0 {
+                    self.batch_is_full = false;
+                }
+            }
+            if completed && self.batch_is_full && self.completion_latch_decode_passes == 0 {
+                self.completion_latch_decode_passes = if self.config.overlap_schedule { 2 } else { 1 };
+            }
         }
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);

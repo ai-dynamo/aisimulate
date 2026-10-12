@@ -295,6 +295,10 @@ impl SglangKvManager {
         self.page_to_block_hash.len()
     }
 
+    pub(crate) fn set_whole_lru_leaf_eviction(&mut self, enabled: bool) {
+        self.cache.set_whole_lru_leaf_eviction(enabled);
+    }
+
     pub fn cache(&self) -> &RadixCache {
         &self.cache
     }

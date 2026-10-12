@@ -180,6 +180,11 @@ pub struct SglangConfig {
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+    /// SGLang 0.5.19 overlap completion: retain the terminal sampled token's KV
+    /// and defer reopening a full batch until overlapping decode work drains.
+    pub overlap_schedule: bool,
+    /// Sensitivity mode: evict whole unlocked LRU leaves, as native radix cache does.
+    pub evict_whole_lru_leaves: bool,
 }
 
 impl Default for SglangConfig {
@@ -190,6 +195,8 @@ impl Default for SglangConfig {
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
+            overlap_schedule: false,
+            evict_whole_lru_leaves: false,
         }
     }
 }

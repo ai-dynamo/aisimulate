@@ -244,7 +244,7 @@ pub(super) fn simulate_decode_step(
     )
     .expect("SGLang decode simulation failed");
     for mut request in result.completed_requests.drain(..) {
-        cleanup_completed_request(&mut request, kv_manager, config.block_size);
+        cleanup_completed_request(&mut request, kv_manager, config.block_size, config.overlap_schedule);
     }
     result
 }
@@ -358,11 +358,12 @@ pub(super) fn cleanup_completed_request(
     request: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
     block_size: usize,
+    overlap_schedule: bool,
 ) {
-    // Native cache_finished_req excludes the terminal sampled token: no forward
+    // Without overlap, native cache_finished_req excludes the terminal sampled token: no forward
     // computed its KV. Explicit zero-output prefix replays have no sampled tail.
     let computed_len = request.current_sequence_len()
-        .saturating_sub(usize::from(request.output_len() > 0));
+        .saturating_sub(usize::from(request.output_len() > 0 && !overlap_schedule));
     let tokens_to_cache = floor_to_block(computed_len, block_size);
     if !request.kv_lease.is_active() {
         return;

@@ -192,6 +192,7 @@ pub struct RadixCache {
     /// Unlocked leaves ordered by their last access time for O(log n) updates
     /// and O(1) oldest-victim lookup.
     evictable_leaves: BTreeSet<(Instant, NodeId)>,
+    evict_whole_lru_leaves: bool,
     belady: Option<BeladyLeaves>,
     /// Total token count in evictable nodes.
     pub evictable_size: usize,
@@ -246,6 +247,7 @@ impl RadixCache {
             #[cfg(test)]
             test_now: self.test_now,
             evictable_leaves: self.evictable_leaves.clone(),
+            evict_whole_lru_leaves: self.evict_whole_lru_leaves,
             belady: self.belady.clone(),
             evictable_size: self.evictable_size,
             protected_size: self.protected_size,
@@ -271,6 +273,7 @@ impl RadixCache {
             #[cfg(test)]
             test_now: None,
             evictable_leaves: BTreeSet::new(),
+            evict_whole_lru_leaves: false,
             belady: None,
             evictable_size: 0,
             protected_size: 0,
@@ -1001,6 +1004,10 @@ impl RadixCache {
         self.debug_assert_evictable_index();
     }
 
+    pub fn set_whole_lru_leaf_eviction(&mut self, enabled: bool) {
+        self.evict_whole_lru_leaves = enabled;
+    }
+
     /// Return to a new cache's state with the same capacity and settings, as
     /// SGLang's `RadixCache.reset()` and `token_to_kv_pool_allocator.clear()`
     /// do. Cached pages are dropped; none may be locked or owned elsewhere.
@@ -1012,6 +1019,7 @@ impl RadixCache {
             "radix reset with pages outside the cache"
         );
         let mut fresh = Self::new(self.total_tokens(), self.page_size);
+        fresh.evict_whole_lru_leaves = self.evict_whole_lru_leaves;
         #[cfg(test)]
         {
             fresh.test_now = self.test_now;
@@ -1060,6 +1068,8 @@ impl RadixCache {
             // rerank its next tail after each Belady eviction instead of discarding the edge.
             let eviction_pages = if self.belady.is_some() {
                 1
+            } else if self.evict_whole_lru_leaves {
+                victim_pages
             } else {
                 remaining.div_ceil(self.page_size).min(victim_pages)
             };

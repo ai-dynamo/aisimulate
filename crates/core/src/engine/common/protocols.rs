@@ -161,6 +161,8 @@ pub(crate) struct SglangArgs {
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
+    pub overlap_schedule: bool,
+    pub evict_whole_lru_leaves: bool,
 }
 
 /// Rank-local view of `EngineConfig`.

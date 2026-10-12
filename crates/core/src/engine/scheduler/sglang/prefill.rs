@@ -223,6 +223,12 @@ pub(super) fn get_new_batch_prefill(
         rem_chunk_tokens -= charged_input_tokens;
         can_run.push(req);
 
+        // NO_TOKEN also applies when the last admitted request exhausts the
+        // reservation budget and leaves no queued candidate to fail its gate.
+        if rem_total_tokens <= 0.0 {
+            batch_is_full = true;
+            break;
+        }
         if rem_chunk_tokens <= 0.0 {
             break;
         }
