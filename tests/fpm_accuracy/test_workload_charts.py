@@ -178,12 +178,7 @@ def test_summary_preserves_serving_layouts_without_defaulting_unknown():
     assert workload_summary(details)["serving_layouts"] == ["agg", "disagg", "unknown"]
     details["unattributed_measurements"] = 0
     assert workload_summary(details)["serving_layouts"] == ["agg", "disagg"]
-    assert (
-        workload_summary({"runs": [], "unattributed_measurements": 0})[
-            "serving_layouts"
-        ]
-        == []
-    )
+    assert workload_summary({"runs": [], "unattributed_measurements": 0})["serving_layouts"] == []
 
 
 @pytest.mark.parametrize("mutation", ["overlap", "helper", "request", "duplicate", "negative"])
