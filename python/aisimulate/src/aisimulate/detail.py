@@ -20,6 +20,22 @@ SERVING_LATENCY_METRICS = frozenset(
     for stat in ("mean", "min", "max", "median", "p75", "p90", "p95", "p99", "std")
 ) | {"p50_trajectory_e2e_latency_ms"}
 
+SERVING_THROUGHPUT_METRICS = frozenset(
+    {
+        "request_throughput_rps",
+        "input_throughput_tok_s",
+        "output_throughput_tok_s",
+        "total_throughput_tok_s",
+        "goodput_request_throughput_rps",
+        "goodput_output_throughput_tok_s",
+        "processed_tokens_per_s",
+        "processed_output_tokens_per_s",
+    }
+) | frozenset(
+    f"{stat}_output_token_throughput_per_user"
+    for stat in ("mean", "min", "max", "median", "p75", "p90", "p95", "p99", "std")
+)
+
 
 def parse_detail_sections(value: str) -> tuple[str, ...]:
     tokens = {part.strip() for part in value.split(",")}

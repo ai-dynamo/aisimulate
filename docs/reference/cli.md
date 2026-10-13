@@ -328,7 +328,8 @@ observations. For a new model, follow the
 When no requests complete, `predict` saves its report but exits `1`. The table
 marks the prediction invalid; JSON includes `prediction_status: invalid`,
 `stop_reason: no_completed_requests`, and an actionable `diagnostic`. Serving
-latency and throughput values are `null` (unavailable), not valid zero samples.
+latency and throughput values, including processing-rate aliases, are `null`
+(unavailable), not valid zero samples. The invalid banner also appears in analytical EPD tables.
 The stop reason identifies the observed outcome, not a proven scheduler cause.
 Check KV capacity against request lengths, context limits, and traffic stop limits.
 

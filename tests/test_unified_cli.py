@@ -471,7 +471,14 @@ def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, ou
     class CompletionRunner(_Runner):
         def run(self, *args, **kwargs):
             report = super().run(*args, **kwargs)
-            values = {"completed_requests": completed, "mean_ttft_ms": 0.0, "output_throughput_tok_s": 0.0}
+            values = {
+                "completed_requests": completed,
+                "mean_ttft_ms": 0.0,
+                "output_throughput_tok_s": 0.0,
+                "processed_tokens_per_s": 12.0,
+                "processed_output_tokens_per_s": 4.0,
+                "throughput_sample_count": 7,
+            }
             report.metrics.update(values)
             report.metadata["native_report"]["summary"].update(values)
             return report
@@ -490,6 +497,9 @@ def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, ou
         assert saved["stop_reason"] == "no_completed_requests"
         assert saved["mean_ttft_ms"] is None
         assert saved["output_throughput_tok_s"] is None
+        assert saved["processed_tokens_per_s"] is None
+        assert saved["processed_output_tokens_per_s"] is None
+        assert saved["throughput_sample_count"] == 7
         assert "KV capacity" in stderr
         if output_format == "json":
             assert json.loads(stdout)["stop_reason"] == "no_completed_requests"
@@ -2377,3 +2387,15 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
         )
     assert error.value.code == 2
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
+
+
+def test_invalid_analytical_epd_table_includes_banner():
+    summary = {
+        "metric_semantics": "analytical_epd_overlay",
+        "prediction_status": "invalid",
+        "stop_reason": "no_completed_requests",
+        "diagnostic": "No requests completed.",
+    }
+    output = cli.format_prediction_stdout(summary, "table")
+    assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
+    assert "AISimulate analytical EPD" in output

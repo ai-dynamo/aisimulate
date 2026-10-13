@@ -21,7 +21,7 @@ from aisimulate_core.sdk.utils import get_model_config_from_model_path
 from .compiler import prediction_to_replay_spec
 from .config.cli import CorePredictionConfig
 from .config_adapter import PredictionAdapterContext, SimulationConfigAdapter
-from .detail import SERVING_LATENCY_METRICS, prediction_summary
+from .detail import SERVING_LATENCY_METRICS, SERVING_THROUGHPUT_METRICS, prediction_summary
 from .power import normalize_power_summary
 from .resources import ResourceLimitError
 from .sweeper.provider import AdapterReplaySpec
@@ -214,7 +214,7 @@ def run_prediction(
             ),
         )
         for key in summary:
-            if key in SERVING_LATENCY_METRICS or "throughput" in key:
+            if key in SERVING_LATENCY_METRICS or key in SERVING_THROUGHPUT_METRICS:
                 summary[key] = None
     if "summary" in native:
         native = {**native, "summary": summary}
