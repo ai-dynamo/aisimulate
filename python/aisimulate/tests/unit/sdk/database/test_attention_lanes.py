@@ -243,10 +243,10 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty_seven():
+def test_engine_spec_schema_version_is_twenty_eight():
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 27
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 28
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
