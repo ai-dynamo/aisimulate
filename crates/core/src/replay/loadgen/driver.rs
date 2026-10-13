@@ -1455,7 +1455,12 @@ impl WorkloadDriver {
             graph_digest: context.graph.graph_digest.clone(),
             nodes: Vec::new(),
             plays: Vec::new(),
+            hash_values: Arc::default(),
         };
+        // Number the view's hashes locally so prompt numbering below is sized
+        // to the selected plays, not the whole corpus.
+        let mut view_hash_ids = FxHashMap::default();
+        let mut view_hash_values = Vec::new();
         let mut source_nodes = Vec::new();
         for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
             let mut nodes = Vec::new();
@@ -1466,6 +1471,14 @@ impl WorkloadDriver {
                 }
                 let source_index = snapshot.source_index(&request.source_request_id)?;
                 let mut node = context.graph.nodes[source_index].clone();
+                for hash_id in &mut node.hash_ids {
+                    let source_hash_id = *hash_id;
+                    *hash_id = *view_hash_ids.entry(source_hash_id).or_insert_with(|| {
+                        view_hash_values.push(context.graph.hash_value(source_hash_id));
+                        // A subset of graph-local IDs, which already fit in u32.
+                        (view_hash_values.len() - 1) as u32
+                    });
+                }
                 node.request_id = request.identity.request_id.clone();
                 node.play_id = snapshot.evidence.play_id.clone();
                 node.source_play_ordinal = Some(cohort_index);
@@ -1503,6 +1516,7 @@ impl WorkloadDriver {
                 root_nodes,
             });
         }
+        view.hash_values = view_hash_values.into();
         // The existing executor compiles the retained dependency structure. Its
         // temporary numbering is replaced by the full prepared context below.
         // No lane activation may renormalize the restored initial timers.
@@ -1677,7 +1691,9 @@ impl WorkloadDriver {
             u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
         let agentic_graph_identity = trace.identity();
         let trace_block_size = trace.block_size;
-        let mut hash_id_interner = FxHashMap::default();
+        // Prompts number hash IDs first-seen over these nodes. Builder graphs
+        // are already numbered that way, so this is the identity for them.
+        let mut prompt_hash_ids = vec![u32::MAX; trace.hash_values.len()];
         let mut next_hash_id = 0_u32;
         let mut index_by_id = FxHashMap::default();
         for (node_index, node) in trace.nodes.iter().enumerate() {
@@ -1741,21 +1757,19 @@ impl WorkloadDriver {
             remaining_dependencies.push(node.dependencies.len());
             authored_not_before_ms.push(node.not_before_ms);
 
-            let hash_ids = node
-                .hash_ids
-                .into_iter()
-                .map(|hash_id| {
-                    if let Some(&interned) = hash_id_interner.get(&hash_id) {
-                        return Ok(interned);
-                    }
-                    let interned = next_hash_id;
+            let mut hash_ids = node.hash_ids;
+            for hash_id in &mut hash_ids {
+                let prompt_hash_id = prompt_hash_ids
+                    .get_mut(*hash_id as usize)
+                    .context("agentic node references an unknown hash ID")?;
+                if *prompt_hash_id == u32::MAX {
+                    *prompt_hash_id = next_hash_id;
                     next_hash_id = next_hash_id
                         .checked_add(1)
                         .context("trace contains more unique hash IDs than u32 can represent")?;
-                    hash_id_interner.insert(hash_id, interned);
-                    Ok(interned)
-                })
-                .collect::<Result<Vec<_>>>()?;
+                }
+                *hash_id = *prompt_hash_id;
+            }
 
             let prompt_tokens =
                 PromptTokens::deferred(node.input_length, hash_ids, trace_block_size)?;
@@ -2898,8 +2912,10 @@ impl WorkloadDriver {
 mod tests {
     use super::*;
     use crate::replay::loadgen::{
-        AgenticDependency, AgenticDependencyRelation, AgenticDependencyTrigger, AgenticNode,
-        AgenticPlay, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+        AgenticDependencyRelation, AgenticDependencyTrigger, AgenticMooncakeHeader,
+        AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticSourceProvenance, AgenticTrace,
+        SessionTrace, Trace, TurnTrace,
     };
 
     fn agentic_node(
@@ -2943,6 +2959,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
         plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
+        // Fixture IDs stand for themselves; the driver renumbers them first-seen.
+        let hash_id_count = nodes
+            .iter()
+            .flat_map(|node| node.hash_ids.iter())
+            .map(|&hash_id| hash_id as u64 + 1)
+            .max()
+            .unwrap_or(0);
         AgenticTrace {
             block_size: 1,
             source: AgenticSourceProvenance {
@@ -2952,6 +2975,7 @@ mod tests {
             graph_digest: "fixture".into(),
             nodes,
             plays,
+            hash_values: (0..hash_id_count).collect(),
         }
     }
 
@@ -2967,6 +2991,48 @@ mod tests {
             delay_ms,
             relation,
         }
+    }
+
+    // Pins agentic prompt hash IDs: numbered first-seen over request_id order
+    // ("r1" < "r10" < "r2" < "r3"), independent of row order and raw values.
+    #[test]
+    fn agentic_prompt_hash_ids_are_numbered_first_seen_in_request_order() {
+        let header = serde_json::from_value::<AgenticMooncakeHeader>(serde_json::json!({
+            "schema": AGENTIC_MOONCAKE_SCHEMA, "version": AGENTIC_MOONCAKE_VERSION,
+            "block_size": 4, "hash_id_scope": "local",
+            "source": {"format": "test", "digest": "fixture"}
+        }))
+        .unwrap();
+        let row = |request_id: &str, hash_ids: &[u64]| {
+            serde_json::from_value::<AgenticMooncakeRow>(serde_json::json!({
+                "request_id": request_id, "play_id": request_id, "session_id": request_id,
+                "model": "model", "not_before_ms": 0.0, "input_length": 4 * hash_ids.len(),
+                "output_length": 1, "hash_ids": hash_ids
+            }))
+            .unwrap()
+        };
+        let large = 9_000_000_000_u64;
+        let rows = vec![
+            row("r2", &[large, 7, 42]),
+            row("r10", &[42, 5]),
+            row("r1", &[5, large]),
+            row("r3", &[7, 7, u64::MAX, 5]),
+        ];
+        let trace = AgenticTrace::from_agentic_mooncake_rows(header, rows).unwrap();
+
+        let driver = WorkloadDriver::new_agentic_trace_with_options(trace, 4, false, None).unwrap();
+        let prompts: Vec<_> = driver
+            .sessions
+            .iter()
+            .map(|session| match &session.turns[0].prompt_tokens {
+                PromptTokens::Deferred { hash_ids, .. } => hash_ids.clone(),
+                PromptTokens::Materialized(_) => panic!("agentic prompts stay deferred"),
+            })
+            .collect();
+        assert_eq!(
+            prompts,
+            [vec![0, 1], vec![2, 0], vec![1, 3, 2], vec![3, 3, 4, 0]]
+        );
     }
 
     fn assert_deterministic_output_plan(

@@ -20,6 +20,22 @@ SERVING_LATENCY_METRICS = frozenset(
     for stat in ("mean", "min", "max", "median", "p75", "p90", "p95", "p99", "std")
 ) | {"p50_trajectory_e2e_latency_ms"}
 
+SERVING_THROUGHPUT_METRICS = frozenset(
+    {
+        "request_throughput_rps",
+        "input_throughput_tok_s",
+        "output_throughput_tok_s",
+        "total_throughput_tok_s",
+        "goodput_request_throughput_rps",
+        "goodput_output_throughput_tok_s",
+        "processed_tokens_per_s",
+        "processed_output_tokens_per_s",
+    }
+) | frozenset(
+    f"{stat}_output_token_throughput_per_user"
+    for stat in ("mean", "min", "max", "median", "p75", "p90", "p95", "p99", "std")
+)
+
 
 def parse_detail_sections(value: str) -> tuple[str, ...]:
     tokens = {part.strip() for part in value.split(",")}
@@ -296,7 +312,9 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
                 "diagnostics": diagnostics,
             }
         elif name == "time":
-            metrics = {key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS}
+            metrics = {
+                key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS and value is not None
+            }
             diagnostics = performance_diagnostics(native)
             result[name] = {
                 "status": "available" if metrics else diagnostics["status"],
@@ -376,7 +394,12 @@ def format_prediction_details(details: dict[str, Any], *, energy_top_n: int = 12
             if "unavailable_reason" in memory:
                 lines.append(f"    {memory['unavailable_reason']}")
             for key, value in memory.items():
-                if key.endswith(("_bytes", "_tokens")) or key in {"source", "stage", "estimated_num_gpu_blocks"}:
+                if key.endswith(("_bytes", "_tokens")) or key in {
+                    "source",
+                    "stage",
+                    "estimated_num_gpu_blocks",
+                    "kvcache_quant_mode",
+                }:
                     lines.append(f"    {key}: {value}")
             for key, value in (memory.get("memory_breakdown") or {}).items():
                 lines.append(f"    {key}: {value}")

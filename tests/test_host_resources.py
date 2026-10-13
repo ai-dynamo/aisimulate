@@ -7,6 +7,7 @@ import gzip
 import json
 import os
 from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,14 @@ from aisimulate.resources import (
     resolve_budget,
     workload_bounds,
 )
+
+
+@pytest.fixture(autouse=True)
+def _cold_trace_scan_cache():
+    # Several tests rewrite one trace in place; each test starts uncached.
+    resources._clear_trace_scan_cache()
+    yield
+    resources._clear_trace_scan_cache()
 
 
 @pytest.fixture
@@ -371,6 +380,32 @@ def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypa
     assert searched[0].isl == received[0][1].isl
 
 
+def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    factories = []
+
+    class CaptureSweeper:
+        def __init__(self, *, runner_factory, **kwargs):
+            factories.append(runner_factory)
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    resolved = EngineReplayRunnerFactory()
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=resolved) == "result"
+
+    assert factories[0].factory == replace(resolved, trace_graph_cache=True)
+    assert resolved.trace_graph_cache is False
+
+
 def test_resource_refusal_is_not_a_failed_replay_observation():
     from aisimulate.sweeper.search import _run_replay_detailed
 
@@ -474,13 +509,10 @@ def test_trace_scalar_lengths_are_counted_before_token_expansion(
     _supervised(monkeypatch)
     plan = build_plan({"trace_path": str(trace), "trace_format": trace_format}, stack=stack, host=host)
     assert plan["status"] == "resource_limited"
-    if trace_format == "agentic_mooncake":
-        assert plan["estimate"]["estimated_peak_bytes"] is None
-        assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
-        assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
-        assert "requires supervised" not in plan["reason"]
-    else:
-        assert plan["estimate"]["estimated_peak_bytes"] > 32 * 10**12
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert plan["estimate"]["lower_bound_bytes"] >= 4 * 10**12
+    assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
+    assert "requires supervised" not in plan["reason"]
 
 
 def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, monkeypatch):
@@ -491,18 +523,66 @@ def test_trace_inspection_streams_large_documents_and_records(tmp_path, host, mo
         for _ in range(60):
             stream.write(record)
     monkeypatch.setattr(resources.json, "loads", lambda _: pytest.fail("must not materialize entire JSON records"))
-    plan = build_plan({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine", host=host)
-    assert plan["status"] == "admitted"
-    assert plan["estimate"]["estimated_peak_bytes"] > trace.stat().st_size
+    estimate = estimate_workload({"trace_path": str(trace), "trace_format": "mooncake"}, stack="engine")
+    assert estimate.request_count == 60
+    assert estimate.lower_bound_bytes == 4 * 60  # Sixty planned u32 outputs; ignored arrays add nothing.
 
 
-def test_delta_trace_accounts_for_cumulative_prompts(tmp_path):
-    trace = tmp_path / "delta.jsonl"
-    trace.write_text((json.dumps({"input_length": 100, "output_length": 10, "hash_ids": [1]}) + "\n") * 5)
-    base = {"trace_path": str(trace), "trace_block_size": 4}
-    ordinary = estimate_workload({**base, "trace_format": "mooncake"}, stack="engine")
-    delta = estimate_workload({**base, "trace_format": "mooncake-delta"}, stack="engine")
-    assert delta.estimated_peak_bytes > ordinary.estimated_peak_bytes
+@pytest.mark.parametrize("trace_format", ["mooncake", "mooncake-delta"])
+def test_mooncake_traces_bound_compact_arrays_and_observe_their_peak(tmp_path, trace_format):
+    trace = tmp_path / "trace.jsonl"
+    rows = [{"input_length": 100, "output_length": 10, "hash_ids": [1, 2]}] * 4
+    rows.append({"output_length": 10, "hash_ids": [1, 2, 3]})  # The loader sizes this prompt as 3 x 64 tokens.
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    estimate = estimate_workload(
+        {"trace_path": str(trace), "trace_block_size": 64, "trace_format": trace_format}, stack="engine"
+    )
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.estimated_peak_bytes is None  # Measured from a completed replay instead.
+    assert estimate.request_count == 5
+    if trace_format == "mooncake":
+        # Rows convert u64 source hashes one at a time, so only the compact
+        # hashes, planned outputs and one expanded prompt are unavoidable.
+        assert estimate.lower_bound_bytes == max(4 * (11 + 50), 4 * 192)
+    else:
+        # Delta setup synthesizes every prompt and plans every output.
+        assert estimate.lower_bound_bytes == 4 * (4 * 100 + 192 + 50)
+
+
+def test_applied_compute_counts_turns_and_responses(tmp_path):
+    trace = tmp_path / "sessions.jsonl"
+    row = {
+        "num_turns": 2,
+        "input_prompt_length": 300,
+        "assistant_response_length": [5, 7],
+        "tool_call_output_length": [11, 13],
+        "tool_call_latency": [0.1, 0.2],
+        "final_assistant_response_length": 9,
+    }
+    trace.write_text((json.dumps(row) + "\n") * 2)
+    estimate = estimate_workload({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine")
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.request_count == 6  # Each session replays num_turns + 1 requests.
+    # The final prompt adds both responses and tool outputs to the initial prompt.
+    assert estimate.lower_bound_bytes == max(4 * 2 * (5 + 7 + 9), 4 * (300 + 5 + 7 + 11 + 13))
+
+
+def test_applied_compute_tool_output_grows_the_final_prompt(tmp_path, host, monkeypatch):
+    trace = tmp_path / "sessions.jsonl"
+    row = {
+        "num_turns": 1,
+        "input_prompt_length": 1,
+        "assistant_response_length": [1],
+        "tool_call_output_length": [10**12],
+        "tool_call_latency": [0.0],
+        "final_assistant_response_length": 1,
+    }
+    trace.write_text(json.dumps(row) + "\n")
+    _supervised(monkeypatch)
+    plan = build_plan({"trace_path": str(trace), "trace_format": "applied_compute_agentic"}, stack="engine", host=host)
+    assert plan["status"] == "resource_limited"
+    assert plan["estimate"]["lower_bound_bytes"] == 4 * (2 + 10**12)
+    assert "lower bound plus worker baseline exceeds available host memory" in plan["reason"]
 
 
 def test_fixed_capacity_kv_domain_has_a_conservative_count_bound(host):
@@ -536,15 +616,14 @@ def test_unqualified_estimate_requires_supervision_and_serial_admission(monkeypa
     assert plan["estimate"]["estimated_peak_bytes"] is None
 
 
-@pytest.mark.parametrize("trace_format,profile", [("mooncake", None), ("agentic_mooncake", {})])
-def test_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format, profile):
+@pytest.mark.parametrize("trace_format", ["mooncake", "agentic_mooncake"])
+def test_profile_trace_storage_is_rejected_before_parser_allocates_scalars(tmp_path, host, monkeypatch, trace_format):
     trace = tmp_path / "oversized.jsonl"
     with trace.open("wb") as stream:
         stream.truncate(128 * resources.MIB)  # Sparse sentinel; no large allocation.
     monkeypatch.setattr(resources.ijson, "parse", lambda *a, **kw: pytest.fail("must refuse before parsing"))
-    workload = {"trace_path": str(trace), "trace_format": trace_format}
-    if profile is not None:
-        workload["agentic_profile"] = profile
+    # Profile replays keep the storage model; finite replays observe their peak instead.
+    workload = {"trace_path": str(trace), "trace_format": trace_format, "agentic_profile": {}}
     plan = build_plan(workload, stack="engine", host=host)
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
@@ -696,7 +775,8 @@ def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, monke
     def events(*args, **kwargs):
         yield "", "start_map", None
         yield prefix, "number", 1
-        pytest.fail("must stop before reading more metadata after the lower bound cannot fit")
+        yield "", "end_map", None
+        pytest.fail("must stop at the first row whose lower bound cannot fit")
 
     monkeypatch.setattr(resources.ijson, "parse", events)
     estimate = estimate_workload(
@@ -817,7 +897,7 @@ def test_weka_counts_nested_requests_and_generated_hashes(tmp_path, layout):
     else:
         source.write_text((json.dumps(play) + "\n") * copies)
     estimate = estimate_workload({"trace_path": str(source), "trace_format": "weka"}, stack="dynamo")
-    assert estimate.allocation_model == "agentic-trace-unqualified-v1"
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
     # ceil(5/4) + ceil(4/4) + ceil(9/4) = six u64 hashes per play.
     assert estimate.lower_bound_bytes == 48 * copies
     assert estimate.estimated_peak_bytes is None
@@ -842,26 +922,182 @@ def test_agentic_dynamo_counts_only_loaded_request_events(tmp_path, compressed):
     workload = {"trace_paths": list(map(str, paths)), "trace_format": "dynamo"}  # No lane hint.
     for stack in ("engine", "dynamo"):
         estimate = estimate_workload(workload, stack=stack)
-        assert estimate.allocation_model == "agentic-trace-unqualified-v1"
+        assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
         assert estimate.lower_bound_bytes == 40  # Three compact hashes and seven planned outputs.
         assert estimate.estimated_peak_bytes is None
 
 
-def test_standard_dynamo_keeps_previous_accounting_and_rejects_mixed_context(tmp_path):
+def test_standard_dynamo_observes_its_peak_and_rejects_mixed_context(tmp_path):
     path = tmp_path / "requests.jsonl"
     row = _dynamo_row(contextual=False)
     path.write_text(json.dumps(row) + "\n")
-    workload = {"trace_path": str(path), "trace_format": "dynamo", "trace_block_size": 4}
+    # Neither the configured block size nor file bytes expand the bound.
+    workload = {"trace_path": str(path), "trace_format": "dynamo", "trace_block_size": 512}
     estimate = estimate_workload(workload, stack="engine")
-    assert estimate.allocation_model == "trace-json-metadata-v1"
-    assert (
-        estimate.estimated_peak_bytes
-        == resources.WORKER_BASELINE_BYTES + 128 * path.stat().st_size + 32 * 19 + 65536 * 2
-    )
+    assert estimate.allocation_model == resources.OBSERVED_TRACE_MODEL
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.request_count == 1
+    # Two retained u64 hashes, compact hashes plus three outputs, or one 8-token prompt.
+    assert estimate.lower_bound_bytes == max(8 * 2, 4 * (2 + 3), 4 * 8)
     for rows in ([row, _dynamo_row("agent")], [_dynamo_row("agent"), row]):
         path.write_text("\n".join(map(json.dumps, rows)))
         with pytest.raises(ResourceLimitError, match="cannot mix requests with and without agent_context"):
             estimate_workload(workload, stack="engine")
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_standard_dynamo_validates_every_later_request(tmp_path, wrapped):
+    # After the first request selects standard mode, inspection must still
+    # validate context and lengths in later rows and files.
+    wrap = (lambda row: {"event": row}) if wrapped else (lambda row: row)
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    paths[0].write_text("\n".join(json.dumps(wrap(_dynamo_row(f"r{i}", contextual=False))) for i in range(3)))
+    workload = {"trace_paths": list(map(str, paths)), "trace_format": "dynamo", "trace_block_size": 4}
+
+    paths[1].write_text(json.dumps(wrap(_dynamo_row("agent"))))
+    with pytest.raises(ResourceLimitError, match="cannot mix requests with and without agent_context"):
+        estimate_workload(workload, stack="engine")
+
+    missing = _dynamo_row("missing", contextual=False)
+    del missing["request"]["output_tokens"]
+    for row in (missing, _dynamo_row("negative", input_length=-1, contextual=False)):
+        paths[1].write_text(json.dumps(wrap(row)))
+        estimate = estimate_workload(workload, stack="engine")
+        assert estimate.allocation_model == "trace-unqualified-v1"
+        assert estimate.reason == "cannot inspect trace metadata: trace token lengths must be nonnegative integers"
+
+    paths[1].write_text(json.dumps(wrap(_dynamo_row("last", contextual=False))))
+    assert estimate_workload(workload, stack="engine").request_count == 4
+
+
+def _count_parses(monkeypatch):
+    calls = []
+    original = resources.ijson.parse
+
+    def parse(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(resources.ijson, "parse", parse)
+    return calls
+
+
+def test_trace_scan_is_reused_until_its_files_change(tmp_path, monkeypatch, host):
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    (traces / "a.jsonl").write_text(json.dumps(_dynamo_row("a", contextual=False)) + "\n")
+    parses = _count_parses(monkeypatch)
+    workload = {"trace_path": str(traces), "trace_format": "dynamo"}
+    first = estimate_workload(workload, stack="engine")
+    # Lanes, concurrency, stack and live headroom apply after the scan.
+    assert estimate_workload({**workload, "agentic_lanes": 32}, stack="dynamo", concurrency=8) == first
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    plan = build_plan(workload, stack="engine", host=host)
+    spec = SimpleNamespace(workload=workload, concurrency=None)
+    assert guard_replay(spec, stack="engine")["estimate"] == plan["estimate"]
+    assert len(parses) == 1  # Admission and the per-run guard share one pass.
+
+    with (traces / "a.jsonl").open("a") as stream:
+        stream.write(json.dumps(_dynamo_row("b", contextual=False)) + "\n")
+    assert estimate_workload(workload, stack="engine").request_count == 2
+    (traces / "c.jsonl").write_text(json.dumps(_dynamo_row("c", contextual=False)) + "\n")
+    assert estimate_workload(workload, stack="engine").request_count == 3
+    assert len(parses) == 1 + 1 + 2
+
+
+def test_trace_scan_never_reuses_partial_or_failed_inspections(tmp_path, monkeypatch):
+    path = tmp_path / "requests.jsonl"
+    rows = [_dynamo_row("a", input_length=4096, contextual=False), _dynamo_row("b", contextual=False)]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    parses = _count_parses(monkeypatch)
+    workload = {"trace_path": str(path), "trace_format": "dynamo"}
+    tight = resources.WORKER_BASELINE_BYTES + 1
+    assert estimate_workload(workload, stack="engine", inspection_budget_bytes=tight).request_count == 1
+    complete = estimate_workload(workload, stack="engine")
+    assert complete.request_count == 2
+    # A completed scan answers later calls; build_plan still compares headroom.
+    assert estimate_workload(workload, stack="engine", inspection_budget_bytes=tight) == complete
+    assert len(parses) == 2
+
+    invalid = tmp_path / "invalid.jsonl"
+    invalid.write_text("not JSON\n")
+    for _ in range(2):
+        estimate = estimate_workload({"trace_path": str(invalid), "trace_format": "dynamo"}, stack="engine")
+        assert estimate.allocation_model == "trace-unqualified-v1"
+    assert len(parses) == 4
+
+
+def test_trace_scan_cache_keeps_recent_traces_and_serves_threads(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setattr(resources, "_TRACE_SCAN_CACHE_SIZE", 2)
+    workloads = []
+    for name in "abc":
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(json.dumps(_dynamo_row(name, contextual=False)) + "\n")
+        workloads.append({"trace_path": str(path), "trace_format": "dynamo"})
+    parses = _count_parses(monkeypatch)
+    for workload in workloads:
+        estimate_workload(workload, stack="engine")
+    estimate_workload(workloads[2], stack="engine")
+    estimate_workload(workloads[0], stack="engine")  # Evicted by the third trace.
+    assert len(parses) == 4
+    with ThreadPoolExecutor(8) as pool:
+        estimates = list(pool.map(lambda _: estimate_workload(workloads[1], stack="engine"), range(32)))
+    assert len(set(estimates)) == 1
+
+
+def test_observed_peaks_admit_parallel_waves_for_the_same_trace(tmp_path, monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    path = tmp_path / "requests.jsonl"
+    path.write_text(json.dumps(_dynamo_row(input_length=1024, contextual=False)) + "\n")
+    spec = SimpleNamespace(workload={"trace_path": str(path), "trace_format": "dynamo"}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    with pytest.raises(resources._SerialAdmissionRequired):
+        factory.admit_wave([spec, spec])
+
+    factory.record_peak(spec, 2 * GB)
+    factory.record_peak(spec, GB)  # The largest completed replay sets the reservation.
+    wave = factory.admit_wave([spec, spec])
+    assert wave["status"] == "admitted"
+    assert wave["observed_peak_bytes"] == [2 * GB, 2 * GB]
+    assert wave["reserved_bytes"] == [3 * GB, 3 * GB]  # 1.5 x the observed 2 GB peak.
+
+    # A tiny observation never reserves less than the baseline plus the lower bound.
+    small = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    small.record_peak(spec, 1)
+    assert small.admit_wave([spec, spec])["reserved_bytes"] == [resources.WORKER_BASELINE_BYTES + 4 * 1024] * 2
+
+    # Another trace identity, or a profile whose evidence outgrows the corpus,
+    # cannot borrow the observation.
+    other = SimpleNamespace(workload={**spec.workload, "trace_block_size": 64}, concurrency=None)
+    profile = SimpleNamespace(workload={**spec.workload, "agentic_profile": {}}, concurrency=None)
+    factory.record_peak(profile, GB)
+    assert factory.observed_peak(profile) is None
+    for unobserved in (other, profile):
+        with pytest.raises(resources._SerialAdmissionRequired):
+            factory.admit_wave([spec, unobserved])
+
+
+def test_observed_margin_never_refuses_a_lone_candidate(tmp_path, monkeypatch, host):
+    _supervised(monkeypatch)
+    monkeypatch.setattr(resources, "discover_host", lambda: host)
+    path = tmp_path / "requests.jsonl"
+    path.write_text(json.dumps(_dynamo_row(input_length=1024, contextual=False)) + "\n")
+    spec = SimpleNamespace(workload={"trace_path": str(path), "trace_format": "dynamo"}, concurrency=None)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    factory.record_peak(spec, 6 * GB)  # 1.5 x 6 GB exceeds the 8 GB budget.
+
+    # Like the unobserved probe, a lone candidate reserves the baseline plus the lower bound.
+    wave = factory.admit_wave([spec])
+    assert wave["reserved_bytes"] == [resources.WORKER_BASELINE_BYTES + 4 * 1024]
+    assert wave["observed_peak_bytes"] == [6 * GB]
+    with pytest.raises(ResourceLimitError) as caught:
+        factory.admit_wave([spec, spec])
+    assert not isinstance(caught.value, resources._SerialAdmissionRequired)
+    assert caught.value.plan["reserved_bytes"] == [9 * GB, 9 * GB]
 
 
 @pytest.mark.parametrize("trace_format,stack", [("weka", "dynamo"), ("dynamo", "engine"), ("dynamo", "dynamo")])

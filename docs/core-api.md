@@ -54,12 +54,22 @@ See the [prediction configuration guide](reference/cli.md) for timing and worklo
 
 `PredictionResult` contains:
 
-- `summary`: merged prediction metrics, including normalized power fields.
+If no requests complete, the summary and saved native result mark
+`prediction_status: invalid` with `stop_reason: no_completed_requests` and a
+`diagnostic`. Serving latency and throughput values are `None`. The original
+runner metrics remain available in `report` for debugging.
+
+- `summary`: merged prediction metrics, including normalized power fields and
+  `kv_cache_precision.<role>.{dtype,source}` when a role's capacity estimate
+  establishes its precision. See [KV precision](perf-model/configuration.md#kv-precision-and-token-capacity).
 - `native`: the native report with the summary merged in, or a summary fallback
   when the runner supplies no native report. Analytical EPD retains its metadata
   and approximation semantics instead of a token-replay report.
 - `replay_spec`: the compiled specification that was executed.
-- `report`: the runner's original `ReplayReport`, including metrics and metadata.
+- `report`: the runner's `ReplayReport`, including metrics and requested metadata.
+  Memory diagnostics collected only for precision disclosure are removed when
+  not requested. Explicit `ReplayOutputRequirements(include_raw_report=False)`
+  retains the summary fallback unless another requested detail requires a native report.
 
 After creating a runner, the call closes it even when execution fails. Runner
 execution exceptions are wrapped in `PredictionExecutionError`, preserving the

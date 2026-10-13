@@ -32,6 +32,7 @@ from scripts.fpm_accuracy.hf.models import (
     OrderingKind,
 )
 from scripts.fpm_accuracy.hf.overrides import HfCaseOverride, HfOverrides, load_overrides
+from scripts.fpm_accuracy.hf.parquet import validate_collection_manifest
 from scripts.fpm_accuracy.hf.protocols import (
     SUPPORTED_EVIDENCE_FORMAT_IDS,
     ParsedObservation,
@@ -107,7 +108,7 @@ class HfDataset:
         self._overrides = overrides
         self._overrides_sha256 = overrides_sha256
         self._index = self._read_json("catalog/index.json")
-        if self._index.get("catalog_version") != 5:
+        if self._index.get("catalog_version") not in (5, 6):
             raise DataError(f"unsupported HF catalog version: {self._index.get('catalog_version')!r}")
         if self._index.get("dataset_id") != repo_id:
             raise DataError(
@@ -338,6 +339,7 @@ class HfDataset:
             parser_policy_id=parser_policy_id,
             warnings=tuple(dict.fromkeys(warnings)),
             issues=parsed.issues,
+            collection_runs=tuple(manifest.get("collection_runs", ())),
         )
 
     def _case_id(
@@ -393,7 +395,7 @@ class HfDataset:
 
     def _load_configuration(self, manifest_path: str) -> ConfigurationSnapshot:
         manifest = self._read_json(manifest_path)
-        if manifest.get("manifest_version") != 3:
+        if manifest.get("manifest_version") not in (3, 4):
             raise DataError(f"unsupported configuration manifest version in {manifest_path}")
         configuration_path = _required_str(manifest, "configuration_path", manifest_path)
         snapshot_id = _required_str(manifest, "snapshot_id", manifest_path)
@@ -491,7 +493,7 @@ class HfDataset:
             expected_sha256=configuration.measurements.manifest_sha256,
         )
         expected = {
-            "manifest_version": 4,
+            "manifest_version": manifest.get("manifest_version") if manifest.get("manifest_version") in (4, 5) else 4,
             "measurement_artifact_id": configuration.measurements.artifact_id,
             "measurement_protocol_id": configuration.measurements.protocol_id,
             "evidence_format_id": configuration.measurements.evidence_format_id,
@@ -516,6 +518,8 @@ class HfDataset:
                 f"measurement manifest {configuration.measurements.manifest_path} file count does not match "
                 f"the configuration manifest"
             )
+        if manifest["manifest_version"] == 5:
+            validate_collection_manifest(manifest)
         return manifest
 
     def _measurement_files(
@@ -588,6 +592,11 @@ class HfDataset:
                     source_path=_optional_str(value.get("source_path")),
                     source_sha256=source_sha256,
                     derived=derived,
+                    storage_format=value.get("format"),
+                    storage_schema=value.get("storage_schema"),
+                    logical_row_count=value.get("logical_row_count"),
+                    source_layout=value.get("source_layout"),
+                    ordering_index=value.get("ordering_index"),
                     representation=representation,
                     iteration_count=iteration_count,
                     rank_record_count=rank_record_count,
@@ -804,7 +813,13 @@ class HfDataset:
                 tuple(
                     sorted(
                         observations,
-                        key=lambda item: (item.chronology_key, item.source_file.path, item.source_row),
+                        key=lambda item: (
+                            item.chronology_key,
+                            item.source_file.ordering_index
+                            if item.source_file.ordering_index is not None
+                            else item.source_file.path,
+                            item.source_row,
+                        ),
                     )
                 ),
                 OrderingKind.CHRONOLOGICAL,
@@ -819,7 +834,13 @@ class HfDataset:
                 tuple(
                     sorted(
                         observations,
-                        key=lambda item: (item.chronology_key, item.source_file.path, item.source_row),
+                        key=lambda item: (
+                            item.chronology_key,
+                            item.source_file.ordering_index
+                            if item.source_file.ordering_index is not None
+                            else item.source_file.path,
+                            item.source_row,
+                        ),
                     )
                 ),
                 OrderingKind.CHRONOLOGICAL,

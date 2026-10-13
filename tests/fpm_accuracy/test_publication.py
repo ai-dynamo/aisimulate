@@ -133,6 +133,26 @@ def test_reject_invalid_campaign(summary, field, value):
         validate_summary(summary)
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        [{"value": -1, "unit": "session_trees"}],
+        [{"value": 4, "unit": "unknown"}],
+        [{"value": 4, "unit": "session_trees"}] * 2,
+    ],
+)
+def test_collection_concurrency_contract_is_optional_and_validated(summary, settings):
+    collection = dict(types=["trace_replay"], datasets=[], run_count=2, unattributed_measurements=0)
+    summary["rows"][0]["collection"] = collection
+    validate_summary(summary)
+    collection["concurrency_settings"] = [{"value": 4, "unit": "session_trees"}]
+    validate_summary(summary)
+    collection["concurrency_settings"] = settings
+    with pytest.raises(ValueError):
+        validate_summary(summary)
+
+
 def test_reject_raw_fields_bad_coverage_and_internal_links(summary):
     summary["rows"][0]["raw_latency"] = [123]
     with pytest.raises(ValueError):
