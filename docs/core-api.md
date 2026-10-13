@@ -54,6 +54,11 @@ See the [prediction configuration guide](reference/cli.md) for timing and worklo
 
 `PredictionResult` contains:
 
+If no requests complete, the summary and saved native result mark
+`prediction_status: invalid` with `stop_reason: no_completed_requests` and a
+`diagnostic`. Serving latency and throughput values are `None`. The original
+runner metrics remain available in `report` for debugging.
+
 - `summary`: merged prediction metrics, including normalized power fields and
   `kv_cache_precision.<role>.{dtype,source}` when a role's capacity estimate
   establishes its precision. See [KV precision](perf-model/configuration.md#kv-precision-and-token-capacity).

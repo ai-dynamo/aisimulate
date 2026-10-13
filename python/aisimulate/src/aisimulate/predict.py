@@ -21,7 +21,7 @@ from aisimulate_core.sdk.utils import get_model_config_from_model_path
 from .compiler import prediction_to_replay_spec
 from .config.cli import CorePredictionConfig
 from .config_adapter import PredictionAdapterContext, SimulationConfigAdapter
-from .detail import prediction_summary
+from .detail import SERVING_LATENCY_METRICS, prediction_summary
 from .power import normalize_power_summary
 from .resources import ResourceLimitError
 from .sweeper.provider import AdapterReplaySpec
@@ -204,6 +204,18 @@ def run_prediction(
     if kv_precision:
         summary["kv_cache_precision"] = kv_precision
     summary.update(normalize_power_summary(report.metrics))
+    if summary.get("completed_requests") == 0:
+        summary.update(
+            prediction_status="invalid",
+            stop_reason="no_completed_requests",
+            diagnostic=(
+                "No requests completed; serving latency and throughput are unavailable. "
+                "Check KV capacity against request lengths, context limits, and traffic stop limits."
+            ),
+        )
+        for key in summary:
+            if key in SERVING_LATENCY_METRICS or "throughput" in key:
+                summary[key] = None
     if "summary" in native:
         native = {**native, "summary": summary}
     else:

@@ -465,6 +465,42 @@ def test_predict_reports_missing_data_after_shared_api_execution(tmp_path, monke
     assert coverage["error"] == f"perf database error: {detail}"
 
 
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("completed", [0, 1])
+def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, output_format, completed):
+    class CompletionRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            values = {"completed_requests": completed, "mean_ttft_ms": 0.0, "output_throughput_tok_s": 0.0}
+            report.metrics.update(values)
+            report.metadata["native_report"]["summary"].update(values)
+            return report
+
+    runner = CompletionRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    code = cli.main(["predict", "-c", str(config_path), "--output-dir", str(output), "--format", output_format])
+    assert code == (1 if completed == 0 else 0)
+    saved = json.loads((output / "prediction.json").read_text())["summary"]
+    stdout, stderr = capsys.readouterr()
+    if completed == 0:
+        assert saved["prediction_status"] == "invalid"
+        assert saved["stop_reason"] == "no_completed_requests"
+        assert saved["mean_ttft_ms"] is None
+        assert saved["output_throughput_tok_s"] is None
+        assert "KV capacity" in stderr
+        if output_format == "json":
+            assert json.loads(stdout)["stop_reason"] == "no_completed_requests"
+        else:
+            assert "INVALID prediction" in stdout
+    else:
+        assert "prediction_status" not in saved
+        assert saved["mean_ttft_ms"] == 0.0
+    assert runner.closed
+
+
 def test_run_prediction_wraps_runner_failure() -> None:
     class _FailingRunner(_Runner):
         def run(self, spec, *, output_requirements=None):

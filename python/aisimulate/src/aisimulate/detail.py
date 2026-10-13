@@ -296,7 +296,9 @@ def build_prediction_details(native: dict[str, Any], sections: tuple[str, ...]) 
                 "diagnostics": diagnostics,
             }
         elif name == "time":
-            metrics = {key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS}
+            metrics = {
+                key: value for key, value in summary.items() if key in SERVING_LATENCY_METRICS and value is not None
+            }
             diagnostics = performance_diagnostics(native)
             result[name] = {
                 "status": "available" if metrics else diagnostics["status"],

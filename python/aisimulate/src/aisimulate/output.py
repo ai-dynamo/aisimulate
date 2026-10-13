@@ -170,6 +170,8 @@ def format_prediction_stdout(
         return "\n".join(lines)
 
     table = format_report_table(summary)
+    if summary.get("prediction_status") == "invalid":
+        table = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n" + table
     if precision_lines:
         table += "\n" + "\n".join(precision_lines)
     if summary.get("agentic_qualification") == "functional_only":

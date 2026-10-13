@@ -247,6 +247,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
+    if summary.get("prediction_status") == "invalid":
+        sys.stderr.write(f"ERROR: {summary['diagnostic']} Saved full report to: {report_path}\n")
+        return 1
     return 0
 
 
