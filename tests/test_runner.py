@@ -2550,5 +2550,8 @@ def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomi
     assert provenance["estimator"] == ("polynomial" if polynomial else "fixed")
     assert provenance["timing_source"] == ("built_in" if polynomial else "configured")
     assert provenance["data_version"] is None
-    assert "does not use performance data" in provenance["data_version_unavailable_reason"]
+    source_description = "built-in" if polynomial else "configured"
+    assert provenance["data_version_unavailable_reason"] == f"{source_description} timing does not use performance data"
     assert ("native_report" in report.metadata) == retain_raw
+    if retain_raw:
+        assert report.metadata["native_report"]["prediction_provenance"]["aggregated"] == provenance

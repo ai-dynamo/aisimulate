@@ -1264,7 +1264,11 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
                 "estimator": estimator,
                 "timing_source": if estimator == "polynomial" { "built_in" } else { "configured" },
                 "data_version": null,
-                "data_version_unavailable_reason": "configured timing does not use performance data",
+                "data_version_unavailable_reason": if estimator == "polynomial" {
+                    "built-in timing does not use performance data"
+                } else {
+                    "configured timing does not use performance data"
+                },
             })
         }
     }
