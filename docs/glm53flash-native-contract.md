@@ -126,8 +126,10 @@ each op's exact geometry and mHC rows tagged
 `architecture=Glm5NextForConditionalGeneration` for each role; same-shape mHC
 rows from another model never price GLM. At query time a generic child that answers
 from its analytical fallback, for example a KDA kernel miss, is an error in
-SILICON. Strict evaluation also sets `enable_shared_layer=False`, so no
-earlier-version rows are merged into the exact tables. HYBRID keeps each
+SILICON. SILICON requires the caller to pass `enable_shared_layer=False`; it
+does not set it. With the shared layer on, any consumed table that would merge
+an earlier-version or cross-backend file into the exact tables is rejected at
+engine construction with an error naming the flag. HYBRID keeps each
 generic child's labelled fallback and falls back to the GLM SOL
 (`Source::Sol`) when a required table is absent. EMPIRICAL is unsupported.
 Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
