@@ -673,7 +673,7 @@ def enumerate_branches(
             if candidate.total_gpus > ss.gpu_budget:
                 raise NoViableParallelConfig(
                     f"pinned parallel config {candidate}: used_gpus={candidate.total_gpus} exceeds "
-                    f"optimization.constraints.max_candidate_gpus={ss.gpu_budget}; "
+                    f"gpu_budget={ss.gpu_budget} (optimization.constraints.max_candidate_gpus in recommend); "
                     "remove this preset or increase the GPU budget"
                 )
         raw_custom = ss.parallel_custom_configs_by_mode.get(deployment_mode, {})

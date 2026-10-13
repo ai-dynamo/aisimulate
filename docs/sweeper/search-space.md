@@ -103,6 +103,8 @@ Explicit parallelism presets are validated strictly. If a candidate exceeds
 `optimization.constraints.max_candidate_gpus`, recommendation stops before search
 and reports the candidate, its `used_gpus`, and the configured limit. Remove that
 preset or increase the budget; an over-budget candidate is not a KV-capacity error.
+The diagnostic names `gpu_budget` for Sweeper SDK users and its `recommend`
+equivalent, `optimization.constraints.max_candidate_gpus`.
 
 For any preset-capable object in `recommend`, `preset` has these forms:
 

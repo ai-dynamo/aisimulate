@@ -696,7 +696,8 @@ def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, re
         parallel_configs=[{"tp": 1, "replicas": n} for n in replicas],
     )
     with pytest.raises(
-        NoViableParallelConfig, match="used_gpus=3 exceeds optimization.constraints.max_candidate_gpus=2"
+        NoViableParallelConfig,
+        match=r"used_gpus=3 exceeds gpu_budget=2 \(optimization.constraints.max_candidate_gpus in recommend\)",
     ):
         enumerate_branches(config)
 
