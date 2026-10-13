@@ -319,15 +319,24 @@ pub(super) fn validate_synthesizable_prompt(
     hash_ids: &[u32],
     trace_block_size: usize,
 ) -> Result<()> {
+    validate_synthesizable_prompt_len(input_length, hash_ids.len(), trace_block_size)
+}
+
+/// Validation only depends on how many hash IDs a prompt has, so prompts that
+/// are built at dispatch can be checked without building them.
+pub(super) fn validate_synthesizable_prompt_len(
+    input_length: usize,
+    hash_id_count: usize,
+    trace_block_size: usize,
+) -> Result<()> {
     if trace_block_size == 0 {
         bail!("trace_block_size must be greater than 0");
     }
-    let synthesizable_capacity = hash_ids
-        .len()
+    let synthesizable_capacity = hash_id_count
         .checked_mul(trace_block_size)
         .context("synthesized prompt capacity overflow")?;
     let required_hash_ids = input_length.div_ceil(trace_block_size);
-    if hash_ids.len() < required_hash_ids {
+    if hash_id_count < required_hash_ids {
         bail!(
             "input_length {} exceeds synthesized capacity {}",
             input_length,

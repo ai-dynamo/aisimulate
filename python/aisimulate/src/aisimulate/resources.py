@@ -424,8 +424,9 @@ def _estimate_weka_trace(workload: Mapping[str, Any], *, inspection_budget_bytes
     copies = (lanes + plays - 1) // plays if snapshot else 1
     replay = copies * (32 * hashes + 32 * outputs + 32768 * records + 16 * active_inputs)
     if snapshot:
-        # Immutable snapshot context owns a graph, u32 hash ranks and outputs.
-        replay += 12 * hashes + 4 * outputs + 2048 * records
+        # Immutable snapshot context owns the graph, whose hash IDs are play-local
+        # u32 ranks, and the output plans.
+        replay += 4 * hashes + 4 * outputs + 2048 * records
     if workload.get("agentic_warmup"):
         # Preparation and profile token payloads do not overlap across the
         # quiescent barrier; retain their extra evidence/identity allowance.
