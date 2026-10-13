@@ -216,6 +216,20 @@ rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
 
+Normal prediction output includes timing provenance without `--detail`. The
+`prediction_provenance` summary maps each worker role to its effective `estimator`,
+`timing_source`, and `data_version`. Operation-level AIC timing reports the resolved
+performance-database backend version, including resolution of version aliases.
+FPM estimators report the resolved profile revision as `data_version` and preserve
+the profile model/revision in `data_identity`. Without a profile revision, they
+report a null version with a reason. Fixed/polynomial timing also has no data
+version; polynomial timing reports source `built_in`, which covers both the default
+and explicit polynomial selection. Its unavailable reason names built-in timing;
+fixed timing uses `configured` and a matching reason. Custom runners that omit provenance report an
+explicit `unavailable_reason`. Malformed runner provenance fails before report
+output with a diagnostic naming the invalid field. These are the executed estimator's values, not the
+requested `auto` mode. The same fields appear in saved `prediction.json`.
+
 <a id="prediction-details"></a>
 
 ### Prediction details
