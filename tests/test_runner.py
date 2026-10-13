@@ -464,9 +464,10 @@ def test_agentic_qualification_survives_default_python_report():
     assert "native_report" not in report.metadata
 
 
-def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
+@pytest.mark.parametrize("trace_graph_cache", [False, True])
+def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size(trace_graph_cache):
     runtime = RecordingRuntime()
-    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0)
+    runner = EngineReplayRunnerFactory(runtime=runtime, trace_graph_cache=trace_graph_cache).create(worker_id=0)
     runner.run(
         _spec(
             workload={
@@ -486,6 +487,8 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert traffic["agentic_lanes"] == 2
     assert traffic["execution_model"] == "test-model"
     assert "trace_block_size" not in traffic
+    # Only sweeps ask native loading to keep the graph; predict's spec is unchanged.
+    assert traffic.get("trace_graph_cache") == (True if trace_graph_cache else None)
 
 
 @pytest.mark.parametrize("model_key", ["model", "model_path"])
