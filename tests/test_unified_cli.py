@@ -2369,3 +2369,9 @@ def test_streamed_prediction_outputs_match_one_shot_json(tmp_path, with_details)
     native = {**summary, "power_diagnostics": power, **({"details": details} if details else {})}
     path = write_prediction_report(tmp_path, native)
     assert path.read_bytes() == (json.dumps(native, indent=2, sort_keys=True) + "\n").encode()
+
+
+def test_failed_prediction_report_leaves_no_file(tmp_path):
+    with pytest.raises(TypeError):
+        write_prediction_report(tmp_path, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []

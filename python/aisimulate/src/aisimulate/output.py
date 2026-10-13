@@ -59,16 +59,13 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
 def write_prediction_report(root: Path, report: dict[str, Any]) -> Path:
     path = root / "prediction.json"
     # json.dump writes the chunks json.dumps would join, so a large per-request
-    # report is never held as one string. The rename keeps a failed encoding from
-    # leaving a partial report.
-    partial = path.with_name(path.name + ".partial")
+    # report is never held as one string. A failed encoding leaves no report, as before.
     try:
-        with partial.open("w", encoding="utf-8") as output:
+        with path.open("w", encoding="utf-8") as output:
             json.dump(report, output, indent=2, sort_keys=True)
             output.write("\n")
-        partial.replace(path)
     except BaseException:
-        partial.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
         raise
     return path
 
