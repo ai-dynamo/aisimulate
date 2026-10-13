@@ -96,6 +96,21 @@ its own KV event stream. A requested deterministic selector uses
 
 ### KV events
 
+Engine `Request.session_id` and the `StoredBlocks.session_id` payload inside
+`KvEventData::Stored` are optional metadata. Replay forwards an authored session
+ID through aggregated execution and both prefill/decode request legs. Native G1
+stores identify the request making blocks visible; they do not imply exclusive
+ownership. Requests without an authored session stay unattributed, including
+legacy traces that use synthetic row IDs for reporting. G2 residency events and
+removals remain unattributed. Missing IDs deserialize as `None` and are omitted
+from JSON output.
+Rust struct literals constructing `Request` or `StoredBlocks` must supply
+`session_id: None` when attribution is absent; JSON defaults do not make fields
+omittable in Rust source.
+
+Session IDs do not enter block hashes or change admission, scheduling, eviction,
+or modeled timing. There is no new policy or configuration switch.
+
 Device (G1) events omit `tier`; a missing `tier` means `device`. A vLLM rank
 with G2 also publishes G2 residency changes as `Stored`/`Removed` events with
 `"tier": "host_pinned"`, as vLLM's offloading connector does. With

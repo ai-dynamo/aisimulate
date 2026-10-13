@@ -1220,6 +1220,7 @@ mod tests {
                 parent_hash: None,
                 start_position: Some(0),
                 blocks: vec![block(0), block(1)],
+                session_id: None,
             }),
             tier: KvEventTier::HostPinned,
         };

@@ -2246,6 +2246,7 @@ impl WorkloadDriver {
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context: replay_context.clone(),
+                        session_id: None,
                     };
                     deferred_request_with_hashes(
                         request_metadata,
@@ -2276,6 +2277,7 @@ impl WorkloadDriver {
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context,
+                        session_id: None,
                     });
                     (request, replay_hashes)
                 }

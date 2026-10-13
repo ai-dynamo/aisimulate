@@ -626,6 +626,7 @@ impl DisaggFlowState {
         let input_length = request.input_length();
         let output_length = request.metadata().effective_max_output_tokens();
         request.metadata_mut().uuid = Some(uuid);
+        request.metadata_mut().session_id = session_id.clone();
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
         collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
@@ -3667,6 +3668,11 @@ fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
+        session_id: request.session_id.or_else(|| {
+            request
+                .replay_context
+                .and_then(|context| context.session_id)
+        }),
     })
 }
 

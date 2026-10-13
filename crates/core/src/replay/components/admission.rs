@@ -236,8 +236,10 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()
-                        .map(|context| (context.session_id.clone(), context.turn_index))
-                        .unwrap_or_default();
+                        .map(|context| {
+                            (request.session_id().map(str::to_owned), context.turn_index)
+                        })
+                        .unwrap_or_else(|| (request.session_id().map(str::to_owned), None));
                     ready.push(map(ReplayReadyArrival {
                         request: ReplayRequestPayload::materialized(request),
                         arrival_time_ms,
@@ -351,11 +353,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 break;
             };
             request.arrival_timestamp_ms = Some(now_ms);
-            let (session_id, turn_index) = request
+            let session_id = request.session_id().map(str::to_owned);
+            let turn_index = request
                 .replay_context
                 .as_ref()
-                .map(|context| (context.session_id.clone(), context.turn_index))
-                .unwrap_or_default();
+                .and_then(|context| context.turn_index);
             ready.push(map(ReplayReadyArrival {
                 request: ReplayRequestPayload::materialized(request),
                 arrival_time_ms: now_ms,

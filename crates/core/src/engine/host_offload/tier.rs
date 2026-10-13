@@ -1181,6 +1181,7 @@ impl HostTier {
                     parent_hash: meta.parent,
                     start_position: Some(meta.position),
                     blocks: vec![block],
+                    session_id: None,
                 })),
             }
         }
@@ -2018,6 +2019,7 @@ pub(crate) mod tests {
                     token_ids: None,
                 })
                 .collect(),
+            session_id: None,
         })
     }
 

@@ -4,13 +4,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use aisimulate_core::engine::{Backend, EngineConfig, TimingModelConfig};
+use aisimulate_core::engine::{Backend, EngineConfig, KvEvent, KvEventData, TimingModelConfig};
 use aisimulate_core::replay::loadgen::{MooncakeRow, ReplayRequestPayload, Trace};
 use aisimulate_core::replay::{
-    AggregatedRoundRobinPlacement, CURRENT_REPLAY_SPEC_VERSION, NoEngineEvents, NoReplayMetadata,
+    AggregatedRoundRobinPlacement, CURRENT_REPLAY_SPEC_VERSION, EngineEventBatch, NoReplayMetadata,
     Placement, PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ReplayComposition,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayRuntimeInput, ReplaySpec, ReplayTopology,
-    Replayer, WorkerPoolSpec, WorkerTopology,
+    ReplayEngineConfig, ReplayEngineFactory, ReplayEngineObservation, ReplayRequest,
+    ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerStage,
+    WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -21,14 +22,15 @@ struct SessionRecordingPlacement<P> {
     stage: &'static str,
     inner: P,
     seen: SeenSessions,
+    events: Rc<RefCell<Vec<KvEvent>>>,
 }
 
 impl<P> PlacementPolicy<ReplayRequestPayload> for SessionRecordingPlacement<P>
 where
-    P: PlacementPolicy<ReplayRequestPayload, Metadata = (), Observation = ()>,
+    P: PlacementPolicy<ReplayRequestPayload, Metadata = (), Observation = KvBatch>,
 {
     type Metadata = ();
-    type Observation = ();
+    type Observation = KvBatch;
 
     fn place(
         &mut self,
@@ -43,7 +45,10 @@ where
         self.inner.place(request, metadata, session_id, now_ms)
     }
 
-    fn observe(&mut self, observation: (), now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+    fn observe(&mut self, observation: KvBatch, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        self.events
+            .borrow_mut()
+            .extend(observation.0.iter().cloned());
         self.inner.observe(observation, now_ms)
     }
 
@@ -102,6 +107,7 @@ where
 
 struct SessionRecordingComposition {
     seen: SeenSessions,
+    events: Rc<RefCell<Vec<KvEvent>>>,
 }
 
 impl SessionRecordingComposition {
@@ -110,15 +116,16 @@ impl SessionRecordingComposition {
             stage,
             inner,
             seen: Rc::clone(&self.seen),
+            events: Rc::clone(&self.events),
         }
     }
 }
 
 impl ReplayComposition for SessionRecordingComposition {
     type Metadata = NoReplayMetadata;
-    type Observation = NoEngineEvents;
-    type AggregatedPlacement = SessionRecordingPlacement<AggregatedRoundRobinPlacement<()>>;
-    type DisaggregatedPlacement = SessionRecordingPlacement<PoolRoundRobinPlacement<()>>;
+    type Observation = KvObservation;
+    type AggregatedPlacement = SessionRecordingPlacement<AggregatedRoundRobinPlacement<KvBatch>>;
+    type DisaggregatedPlacement = SessionRecordingPlacement<PoolRoundRobinPlacement<KvBatch>>;
 
     fn create_aggregated_placement(
         &mut self,
@@ -219,11 +226,13 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
             }
             .unwrap();
             let seen = SeenSessions::default();
+            let events = Rc::new(RefCell::new(Vec::new()));
             let report = Replayer::with_composition(
                 spec(disagg, max_in_flight),
                 ReplayEngineFactory::new(),
                 SessionRecordingComposition {
                     seen: Rc::clone(&seen),
+                    events: Rc::clone(&events),
                 },
             )
             .unwrap()
@@ -252,6 +261,18 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
                 );
             }
 
+            // Legacy multi-turn traces have no ReplayRequestContext. Attribution
+            // must survive ingress anyway, without using synthetic row IDs.
+            let stores = events.borrow();
+            let sessions: std::collections::BTreeSet<_> = stores
+                .iter()
+                .filter_map(|event| match &event.data {
+                    KvEventData::Stored(stored) => Some(stored.session_id.as_deref()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(sessions, [None, Some("a")].into_iter().collect(), "{case}");
+
             // Rows without a session ID keep their per-request identity.
             let mut identities = report
                 .per_request
@@ -268,6 +289,126 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
                     (Some("request_4".to_string()), Some(0)),
                 ],
                 "{case}"
+            );
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct KvBatch(Vec<KvEvent>);
+
+impl EngineEventBatch for KvBatch {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn append(&mut self, mut other: Self) {
+        self.0.append(&mut other.0);
+    }
+}
+
+struct KvObservation;
+impl ReplayEngineObservation for KvObservation {
+    type Batch = KvBatch;
+    const CAPTURE_ENGINE_KV_EVENTS: bool = true;
+    fn observe_engine_events(
+        _stage: WorkerStage,
+        _worker: usize,
+        _rank: u32,
+        events: Vec<KvEvent>,
+    ) -> KvBatch {
+        KvBatch(events)
+    }
+}
+
+#[test]
+fn session_metadata_reaches_stores_without_changing_execution() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for disagg in [false, true] {
+            if backend == Backend::Trtllm && disagg {
+                continue;
+            }
+            let run = |attributed: bool| {
+                let mut spec = spec(disagg, None);
+                let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine).unwrap();
+                config.rank.backend = backend;
+                config.rank.max_num_seqs = 1;
+                config.rank.emit_kv_events = true;
+                config.rank.emit_kv_token_ids = true;
+                spec.engine = serde_json::to_value(config).unwrap();
+                spec.requests = (0..3)
+                    .map(|i| ReplayRequest {
+                        id: format!("request-{i}"),
+                        arrival_time_ms: 0.0,
+                        input_tokens: 16,
+                        input_token_ids: Some(vec![10 + i; 16]),
+                        output_tokens: 8,
+                        output_token_ids: Some(vec![20 + i; 8]),
+                        dp_rank: None,
+                        prefill_dp_rank: None,
+                        turn_index: None,
+                        metadata: serde_json::Value::Null,
+                        session_id: (attributed && i < 2).then(|| format!("session-{i}")),
+                    })
+                    .collect();
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let report = Replayer::with_composition(
+                    spec,
+                    ReplayEngineFactory::new(),
+                    SessionRecordingComposition {
+                        seen: SeenSessions::default(),
+                        events: Rc::clone(&events),
+                    },
+                )
+                .unwrap()
+                .run()
+                .unwrap();
+                assert_eq!(report.request_counts.completed_requests, 3);
+                let timings = report
+                    .per_request
+                    .iter()
+                    .map(|r| (r.ttft_ms, r.e2e_latency_ms))
+                    .collect::<Vec<_>>();
+                let events = events.borrow().clone();
+                (events, timings)
+            };
+            let (mut attributed, timings) = run(true);
+            let (plain, plain_timings) = run(false);
+            let sessions: std::collections::BTreeSet<_> = attributed
+                .iter()
+                .filter_map(|event| match &event.data {
+                    KvEventData::Stored(store) => Some(store.session_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                sessions,
+                [None, Some("session-0".into()), Some("session-1".into())]
+                    .into_iter()
+                    .collect(),
+                "{backend:?} disagg={disagg}"
+            );
+            for event in &mut attributed {
+                if let KvEventData::Stored(store) = &mut event.data {
+                    for block in &store.blocks {
+                        let tokens = block.token_ids.as_ref().expect("token capture enabled");
+                        let request_index = tokens[0] % 10;
+                        let expected =
+                            (request_index < 2).then(|| format!("session-{request_index}"));
+                        assert_eq!(
+                            store.session_id, expected,
+                            "store attributed to another request"
+                        );
+                    }
+                    store.session_id = None;
+                }
+            }
+            assert_eq!(
+                attributed, plain,
+                "session must not change KV identities or event order: {backend:?} disagg={disagg}"
+            );
+            assert_eq!(
+                timings, plain_timings,
+                "session must not change virtual timing: {backend:?} disagg={disagg}"
             );
         }
     }

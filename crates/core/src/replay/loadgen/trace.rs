@@ -398,6 +398,7 @@ impl TurnTrace {
             strict_priority: self.strict_priority,
             policy_class: self.policy_class.clone(),
             replay_context: None,
+            session_id: None,
         })
     }
 

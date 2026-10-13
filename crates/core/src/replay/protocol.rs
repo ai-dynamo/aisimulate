@@ -93,6 +93,9 @@ pub struct DirectRequest {
     /// scheduler. Legacy runtime inputs may omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_context: Option<ReplayRequestContext>,
+    /// Session forwarded to engine execution. Replay context is the legacy fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 fn is_zero_i32(value: &i32) -> bool {
@@ -104,6 +107,14 @@ fn is_zero_u32(value: &u32) -> bool {
 }
 
 impl DirectRequest {
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref().or_else(|| {
+            self.replay_context
+                .as_ref()
+                .and_then(|context| context.session_id.as_deref())
+        })
+    }
+
     pub fn request_id(&self) -> Option<Uuid> {
         self.uuid
     }

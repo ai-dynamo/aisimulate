@@ -336,6 +336,7 @@ where
         let input_length = request.input_length();
         let output_length = request.metadata().effective_max_output_tokens();
         request.metadata_mut().uuid = Some(uuid);
+        request.metadata_mut().session_id = session_id.clone();
         if matches!(self.admission.mode(), ReplayMode::Concurrency { .. }) {
             request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
         }
