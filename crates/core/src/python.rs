@@ -1224,19 +1224,30 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
             let estimator = config
                 .get("estimation_mode")
                 .and_then(|value| value.as_str());
+            let is_fpm = matches!(estimator, Some("fpm_interpolation" | "fpm_regression"));
+            let profile = config.get("fpm_profile").filter(|_| is_fpm);
             let data_version = if estimator == Some("op_level") {
                 config
                     .get("backend_version")
                     .and_then(|value| value.as_str())
             } else {
-                None
+                profile
+                    .and_then(|value| value.get("model_revision"))
+                    .and_then(|value| value.as_str())
             };
+            let data_identity = profile.map(|profile| {
+                serde_json::json!({
+                    "model": profile.get("model"),
+                    "model_revision": profile.get("model_revision"),
+                })
+            });
             serde_json::json!({
                 "estimator": estimator,
                 "timing_source": provider,
                 "data_version": data_version,
+                "data_identity": data_identity,
                 "data_version_unavailable_reason": data_version.is_none().then_some(
-                    "selected estimator does not expose a versioned operation database"
+                    "selected estimator does not expose a data version"
                 ),
             })
         }
@@ -1248,7 +1259,7 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
             };
             serde_json::json!({
                 "estimator": estimator,
-                "timing_source": "configured",
+                "timing_source": if estimator == "polynomial" { "built_in" } else { "configured" },
                 "data_version": null,
                 "data_version_unavailable_reason": "configured timing does not use performance data",
             })

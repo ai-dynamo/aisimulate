@@ -2376,6 +2376,7 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tm
         "estimator": "op_level",
         "timing_source": "aic",
         "data_version": expected,
+        "data_identity": None,
         "data_version_unavailable_reason": None,
     }
     assert set(consumed_versions["native"]) == {expected}
@@ -2532,15 +2533,19 @@ def test_flat_active_controls_reject_fixed_timing():
 
 
 @pytest.mark.parametrize("retain_raw", [False, True])
-def test_native_fixed_timing_provenance_without_diagnostics(retain_raw):
+@pytest.mark.parametrize("polynomial", [False, True])
+def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomial):
+    spec = _spec()
+    if polynomial:
+        spec.backend_deployment.agg_engine_args["timing_model"] = {"type": "polynomial"}
     report = (
         EngineReplayRunnerFactory()
         .create(0)
-        .run(_spec(), output_requirements=ReplayOutputRequirements(include_raw_report=retain_raw))
+        .run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=retain_raw))
     )
     provenance = report.metadata["prediction_provenance"]["aggregated"]
-    assert provenance["estimator"] == "fixed"
-    assert provenance["timing_source"] == "configured"
+    assert provenance["estimator"] == ("polynomial" if polynomial else "fixed")
+    assert provenance["timing_source"] == ("built_in" if polynomial else "configured")
     assert provenance["data_version"] is None
     assert "does not use performance data" in provenance["data_version_unavailable_reason"]
     assert ("native_report" in report.metadata) == retain_raw

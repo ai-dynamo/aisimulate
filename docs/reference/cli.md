@@ -220,8 +220,11 @@ Normal prediction output includes timing provenance without `--detail`. The
 `prediction_provenance` summary maps each worker role to its effective `estimator`,
 `timing_source`, and `data_version`. Operation-level AIC timing reports the resolved
 performance-database backend version, including resolution of version aliases.
-Fixed/polynomial timing and FPM estimators report a null data version with a
-`data_version_unavailable_reason`; custom runners that omit provenance report an
+FPM estimators report the resolved profile revision as `data_version` and preserve
+the profile model/revision in `data_identity`. Without a profile revision, they
+report a null version with a reason. Fixed/polynomial timing also has no data
+version; polynomial timing reports source `built_in`, which covers both the default
+and explicit polynomial selection. Custom runners that omit provenance report an
 explicit `unavailable_reason`. Malformed runner provenance fails before report
 output with a diagnostic naming the invalid field. These are the executed estimator's values, not the
 requested `auto` mode. The same fields appear in saved `prediction.json`.
