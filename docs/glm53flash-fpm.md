@@ -19,8 +19,17 @@ and `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
 FP8 TP1 does not fit on one GB300.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
-repository. They are published in `nvidia/aisimulate-fpm-dataset` and the
-consumer pins them by immutable revision.
+repository. They are published in `nvidia/aisimulate-fpm-dataset`
+([discussion 15](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/15)).
+[`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
+pins the nine profiles to its merge commit
+`08771888388a1ce9cd8d421b2e42f353fd5e2abb` and records each file's SHA-256.
+Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
+`gb300-vllm-nvfp4-tp1` or `gb300-sglang-fp8-tp2`. Materialize one with
+`python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
+`materialize_fpm_profile`) and pass the printed root as `systems_paths`, with
+`estimation_mode="fpm_interpolation"` and the profile identity's
+`backend_version`.
 
 ## vLLM producer
 
