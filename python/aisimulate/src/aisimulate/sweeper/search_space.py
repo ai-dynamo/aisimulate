@@ -646,6 +646,13 @@ def enumerate_branches(
         # each backend contributes its full enumerated menu.
         raw_pinned = ss.parallel_configs_by_mode.get(deployment_mode, ss.parallel_configs)
         pinned = [_parse_parallel_entry(e, deployment_mode) for e in raw_pinned] if raw_pinned else None
+        for candidate in pinned or ():
+            if candidate.total_gpus > ss.gpu_budget:
+                raise NoViableParallelConfig(
+                    f"pinned parallel config {candidate}: used_gpus={candidate.total_gpus} exceeds "
+                    f"gpu_budget={ss.gpu_budget} (optimization.constraints.max_candidate_gpus in recommend); "
+                    "remove this preset or increase the GPU budget"
+                )
         raw_custom = ss.parallel_custom_configs_by_mode.get(deployment_mode, {})
         custom_by_role = {
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()

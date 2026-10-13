@@ -678,6 +678,25 @@ def test_pinned_parallel_configs_replace_generated_menu():
     assert all(item.total_gpus == 8 for item in branch.parallel_configs)
 
 
+@pytest.mark.parametrize("replicas", [[3], [1, 2, 3]])
+def test_pinned_gpu_budget_rejection_names_requirement_and_limit(monkeypatch, replicas):
+    monkeypatch.setattr(
+        "aisimulate.sweeper.search_space.parallel_configs_for",
+        lambda *args, **kwargs: [_AGG_CFG],
+    )
+    config = _config(
+        deployment_mode=["agg"],
+        backend=["vllm"],
+        gpu_budget=2,
+        parallel_configs=[{"tp": 1, "replicas": n} for n in replicas],
+    )
+    with pytest.raises(
+        NoViableParallelConfig,
+        match=r"used_gpus=3 exceeds gpu_budget=2 \(optimization.constraints.max_candidate_gpus in recommend\)",
+    ):
+        enumerate_branches(config)
+
+
 def test_illegal_pinned_parallel_config_is_rejected():
     config = _config(
         model_name="meta-llama/Meta-Llama-3.1-8B",
