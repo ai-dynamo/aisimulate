@@ -104,6 +104,12 @@ shapes outside the default automatic search menu, such as vLLM TP2/DP4/EP8.
 Every role must have a positive integer replica count. Presets must satisfy
 backend topology rules, the GPU budget, runner support,
 and KV capacity. The default menu continues to use its existing pure patterns.
+Explicit pins are also independent of the automatic menu's 16-GPU worker limit.
+Mixed MoE tensor/expert parallelism is allowed where the backend topology rules
+permit it (TensorRT-LLM/SGLang); vLLM still rejects mixed MoE TP/EP. Admission
+checks topology and memory, not complete timing-data coverage. Candidate evaluation
+still rejects a pin if the selected estimator lacks the required timing data.
+
 
 For any preset-capable object in `recommend`, `preset` has these forms:
 
