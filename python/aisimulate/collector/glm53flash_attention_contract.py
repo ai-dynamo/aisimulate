@@ -37,6 +37,13 @@ CHECKPOINTS = {
     "fp8": ("zai-org/GLM-5.3-Flash", "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"),
     "nvfp4": ("nvidia/GLM-5.3-Flash-NVFP4", "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"),
 }
+# sha256_json(config.json) at each pinned revision above (the bundled
+# model_configs copies are unmodified; see GLM53FLASH_PROVENANCE.md). A row
+# measured on any other checkpoint config cannot claim the pinned revision.
+CHECKPOINT_CONFIG_SHA256 = {
+    "fp8": "971457b1bd1079cdeecd67a27194357f87e598045282e4dffee5a981de95688f",
+    "nvfp4": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee",
+}
 # Exact runtimes the collectors are pinned to: stock vLLM v0.31.0 (upstream
 # tag commit db9527a46873454610df6dbedf79a36d6bf1a7f6, aarch64 image digest
 # below) and SGLang 0.5.20. Stock v0.31.0 still corrupts the boundary pool of
@@ -478,6 +485,8 @@ def validate_row(row: dict) -> dict:
     for key in ("source_sha256", "config_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", row[key]):
             raise ValueError(f"invalid {key}")
+    if row["config_sha256"] != CHECKPOINT_CONFIG_SHA256[body["checkpoint_format"]]:
+        raise ValueError("config_sha256 does not match the pinned checkpoint revision's config.json")
     if row["runtime_digest"] != RUNTIME_IMAGES[body["backend"]]:
         raise ValueError("runtime digest is not the pinned immutable image")
     return body
@@ -487,12 +496,13 @@ def physical_key(row: dict) -> tuple:
     return tuple(row[c] for c in KEY_COLUMNS)
 
 
-def aggregate_rank_samples(records: list[dict], tp_size: int) -> list[dict]:
+def aggregate_rank_samples(records: list[dict], tp_size: int, iterations: int) -> list[dict]:
     """Median over repetitions of the per-repetition maximum across TP ranks.
 
     Each raw record is one rank's timing of one repetition of one target. A
-    target is admitted only when every rank reported the same repetition set
-    with identical invocation identity; duplicate ranks/repetitions fail.
+    target is admitted only when every rank reported every planned repetition
+    (``range(iterations)``) with identical invocation identity; duplicate
+    ranks/repetitions and short repetition sets fail.
     """
     groups = defaultdict(list)
     for record in records:
@@ -514,6 +524,11 @@ def aggregate_rank_samples(records: list[dict], tp_size: int) -> list[dict]:
             samples[repetition][rank] = latency
         if any(set(ranks) != set(range(tp_size)) for ranks in samples.values()):
             raise ValueError(f"target {target} is missing a TP rank")
+        if set(samples) != set(range(iterations)):
+            raise ValueError(
+                f"target {target} has repetitions {sorted(samples)[:4]}... ({len(samples)}), "
+                f"the plan requires {iterations}"
+            )
         maxima = [max(ranks.values()) for _, ranks in sorted(samples.items())]
         first = items[0]
         key, provenance = first["key"], first["provenance"]
@@ -697,11 +712,12 @@ def load_attempt(attempt: Path, partial: bool = False) -> tuple[dict, list[dict]
         reps_by_rank: dict[str, dict[int, set]] = defaultdict(lambda: defaultdict(set))
         for record in records:
             reps_by_rank[record["target_id"]][record["tp_rank"]].add(record["repetition"])
-        # A target is complete when every rank wrote the same repetitions.
+        # A target is complete when every rank wrote every planned repetition.
+        planned_reps = set(range(plan["iterations"]))
         full = {
             t
             for t, ranks in reps_by_rank.items()
-            if set(ranks) == set(range(tp_size)) and len({frozenset(v) for v in ranks.values()}) == 1
+            if set(ranks) == set(range(tp_size)) and all(v == planned_reps for v in ranks.values())
         }
         # Every target measured completely on every rank is admitted; the
         # rest of a failed set must come from other attempts or be classified.
@@ -730,7 +746,7 @@ def load_attempt(attempt: Path, partial: bool = False) -> tuple[dict, list[dict]
             "admitted_sets": admitted,
             "failed_sets": sorted(failed),
         }
-    rows = aggregate_rank_samples(records, tp_size)
+    rows = aggregate_rank_samples(records, tp_size, plan["iterations"])
     measured = {(bodies[r["geometry"]], r["batch_size"], r["prefix"], r["x"]) for r in rows}
     expected = set(target_keys(queued))
     if manifest["max_model_len"] != selected_max_model_len(manifest):

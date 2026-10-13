@@ -11,6 +11,7 @@ import pytest
 import yaml
 from collector.glm53flash_attention_contract import (
     BASENAME,
+    CHECKPOINT_CONFIG_SHA256,
     COLUMNS,
     KERNEL_DECODE,
     KERNEL_PREFILL,
@@ -244,10 +245,15 @@ def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra
     ]
 
 
+def _aggregate(records, tp_size):
+    """Aggregate a fixture whose every target carries its full repetition set."""
+    return aggregate_rank_samples(records, tp_size, 1 + max(r["repetition"] for r in records))
+
+
 def test_rank_maximum_then_median_and_published_schema():
     flat = _flat()
     records = _records(flat, "context", 2, 4096, 256, [[1.0, 5.0, 2.0], [3.0, 1.0, 1.0]])
-    rows = aggregate_rank_samples(records, 2)
+    rows = _aggregate(records, 2)
     assert len(rows) == 1
     row = rows[0]
     assert tuple(row) == COLUMNS
@@ -255,23 +261,26 @@ def test_rank_maximum_then_median_and_published_schema():
     assert row["latency"] == 3.0 and row["sample_count"] == 3
     assert row["measurement_scope"] == "local_compute" and row["execution_profile"] == "full"
     assert row["used_cuda_graph"] is True and row["kv_seed_regime"] == "real_kv"
-    decode = aggregate_rank_samples(_records(flat, "generation", 4, 0, 4096, [[1.0], [2.0]]), 2)
+    decode = _aggregate(_records(flat, "generation", 4, 0, 4096, [[1.0], [2.0]]), 2)
     assert decode[0]["used_cuda_graph"] is True and decode[0]["prefix"] == 0
 
 
 def test_incomplete_duplicate_mixed_or_nonfinite_samples_fail():
     flat = _flat()
     with pytest.raises(ValueError, match="missing a TP rank"):
-        aggregate_rank_samples(_records(flat, "context", 1, 0, 16, [[1.0, 1.0]]), 2)
+        _aggregate(_records(flat, "context", 1, 0, 16, [[1.0, 1.0]]), 2)
     doubled = _records(flat, "context", 1, 0, 16, [[1.0], [1.0]])
     with pytest.raises(ValueError, match="repeats rank"):
-        aggregate_rank_samples(doubled + doubled[:1], 2)
+        _aggregate(doubled + doubled[:1], 2)
     mixed = _records(flat, "context", 1, 0, 16, [[1.0], [1.0]])
     mixed[1]["kernel_source"] = "another kernel"
     with pytest.raises(ValueError, match="mixes invocation identities"):
-        aggregate_rank_samples(mixed, 2)
+        _aggregate(mixed, 2)
+    # Every rank holding the same short subset is still below the plan.
+    with pytest.raises(ValueError, match="the plan requires 3"):
+        aggregate_rank_samples(_records(flat, "context", 1, 0, 16, [[1.0, 1.0], [1.0, 1.0]]), 2, 3)
     with pytest.raises(ValueError, match="nonfinite"):
-        aggregate_rank_samples(_records(flat, "context", 1, 0, 16, [[1.0], [1.0]], extra={"finite": False}), 2)
+        _aggregate(_records(flat, "context", 1, 0, 16, [[1.0], [1.0]], extra={"finite": False}), 2)
 
 
 def _table(tmp_path, rows):
@@ -285,8 +294,8 @@ def test_writer_emits_the_reader_schema_and_rejects_duplicates_and_mixed_provena
     for checkpoint in ("fp8", "nvfp4"):
         for tp in (2, 4):
             flat = _flat(checkpoint=checkpoint, tp=tp)
-            rows += aggregate_rank_samples(_records(flat, "context", 1, 0, 2048, [[1.0]] * tp), tp)
-            rows += aggregate_rank_samples(_records(flat, "generation", 1, 0, 2049, [[0.1]] * tp), tp)
+            rows += _aggregate(_records(flat, "context", 1, 0, 2048, [[1.0]] * tp), tp)
+            rows += _aggregate(_records(flat, "generation", 1, 0, 2049, [[0.1]] * tp), tp)
     table = _table(tmp_path, rows)
     assert table.schema.names == list(COLUMNS)
     assert table.schema.field("batch_size").type == pa.int64()
@@ -295,9 +304,7 @@ def test_writer_emits_the_reader_schema_and_rejects_duplicates_and_mixed_provena
     assert table.num_rows == 8
     with pytest.raises(ValueError, match="duplicate physical"):
         write_parquet(rows + rows[:1], tmp_path / "dup.parquet")
-    other_source = aggregate_rank_samples(
-        _records(_flat(tp=2), "context", 2, 0, 16, [[1.0], [1.0]], source="b" * 64), 2
-    )
+    other_source = _aggregate(_records(_flat(tp=2), "context", 2, 0, 16, [[1.0], [1.0]], source="b" * 64), 2)
     with pytest.raises(ValueError, match="one backend/runtime/source"):
         write_parquet(rows + other_source, tmp_path / "mixed.parquet")
     for row in rows[:2]:
@@ -305,13 +312,18 @@ def test_writer_emits_the_reader_schema_and_rejects_duplicates_and_mixed_provena
         with pytest.raises(ValueError, match="CUDA graph use"):
             validate_row(dict(row, used_cuda_graph=False))
     other_config = dict(rows[0], batch_size=3, config_sha256="c" * 64)
-    with pytest.raises(ValueError, match="configuration identities"):
+    with pytest.raises(ValueError, match="pinned checkpoint revision"):
         write_parquet(rows + [other_config], tmp_path / "config.parquet")
+
+
+def test_pinned_config_hashes_match_the_bundled_checkpoint_configs():
+    for checkpoint, path in CONFIGS.items():
+        assert CHECKPOINT_CONFIG_SHA256[checkpoint] == sha256_json(json.loads(path.read_text()))
 
 
 def test_rows_the_reader_would_reject_fail_before_publication():
     flat = _flat()
-    row = aggregate_rank_samples(_records(flat, "generation", 1, 0, 4096, [[1.0], [1.0]]), 2)[0]
+    row = _aggregate(_records(flat, "generation", 1, 0, 4096, [[1.0], [1.0]]), 2)[0]
     validate_row(row)
     for change in (
         {"prefix": 7},
@@ -359,7 +371,10 @@ def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_l
     (attempt / "manifest.json").write_text(json.dumps({**body, "manifest_sha256": sha256_json(body)}))
     records = []
     for phase, batch, prefix, x in target_keys(plan):
-        records += _records(flat, phase, batch, prefix, x, [[1.0, 2.0], [1.5, 1.0]])
+        reps = range(sweep_spec["iterations"])
+        records += _records(
+            flat, phase, batch, prefix, x, [[1.0 + r % 2 for r in reps], [1.5 - r % 2 / 2 for r in reps]]
+        )
     for rank in (0, 1):
         lines = [json.dumps(r) for r in records if r["tp_rank"] == rank]
         (raw / f"rank-{rank}.jsonl").write_text("\n".join(lines) + "\n")
