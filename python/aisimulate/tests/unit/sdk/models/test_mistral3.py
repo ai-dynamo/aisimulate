@@ -217,13 +217,15 @@ class TestMistral3Workload:
         with pytest.raises(ValueError, match="Pixtral requires image_height and image_width"):
             BaseBackend.effective_prefill_isl(local_model_path, sdk_config.RuntimeConfig(isl=100, num_image_tokens=9))
 
-    def test_image_count_without_geometry_or_token_override_is_rejected(self, local_model_path):
-        runtime = sdk_config.RuntimeConfig(isl=100, num_images_per_request=1)
-        with pytest.raises(ValueError, match="Pixtral image workloads require image dimensions or num_image_tokens"):
+    @pytest.mark.parametrize("dimensions", [{"image_height": 70}, {"image_width": 70}])
+    def test_incomplete_image_dimensions_are_rejected(self, local_model_path, dimensions):
+        runtime = sdk_config.RuntimeConfig(isl=100, **dimensions)
+        with pytest.raises(ValueError, match="Image height and width must either both be provided"):
             BaseBackend.effective_prefill_isl(local_model_path, runtime)
 
-    def test_text_only_context_is_unchanged(self, local_model_path):
-        runtime = sdk_config.RuntimeConfig(isl=100, num_images_per_request=0)
+    @pytest.mark.parametrize("image_options", [{}, {"num_images_per_request": 0}, {"num_images_per_request": 2}])
+    def test_text_only_context_is_unchanged(self, local_model_path, image_options):
+        runtime = sdk_config.RuntimeConfig(isl=100, **image_options)
         assert BaseBackend.effective_prefill_isl(local_model_path, runtime) == 100
 
 

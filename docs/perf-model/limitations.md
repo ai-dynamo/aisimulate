@@ -29,8 +29,13 @@ route makes unmeasured execution-policy changes qualified.
 
 Mistral3/Pixtral modeling supports images and the final vision feature layer
 (`vision_feature_layer=-1`). Video inputs and other feature-layer selections
-raise an error. Image workloads require both `image_height` and `image_width`;
+raise an error. Requests with no image dimensions or image-token override remain
+text-only, including with the default image count of one. Image workloads require
+both `image_height` and `image_width`;
 an image-token count alone cannot determine the row separators in the prompt.
+
+The Mistral Medium 3.5 configuration is not bundled. Supply its Hugging Face model
+ID to download the configuration, or a local directory containing `config.json`.
 
 Images larger than the configured `vision_config.image_size` are resized to
 that maximum side while preserving aspect ratio. Patch grids round up to the
