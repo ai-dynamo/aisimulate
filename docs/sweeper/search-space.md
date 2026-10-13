@@ -101,7 +101,8 @@ A mapping is one atomic candidate choice; values inside it are not independently
 
 Explicit parallelism presets may include hybrid attention TP/DP and MoE EP
 shapes outside the default automatic search menu, such as vLLM TP2/DP4/EP8.
-They still must satisfy backend topology rules, the GPU budget, runner support,
+Every role must have a positive integer replica count. Presets must satisfy
+backend topology rules, the GPU budget, runner support,
 and KV capacity. The default menu continues to use its existing pure patterns.
 
 For any preset-capable object in `recommend`, `preset` has these forms:
