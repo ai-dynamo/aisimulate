@@ -490,6 +490,13 @@ def test_native_disaggregated_capacity_keeps_canonical_worker_role(profile, timi
     assert result.metrics["completed_requests"] == 1
     assert "prefill" in roles and "decode" in roles
     assert set(roles) == {"prefill", "decode"}
+    provenance = result.metadata["prediction_provenance"]
+    assert set(provenance) == {"prefill", "decode"}
+    for role in provenance.values():
+        assert role["estimator"] == "fpm_interpolation"
+        assert role["timing_source"] == "aic"
+        assert role["data_version"] is None
+        assert "versioned operation database" in role["data_version_unavailable_reason"]
 
 
 @pytest.mark.parametrize("mode,budget,expected", [("agg", 2, 2), ("disagg", 4, 4)])

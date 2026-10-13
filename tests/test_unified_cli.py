@@ -2341,3 +2341,44 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
         )
     assert error.value.code == 2
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("available", [False, True])
+def test_predict_reports_effective_timing_provenance_without_details(
+    tmp_path, monkeypatch, capsys, output_format, available
+):
+    provenance = {
+        "aggregated": {
+            "estimator": "op_level",
+            "timing_source": "aic",
+            "data_version": "0.24.0",
+            "data_version_unavailable_reason": None,
+        }
+    }
+
+    class ProvenanceRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            assert not self.output_requirements.capture_performance_diagnostics
+            if available:
+                report.metadata["prediction_provenance"] = provenance
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(ProvenanceRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
+    stdout = capsys.readouterr().out
+    saved = json.loads((output / "prediction.json").read_text())["summary"]["prediction_provenance"]
+    if available:
+        assert saved == provenance
+    else:
+        assert "runner did not report" in saved["runner"]["unavailable_reason"]
+    if output_format == "json":
+        assert json.loads(stdout)["prediction_provenance"] == saved
+    elif available:
+        assert "Timing (aggregated): estimator=op_level; source=aic; data_version=0.24.0" in stdout
+    else:
+        assert "Timing (runner): unavailable (runner did not report" in stdout

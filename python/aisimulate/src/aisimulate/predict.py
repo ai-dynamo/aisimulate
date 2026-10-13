@@ -203,6 +203,10 @@ def run_prediction(
         kv_precision[role] = {"dtype": mode, "source": source}
     if kv_precision:
         summary["kv_cache_precision"] = kv_precision
+    summary["prediction_provenance"] = report.metadata.get(
+        "prediction_provenance",
+        {"runner": {"unavailable_reason": "runner did not report effective timing provenance"}},
+    )
     summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:
         native = {**native, "summary": summary}
