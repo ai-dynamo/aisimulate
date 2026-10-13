@@ -956,11 +956,13 @@ def test_partial_illegal_pin_preserves_runner_details(monkeypatch):
     assert calls == ["trtllm"]
 
 
-@pytest.mark.parametrize("replicas", [0, -1, True, 1.5])
+@pytest.mark.parametrize("field", ["tp", "pp", "attention_dp", "moe_tp", "moe_ep", "replicas"])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "2", None])
 @pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
-def test_explicit_pin_rejects_invalid_replica_count(replicas, role):
-    shape = {"tp": 2, "attention_dp": 4, "moe_tp": 1, "moe_ep": 8, "replicas": replicas}
+def test_explicit_pin_rejects_invalid_dimensions(field, value, role):
+    shape = {"tp": 2, "attention_dp": 4, "moe_tp": 1, "moe_ep": 8, "replicas": 1}
+    shape[field] = value
     mode = "agg" if role == "agg" else "disagg"
     pin = shape if mode == "agg" else {"prefill": {"tp": 1}, "decode": {"tp": 1}, role: shape}
-    with pytest.raises(ValueError, match="replicas must be a positive integer"):
+    with pytest.raises(ValueError, match=f"{field} must be a positive integer"):
         _config(deployment_mode=[mode], parallel_configs=[pin])
