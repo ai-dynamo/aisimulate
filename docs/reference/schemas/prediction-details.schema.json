@@ -585,6 +585,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "kvcache_quant_mode": {
+          "enum": ["bfloat16", "int8", "fp8"]
+        },
         "total_kv_size_tokens": {
           "type": "integer",
           "minimum": 0

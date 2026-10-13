@@ -376,7 +376,12 @@ def format_prediction_details(details: dict[str, Any], *, energy_top_n: int = 12
             if "unavailable_reason" in memory:
                 lines.append(f"    {memory['unavailable_reason']}")
             for key, value in memory.items():
-                if key.endswith(("_bytes", "_tokens")) or key in {"source", "stage", "estimated_num_gpu_blocks"}:
+                if key.endswith(("_bytes", "_tokens")) or key in {
+                    "source",
+                    "stage",
+                    "estimated_num_gpu_blocks",
+                    "kvcache_quant_mode",
+                }:
                     lines.append(f"    {key}: {value}")
             for key, value in (memory.get("memory_breakdown") or {}).items():
                 lines.append(f"    {key}: {value}")

@@ -14,6 +14,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
 from .afd_artifacts import write_afd_qualification_artifacts
 from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
 from .compiler import prediction_to_replay_spec
@@ -135,7 +137,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
                 output_requirements=ReplayOutputRequirements(
                     include_raw_report=not epd,
                     capture_per_request=args.capture_per_request,
-                    capture_memory_diagnostics="memory" in args.detail,
+                    capture_memory_diagnostics=True,
                     capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
                 ),
             )
@@ -165,6 +167,29 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     if isinstance(native.get("fpm_query_coverage"), dict):
         write_fpm_coverage(root, native["fpm_query_coverage"])
     summary = prediction_summary(native)
+    kv_precision = {}
+    for role, memory in native.get("memory_diagnostics", {}).items():
+        mode = memory.get("kvcache_quant_mode")
+        worker = getattr(config.engine.workers, role, None)
+        if mode is None or worker is None:
+            continue
+        explicit = worker.timing.kvcache_quant_mode or config.engine.kvcache_quant_mode
+        if explicit is not None:
+            source = "user_override"
+        elif memory.get("source") == "profile":
+            source = "fpm_profile"
+        else:
+            # Reuse the cached, normalized checkpoint metadata read during model
+            # construction. Weight quantization alone is not a KV declaration.
+            raw = get_model_config_from_model_path(config.engine.model).get("raw_config", {})
+            declared = raw.get("kv_cache_quant_algo")
+            declared = "bfloat16" if declared == "none" else declared
+            source = "checkpoint" if declared == mode else "aisimulate_policy"
+        kv_precision[role] = {"dtype": mode, "source": source}
+    if kv_precision:
+        summary["kv_cache_precision"] = kv_precision
+    if "memory" not in args.detail:
+        native = {key: value for key, value in native.items() if key != "memory_diagnostics"}
     summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:
         native = {**native, "summary": summary}

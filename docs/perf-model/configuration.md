@@ -321,7 +321,8 @@ These additional public YAML fields are concrete controls:
 
 | Field | Meaning |
 | --- | --- |
-| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
+| `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
 | `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
@@ -333,6 +334,39 @@ and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
 for execution and cache combinations.
+
+### KV precision and token capacity
+
+An explicit `engine.kvcache_quant_mode` or worker timing override takes precedence,
+subject to model/backend and profile validation. An FPM profile supplies its
+recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:
+
+| Checkpoint metadata | Inferred KV precision |
+|---|---|
+| `kv_cache_quant_algo` is not missing/null, `fp8`, `bfloat16`, or `"none"` (for example, `int8`) | Rejected during checkpoint normalization |
+| DeepSeek V4/V4.1 architecture | FP8 |
+| `kv_cache_quant_algo: fp8` | FP8 |
+| `kv_cache_quant_algo: "none"` | BF16 |
+| KV declaration missing/null or `bfloat16`; weight `quant_algo` is `fp8`, `fp8_block`, or `nvfp4` | FP8 |
+| Other supported configurations | BF16 |
+
+These are AISimulate policies, not serving-engine defaults. `torch_dtype: bfloat16`
+does not prevent FP8 KV inference. For regular language roles using default timing,
+pass `--set engine.kvcache_quant_mode=bfloat16` or set it in YAML to require BF16.
+The explicit engine field also accepts `int8`, subject to model/backend validation;
+this does not make an `int8` checkpoint KV declaration valid.
+Fixed/polynomial timing, EPD, and AFD currently reject this engine override.
+
+Ordinary `predict` output shows each known role's effective KV dtype and source.
+JSON stdout and `prediction.json` summaries expose `kv_cache_precision.<role>`
+with `dtype` and `source`: `user_override`, `checkpoint` (a matching explicit KV
+declaration), `fpm_profile`, or `aisimulate_policy`. `--detail memory` also includes
+`kvcache_quant_mode` beside capacity. Naive fallback and roles without a capacity
+estimate omit this disclosure. Fixed/polynomial timing roles currently size capacity
+at compile time and do not report the resolved precision through this path.
+
+FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
+FP8 KV holds twice as many tokens. This does not imply twice the throughput.
 
 ## Migrating saved configuration
 

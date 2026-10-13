@@ -440,6 +440,9 @@ class KVCacheEstimator:
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
                 "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
+                "kvcache_quant_mode": (
+                    model_config.kvcache_quant_mode.name if model_config.kvcache_quant_mode is not None else None
+                ),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 "tokens_from_kv_bytes": tokens_from_kv_bytes,
             }
@@ -524,6 +527,11 @@ class KVCacheEstimator:
             "total_kv_size_bytes": math.floor(total_kv_size_bytes_f),
             "kv_size_per_token_bytes": math.floor(kv_per_token),
             "total_kv_size_tokens": total_kv_size_tokens,
+            **(
+                {"kvcache_quant_mode": breakdown["kvcache_quant_mode"]}
+                if breakdown.get("kvcache_quant_mode") is not None
+                else {}
+            ),
             # Carried so _apply_tolerance derives adjusted tokens the same way;
             # stripped by estimate_kv_cache before returning.
             "tokens_from_kv_bytes": tokens_from_bytes,
@@ -1134,6 +1142,8 @@ def estimate_kv_cache(
         (``"native"`` | ``"naive_fallback"`` | ``"profile"``), ``memory_breakdown`` (dict on the
         native/declared paths, ``None`` for runtime capacity or naive fallback), and ``tolerance_adjusted`` (a dict
         when ``tolerance_fraction`` is set, else ``None``).
+        Native and profile estimates also report the resolved ``kvcache_quant_mode``;
+        the naive fallback does not infer a quantization mode from its byte width.
 
     Raises:
         ValueError: incompatible / out-of-range memory fraction, out-of-range
@@ -1202,7 +1212,7 @@ def estimate_kv_cache(
         ):
             from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-            return RustForwardPassPerfModel.estimate_cache_budget(
+            estimate = RustForwardPassPerfModel.estimate_cache_budget(
                 {
                     "model": model_path,
                     "system": system,
@@ -1228,6 +1238,8 @@ def estimate_kv_cache(
                     "tolerance_fraction": tolerance_fraction,
                 },
             )
+            estimate["kvcache_quant_mode"] = deployment.kv_cache_dtype
+            return estimate
         estimate = KVCacheEstimator._estimate_from_breakdown(
             {
                 "weights_bytes": resources.weights_bytes,
@@ -1244,6 +1256,7 @@ def estimate_kv_cache(
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
         )
         estimate["source"] = "profile"
+        estimate["kvcache_quant_mode"] = deployment.kv_cache_dtype
         estimate["resource_provenance"] = resources.provenance
         _apply_tolerance(estimate, tolerance_fraction)
         estimate.pop("tokens_from_kv_bytes", None)

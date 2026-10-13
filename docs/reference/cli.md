@@ -223,8 +223,12 @@ aisimulate predict -c prediction.yaml --detail summary,memory,time \
   --format json --output-dir ./prediction-details
 ```
 
-`--detail` selects additional reports on `predict`. With no selector, stdout and durable
-reports retain their existing shape. With a selector, JSON stdout contains `summary` and
+Ordinary prediction output includes effective KV precision and its source for roles
+with native or profile capacity estimates. JSON summaries expose this as
+`kv_cache_precision.<role>.{dtype,source}`; see
+[KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
+
+`--detail` selects additional reports on `predict`. With a selector, JSON stdout contains `summary` and
 `details`; the same versioned `details` object is added to `prediction.json` and follows the
 [prediction-details schema](schemas/prediction-details.schema.json). Table output appends selected
 sections and skipped-section reasons to the normal prediction summary.
@@ -232,7 +236,11 @@ sections and skipped-section reasons to the normal prediction summary.
 - `summary`: existing serving metrics.
 - `memory`: the existing initial per-rank memory capacity estimate, including components when
   available, with sizes in bytes and token counts in tokens. The only current `stage` value is
-  `before_native_capacity_adjustments`; `estimated_num_gpu_blocks` is captured at this stage,
+  `before_native_capacity_adjustments`. Native and profile estimates include the resolved
+  `kvcache_quant_mode`: compare it with the deployment before interpreting token capacity.
+  An omitted engine override can infer FP8; see [KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
+  The field is omitted when the estimator cannot establish the quantization mode.
+  `estimated_num_gpu_blocks` is captured at this stage,
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,
   and unsupported providers/topologies may have no exported estimate.
