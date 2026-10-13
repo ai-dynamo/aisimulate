@@ -1,0 +1,49 @@
+{
+ "verdict": "aligned",
+ "repo": "zai-org/GLM-5",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "glm5_topk_GLM-5",
+ "target_roles": [
+  "dsa_indexer"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
+ "capture_file": "facts/pathdiff/opcov_sgl_glm5_topk@0.5.21.json",
+ "capture_sha256": "20a338c8bd364582",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a1be3525bd22",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "1d85ae74649f",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "dsa_nsa",
+  "sgl_kernel",
+  "trtllm_fmha",
+  "trtllm_gen_moe"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "dsa_indexer": {
+   "collector": 1,
+   "serving": 5,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

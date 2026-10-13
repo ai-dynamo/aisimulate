@@ -42,6 +42,13 @@ _SYSTEM_TO_HW: dict[str, str] = {
     "gb200": "gb200",
     "gb200_sxm": "gb200",
     "gb300": "gb200",
+    # RTX PRO Blackwell PCIe hosts share one SM-keyed profile; the RTX PRO 5000
+    # system (SDK entry pending) maps here too once it exists.
+    "rtx_pro_6000_server": "sm120",
+    # Ada: product-keyed like the Hopper entries (the SDK has an l40s system and nothing else on
+    # sm89 yet; an l4 system would get its own profile). Explicit so the table stays the one place
+    # that says which systems have facts.
+    "l40s": "l40s",
 }
 
 # Sections of the params dict that may carry the SDK system id.

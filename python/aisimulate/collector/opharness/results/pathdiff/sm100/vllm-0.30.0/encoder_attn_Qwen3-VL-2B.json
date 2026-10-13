@@ -1,0 +1,66 @@
+{
+ "verdict": "diverged",
+ "repo": "Qwen/Qwen3-VL-2B-Instruct",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "encoder_attn_Qwen3-VL-2B",
+ "target_roles": [
+  "attention"
+ ],
+ "phase": "profile_run",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "vision|vit|patch|encoder|flash|attn",
+ "capture_file": "facts/pathdiff/opcov_encoder_attn_qwen3vl@0.30.0.json",
+ "capture_sha256": "5fc06e72434c6883",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "cab364446c18",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "cb478a8b3ca1",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa3",
+  "fa_cute_sm100"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa_cute_sm100",
+  "trtllm_fmha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 3,
+   "serving": 5,
+   "matched": 1
+  }
+ },
+ "collector_only_signal": [
+  "attention:fa3"
+ ],
+ "kernel_drift": {
+  "attention": {
+   "collector_only_kernels": [
+    "kernel_cutlass_kernel_vllmvllm_flash_attncuteflash_fwd_combineFlashAttentionForw",
+    "kernel_cutlass_kernel_vllmvllm_flash_attncuteprepare_schedulerFlashPrepareSchedu"
+   ],
+   "serving_kernels": [
+    "fmhaSm100aKernel_QkvBfloat16OBfloat16H128PagedKvCausalP16VarSeqQ256Kv128Persiste",
+    "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP16MultiCtasKvCgaVarSeqQ8K",
+    "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP16MultiCtasKvVarSeqQ8Kv25",
+    "fmhaSm100fKernel_QkvBfloat16OBfloat16H128PagedKvCausalP16VarSeqQ8Kv256Persistent",
+    "kernel_cutlass_kernel_vllmvllm_flash_attncuteflash_fwd_sm100FlashAttentionForwar"
+   ]
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

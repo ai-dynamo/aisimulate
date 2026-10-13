@@ -1,0 +1,53 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "moe_fp8block_DeepSeek-V3.2",
+ "target_roles": [
+  "moe_gemm",
+  "routing"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "fp8",
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "capture_file": "facts/pathdiff/opcov_moe_fp8block_dsv3@0.30.0.json",
+ "capture_sha256": "ea4da41958b1e853",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "855e920b2e7a",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "caa3c868dc24",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "deepgemm",
+  "sgl_kernel",
+  "torch",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "flashinfer",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "moe_gemm": {
+   "collector": 4,
+   "serving": 4,
+   "matched": 4
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

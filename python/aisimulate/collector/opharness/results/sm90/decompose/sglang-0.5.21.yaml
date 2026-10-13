@@ -1,0 +1,482 @@
+_meta:
+  platform: sm90
+  framework: sglang
+  version: 0.5.21
+  taxonomy: kernel_taxonomy_sm90.yaml
+  kind: summary
+  generated: '2026-10-01T20:22:23'
+  summary:
+    repos: 102
+    repos_with_residue: 102
+    residue_kernels: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, _combine_kernel,
+      _engram_gate_kernel, _engram_gather_kernel, _fp4_index_logits_kernel, _fused_replay_state_indices_kernel, _hc_combine_kernel, _hc_mix_reduce_sinkhorn_kernel, _hc_mix_stats_partial_kernel, _hc_mix_stats_reduce_kernel,
+      _matmul_NNT_bf16xbf16xmxfp4, _matmul_NNT_bf16xbf16xmxfp4_swiglu, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _quantize_fp4_indexer_kernel, _rope_tail_fake_quant_fp4_kernel, _score_kernel,
+      _small_copy_kernel, 'flashinfer::BatchDecodeWithPagedKVCacheKernel', 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', fused_sigmoid_gating_delta_rule_update_kernel,
+      gdn_prefill_qkv_prepare_kernel, hc_split_sinkhorn_kernel__kernel, 'sglang::act_kernel', 'sglang::add3_kernel', 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::concat_mla_absorb_q_kernel',
+      'sglang::deepseek_rope_kernel', 'sglang::device::marlin::Marlin', 'sglang::fast_hadamard_transform_kernel', 'sglang::flash_c128_prefill', 'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_a_gemm_kernel',
+      'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_q_norm_rope', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::fused_rope_store_kernel', 'sglang::fused_store_flashmla_cache', 'sglang::fused_store_indexer_cache',
+      'sglang::mla_output_gate_kernel', 'sglang::per_tensor_quant_fp8_kernel', 'sglang::silu_mul_clamp_kernel', 'sglang::store_kvcache_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel',
+      'sglang::topk_small_batch_cluster_kernel', 'sglang::write_c4_prefill', 'void at::native::roll_cuda_kernel<float>']
+results:
+  MiniMaxAI/MiniMax-M2:
+    record: f7c0ada15e8f
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  MiniMaxAI/MiniMax-M2.5:
+    record: f1d679b203e5
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  MiniMaxAI/MiniMax-M2.7:
+    record: e2f8a6aa511a
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen1.5-MoE-A2.7B:
+    record: aa851558d815
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-0.6B:
+    record: e64a66a590c0
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-1.7B:
+    record: c2b22894e56f
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-235B-A22B:
+    record: 1f33f0f7b82b
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-235B-A22B-FP8:
+    record: ee0b8a490b43
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    record: 89129cd4b924
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-30B-A3B:
+    record: 15fe1f74acb0
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-30B-A3B-FP8:
+    record: b24a0ef63c81
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-32B:
+    record: ebe7e55a50c1
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-32B-FP8:
+    record: 43bc0998a519
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    record: bd9e8a8468ff
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-8B:
+    record: 1371a004e7c0
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    record: b1528df4bd87
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_store_kernel']
+    kv_variant_residue: ['sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    record: fb63e8db92fc
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel',
+      'sglang::fused_qknorm_warp', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-2B-Instruct:
+    record: 1a0e76dd419d
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'flashinfer::BatchDecodeWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp',
+      'sglang::store_kvcache_kernel']
+    kv_variant_residue: ['flashinfer::BatchPrefillWithPagedKVCacheKernel']
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    record: 0b8c91d5bbbe
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel',
+      'sglang::fused_qknorm_warp', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-32B-Instruct:
+    record: '239796647175'
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp',
+      'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-32B-Thinking:
+    record: 67d0a924f1aa
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp',
+      'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-4B-Instruct:
+    record: 9e597d9ba337
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp',
+      'sglang::store_kvcache_kernel']
+  Qwen/Qwen3-VL-8B-Instruct:
+    record: f6b434383e95
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'flashinfer::BatchPrefillWithPagedKVCacheKernel', 'flashinfer::PersistentVariableLengthMergeStatesKernel', 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp',
+      'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-0.8B:
+    record: 3f932c3bbbd0
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-122B-A10B:
+    record: 8a199baf6e9d
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-27B:
+    record: 8de441a2b514
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-2B:
+    record: 838ccd215a64
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-35B-A3B:
+    record: 43b8f2e526ca
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-397B-A17B:
+    record: 3c6813428962
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-4B:
+    record: 5256a5d4830a
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.5-9B:
+    record: df10aa92b421
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.8-27B:
+    record: a033c0652ab6
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  Qwen/Qwen3.8-27B-FP8:
+    record: c742a2c9a5ad
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  TokenRhythm/NeoHorse-1-9B:
+    record: 93971578db78
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  XiaomiMiMo/MiMo-7B-Base:
+    record: 9519fbf5b4a1
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  XiaomiMiMo/MiMo-V2-Flash:
+    record: 6c9596ad7b73
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  deepseek-ai/DeepSeek-R1:
+    record: 20d764630968
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  deepseek-ai/DeepSeek-V3:
+    record: ce6877f422b7
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  deepseek-ai/DeepSeek-V3.2:
+    record: b6532b6113e1
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fast_hadamard_transform_kernel', 'sglang::fused_rope_kernel', 'sglang::fused_store_indexer_cache',
+      'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  deepseek-ai/DeepSeek-V4-Flash:
+    record: e258699b5333
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_infra, norm_rope, quant, routing]
+    residue: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, 'sglang::deepseek_rope_kernel',
+      'sglang::flash_c128_prefill', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_q_norm_rope',
+      'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel', 'sglang::topk_small_batch_cluster_kernel', 'sglang::write_c4_prefill']
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    record: d7b6611675a9
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_infra, norm_rope, quant, routing]
+    residue: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, 'sglang::deepseek_rope_kernel',
+      'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::topk_main_kernel', 'sglang::topk_small_batch_cluster_kernel', 'sglang::write_c4_prefill']
+  deepseek-ai/DeepSeek-V4-Pro:
+    record: baa50c917d53
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_infra, norm_rope, quant, routing]
+    residue: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, 'sglang::deepseek_rope_kernel',
+      'sglang::flash_c128_prefill', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel']
+    kv_variant_residue: ['sglang::flash_c4_decode']
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    record: 7c93a16093bf
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_infra, norm_rope, quant, routing]
+    residue: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, 'sglang::deepseek_rope_kernel',
+      'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel', 'sglang::write_c4_prefill']
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    record: fedf0386a75f
+    roles: [attention, gemm, infra, kvcache, mhc, moe_infra, norm_rope, quant, routing]
+    residue: [_ZN12tensorrt_llm7kernels19cutlass_kernels_oss6detail38build_precomputed_work_ti, _ZN7cutlass13device_kernelINS_4gemm6kernel33GemmUniversalPrecomputedSchedulerINS, _engram_gate_kernel, _engram_gather_kernel,
+      _fp4_index_logits_kernel, _hc_combine_kernel, _hc_mix_reduce_sinkhorn_kernel, _hc_mix_stats_partial_kernel, _hc_mix_stats_reduce_kernel, _quantize_fp4_indexer_kernel, _rope_tail_fake_quant_fp4_kernel,
+      hc_split_sinkhorn_kernel__kernel, 'sglang::deepseek_rope_kernel', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_store_flashmla_cache', 'sglang::silu_mul_clamp_kernel', 'void at::native::roll_cuda_kernel<float>']
+  google/gemma-4-26B-A4B:
+    record: 62d12207b067
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    record: b15ed9657ab4
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: [_moe_align_small_numel_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  meta-llama/Meta-Llama-3.1-405B:
+    record: 4da173314638
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  meta-llama/Meta-Llama-3.1-70B:
+    record: 028579abb3aa
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  meta-llama/Meta-Llama-3.1-8B:
+    record: 04b270ea8bcb
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  meta-models/Muse-Glimmer-30B:
+    record: fab8995b976b
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  mistralai/Mixtral-8x22B-v0.1:
+    record: 09ee23d333a1
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  mistralai/Mixtral-8x7B-v0.1:
+    record: 5f01821401e7
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  moonshotai/Kimi-K2-Instruct:
+    record: 52b73acf67c5
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  moonshotai/Kimi-K2.5:
+    record: be79089e7b8e
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  moonshotai/Kimi-K3:
+    record: 7ef3a64cae10
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_combine_kernel, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _score_kernel, _small_copy_kernel, fused_sigmoid_gating_delta_rule_update_kernel, 'sglang::add3_kernel', 'sglang::fused_a_gemm_kernel',
+      'sglang::mla_output_gate_kernel']
+  nvidia/DeepSeek-V3.1-NVFP4:
+    record: 7726a24821f0
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::fused_a_gemm_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  nvidia/DeepSeek-V3.2-NVFP4:
+    record: e44bbc693875
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::concat_mla_absorb_q_kernel', 'sglang::device::marlin::Marlin', 'sglang::fast_hadamard_transform_kernel', 'sglang::fused_a_gemm_kernel',
+      'sglang::fused_rope_kernel', 'sglang::fused_store_indexer_cache', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    record: b4a6c7bf49e6
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: ['sglang::deepseek_rope_kernel', 'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer',
+      'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel', 'sglang::topk_small_batch_cluster_kernel',
+      'sglang::write_c4_prefill']
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    record: a31bcb79d360
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: ['sglang::deepseek_rope_kernel', 'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer',
+      'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel', 'sglang::write_c4_prefill']
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    record: 6504450d80a2
+    roles: [attention, gemm, infra, kvcache, mhc, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_engram_gate_kernel, _engram_gather_kernel, _fp4_index_logits_kernel, _hc_combine_kernel, _hc_mix_reduce_sinkhorn_kernel, _hc_mix_stats_partial_kernel, _hc_mix_stats_reduce_kernel, _quantize_fp4_indexer_kernel,
+      _rope_tail_fake_quant_fp4_kernel, hc_split_sinkhorn_kernel__kernel, 'sglang::align_single_token_kernel', 'sglang::deepseek_rope_kernel', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_store_flashmla_cache',
+      'sglang::silu_mul_clamp_kernel', 'void at::native::roll_cuda_kernel<float>']
+  nvidia/GLM-5-NVFP4:
+    record: 14d980563e20
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store',
+      'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  nvidia/GLM-5.1-NVFP4:
+    record: fd25d12295a9
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store',
+      'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  nvidia/GLM-5.2-NVFP4:
+    record: 2e248408efd3
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+    kv_variant_residue: ['sglang::clamp_position_kernel']
+  nvidia/GLM-5.3-NVFP4:
+    record: 921a87fb0604
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    record: e1b41ad59464
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Kimi-K2.5-NVFP4:
+    record: 1d0d98a4c8de
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::fused_a_gemm_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  nvidia/Kimi-K2.6-NVFP4:
+    record: ca7924ccc541
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    record: 2e724726d3a8
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel']
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    record: 08ca9bfd961d
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    record: 1339afe77bed
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/MiniMax-M2.5-NVFP4:
+    record: e335115e67f6
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/MiniMax-M2.7-NVFP4:
+    record: 6c29999ca78b
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    record: 09ff7e8907e3
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    record: 1a277556c470
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    record: 74772d01f3f0
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    record: eede0c05f4c2
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::per_tensor_quant_fp8_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    record: f76b90b0ed2b
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    record: af4c2c577b9c
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    record: 7ef3e44ba8fd
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::per_tensor_quant_fp8_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    record: 02bf60400600
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    record: e1911f62244a
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    record: 5ccb11ea80bd
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::store_kvcache_kernel']
+  nvidia/Nemotron-H-56B-Base-8K:
+    record: 1950e2f5b3f1
+    roles: [attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::act_kernel', 'sglang::clamp_position_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    record: 19478074c003
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::fused_qknorm_warp', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    record: 0d4b4d2d7a31
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::align_single_token_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    record: 2b13866c809d
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::align_single_token_kernel', 'sglang::store_kvcache_kernel']
+  nvidia/Qwen3.6-27B-NVFP4:
+    record: e06333b0e3b5
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, gdn_prefill_qkv_prepare_kernel, 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::store_kvcache_kernel']
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    record: 0ff51d40ea33
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_fused_replay_state_indices_kernel, _small_copy_kernel, 'sglang::align_single_token_kernel', 'sglang::clamp_position_kernel', 'sglang::device::marlin::Marlin', 'sglang::store_kvcache_kernel']
+  openai/gpt-oss-120b:
+    record: 0b0ee0099659
+    roles: [attention, gemm, infra, kvcache, norm_rope, routing]
+    residue: [_matmul_NNT_bf16xbf16xmxfp4, _matmul_NNT_bf16xbf16xmxfp4_swiglu, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  openai/gpt-oss-20b:
+    record: c0a96df9eba3
+    roles: [attention, gemm, infra, kvcache, norm_rope, routing]
+    residue: [_matmul_NNT_bf16xbf16xmxfp4, _matmul_NNT_bf16xbf16xmxfp4_swiglu, _small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  openbmb/MiniCPM5-2B:
+    record: af5a1c0708d0
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_small_copy_kernel, 'sglang::clamp_position_kernel', 'sglang::fused_rope_kernel', 'sglang::store_kvcache_kernel']
+  ornith-ai/Ornith-1.5-35B-A3B:
+    record: 2ca5755fdfa0
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_fused_replay_state_indices_kernel, _moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::store_kvcache_kernel']
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    record: f966942e5b85
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, 'sglang::deepseek_rope_kernel', 'sglang::flash_c128_prefill', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla', 'sglang::fused_norm_rope_flashmla',
+      'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_main_kernel', 'sglang::topk_small_batch_cluster_kernel']
+    kv_variant_residue: ['sglang::fused_norm_rope_indexer']
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    record: 4092466f985e
+    roles: [attention, dsa_indexer, gemm, infra, kvcache, mhc, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, 'sglang::deepseek_rope_kernel', 'sglang::flash_c128_prefill', 'sglang::flash_c4_decode', 'sglang::flash_c4_prefill', 'sglang::fused_k_norm_rope_flashmla',
+      'sglang::fused_norm_rope_flashmla', 'sglang::fused_norm_rope_indexer', 'sglang::fused_q_indexer_rope_hadamard_quant', 'sglang::fused_q_norm_rope', 'sglang::silu_mul_clamp_kernel', 'sglang::tiny_n_gemm_kernel',
+      'sglang::topk_main_kernel']
+  zai-org/GLM-5:
+    record: 9c5f5edcb80e
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  zai-org/GLM-5-FP8:
+    record: 54ea2c73c5c1
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+    kv_variant_residue: ['sglang::clamp_position_kernel']
+  zai-org/GLM-5.1:
+    record: ef11e3af3bc9
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  zai-org/GLM-5.1-FP8:
+    record: 476020c23156
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+    kv_variant_residue: ['sglang::clamp_position_kernel']
+  zai-org/GLM-5.2:
+    record: 6e5653bffc46
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  zai-org/GLM-5.2-FP8:
+    record: 1a762b95701c
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+    kv_variant_residue: ['sglang::clamp_position_kernel']
+  zai-org/GLM-5.3:
+    record: 671adce3e1a7
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']
+  zai-org/GLM-5.3-BF16:
+    record: d746d25dadaf
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_moe_align_small_numel_kernel, _moe_sum_reduce_kernel, _small_copy_kernel, 'sglang::concat_mla_absorb_q_kernel', 'sglang::fused_a_gemm_kernel', 'sglang::fused_k_indexer_norm_rope_store', 'sglang::fused_q_indexer_rope_hadamard_quant',
+      'sglang::fused_rope_kernel', 'sglang::tiny_n_gemm_kernel', 'sglang::topk_small_batch_cluster_kernel']

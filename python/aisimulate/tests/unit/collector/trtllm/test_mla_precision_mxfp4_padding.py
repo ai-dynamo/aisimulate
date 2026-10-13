@@ -72,6 +72,10 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
         "get_sm_version": lambda: sm,
         "_MXFP4_MOE_TYPES": {"w4a16_mxfp4", "w4a8_mxfp4_mxfp8"},
         "RenormalizeMoeRoutingMethod": MagicMock(),
+        # Declared-routing lookup (DeepSeek-V3-family gate) is not exercised by
+        # these MXFP4 checkpoints; keep the softmax-top-k path under test.
+        "_declared_moe_routing": lambda _model_name: None,
+        "DeepseekV3Gate": MagicMock(),
         "create_moe": native_builder,
         "inspect": SimpleNamespace(signature=lambda _: SimpleNamespace(parameters={})),
     }

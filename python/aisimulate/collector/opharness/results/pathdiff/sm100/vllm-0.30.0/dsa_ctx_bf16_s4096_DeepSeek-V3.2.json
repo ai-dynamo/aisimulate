@@ -1,0 +1,75 @@
+{
+ "verdict": "diverged",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "dsa_ctx_bf16_s4096_DeepSeek-V3.2",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "prefill",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|attn|indexer|flash|mqa|sparse|gemm|proj|deepgemm|quant",
+ "capture_file": "facts/pathdiff/opcov_dsa_ctx_bf16_s4096@0.30.0.json",
+ "capture_sha256": "39bbbb47c0f41eaa",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "2fa19c21d0bc",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "a65a2f5a476d",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "sgl_kernel",
+  "trtllm_fmha"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "fa_cute_sm100",
+  "sgl_kernel",
+  "trtllm_gen_moe",
+  "vllm_kernel"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 1
+  },
+  "dsa_indexer": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "collector_only_signal": [
+  "attention:trtllm_fmha"
+ ],
+ "kernel_drift": {
+  "attention": {
+   "collector_only_kernels": [
+    "fmhaSm100fKernel_QkvBfloat16OBfloat16HQk576HV512HVPerCta256PagedKvDenseStaticTok"
+   ],
+   "serving_kernels": [
+    "kernel_cutlass_kernel_vllmvllm_flash_attncuteflash_fwd_sm100FlashAttentionForwar",
+    "vllm::cp_gather_indexer_k_quant_cache_kernel"
+   ]
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

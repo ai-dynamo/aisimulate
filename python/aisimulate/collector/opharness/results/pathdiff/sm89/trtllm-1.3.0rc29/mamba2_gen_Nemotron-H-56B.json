@@ -1,0 +1,48 @@
+{
+ "verdict": "aligned",
+ "repo": "nvidia/Nemotron-H-56B-Base-8K",
+ "framework": "trtllm",
+ "version": "1.3.0rc29",
+ "gate_name": "mamba2_gen_Nemotron-H-56B",
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "mamba|ssm|chunk|scan|conv1d|selective|causal|state",
+ "capture_file": "facts/pathdiff/opcov_trt_mamba2_gen@1.3.0rc29.json",
+ "capture_sha256": "af9b5bc4a8e876c5",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "a6c38cb1f3ed",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "af76ab9033f0",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "causal_conv1d"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "cublas",
+  "mamba_triton",
+  "trtllm_mha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 1,
+   "serving": 9,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

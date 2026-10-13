@@ -281,14 +281,16 @@ def run_moe_torch(
                 )
 
         def run_iterations():
-            # Use benchmark_with_power context manager
+            # Use benchmark_with_power context manager. On XPU the helper never
+            # attempts a CUDA-graph capture (torch.cuda.is_available() is False),
+            # so the timing is eager by construction; the allow_graph_fail=True
+            # switch removed on 2026-10-12 was dead here.
             with benchmark_with_power(
                 device=device,
                 kernel_func=run_single_iteration,
                 num_warmups=num_warmups,
                 num_runs=num_runs,
                 repeat_n=1,
-                allow_graph_fail=True,
             ) as results:
                 pass
 

@@ -31,14 +31,20 @@ UNVERIFIED_LANES = ["int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"]
 QWEN38MAX_LANES = ["bfloat16", "fp8_block", "nvfp4"]
 
 
-def _load_guard(installed_version: str):
+def _load_guard(installed_version: str, sm_version: int = 90):
     tree = ast.parse(SOURCE_PATH.read_text(encoding="utf-8"), filename=str(SOURCE_PATH))
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_raise_if_unverified_moe_lane"
     )
     fake_distribution = types.SimpleNamespace(version=installed_version)
     fake_pkg_resources = types.SimpleNamespace(get_distribution=lambda _name: fake_distribution)
-    loaded = {"pkg_resources": fake_pkg_resources, "_check_compat": _check_compat}
+    loaded = {
+        "pkg_resources": fake_pkg_resources,
+        "_check_compat": _check_compat,
+        # the guard reads the runtime through the module helpers; stub both
+        "_dist_version": lambda _name: installed_version,
+        "get_sm_version": lambda: sm_version,
+    }
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE_PATH), "exec"), loaded)
     return loaded["_raise_if_unverified_moe_lane"]
 
@@ -72,3 +78,32 @@ def test_guard_never_fires_for_qwen38max_collected_lanes(moe_type, installed_ver
     guard = _load_guard(installed_version)
 
     assert guard(moe_type) == installed_version
+
+
+@pytest.mark.parametrize("installed_version", ["0.5.21", "0.5.21.post1", "0.5.21+cu130"])
+@pytest.mark.parametrize("sm_version", [89, 90])
+@pytest.mark.parametrize("moe_type", ["int4_wo", "w4a16_mxfp4"])
+def test_guard_accepts_0521_hopper_lanes_reverified_2026_10_04(moe_type, installed_version, sm_version):
+    """0.5.21 Marlin (int4_wo) and Triton (w4a16_mxfp4) dispatch re-verified on SM89/90 only."""
+    guard = _load_guard(installed_version, sm_version)
+    assert guard(moe_type) == installed_version
+
+
+@pytest.mark.parametrize("moe_type", ["int4_wo", "w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
+@pytest.mark.parametrize("sm_version", [100, 103])
+def test_guard_accepts_0521_blackwell_mxfp4_lanes(moe_type, sm_version):
+    """SM100/103 MXFP4 lanes re-verified on 0.5.21 from the B200 identity records (6400345f);
+    int4_wo re-opened 2026-10-06 from the same records (Kimi-K2.5 -> FLASHINFER_TRTLLM / trtllm_gen_moe)."""
+    guard = _load_guard("0.5.21", sm_version)
+    assert guard(moe_type) == "0.5.21"
+
+
+@pytest.mark.parametrize(
+    "moe_type, sm_version",
+    [("w4a8_mxfp4_mxfp8", 90), ("int4_wo", 120), ("w4a16_mxfp4", 120)],
+)
+def test_guard_keeps_0521_unverified_lanes_closed(moe_type, sm_version):
+    """Every SM120 weight-only lane and the DSV4 FP4 lane on Hopper were not re-verified."""
+    guard = _load_guard("0.5.21", sm_version)
+    with pytest.raises(RuntimeError, match=rf"{moe_type}.*installed: 0.5.21, SM{sm_version}"):
+        guard(moe_type)

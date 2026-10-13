@@ -1,0 +1,801 @@
+_meta:
+  platform: rtx5000_sm120
+  framework: vllm
+  version: 0.30.0
+  verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
+  summary:
+    pass: 98
+    pass+custom: 7
+    fail: 19
+  golden_facts_not_applied: 0
+results:
+  MiniMaxAI/MiniMax-M2:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.5:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M2.7:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M3:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  MiniMaxAI/MiniMax-M3-MXFP8:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: ModelOptMxFp8FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen1.5-MoE-A2.7B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-0.6B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-1.7B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-30B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-30B-A3B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-8B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-2B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-32B-Thinking:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-4B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3-VL-8B-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-0.8B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-122B-A10B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-27B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-2B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-397B-A17B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-4B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.5-9B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-2.4T-A95B:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 32.00 GiB. GPU 0 has a total capacity of 71.12 GiB of which 17.01 GiB is free. Including non-PyTorch memory, this process has 54.10
+      GiB me'
+  Qwen/Qwen3.8-2.4T-A95B-FP8:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 8.00 GiB. GPU 0 has a total capacity of 71.12 GiB of which 90.62 MiB is free. Including non-PyTorch memory, this process has 71.03
+      GiB mem'
+  Qwen/Qwen3.8-27B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-27B-FP8:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-Flash-Next:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next'' is not a valid HuggingFace model path or local pa'
+  Qwen/Qwen3.8-Flash-Next-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
+  TokenRhythm/NeoHorse-1-9B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-7B-Base:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-V2-Flash:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  XiaomiMiMo/MiMo-V2.6-Flash-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Flash-RL'' is not a valid HuggingFace model path or lo'
+  XiaomiMiMo/MiMo-V2.6-Pro-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
+  baerquant/Inkling:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling'' is not a valid HuggingFace model path or local path wit'
+  baerquant/Inkling-Small:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling-Small'' is not a valid HuggingFace model path or local pa'
+  baerquants/Inkling-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-NVFP4'' is not a valid HuggingFace model path or local p'
+  baerquants/Inkling-Small-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-Small-NVFP4'' is not a valid HuggingFace model path or l'
+  deepseek-ai/DeepSeek-R1:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->deepgemm/triton
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V3:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->deepgemm/triton
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V3.2:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Flash:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: No common block size for 64.'
+  google/gemma-4-26B-A4B:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 GiB. GPU 0 has a total capacity of 71.12 GiB of which 2.94 GiB is free. Including non-PyTorch memory, this process has 68.17
+      GiB mem'
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-405B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-70B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-llama/Meta-Llama-3.1-8B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  meta-models/Muse-Glimmer-30B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  mistralai/Mixtral-8x22B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  mistralai/Mixtral-8x7B-v0.1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  moonshotai/Kimi-K2-Instruct:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: Fp8MoE->deepgemm/triton
+    kv_allocated: auto
+    topology: tp1
+  moonshotai/Kimi-K2.5:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: CompressedTensorsWNA16MoE->marlin/triton
+    kv_allocated: auto
+    topology: tp1
+  moonshotai/Kimi-K3:
+    verdict: pass
+    evidence: current
+    attention: KimiK3DeltaAttention + kda_decode_fusion_many_heads_kernel
+    moe: Mxfp4MoE->deepgemm/triton
+    kv_allocated: auto
+    topology: tp1
+  nvidia/DeepSeek-V3.1-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/DeepSeek-V3.2-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: fp8
+    topology: tp1
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: No common block size for 64.'
+  nvidia/GLM-5-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: fp8
+    topology: tp1
+  nvidia/GLM-5.1-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: fp8
+    topology: tp1
+  nvidia/GLM-5.2-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: fp8
+    topology: tp1
+  nvidia/GLM-5.3-Flash-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
+  nvidia/GLM-5.3-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: fp8
+    topology: tp1
+  nvidia/Gemma-4-26B-A4B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: triton
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Kimi-K2.5-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K2.6-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--kv-cache-dtype","bfloat16"]
+    evidence: current
+    attention: triton
+    moe: ModelOptNvFp4FusedMoE->triton
+    kv_allocated: bfloat16
+    topology: tp1
+  nvidia/Kimi-K3-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: KimiK3DeltaAttention + kda_decode_fusion_many_heads_kernel
+    moe: ModelOptNvFp4FusedMoE->cutlass/triton
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    verdict: pass
+    evidence: current
+    attention: null
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M2.5-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M2.7-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/MiniMax-M3-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: MiniMaxM3SparseTritonImpl
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptFp8MoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.8"]
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
+    verdict: fail
+    cause: capacity (single-kind cut is not a faithful identity probe)
+    error: no attention-ish module classes found in model
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass
+    evidence: current
+    attention: fa2 + _chunk_scan_fwd_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: _chunk_scan_fwd_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Nemotron-H-56B-Base-8K:
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
+    evidence: current
+    attention: fa2 + _state_passing_fwd_kernel
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: ModelOptNvFp4FusedMoE
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.6-27B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: capacity (no faithful cut fits one probe GPU)
+    error: 'torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 4.06 GiB. GPU 0 has a total capacity of 71.12 GiB of which 2.60 GiB is free. Including non-PyTorch memory, this process has 68.51
+      GiB memo'
+  nvidia/Qwen3.8-27B-NVFP4:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.8-Flash-Next-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Qwen3.8-Flash-Next-NVFP4'' is not a valid HuggingFace model path or '
+  openai/gpt-oss-120b:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: GptOssMxfp4MoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  openai/gpt-oss-20b:
+    verdict: pass
+    evidence: current
+    attention: null
+    moe: GptOssMxfp4MoE->marlin
+    kv_allocated: auto
+    topology: tp1
+  openbmb/MiniCPM5-2B:
+    verdict: pass
+    evidence: current
+    attention: fa2
+    kv_allocated: auto
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass
+    evidence: current
+    attention: fa2 + fused_recurrent_gated_delta_rule_packed_decode_kernel
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    verdict: pass
+    evidence: current
+    attention: DeepseekV4FlashInferSM120Attention
+    moe: Mxfp4MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5-FP8:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.1:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.1-FP8:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.2:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.2-FP8:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.3:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: Fp8MoE->deepgemm
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.3-BF16:
+    verdict: pass
+    evidence: current
+    attention: FlashInferMLASparseSM120Impl
+    moe: UnquantizedFusedMoE->flashinfer_cutlass
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.3-Flash:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash'' is not a valid HuggingFace model path or local path'
+  zai-org/GLM-5.3-Flash-BF16:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash-BF16'' is not a valid HuggingFace model path or local'

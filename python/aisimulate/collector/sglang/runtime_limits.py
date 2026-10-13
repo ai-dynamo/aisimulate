@@ -149,6 +149,23 @@ def sglang_dsa_mqa_logits_chunking_supported() -> bool:
         has_chunk_kernel = "logits_chunk" in source
         if has_chunk_decision and has_chunk_loop and has_chunk_kernel:
             return True
+    # sglang>=0.5.21 restructured the contract: the free-memory row chunking moved
+    # out of Indexer into dsa_indexer_kpool._mqa_logits_row_chunks (:85, driven by
+    # mqa_logits_should_chunk / mqa_logits_rows_per_chunk / mqa_logits_budget_bytes)
+    # and the SM100 batch>num_sms split lives in Indexer._get_topk_ragged's local
+    # _chunked_fp8_paged_mqa_logits (dsa_indexer.py:1027). Same behaviour the
+    # collector relies on (logits never exceed the free-memory budget), new shape.
+    try:
+        kpool = importlib.import_module("sglang.srt.layers.attention.dsa.dsa_indexer_kpool")
+        indexer_mod = importlib.import_module("sglang.srt.layers.attention.dsa.dsa_indexer")
+        indexer_cls = getattr(indexer_mod, "Indexer", None)
+        row_chunks = getattr(kpool, "_mqa_logits_row_chunks", None)
+        if indexer_cls is not None and row_chunks is not None and getattr(indexer_cls, "_get_topk_ragged", None):
+            source = inspect.getsource(row_chunks)
+            if "mqa_logits_should_chunk" in source and "mqa_logits_rows_per_chunk" in source:
+                return True
+    except Exception:
+        pass
     raise RuntimeError("SGLang DSA MQA-logits chunking source contract was not detected")
 
 
@@ -177,6 +194,16 @@ def required_prefill_extend_tokens(batch_size: int, seq_len: int) -> int:
 def runtime_chunk_size(model_runner) -> int:
     server_args = getattr(model_runner, "server_args", None)
     sglang_chunk = getattr(server_args, "chunked_prefill_size", None) if server_args else None
+    if not (isinstance(sglang_chunk, int) and sglang_chunk > 0) and server_args is not None:
+        # sglang>=0.5.21: derived values are read through the resolving view
+        # (arg_groups/model_override_base.py:120 resolving_view; one_batch.load_model
+        # reads cfg.mem_fraction_static the same way), not off the raw record.
+        try:
+            from sglang.srt.arg_groups.model_override_base import resolving_view
+
+            sglang_chunk = getattr(resolving_view(server_args), "chunked_prefill_size", None)
+        except ImportError:
+            pass
     if isinstance(sglang_chunk, int) and sglang_chunk > 0:
         return sglang_chunk
     raise RuntimeError("SGLang did not initialize server_args.chunked_prefill_size")

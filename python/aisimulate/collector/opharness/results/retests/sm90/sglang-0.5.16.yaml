@@ -1,0 +1,15 @@
+# Customization retest record for sglang 0.5.16 (the pin the harness carries).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B on 0.5.16 in a
+# separate workspace (facts/retest_sgl_ws, targets_bare.yaml = targets.yaml minus the
+# sglang cli_extra_args), same dummies, same image, 2026-09-25. All six customizations are
+# params.agg.moe_backend=marlin for the DSV4 fp4-experts checkpoints on SM90:
+#   bf16/fp8 checkpoints: the bare default (moe runner auto) asserts 'Hidden size mismatch'
+#   NVFP4 checkpoints: 'Current platform does not support NVFP4 quantization with the selected
+#   MoE backend. Please use Blackwell and above, or use moe_runner_backend marlin'
+# so the marlin prescription is still REQUIRED on this pin.
+deepseek-ai/DeepSeek-V4-Pro-0813: still_needed  # bare default fails: AssertionError: Hidden size mismatch (raw e243a2f9ad54)
+deepseek-ai/DeepSeek-V4-Flash-0731: still_needed  # bare default fails: AssertionError: Hidden size mismatch (raw efc9bc1f3527)
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # bare default fails: ValueError: Current platform does not support NVFP4 quantization with  (raw 1134eff51433)
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # bare default fails: ValueError: Current platform does not support NVFP4 quantization with  (raw 7d9344daa57e)
+deepseek-ai/DeepSeek-V4-Flash: still_needed  # bare default fails: AssertionError: Hidden size mismatch (raw 96b2eb86360b)
+deepseek-ai/DeepSeek-V4-Pro: still_needed  # bare default fails: AssertionError: Hidden size mismatch (raw 05f468301220)

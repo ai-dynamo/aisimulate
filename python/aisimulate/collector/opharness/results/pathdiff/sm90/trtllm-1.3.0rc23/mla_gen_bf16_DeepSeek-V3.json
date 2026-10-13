@@ -1,0 +1,51 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "trtllm",
+ "version": "1.3.0rc23",
+ "gate_name": "mla_gen_bf16_DeepSeek-V3",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "capture_file": "facts/pathdiff/opcov_trt_mla_gen.json",
+ "capture_sha256": "8e4fbc1055a4ae0c",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "b814f7c9ef76",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "2ab6057fbe8a",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas",
+  "flashmla"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "flashmla",
+  "trtllm_internal"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 3,
+   "serving": 3,
+   "matched": 3
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

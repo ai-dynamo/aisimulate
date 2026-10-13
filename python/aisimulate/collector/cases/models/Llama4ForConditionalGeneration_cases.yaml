@@ -39,7 +39,7 @@ model_case_values:
       window_sizes: [0, 8192]
       sglang_runtime_window_size: -1
       sglang_attention_chunk_size: 8192
-      sglang_backends: {90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: fa3, 100: trtllm_mha, 103: trtllm_mha, 120: triton}  # sm89: arg_groups/model_overrides/llama4.py "other platforms" -> triton
       tensor_parallel_sizes: [1, 2, 4, 8]
   moe:
     - model_path: meta-llama/Llama-4-Scout-17B-16E-Instruct

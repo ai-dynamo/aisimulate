@@ -1,0 +1,20 @@
+# Customization retest record for trtllm 1.3.0rc23 (the pin the harness carries).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B on rc23 in a separate
+# workspace (facts/retest_trt_ws, targets_bare.yaml = targets.yaml minus the trtllm cli_extra_args),
+# same dummies, same image, 2026-09-27.
+#   DSV4 family (tokens_per_block=128): the bare render's tokens_per_block 32 asserts in
+#   DeepseekV4CacheManager ('requires tokens_per_block in [128, 256], got 32').
+#   MiniMax-M3 family (sparse_attention_config algorithm=minimax_m3): the bare render runs the
+#   default KVCacheManager and the sparse forward refuses it ('requires MiniMaxM3KVCacheManagerV2').
+# Both prescriptions are still REQUIRED on this pin.
+deepseek-ai/DeepSeek-V4-Pro-0813: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw a0d542dfe0fb)
+deepseek-ai/DeepSeek-V4-Flash-0731: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw de3e1199dc90)
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw 3b0568770d96)
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw b5542d6acad7)
+MiniMaxAI/MiniMax-M3: still_needed  # bare default fails: RuntimeError: MiniMax-M3 sparse forward (layer 0) requires the kv_cache_manager  (raw b753bd4070e2)
+MiniMaxAI/MiniMax-M3-MXFP8: still_needed  # bare default fails: RuntimeError: MiniMax-M3 sparse forward (layer 0) requires the kv_cache_manager  (raw b9ee40a3c615)
+nvidia/MiniMax-M3-NVFP4: still_needed  # bare default fails: RuntimeError: MiniMax-M3 sparse forward (layer 0) requires the kv_cache_manager  (raw f3e4815068e5)
+deepseek-ai/DeepSeek-V4-Flash: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw d344741ec557)
+deepseek-ai/DeepSeek-V4-Pro: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw cf13e9edb60c)
+sgl-project/DeepSeek-V4-Flash-FP8: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw 60854c00a819)
+sgl-project/DeepSeek-V4-Pro-FP8: still_needed  # bare default fails: AssertionError: DeepseekV4CacheManager requires tokens_per_block in [128, 256],  (raw 85383cddb900)

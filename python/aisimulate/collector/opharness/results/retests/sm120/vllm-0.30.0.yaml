@@ -1,0 +1,14 @@
+# Customization retest record for vllm 0.30.0 on sm120 (RTX PRO 5000 72GB probe box, 2026-09-30).
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B in facts/retest_vllm030_sm120/
+# (the rendered run.sh minus the per-checkpoint extra arg, same dummy, same image, same probe).
+# Customizations at this pin: Nemotron-H-56B (all SMs) plus the six `sms: [sm120]` entries added upstream 2026-09-30.
+# The bare-default evidence for the sm120-scoped repos is the ORIGINAL rendered probe of the same run id (the
+# customized re-probe overwrote archive/raw/<id>.json — ids name the case, not the args); those bare raws are
+# preserved in evidence bundle 2026-09-30_sm120_vllm-0.30.0.708567c23dbe (pre-migration ids in parentheses).
+nvidia/Nemotron-H-56B-Base-8K: still_needed  # bare default OOMs in the mamba profile run on 72GB as well (d1ae196be9b1_bare.json: torch.OutOfMemoryError 8 GiB with 6.58 GiB free); with gpu-memory-utilization 0.6 the run passes (matrix cell pass+custom)
+nvidia/DeepSeek-V3.1-NVFP4: still_needed  # bare render resolves fp8 KV -> TRITON_MLA smem 102400 > 101376 at cudagraph capture (bundle raw f157c1c39890); with --kv-cache-dtype bfloat16 pass+custom (7416aa53aecc)
+nvidia/Kimi-K2.5-NVFP4: still_needed  # same smem failure bare (bundle raw 691d6cce3327); bf16 KV pass+custom (7912bcfc9341)
+nvidia/Kimi-K2.6-NVFP4: still_needed  # same smem failure bare (bundle raw 9c912acc9024); bf16 KV pass+custom (48e2af0850c0)
+nvidia/Kimi-K2.7-Code-NVFP4: still_needed  # same smem failure bare (bundle raw c91c53ea605c); bf16 KV pass+custom (9cc3de36d2ed)
+nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16: still_needed  # bare all_kinds OOMs at gpu-memory-utilization 0.9 on 72GB too (archive/raw_superseded/ebbea1cc8515.json: 4 GiB alloc with 2.7 GiB free); all_kinds + 0.8 passes (facts/ab_sm120/ebbea1cc8515_allkinds_mem08.json) -> re-probed on the all_kinds cut, capacity fallback no longer needed
+nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8: still_needed  # same: bare all_kinds OOM at 0.9 (archive/raw_superseded/67231bf7f4fe.json), all_kinds + 0.8 passes (facts/ab_sm120/67231bf7f4fe_allkinds_mem08.json)

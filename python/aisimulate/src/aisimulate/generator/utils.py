@@ -163,3 +163,145 @@ def msa_sparse_implementation(backend_name: str, model_path: str, system_name: s
     if int(spec.get("gpu", {}).get("sm_version", -1)) in (100, 103):
         return "msa"
     return None
+
+
+_MSA_ARCHITECTURES = ("MiniMaxM3ForCausalLM", "MiniMaxM3SparseForConditionalGeneration")
+
+
+def msa_sparse_algorithm(backend_name: str, model_path: str) -> str | None:
+    """MiniMax-M3 x TRT-LLM: the ``sparse_attention_config.algorithm`` key.
+
+    TRT-LLM >= 1.3.0rc29 refuses to build the M3 KV-cache manager without
+    ``sparse_attention_config.algorithm='minimax_m3'`` (modeling_minimaxm3.py:337
+    ``_validate_sparse_attention_runtime_config`` @1.3.0rc29) on every SM — unlike
+    the ``implementation`` knob above, which is an SM100-family performance
+    prescription. Keyed on the checkpoint ARCHITECTURE; None for every other
+    model/backend so the field is dropped. Rendered by the >= rc29 engine
+    template only (older templates never emitted the key and rc23 did not read it).
+    """
+    if backend_name != "trtllm":
+        return None
+    from aisimulate.sdk.utils import get_model_config_from_model_path
+
+    try:
+        architecture = get_model_config_from_model_path(model_path).get("architecture")
+    except Exception:  # FileNotFound / KeyError / ValueError / HuggingFaceDownloadError
+        return None
+    return "minimax_m3" if architecture in _MSA_ARCHITECTURES else None
+
+
+def _model_architecture(model_path: str, model_config: dict | None = None) -> str | None:
+    """Architecture of a checkpoint config, None when unresolvable (a
+    user-local or unreachable checkpoint the SDK cannot load — the render
+    then carries no prescription, it never fails on this fact). A frozen
+    ``model_config`` (naive path) is used as-is: no resolution runs.
+    Indirection so tests can stub the SDK lookup."""
+    if isinstance(model_config, dict):
+        return model_config.get("architecture")
+    from aisimulate.sdk.utils import get_model_config_from_model_path
+
+    try:
+        return get_model_config_from_model_path(model_path).get("architecture")
+    except Exception:  # FileNotFound / KeyError / ValueError / HuggingFaceDownloadError
+        return None
+
+
+# DeepSeek sparse attention (DSA) architectures: the sparse-MLA selector is
+# the one that rejects vLLM's auto-resolved kv dtype spelling (see below).
+_DSA_ARCHITECTURES = ("GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM")
+
+
+def _bundled_quantization(model_path: str, raw: dict | None = None) -> dict | None:
+    """The artifact's quantization facts as the SDK loader exposes them:
+    config.json ``quantization_config`` merged with the ``hf_quant_config``
+    the loader attaches from the bundled ``<repo>_hf_quant_config.json`` (the
+    modelopt artifacts keep ``kv_cache_quant_algo`` ONLY there — their
+    config.json has no quantization block at all). None when the config is
+    unresolvable or carries neither. Indirection so tests can stub it."""
+    if raw is None:
+        from aisimulate_core.sdk.utils import _load_model_config_from_model_path
+
+        try:
+            raw = _load_model_config_from_model_path(model_path)
+        except Exception:  # unresolvable checkpoint: no quantization fact
+            return None
+    merged: dict = {}
+    hfq = raw.get("hf_quant_config")
+    if isinstance(hfq, dict):
+        merged.update(hfq.get("quantization") if isinstance(hfq.get("quantization"), dict) else hfq)
+    if isinstance(raw.get("quantization_config"), dict):
+        merged.update(raw["quantization_config"])
+    return merged or None
+
+
+def _artifact_pins_fp8_kv(quantization: dict | None) -> bool:
+    """modelopt artifacts pin the KV cache either as ``kv_cache_quant_algo:
+    FP8`` (hf_quant_config.json) or as ``kv_cache_scheme: {num_bits: 8,
+    type: float}`` (config.json quantization block); either spelling counts."""
+    if not quantization:
+        return False
+    if str(quantization.get("kv_cache_quant_algo") or "").upper() == "FP8":
+        return True
+    scheme = quantization.get("kv_cache_scheme")
+    if isinstance(scheme, str):
+        return scheme.upper() == "FP8"
+    scheme = scheme or {}
+    return scheme.get("num_bits") == 8 and str(scheme.get("type", "")).lower() == "float"
+
+
+def vllm_dsa_kv_cache_dtype(backend_name: str, model_path: str, gemm_quant_mode: Any = None,
+                            model_config: dict | None = None) -> str | None:
+    """NVFP4 DSA checkpoints x vLLM: prescribe ``--kv-cache-dtype fp8``.
+
+    The modelopt NVFP4 artifacts of the DSA models (GLM-5 / 5.1 / 5.2 / 5.3
+    -NVFP4, DeepSeek-V3.2-NVFP4) pin the KV cache to FP8. vLLM 0.29.0
+    resolves ``--kv-cache-dtype auto`` for them to the literal ``fp8_e4m3``
+    and its sparse-MLA backend selector rejects that spelling
+    (FLASHMLA_SPARSE: "kv_cache_dtype not supported"); the same engine with
+    an explicit ``fp8`` loads FlashMLASparseImpl and serves. Serving-side
+    the KV IS fp8 either way (checkpoint scheme), so the explicit value only
+    says what ``auto`` means for these artifacts.
+
+    Keyed on the checkpoint ARCHITECTURE (DSA) plus an artifact fact — never
+    a model-name pattern: the task's ``nvfp4`` GEMM quant mode on the
+    optimized path, or the bundled config's fp8 KV scheme on the naive
+    ``cli generate`` path (which has no perf task). Bundled configs without a
+    ``quantization_config`` (the Hub config of DeepSeek-V3.2-NVFP4 keeps its
+    quantization only in hf_quant_config.json) get no prescription until the
+    SDK bundles that fact — a known gap, recorded in the opharness findings.
+    Evidence: findings ``vllm_fp8kv`` (0.29 addendum),
+    ``glm53_onboarding_2026_09_24``; owner decision 2026-09-24. Returns None
+    everywhere else so the task's own kv mode stands.
+    """
+    if backend_name != "vllm":
+        return None
+    if _model_architecture(model_path, model_config) not in _DSA_ARCHITECTURES:
+        return None
+    if str(gemm_quant_mode or "").lower() == "nvfp4":
+        return "fp8"
+    raw = model_config.get("raw_config") if isinstance(model_config, dict) else None
+    if _artifact_pins_fp8_kv(_bundled_quantization(model_path, raw if isinstance(raw, dict) else None)):
+        return "fp8"
+    return None
+
+
+def model_has_kda(model_path: str, model_config: dict | None = None) -> bool:
+    """True when the checkpoint declares KDA (Kimi Delta Attention) linear-attention
+    layers: config.json (or text_config) linear_attn_config.kda_layers non-empty
+    (Kimi-K3, Kimi-Linear, GLM-5.3-Flash). Read from the SDK-loaded config so
+    bundled, local and Hub checkpoints resolve identically; any failure to load
+    is False (the caller renders the default, nothing is invented)."""
+    if isinstance(model_config, dict):  # frozen config (naive path): no resolution
+        raw = model_config.get("raw_config") or {}
+    else:
+        try:
+            from aisimulate.sdk.utils import get_model_config_from_model_path
+
+            raw = get_model_config_from_model_path(model_path).get("raw_config") or {}
+        except Exception:  # unresolvable checkpoint: no fact, no override
+            return False
+    for cfg in (raw.get("text_config") or {}, raw):
+        la = cfg.get("linear_attn_config") if isinstance(cfg, dict) else None
+        if isinstance(la, dict) and la.get("kda_layers"):
+            return True
+    return False

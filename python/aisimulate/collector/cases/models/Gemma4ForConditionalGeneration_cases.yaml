@@ -25,6 +25,10 @@ description: >
 
 model_case_values:
   attention:
+    # sglang_backends: sglang 0.5.21 arg_groups/model_overrides/gemma4.py:_gemma4_overrides forces
+    # triton on every SM except SM100 (trtllm_mha); a missing SM key falls through to the generic
+    # table (flashinfer on sm89/sm120), which serving never runs for Gemma4. sm89 added 2026-10-04
+    # (L40: gate attn_ctx_hd512_gemma-4-26B-A4B diverged — collector FlashInfer prefill vs serving Triton).
     # trtllm_attn_backend: TRT-LLM 1.3.0rc20 serving forces
     # attn_backend=FLASHINFER for Gemma4 on every SM
     # (Gemma4ForConditionalGeneration.get_model_defaults,
@@ -42,7 +46,7 @@ model_case_values:
       window_size: 1024
       sglang_runtime_window_size: 1023
       sglang_scaling: 1.0
-      sglang_backends: {90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       trtllm_attn_backend: FLASHINFER
       tensor_parallel_sizes: [1, 2, 4, 8, 16]
     - id: gemma4_global_attention
@@ -54,7 +58,7 @@ model_case_values:
       head_dim: 512
       window_size: 0
       sglang_scaling: 1.0
-      sglang_backends: {90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       trtllm_attn_backend: FLASHINFER
       tensor_parallel_sizes: [1, 2, 4, 8, 16]
     - id: gemma4_31b_swa_attention
@@ -65,7 +69,7 @@ model_case_values:
       window_size: 1024
       sglang_runtime_window_size: 1023
       sglang_scaling: 1.0
-      sglang_backends: {90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       trtllm_attn_backend: FLASHINFER
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
     - id: gemma4_31b_global_attention
@@ -75,7 +79,7 @@ model_case_values:
       head_dim: 512
       window_size: 0
       sglang_scaling: 1.0
-      sglang_backends: {90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
+      sglang_backends: {89: triton, 90: triton, 100: trtllm_mha, 103: trtllm_mha, 120: triton}
       trtllm_attn_backend: FLASHINFER
       tensor_parallel_sizes: [1, 2, 4, 8, 16, 32]
   moe:

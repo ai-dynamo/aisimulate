@@ -1,0 +1,47 @@
+{
+ "verdict": "aligned",
+ "repo": "Qwen/Qwen3-VL-2B-Instruct",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "encoder_attn_Qwen3-VL-2B",
+ "target_roles": [
+  "attention"
+ ],
+ "phase": "profile_run",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "vision|vit|patch|encoder|flash|attn",
+ "capture_file": "facts/pathdiff/opcov_encoder_attn_qwen3vl@0.30.0.json",
+ "capture_sha256": "58c7a10029cfd8f2",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "205d0c1878d4",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "cb478a8b3ca1",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "fa2"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa2",
+  "torch"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 1,
+   "serving": 3,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

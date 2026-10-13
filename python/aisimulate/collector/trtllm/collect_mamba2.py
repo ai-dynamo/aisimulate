@@ -125,6 +125,117 @@ def get_mamba2_test_cases():
     return test_cases
 
 
+def _token_major_prefill_conv() -> bool:
+    """Serving's prefill conv layout at this runtime.
+
+    1.3.0rc29 Mamba2Mixer defaults TRTLLM_MAMBA_TOKEN_MAJOR_CONV=1 (mamba2_mixer.py:319)
+    and feeds causal_conv1d_fn a channel-last VIEW of the token-major projection with a
+    separate token-major ``out`` (mamba2_mixer.py:541-569; causal_conv1d.py:26-60 picks
+    causal_conv1d_channellast_fwd_kernel off x.stride(0) == 1). Older runtimes have no
+    ``out`` parameter and run the channel-major kernel on (batch, dim, seq) inputs. The
+    H20 mamba2_ctx gate (2026-10-02) diverged on exactly this kernel pair.
+    """
+    import inspect
+
+    return (
+        "out" in inspect.signature(causal_conv1d_fn).parameters
+        and os.environ.get("TRTLLM_MAMBA_TOKEN_MAJOR_CONV", "1") == "1"
+    )
+
+
+def _prefill_conv_token_major_inputs(xbc_batched, batch_size, seq_len, device):
+    """(batch, dim, seq) random input -> the serving varlen token-major buffer
+    [tokens, dim] (sequences concatenated), its ``out`` twin and the varlen
+    metadata serving passes (mamba2_mixer.py:536-569: cu_seqlens int32,
+    cache_indices, has_initial_state=False for a cache-cold prefill)."""
+    conv_dim = xbc_batched.shape[1]
+    x_tm = xbc_batched.permute(0, 2, 1).reshape(batch_size * seq_len, conv_dim).contiguous()
+    out_tm = torch.empty_like(x_tm)
+    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int32, device=device)
+    cache_indices = torch.arange(batch_size, dtype=torch.int32, device=device)
+    has_initial_state = torch.zeros(batch_size, dtype=torch.bool, device=device)
+    return x_tm, out_tm, cu_seqlens, cache_indices, has_initial_state
+
+
+def _run_prefill_conv_token_major(
+    x_tm, out_tm, conv_weight, conv_bias, conv_state, cu_seqlens, cache_indices, has_initial_state
+):
+    causal_conv1d_fn(
+        x_tm.t(),
+        conv_weight,
+        conv_bias,
+        query_start_loc=cu_seqlens,
+        cache_indices=cache_indices,
+        has_initial_state=has_initial_state,
+        conv_states=conv_state,
+        activation="silu",
+        out=out_tm.t(),
+    )
+
+
+# Both SSM kernels take the output buffer from the caller: serving hands them a
+# view of one preallocated per-forward buffer (mamba2_mixer.py:453-457 alloc,
+# :634 prefill `out=`, :906 decode `out=` @1.3.0rc29; rc20 :335/:403/:629) and
+# neither kernel allocates one when it is missing — ssd_chunk_scan.py:667
+# `assert out.shape == x.shape` and selective_state_update.py `out.dim()`
+# (rc20 :85, rc29 same) both fail on None. The collector omitted `out` until
+# 2026-10-12, so every scan/state-update cell raised and the per-cell except
+# dropped the lane: no shipped mamba2 table has those rows.
+
+# Decode SSM state update: serving picks FlashInfer's kernel or TRT-LLM's own
+# Triton kernel per layer geometry — Mamba2Mixer.__init__ (mamba2_mixer.py:
+# 284-293 gate, :322-328 selection @1.3.0rc29; rc20 mixer :14-23 had the ratio
+# list [1, 8, 16]). The collector measures the full (unsharded) layer, i.e. the
+# TP=1 geometry the gate sees as tp_nheads / tp_ngroups.
+# FIXME(re-verify): re-check the three lists on every TRT-LLM version bump.
+_FLASHINFER_SSU_HEAD_DIMS = (64, 128)
+_FLASHINFER_SSU_HEAD_GROUP_RATIOS = (1, 2, 4, 8, 16, 32, 64)
+_FLASHINFER_SSU_D_STATES = (64, 128, 256)
+SSU_KERNEL_SOURCE_FLASHINFER = "selective_state_update_flashinfer"
+SSU_KERNEL_SOURCE_TRITON = "selective_state_update_triton"
+
+
+def _serving_selects_flashinfer_ssu(nheads: int, n_groups: int, head_dim: int, d_state: int) -> bool:
+    head_group_ratio = nheads // n_groups if n_groups > 0 else 0
+    return (
+        head_dim in _FLASHINFER_SSU_HEAD_DIMS
+        and head_group_ratio in _FLASHINFER_SSU_HEAD_GROUP_RATIOS
+        and d_state in _FLASHINFER_SSU_D_STATES
+    )
+
+
+def _decode_state_update_kernel(nheads: int, n_groups: int, head_dim: int, d_state: int):
+    """The (callable, kernel_source) serving's Mamba2Mixer runs for this layer's decode.
+
+    kernel_source records the function serving calls (`selective_state_update_fi`
+    from flashinfer.mamba, or TRT-LLM's own Triton `selective_state_update`), the
+    way the GDN tables record `chunk_gated_delta_rule_{flashinfer,triton}`. No
+    fallback: if the FlashInfer import fails, serving fails identically at mixer
+    import (mamba2_mixer.py:23 @1.3.0rc29).
+    """
+    if _serving_selects_flashinfer_ssu(nheads, n_groups, head_dim, d_state):
+        from flashinfer.mamba import selective_state_update as selective_state_update_flashinfer
+
+        return selective_state_update_flashinfer, SSU_KERNEL_SOURCE_FLASHINFER
+    return selective_state_update, SSU_KERNEL_SOURCE_TRITON
+
+
+def _decode_dt(batch_size: int, nheads: int, head_dim: int, device) -> torch.Tensor:
+    """Decode dt laid out the way serving hands it to the state-update kernel.
+
+    Serving casts the per-head dt to fp32 and broadcasts it over head_dim with
+    einops.repeat (mamba2_mixer.py:743-746 and :764 @1.3.0rc29): an expanded
+    VIEW with strides (nheads, 1, 0), like the A / D / dt_bias buffers. FlashInfer's
+    binding checks exactly that layout (csrc/selective_state_update.cu:187-188
+    @v0.6.18: dt.stride(1) == 1, dt.stride(2) == 0 — the b200 diagnostic on
+    76ce215e failed every decode cell with "dt.stride(1) must be 1, got 64"), and
+    TRT-LLM's Triton kernel keys its tie_hdim fast path off dt.stride(-1) == 0.
+    A dense (batch, nheads, head_dim) tensor is rejected by the former and
+    mis-tuned for the latter.
+    """
+    return repeat(torch.randn(batch_size, nheads, dtype=torch.float32, device=device), "b h -> b h p", p=head_dim)
+
+
 def run_mamba2_context_benchmark(
     d_model: int,
     d_state: int,
@@ -146,7 +257,9 @@ def run_mamba2_context_benchmark(
 
     This benchmarks:
     1. causal_conv1d_fn - Conv1D for context phase
-    2. mamba_chunk_scan_combined - SSM scan
+    2. mamba_chunk_scan_combined - SSM scan (the one entry point serving calls;
+       it routes to FlashInfer's SSD on SM100-family parts itself,
+       ssd_combined.py:469-497 @1.3.0rc29)
 
     Together these represent the core compute of a Mamba2 layer
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).
@@ -175,6 +288,17 @@ def run_mamba2_context_benchmark(
     A = -torch.rand(nheads, device=device) - 1.0  # noqa: N806
     D = torch.randn(nheads, device=device)  # noqa: N806
     dt_bias = torch.rand(nheads, device=device) - 4.0
+
+    # Every cell is timed under CUDA-graph replay; a failed capture raises
+    # (benchmark_with_power default allow_graph_fail=False) and the cell is
+    # counted as failed below. Until 2026-10-12 allow_graph_fail=True timed the
+    # Python launch loop eagerly and shipped that floor as the kernel latency,
+    # and the per-cell `except` dropped a failed kernel lane with no failure
+    # record: every shipped mamba2 table (rc20, all eight systems) and the rc29
+    # b200 package carry only the causal_conv1d lanes.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
 
     # Sweep over batch_size x seq_len combinations
     for batch_size in batch_size_list:
@@ -215,12 +339,27 @@ def run_mamba2_context_benchmark(
                     C = torch.randn(batch_size, seq_len, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
 
                     # --- Benchmark causal_conv1d_fn ---
-                    torch.cuda.synchronize()
-                    causal_conv1d_fn(xbc_input, conv_weight, conv_bias, activation="silu", conv_states=conv_state)
-                    torch.cuda.synchronize()
+                    conv_kernel_source = "causal_conv1d_fn"
+                    if _token_major_prefill_conv():
+                        conv_kernel_source = "causal_conv1d_fn_token_major"
+                        x_tm, out_tm, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
+                            xbc_input, batch_size, seq_len, device
+                        )
+                        del xbc_input
 
-                    def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
-                        causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
+                        def run_conv1d(
+                            _x=x_tm, _o=out_tm, _conv_state=conv_state, _cu=cu_seqlens, _ci=cache_idx, _hi=has_init
+                        ):
+                            _run_prefill_conv_token_major(_x, _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi)
+
+                    else:
+
+                        def run_conv1d(_xbc=xbc_input, _conv_state=conv_state):
+                            causal_conv1d_fn(_xbc, conv_weight, conv_bias, activation="silu", conv_states=_conv_state)
+
+                    torch.cuda.synchronize()
+                    run_conv1d()
+                    torch.cuda.synchronize()
 
                     with benchmark_with_power(
                         device=device,
@@ -228,7 +367,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -236,12 +374,15 @@ def run_mamba2_context_benchmark(
                             version=tensorrt_llm.__version__,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="mamba2",
-                            kernel_source="causal_conv1d_fn",
+                            kernel_source=conv_kernel_source,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )
 
                     # --- Benchmark mamba_chunk_scan_combined ---
+                    # Caller-owned output, as serving's preallocated buffer view
+                    # (mamba2_mixer.py:634 @1.3.0rc29); the kernel asserts on it.
+                    ssm_out = torch.empty_like(x)
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
                         x,
@@ -255,10 +396,11 @@ def run_mamba2_context_benchmark(
                         dt_bias=dt_bias,
                         dt_softplus=True,
                         return_final_states=True,
+                        out=ssm_out,
                     )
                     torch.cuda.synchronize()
 
-                    def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C):
+                    def run_ssm_scan(_x=x, _dt=dt, _b=B, _c=C, _out=ssm_out):
                         mamba_chunk_scan_combined(
                             _x,
                             _dt,
@@ -271,6 +413,7 @@ def run_mamba2_context_benchmark(
                             dt_bias=dt_bias,
                             dt_softplus=True,
                             return_final_states=True,
+                            out=_out,
                         )
 
                     with benchmark_with_power(
@@ -279,7 +422,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -307,21 +449,48 @@ def run_mamba2_context_benchmark(
                         device,
                     )
 
+                    conv_kernel_source = "causal_conv1d_fn"
+                    conv1d_iter_idx = [0]
+                    if _token_major_prefill_conv():
+                        conv_kernel_source = "causal_conv1d_fn_token_major"
+                        tm_pool = []
+                        for _xb in input_pool["xbc"]:
+                            x_tm, _, cu_seqlens, cache_idx, has_init = _prefill_conv_token_major_inputs(
+                                _xb, batch_size, seq_len, device
+                            )
+                            tm_pool.append(x_tm)
+                        input_pool["xbc"] = tm_pool  # channel-major originals released
+                        out_tm = torch.empty_like(tm_pool[0])
+
+                        def run_conv1d(
+                            _pool=tm_pool,
+                            _o=out_tm,
+                            _conv_state=conv_state,
+                            _idx=conv1d_iter_idx,
+                            _cu=cu_seqlens,
+                            _ci=cache_idx,
+                            _hi=has_init,
+                        ):
+                            idx = _idx[0] % total_iters
+                            _idx[0] += 1
+                            _run_prefill_conv_token_major(
+                                _pool[idx], _o, conv_weight, conv_bias, _conv_state, _cu, _ci, _hi
+                            )
+
+                    else:
+
+                        def run_conv1d(_pool=input_pool, _conv_state=conv_state, _idx=conv1d_iter_idx):
+                            idx = _idx[0] % total_iters
+                            _idx[0] += 1
+                            causal_conv1d_fn(
+                                _pool["xbc"][idx], conv_weight, conv_bias, activation="silu", conv_states=_conv_state
+                            )
+
                     # Warmup with first set of inputs
                     torch.cuda.synchronize()
-                    causal_conv1d_fn(
-                        input_pool["xbc"][0], conv_weight, conv_bias, activation="silu", conv_states=conv_state
-                    )
+                    run_conv1d()
+                    conv1d_iter_idx[0] = 0
                     torch.cuda.synchronize()
-
-                    conv1d_iter_idx = [0]
-
-                    def run_conv1d(_pool=input_pool, _conv_state=conv_state, _idx=conv1d_iter_idx):
-                        idx = _idx[0] % total_iters
-                        _idx[0] += 1
-                        causal_conv1d_fn(
-                            _pool["xbc"][idx], conv_weight, conv_bias, activation="silu", conv_states=_conv_state
-                        )
 
                     with benchmark_with_power(
                         device=device,
@@ -329,7 +498,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -337,12 +505,15 @@ def run_mamba2_context_benchmark(
                             version=tensorrt_llm.__version__,
                             device_name=torch.cuda.get_device_name(device),
                             op_name="mamba2",
-                            kernel_source="causal_conv1d_fn",
+                            kernel_source=conv_kernel_source,
                             perf_filename=perf_filename,
                             power_stats=results["power_stats"],
                         )
 
                     # --- Benchmark mamba_chunk_scan_combined ---
+                    # One caller-owned output buffer for every iteration, as
+                    # serving's preallocated view (mamba2_mixer.py:634 @1.3.0rc29).
+                    ssm_out = torch.empty_like(input_pool["x"][0])
                     torch.cuda.synchronize()
                     mamba_chunk_scan_combined(
                         input_pool["x"][0],
@@ -356,12 +527,13 @@ def run_mamba2_context_benchmark(
                         dt_bias=dt_bias,
                         dt_softplus=True,
                         return_final_states=True,
+                        out=ssm_out,
                     )
                     torch.cuda.synchronize()
 
                     ssm_iter_idx = [0]
 
-                    def run_ssm_scan(_pool=input_pool, _idx=ssm_iter_idx):
+                    def run_ssm_scan(_pool=input_pool, _idx=ssm_iter_idx, _out=ssm_out):
                         idx = _idx[0] % total_iters
                         _idx[0] += 1
 
@@ -377,6 +549,7 @@ def run_mamba2_context_benchmark(
                             dt_bias=dt_bias,
                             dt_softplus=True,
                             return_final_states=True,
+                            out=_out,
                         )
 
                     with benchmark_with_power(
@@ -385,7 +558,6 @@ def run_mamba2_context_benchmark(
                         num_warmups=num_warmups,
                         num_runs=num_runs,
                         repeat_n=1,
-                        allow_graph_fail=True,
                     ) as results:
                         log_perf(
                             item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -400,15 +572,26 @@ def run_mamba2_context_benchmark(
 
                 # Cleanup
                 if aic_cached_inputs:
-                    del x, dt, B, C, xbc_input, conv_state
+                    del x, dt, B, C, xbc_input, conv_state, ssm_out
                 else:
-                    del input_pool, conv_state
+                    del input_pool, conv_state, ssm_out
                 gc.collect()
                 torch.cuda.empty_cache()
+                successful_points += 1
 
             except Exception as e:
+                failed_points += 1
+                failures.append(f"batch_size={batch_size}, seq_len={seq_len}: {type(e).__name__}: {e}")
                 print(f"  Error at batch_size={batch_size}, seq_len={seq_len}: {e}")
                 continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"Mamba2 context summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM Mamba2 context collection failed strict completeness: {summary}; "
+            f"failed cells: {'; '.join(failures)}"
+        )
 
 
 def run_mamba2_generation_benchmark(
@@ -429,7 +612,9 @@ def run_mamba2_generation_benchmark(
 
     This benchmarks:
     1. causal_conv1d_update - Conv1D state update for decode
-    2. selective_state_update - SSM state update
+    2. the SSM state update serving selects for this geometry: FlashInfer's
+       selective_state_update or TRT-LLM's Triton one (see
+       _decode_state_update_kernel); kernel_source names the one that ran
 
     Together these represent the core compute of a Mamba2 layer during decode
     (excluding in_proj/out_proj GEMMs which use existing GEMM model).
@@ -464,6 +649,14 @@ def run_mamba2_generation_benchmark(
     D = repeat(d_base, "h -> h p", p=head_dim)  # noqa: N806
     dt_bias = repeat(dt_bias_base, "h -> h p", p=head_dim)
 
+    # The decode kernel serving's gate selects for this geometry, and its label.
+    ssu_func, ssu_kernel_source = _decode_state_update_kernel(nheads, n_groups, head_dim, d_state)
+
+    # Same contract as the context runner: graph-timed or counted as failed.
+    successful_points = 0
+    failed_points = 0
+    failures: list[str] = []
+
     for batch_size in batch_size_list:
         if aic_debug == 1:
             print(f"  Benchmarking batch_size={batch_size}")
@@ -477,6 +670,11 @@ def run_mamba2_generation_benchmark(
 
             # SSM state: [batch, nheads, head_dim, d_state]
             ssm_state = torch.randn(batch_size, nheads, head_dim, d_state, dtype=dtype, device=device)
+            # Serving addresses the state cache through slot indices and hands
+            # the kernel a view of its preallocated output buffer
+            # (mamba2_mixer.py:901-907 @1.3.0rc29); the state here is dense, so
+            # the slots are the identity.
+            state_batch_indices = torch.arange(batch_size, dtype=torch.int32, device=device)
 
             if aic_cached_inputs:
                 # Common log data for both kernels
@@ -497,9 +695,10 @@ def run_mamba2_generation_benchmark(
                 # Cached mode: use same inputs for all iterations (saves memory)
                 xbc_input = torch.randn(batch_size, conv_dim, dtype=dtype, device=device)
                 x = torch.randn(batch_size, nheads, head_dim, dtype=dtype, device=device)
-                dt = torch.randn(batch_size, nheads, head_dim, dtype=dtype, device=device)
+                dt = _decode_dt(batch_size, nheads, head_dim, device)
                 B = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
                 C = torch.randn(batch_size, n_groups, d_state, dtype=dtype, device=device)  # noqa: N806
+                ssu_out = torch.empty_like(x)
 
                 # --- Benchmark causal_conv1d_update ---
                 torch.cuda.synchronize()
@@ -515,7 +714,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -528,9 +726,9 @@ def run_mamba2_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark selective_state_update ---
+                # --- Benchmark the serving-selected selective_state_update ---
                 torch.cuda.synchronize()
-                selective_state_update(
+                ssu_func(
                     ssm_state,
                     x,
                     dt,
@@ -541,11 +739,13 @@ def run_mamba2_generation_benchmark(
                     z=None,
                     dt_bias=dt_bias,
                     dt_softplus=True,
+                    state_batch_indices=state_batch_indices,
+                    out=ssu_out,
                 )
                 torch.cuda.synchronize()
 
-                def run_state_update(_ssm_state=ssm_state, _x=x, _dt=dt, _b=B, _c=C):
-                    selective_state_update(
+                def run_state_update(_ssm_state=ssm_state, _x=x, _dt=dt, _b=B, _c=C, _out=ssu_out):
+                    ssu_func(
                         _ssm_state,
                         _x,
                         _dt,
@@ -556,6 +756,8 @@ def run_mamba2_generation_benchmark(
                         z=None,
                         dt_bias=dt_bias,
                         dt_softplus=True,
+                        state_batch_indices=state_batch_indices,
+                        out=_out,
                     )
 
                 with benchmark_with_power(
@@ -564,7 +766,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -572,7 +773,7 @@ def run_mamba2_generation_benchmark(
                         version=tensorrt_llm.__version__,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="mamba2",
-                        kernel_source="selective_state_update",
+                        kernel_source=ssu_kernel_source,
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     )
@@ -597,7 +798,6 @@ def run_mamba2_generation_benchmark(
                     {
                         "xbc": (batch_size, conv_dim),
                         "x": (batch_size, nheads, head_dim),
-                        "dt": (batch_size, nheads, head_dim),
                         "B": (batch_size, n_groups, d_state),
                         "C": (batch_size, n_groups, d_state),
                     },
@@ -605,6 +805,8 @@ def run_mamba2_generation_benchmark(
                     dtype,
                     device,
                 )
+                input_pool["dt"] = [_decode_dt(batch_size, nheads, head_dim, device) for _ in range(total_iters)]
+                ssu_out = torch.empty_like(input_pool["x"][0])
 
                 # --- Benchmark causal_conv1d_update ---
                 torch.cuda.synchronize()
@@ -624,7 +826,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -637,9 +838,9 @@ def run_mamba2_generation_benchmark(
                         power_stats=results["power_stats"],
                     )
 
-                # --- Benchmark selective_state_update ---
+                # --- Benchmark the serving-selected selective_state_update ---
                 torch.cuda.synchronize()
-                selective_state_update(
+                ssu_func(
                     ssm_state,
                     input_pool["x"][0],
                     input_pool["dt"][0],
@@ -650,15 +851,17 @@ def run_mamba2_generation_benchmark(
                     z=None,
                     dt_bias=dt_bias,
                     dt_softplus=True,
+                    state_batch_indices=state_batch_indices,
+                    out=ssu_out,
                 )
                 torch.cuda.synchronize()
 
                 ssm_iter_idx = [0]
 
-                def run_state_update(_pool=input_pool, _ssm_state=ssm_state, _idx=ssm_iter_idx):
+                def run_state_update(_pool=input_pool, _ssm_state=ssm_state, _idx=ssm_iter_idx, _out=ssu_out):
                     idx = _idx[0] % total_iters
                     _idx[0] += 1
-                    selective_state_update(
+                    ssu_func(
                         _ssm_state,
                         _pool["x"][idx],
                         _pool["dt"][idx],
@@ -669,6 +872,8 @@ def run_mamba2_generation_benchmark(
                         z=None,
                         dt_bias=dt_bias,
                         dt_softplus=True,
+                        state_batch_indices=state_batch_indices,
+                        out=_out,
                     )
 
                 with benchmark_with_power(
@@ -677,7 +882,6 @@ def run_mamba2_generation_benchmark(
                     num_warmups=num_warmups,
                     num_runs=num_runs,
                     repeat_n=1,
-                    allow_graph_fail=True,
                 ) as results:
                     log_perf(
                         item_list=[{**common_log_data, "latency": results["latency_ms"]}],
@@ -685,22 +889,33 @@ def run_mamba2_generation_benchmark(
                         version=tensorrt_llm.__version__,
                         device_name=torch.cuda.get_device_name(device),
                         op_name="mamba2",
-                        kernel_source="selective_state_update",
+                        kernel_source=ssu_kernel_source,
                         perf_filename=perf_filename,
                         power_stats=results["power_stats"],
                     )
 
             # Cleanup
             if aic_cached_inputs:
-                del ssm_state, conv_state, x, dt, B, C, xbc_input
+                del ssm_state, conv_state, x, dt, B, C, xbc_input, ssu_out, state_batch_indices
             else:
-                del ssm_state, conv_state, input_pool
+                del ssm_state, conv_state, input_pool, ssu_out, state_batch_indices
             gc.collect()
             torch.cuda.empty_cache()
+            successful_points += 1
 
         except Exception as e:
+            failed_points += 1
+            failures.append(f"batch_size={batch_size}: {type(e).__name__}: {e}")
             print(f"  Error at batch_size={batch_size}: {e}")
             continue
+
+    summary = f"ok={successful_points} error={failed_points} skip=0"
+    print(f"Mamba2 generation summary: {summary}")
+    if failed_points or successful_points == 0:
+        raise RuntimeError(
+            f"TRTLLM Mamba2 generation collection failed strict completeness: {summary}; "
+            f"failed cells: {'; '.join(failures)}"
+        )
 
 
 def _make_input_pool(

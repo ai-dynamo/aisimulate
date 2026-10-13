@@ -27,13 +27,30 @@ from collector.case_generator import (
 )
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.registry_types import PerfFile
-from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
-from tensorrt_llm._torch.attention_backend.interface import (
-    AttentionRuntimeFeatures,
-    PositionalEmbeddingParams,
-    RopeParams,
-)
-from tensorrt_llm._torch.attention_backend.utils import create_attention
+# trtllm >=1.3.0rc29 moved _torch.attention_backend.* -> _torch.attention.backends.* and
+# _torch.modules.fused_moe -> _torch.moe.fused_moe (the old package root is a deprecation shim
+# without submodules). Path-only compat: same classes, same kernels (layer_permissions.md
+# 'API-compat shims may only change HOW the same kernel is constructed').
+try:
+    from tensorrt_llm._torch.attention.backends import TrtllmAttentionMetadata
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend import TrtllmAttentionMetadata
+try:
+    from tensorrt_llm._torch.attention.backends.interface import (
+        AttentionRuntimeFeatures,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.interface import (
+        AttentionRuntimeFeatures,
+        PositionalEmbeddingParams,
+        RopeParams,
+    )
+try:
+    from tensorrt_llm._torch.attention.backends.utils import create_attention
+except ModuleNotFoundError:  # < rc29 layout
+    from tensorrt_llm._torch.attention_backend.utils import create_attention
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.functional import PositionEmbeddingType
@@ -82,6 +99,28 @@ def _skip_trtllm_sm120_fp8_context_fmha(
     )
 
 
+def _deployment_tokens_per_block() -> int:
+    """KV page the deployment actually serves with, not a collector constant.
+
+    The generator renders every trtllm engine with ``kv_cache_config.tokens_per_block: 32``
+    (TRT-LLM's own KvCacheConfig default); the collector used to pin 64 here, which on
+    Blackwell selects a different FMHA cubin family — the sm100 kernel names carry the page
+    (fmhaSm100a…PagedKvCausalP64… vs serving's …P32…), so the sm100 attention gates
+    DIVERGED on nothing but the page while the sm90 names hide it (B200, 2026-10-04,
+    opharness finding sm100_sglang_trtllm_gate_verdicts_2026_10_04). Ask the framework
+    for its default; ``AIS_TRTLLM_TOKENS_PER_BLOCK`` is the A/B hook.
+    """
+    override = os.environ.get("AIS_TRTLLM_TOKENS_PER_BLOCK")
+    if override:
+        return int(override)
+    try:
+        from tensorrt_llm.llmapi import KvCacheConfig
+
+        return int(KvCacheConfig().tokens_per_block)
+    except Exception:  # older builds without the pydantic config
+        return 32
+
+
 def run_attention_torch(
     batch_size,
     input_len,
@@ -98,7 +137,12 @@ def run_attention_torch(
     device="cuda:0",
 ):
     device = torch.device(device)
-    torch.set_default_device(device)
+    # No torch.set_default_device(device): the FLASHINFER sub-backend builds its HOST block
+    # tables with torch.zeros(..., pin_memory=True) (attention/backends/flashinfer.py:1566
+    # @1.3.0rc29); under a CUDA default device that allocation lands on the GPU and pinning
+    # raises "Only dense CPU tensors can be pinned" — 2,942 FLASHINFER decode cases (every
+    # Gemma-4 head_dim 256/512 x window 1024/0 cell) on b200 rc29, job 469988228. Serving
+    # never sets a default device; every tensor this collector creates names its device.
     torch.cuda.set_device(device)
 
     if attn_backend_name not in {"TRTLLM", "FLASHINFER"}:
@@ -118,7 +162,7 @@ def run_attention_torch(
     # supported-arch set against fmhaRunner.cuh on the next framework version bump.
     if is_flashinfer and get_sm_version() not in (100, 103):
         raise ValueError(
-            f"FlashInfer trtllm-gen FMHA is Blackwell-only (SM100/103); Gemma4 dense "
+            f"FIXME(kernel-limit): FlashInfer trtllm-gen FMHA is Blackwell-only (SM100/103); Gemma4 dense "
             f"attention has no kernel on SM{get_sm_version()} "
             f"(fmhaRunner.cuh:37 + modeling_gemma4.py:270 @1.3.0rc20)"
         )
@@ -133,9 +177,48 @@ def run_attention_torch(
         # TRTLLM-backend contract flashinfer does not consume, so an fp8-labeled
         # flashinfer row would record BF16 compute under an fp8 label. Fail closed.
         raise ValueError("TRT-LLM 1.3.0rc20 FlashInferAttention has no FP8 FMHA compute path")
+    # FIXME(kernel-limit): trtllm-gen has no FMHA for head_dim 192 on SM100/103 — context
+    # ("Missing TRTLLM-GEN kernel (context): headDimQk=192", 2,904 b200 rc29 cases) and decode
+    # ("Missing TRTLLM-GEN kernel (decode)", 1,624 b200 / 1,641 b300). Serving routes the same
+    # kernel. Classified before the layer is built; re-verify on the next TRT-LLM bump.
+    if head_dim == 192 and get_sm_version() in (100, 103):
+        raise ValueError(
+            "FIXME(kernel-limit): TRT-LLM trtllm-gen FMHA has no head_dim=192 kernel on SM100/103 "
+            f"({'context' if is_context_phase else 'decode'}; trtllm_fmha_kernel_launcher.cu:320)"
+        )
+    # FIXME(kernel-limit): SM90 FP8-KV decode crashes ("CUDA error: unspecified launch failure"
+    # + SIGABRT) in two measured envelopes (h200 rc29, job 2026-10-08, 681 + 681 cases; the
+    # passing rows of the same shard bound them exactly):
+    #   (a) num_heads 96 / kv_heads 4 (GQA 24): EVERY head_dim (64/128/256), every batch, isl
+    #       and window — 512 cases, 0 passing rows;
+    #   (b) head_dim 256 at GQA 32 (32/1, 64/2, 128/4), full attention (window 0): isl >= 255
+    #       — 169 cases; isl <= 127 passes at every batch.
+    # GQA 32/64 at other head_dims and GQA 24 never crashed and keep collecting (the first
+    # version of this guard, ed9109ec, refused every GQA >= 24 cell and lost 4,119 good rows:
+    # pipeline 72346027). Same family as the rc23 campaign's "decode fails for fp8 KV at GQA
+    # ratio 24/32" (finding campaign_1002 (3)). Re-verify on the next TRT-LLM bump.
+    if not is_context_phase and use_fp8_kv_cache and get_sm_version() == 90 and num_key_value_heads:
+        gqa_ratio = num_heads // num_key_value_heads
+        if (num_heads, num_key_value_heads) == (96, 4):
+            raise ValueError(
+                "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes for 96 q-heads over 4 kv-heads "
+                f"(head_dim={head_dim}); launch failure + SIGABRT on every cell"
+            )
+        if head_dim == 256 and gqa_ratio == 32 and attention_window_size == 0 and input_len >= 255:
+            raise ValueError(
+                "FIXME(kernel-limit): TRT-LLM SM90 FP8-KV decode crashes for head_dim 256 at GQA ratio 32 "
+                f"with kv length >= 255 (num_heads={num_heads}, kv_heads={num_key_value_heads}, isl={input_len})"
+            )
 
     # if XQA JIT is enabled, the context phase will also trigger XQA prepare which causes the error
     # with specifc q/kv head and seq setting.
+    # NOTE (1.3.0rc23, verified 2026-09-24): this env no longer exists in the
+    # binaries (only TRTLLM_FORCE_XQA / TRTLLM_XQA_BLOCKS_PER_SEQUENCE do).
+    # XQA vs MMHA for decode is the op's own heuristic ("JIT XQA is not
+    # used: maybe no performance gain" at short KV; XQA selected at long KV) —
+    # the collector follows it per (batch, kv_len) cell exactly as serving
+    # does, which path_diff confirmed at kv 4095 (XQA) vs kv 1 (MMHA). Kept
+    # for older builds that still read it.
     if is_context_phase:
         os.environ["TRTLLM_ENABLE_XQA_JIT"] = "0"
     else:
@@ -144,7 +227,7 @@ def run_attention_torch(
     layer_idx = 0
     world_size = 1
     tp_size = 1
-    tokens_per_block = 64
+    tokens_per_block = _deployment_tokens_per_block()
     warming_up = 10
     test_ite = 6
     output_len = 1
@@ -352,7 +435,10 @@ def run_attention_torch(
         # with backend-agnostic kwargs (pyexecutor/model_engine.py:1784,
         # 1818-1830@1.3.0rc20); ``workspace`` is a TrtllmAttentionMetadata-only
         # field, flashinfer manages its own workspace_buffer.
-        from tensorrt_llm._torch.attention_backend.flashinfer import FlashInferAttentionMetadata
+        try:
+            from tensorrt_llm._torch.attention.backends.flashinfer import FlashInferAttentionMetadata
+        except ModuleNotFoundError:  # < rc29 layout
+            from tensorrt_llm._torch.attention_backend.flashinfer import FlashInferAttentionMetadata
 
         attn_metadata = FlashInferAttentionMetadata(**metadata_kwargs)
     else:
@@ -368,10 +454,10 @@ def run_attention_torch(
     else:
         num_tokens = batch_size
 
-    sinks = torch.randn(num_heads, dtype=torch.float32) if head_dim == 64 else None
-    q = torch.randn([num_tokens, num_heads * head_dim]).bfloat16().to(torch.device(device))
-    k = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
-    v = torch.randn([num_tokens, num_key_value_heads * head_dim]).bfloat16().to(torch.device(device))
+    sinks = torch.randn(num_heads, dtype=torch.float32, device=device) if head_dim == 64 else None
+    q = torch.randn([num_tokens, num_heads * head_dim], dtype=torch.bfloat16, device=device)
+    k = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
+    v = torch.randn([num_tokens, num_key_value_heads * head_dim], dtype=torch.bfloat16, device=device)
     if is_flashinfer:
         # Serving splits Q/K/V for backends without fused-QKV support
         # (modules/attention.py:619,641-646@1.3.0rc20; FlashInferAttention
@@ -392,6 +478,20 @@ def run_attention_torch(
             "attention_sinks": sinks,
             "out_scale": out_scale,
         }
+    # FIXME(kernel-limit): H20 campaign 2026-10-02 (1.3.0rc29, TRTLLM backend,
+    # attention/backends/fmha/fallback.py:122): the context FMHA faults with
+    # cudaErrorIllegalAddress exactly when the LAST sequence's packed Q/O byte
+    # offset (batch-1) * input_len * num_heads * head_dim * 2 >= 2**31 —
+    # verified cell-by-cell on the (96,*,256), (64,*,256) and (96,8,128) grids
+    # (b16 s3072 h96 d256 crashes, b8 s6144 passes at the same token count),
+    # i.e. a 32-bit per-sequence offset inside the kernel. Serving reaches such
+    # batches only with max_num_tokens >= ~44k tokens per context forward.
+    # Unverified against the kernel source; cases above the boundary keep
+    # failing into the classified log until the claim is confirmed (or a bump
+    # fixes it). Generation has a second family: fp8 KV with GQA ratio 24 or
+    # 32 (96/4 at d64/128/256; 32/1, 64/2, 128/4 at d256) fails with
+    # cudaErrorLaunchFailure / IMA at every batch and KV length while the same
+    # shapes pass with a bf16 KV cache.
     attn.forward(*forward_args, attn_metadata, **forward_kwargs)
 
     # Use benchmark_with_power context manager

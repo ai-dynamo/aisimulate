@@ -1,0 +1,47 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "attn_gen_Llama-3.1-8B",
+ "target_roles": [
+  "attention",
+  "dsa_indexer"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_gen@0.5.21.json",
+ "capture_sha256": "2ca4ce92dd40ea57",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "3e2b11f5e3d8",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "21a7463d8343",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "flashinfer"
+ ],
+ "serving_backends": [
+  "cublas",
+  "flashinfer"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "attention": {
+   "collector": 2,
+   "serving": 2,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

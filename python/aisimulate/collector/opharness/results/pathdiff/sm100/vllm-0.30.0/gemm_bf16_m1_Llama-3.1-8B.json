@@ -1,0 +1,46 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "vllm",
+ "version": "0.30.0",
+ "gate_name": "gemm_bf16_m1_Llama-3.1-8B",
+ "target_roles": [
+  "gemm"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "gemm|linear|proj|nvjet|gemvx|cublas|cutlass|skinny",
+ "capture_file": "facts/pathdiff/opcov_gemm_bf16_m1@0.30.0.json",
+ "capture_sha256": "14f303bd92acdb10",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "62623ead71e7",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "b2410a0e1ef2",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cublas"
+ ],
+ "serving_backends": [
+  "cublas",
+  "trtllm_fmha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "gemm": {
+   "collector": 1,
+   "serving": 123,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

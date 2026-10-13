@@ -1,0 +1,51 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "trtllm",
+ "version": "1.3.0rc29",
+ "gate_name": "gemm_fp8block_DeepSeek-V3",
+ "target_roles": [
+  "gemm"
+ ],
+ "phase": null,
+ "phase_scoped": false,
+ "kv_dtype": "auto",
+ "op_hint": "gemm|linear|proj|deepgemm|cutlass|cublas|quant",
+ "capture_file": "facts/pathdiff/opcov_trt_gemm_fp8block@1.3.0rc29.json",
+ "capture_sha256": "7fc959276d751804",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "c20f9e200c18",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "4463260e6443",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "cutlass",
+  "deepgemm"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "flashmla",
+  "trtllm_internal",
+  "trtllm_mha"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "gemm": {
+   "collector": 2,
+   "serving": 8,
+   "matched": 2
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

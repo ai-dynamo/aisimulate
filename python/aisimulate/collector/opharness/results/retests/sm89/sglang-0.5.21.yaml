@@ -1,0 +1,9 @@
+# Customization retest record for sglang 0.5.21 on sm89 (L40, 2026-10-04/05). MiniMax-M3 (bf16) was retested on sm89 once the m3 dummy kept its
+# dense head; the other customized checkpoints fail on sm89 BEFORE their customization can matter (capacity / platform floor), so for them
+# still_needed is carried from the sm90 evidence (results/retests/sm90/sglang-0.5.21.yaml) and asserts nothing about sm89.
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed  # sm89 cell: capacity (no faithful cut fits 44 GiB) before the marlin runner choice is reached
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed  # sm89 cell: DeepGEMM attention.hpp:496 arch assert at CUDA-graph capture, before MoE runner matters
+nvidia/DeepSeek-V4.1-Flash-NVFP4: still_needed  # sm89 cell: capacity
+MiniMaxAI/MiniMax-M3: still_needed  # sm89, 2026-10-05 with the dense-head m3 dummy: customized render passes (MiniMaxHybridAttnBackend); bare default A/B (same engine cli minus --cuda-graph-backend-prefill, facts/ab_sgl_m3/bare.json) fails "Mixed chunk prefill requires the breakable prefill CUDA graph backend; got 'tc_piecewise'" exactly as on sm90
+MiniMaxAI/MiniMax-M3-MXFP8: still_needed  # sm89 cell: MXFP8 dense GEMM requires Blackwell
+nvidia/MiniMax-M3-NVFP4: still_needed  # sm89 cell: sparse-attention / FP4 kernels need SM90+/Blackwell

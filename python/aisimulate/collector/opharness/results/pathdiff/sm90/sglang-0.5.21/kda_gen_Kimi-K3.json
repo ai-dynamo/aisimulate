@@ -1,0 +1,47 @@
+{
+ "verdict": "aligned",
+ "repo": "moonshotai/Kimi-K3",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "gate_name": "kda_gen_Kimi-K3",
+ "target_roles": [
+  "linear_attention"
+ ],
+ "phase": "decode",
+ "phase_scoped": true,
+ "kv_dtype": "auto",
+ "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
+ "capture_file": "facts/pathdiff/opcov_sgl_kda_gen@0.5.21.json",
+ "capture_sha256": "a64d3a0349a8de12",
+ "capture_env": null,
+ "capture_run_error": null,
+ "serving_record": {
+  "id": "7ef3a64cae10",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1,
+  "exec_fingerprint": "c976bd00065e",
+  "evidence_status": "current"
+ },
+ "collector_backends": [
+  "causal_conv1d"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "cublas",
+  "fa3"
+ ],
+ "missing_roles": [],
+ "aux_collector_only_roles": [],
+ "role_counts": {
+  "linear_attention": {
+   "collector": 1,
+   "serving": 1,
+   "matched": 1
+  }
+ },
+ "evidence": "archive/evidence/pathdiff/<framework-version>/<gate>.json in the probe workspace (full kernel lists)"
+}

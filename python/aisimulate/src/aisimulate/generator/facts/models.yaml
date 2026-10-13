@@ -11,9 +11,11 @@ models:
     default_variant: pro
     default_precision: fp8
     match:
+      # `DeepSeek-V4-*` (not `V4*`): DeepSeek-V4.1 is a different model with its
+      # own profile below; the broader glob used to hand it V4's defaults.
       model_paths:
-        - deepseek-ai/DeepSeek-V4*
-        - sgl-project/DeepSeek-V4*
+        - deepseek-ai/DeepSeek-V4-*
+        - sgl-project/DeepSeek-V4-*
       architectures:
         - DeepseekV4ForCausalLM
       model_types:
@@ -102,6 +104,107 @@ models:
           model_paths:
             - deepseek-ai/DeepSeek-V4-Flash*
             - sgl-project/DeepSeek-V4-Flash*
+        default_precision: fp8
+        artifacts:
+          include:
+            model_cache_pvc:
+              name: model-cache
+              storage: 400Gi
+              storageClassName: your-storage-class-name
+            model_download_job:
+              job_name: model-download
+              pvc_name: model-cache
+              mount_path: /model-store
+
+  minimax-m3:
+    id: minimax-m3
+    match:
+      model_paths:
+        - MiniMaxAI/MiniMax-M3*
+        - nvidia/MiniMax-M3*
+      architectures:
+        - MiniMaxM3SparseForConditionalGeneration
+        - MiniMaxM3VLForConditionalGeneration
+      model_types:
+        - minimax_m3
+    traits:
+      - moe
+      - sparse_attention
+    defaults:
+      # Provenance: op-probe harness on L40, vllm 0.30.0, 2026-10-05 (collector/opharness/results/findings.yaml
+      # minimax_m3_dummy_dense_head_2026_10_05). M3 is three dense-attention layers followed by sparse layers; vllm
+      # sizes the KV manager block to 16 by default, the dense layers' FlashAttention backend accepts MultipleOf(16)
+      # but MiniMaxM3SparseBackend / MiniMaxM3IndexerBackend accept exactly [128] (one sparse block per KV page,
+      # models/minimax_m3/common/sparse_attention.py), so select_common_block_size has no candidate and the engine
+      # dies at "No common block size for 16" (v1/worker/utils.py:386). 128 satisfies every layer's backend. An
+      # all-sparse dummy cut never showed this (its only backend forces 128), which is how the sm90 matrix passed.
+      - match: {backend: vllm}
+        roles: ["*"]
+        backend_args:
+          block-size: 128
+  deepseek-v4.1:
+    id: deepseek-v4.1
+    default_variant: flash
+    default_precision: fp8
+    match:
+      model_paths:
+        - deepseek-ai/DeepSeek-V4.1*
+        - nvidia/DeepSeek-V4.1*
+      architectures:
+        - DeepseekV41ForCausalLM
+      model_types:
+        - deepseek_v41
+    traits:
+      - moe
+      - mla
+      - mtp
+      - compressed_attention
+      - engram
+    requires:
+      capabilities:
+        - deepseek_v4_openai_parsing
+        - deepseek_v4_tokenization
+    defaults:
+      # Provenance: op-probe harness A/B on H20, vllm 0.30.0, 2026-10-01
+      # (collector/opharness/results/findings.yaml
+      # dsv41_dummy_cut_and_vllm_block_size_2026_10_01). V4.1 inherits V4's
+      # trust-remote-code / autotune defaults but NOT block-size 256: its
+      # compressed layers (compress_ratio 1/2) run 64-token kernel blocks, and
+      # vllm 0.30.0 refuses to split a 256-token manager block 4-way under the
+      # BLHNC layout once a KV tensor is shared by several layers
+      # ("block stride != page", kv_cache_interface.py:373). 64 loads; it is the
+      # value vllm's own error message prescribes.
+      - match: {backend: vllm}
+        roles: ["*"]
+        backend_args:
+          trust-remote-code: true
+          block-size: 64
+          no-enable-flashinfer-autotune: true
+      # Same sglang defaults as deepseek-v4 (V4.1 code lives in the same
+      # deepseek_v4 model file on sglang main; no release supports it yet).
+      - match: {backend: sglang}
+        roles: ["*"]
+        backend_args:
+          trust-remote-code: true
+          disable-flashinfer-autotune: true
+    precision_variants:
+      fp8:
+        weight_dtype: fp8
+        activation_dtype: fp8
+        expert_dtype: fp4
+        kv_cache_dtype_default: fp8
+        requires:
+          capabilities:
+            - fp8_kv_cache
+            - deepseek_v4_attention_indexer
+            - fp4_moe_runner
+    variants:
+      flash:
+        id: flash
+        match:
+          model_paths:
+            - deepseek-ai/DeepSeek-V4.1-Flash*
+            - nvidia/DeepSeek-V4.1-Flash*
         default_precision: fp8
         artifacts:
           include:

@@ -1,0 +1,432 @@
+_meta:
+  platform: sm120
+  framework: vllm
+  version: 0.30.0
+  taxonomy: kernel_taxonomy_sm120.yaml
+  kind: summary
+  generated: '2026-09-30T16:27:08'
+  summary:
+    repos: 105
+    repos_with_residue: 8
+    residue_kernels: [kernel_cutlass_device_kernel]
+results:
+  MiniMaxAI/MiniMax-M2:
+    record: 2e72124b0287
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  MiniMaxAI/MiniMax-M2.5:
+    record: 72526996db46
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  MiniMaxAI/MiniMax-M2.7:
+    record: dcf0e26e679b
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  MiniMaxAI/MiniMax-M3:
+    record: 82fcec576726
+    roles: [activation, attention, gemm, infra, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  MiniMaxAI/MiniMax-M3-MXFP8:
+    record: c4cfde608425
+    roles: [activation, attention, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  Qwen/Qwen1.5-MoE-A2.7B:
+    record: 4ccd6c3263d4
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-0.6B:
+    record: 6100e99fb130
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-1.7B:
+    record: 55d8ef14f0f5
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-235B-A22B:
+    record: 8725f4278588
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-235B-A22B-FP8:
+    record: c12e001755e2
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    record: 6c726466110f
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-30B-A3B:
+    record: 58c3adb21e36
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-30B-A3B-FP8:
+    record: 1d90c6ff4a1e
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  Qwen/Qwen3-32B:
+    record: ae26d5431c4c
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-32B-FP8:
+    record: 29693b3268a2
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: []
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    record: 494fc136f4eb
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-8B:
+    record: 5aca6d41f82a
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    record: b02b3feafc7d
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    record: 7e12eb850df5
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-2B-Instruct:
+    record: 205d0c1878d4
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    record: a81dd446db71
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-32B-Instruct:
+    record: 31a933827e31
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-32B-Thinking:
+    record: 35a4298b55be
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-4B-Instruct:
+    record: ac283b736bcc
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-8B-Instruct:
+    record: 0a2f7a2a22b4
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-0.8B:
+    record: 805950756f46
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-122B-A10B:
+    record: 515f87fa6f46
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-27B:
+    record: f044481d0dc3
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-2B:
+    record: 619470b622b9
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-35B-A3B:
+    record: 2d404be5dfb3
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-397B-A17B:
+    record: 01dd979a81c3
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-4B:
+    record: 9f3a79bf3c43
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-9B:
+    record: 97905424d229
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.8-27B:
+    record: 46884da29561
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  Qwen/Qwen3.8-27B-FP8:
+    record: d8bbd083f000
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: []
+  TokenRhythm/NeoHorse-1-9B:
+    record: 69912ad40d77
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  XiaomiMiMo/MiMo-7B-Base:
+    record: 89055a73e1d4
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  XiaomiMiMo/MiMo-V2-Flash:
+    record: 65d56d95a843
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  deepseek-ai/DeepSeek-R1:
+    record: 3bb0db7ce1b8
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  deepseek-ai/DeepSeek-V3:
+    record: 3e5d9e701dc1
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  deepseek-ai/DeepSeek-V3.2:
+    record: c6a0f7d8916f
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  deepseek-ai/DeepSeek-V4-Flash:
+    record: 7bfad8b9dd1a
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    record: 2712aea9b557
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  deepseek-ai/DeepSeek-V4-Pro:
+    record: 1ce88c80438e
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    record: cb26845b7062
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  google/gemma-4-26B-A4B:
+    record: e1e1b1d90a61
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    record: 1144852a8544
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  meta-llama/Meta-Llama-3.1-405B:
+    record: 9a14aacbd3fb
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  meta-llama/Meta-Llama-3.1-70B:
+    record: 3d09cb24a78a
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  meta-llama/Meta-Llama-3.1-8B:
+    record: 0f68f1cfac9c
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  meta-models/Muse-Glimmer-30B:
+    record: 6a6040ca8fdd
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  mistralai/Mixtral-8x22B-v0.1:
+    record: 4b0ae7f78663
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  mistralai/Mixtral-8x7B-v0.1:
+    record: e2666a039b87
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  moonshotai/Kimi-K2-Instruct:
+    record: 218c8965f8e8
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  moonshotai/Kimi-K2.5:
+    record: 3798001f26ac
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  moonshotai/Kimi-K3:
+    record: d81c8a403a69
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/DeepSeek-V3.1-NVFP4:
+    record: 7416aa53aecc
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/DeepSeek-V3.2-NVFP4:
+    record: f244fc8ab3d8
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/DeepSeek-V4-Flash-NVFP4:
+    record: 5810da419530
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  nvidia/DeepSeek-V4-Pro-NVFP4:
+    record: 5fbd6f08b879
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  nvidia/GLM-5-NVFP4:
+    record: b936a37c4dd0
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/GLM-5.1-NVFP4:
+    record: 390c9d205444
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/GLM-5.2-NVFP4:
+    record: c9739f96bf47
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/GLM-5.3-NVFP4:
+    record: fa6d04edddc3
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Gemma-4-26B-A4B-NVFP4:
+    record: 664bb6eec15d
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant, routing]
+    residue: []
+  nvidia/Gemma-4-31B-IT-NVFP4:
+    record: a6355d28bc9d
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: []
+  nvidia/Kimi-K2.5-NVFP4:
+    record: 7912bcfc9341
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Kimi-K2.6-NVFP4:
+    record: 48e2af0850c0
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Kimi-K2.7-Code-NVFP4:
+    record: 9cc3de36d2ed
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Kimi-K3-NVFP4:
+    record: b6c35fb4c202
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    record: ce69bf80ed5a
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: []
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    record: ff4cdcef97b0
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  nvidia/MiniMax-M2.5-NVFP4:
+    record: 904ae32a3a6e
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/MiniMax-M2.7-NVFP4:
+    record: 080909538246
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/MiniMax-M3-NVFP4:
+    record: 6830f9257cb6
+    roles: [activation, attention, gemm, infra, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    record: 4e05b9728bca
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    record: e0381715f9f7
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    record: 0ab38a172edd
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    record: ee30e23ebc87
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    record: a259edda02fa
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    record: ebbea1cc8515
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    record: 67231bf7f4fe
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    record: 136becd4ea9c
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    record: e0d7140d495a
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Nemotron-H-56B-Base-8K:
+    record: 0aedebd909bf
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: []
+  nvidia/Qwen3-235B-A22B-NVFP4:
+    record: fddec8791790
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Qwen3.5-122B-A10B-NVFP4:
+    record: 87ac7676e383
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Qwen3.5-397B-A17B-NVFP4:
+    record: be77fb506c8e
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Qwen3.6-27B-NVFP4:
+    record: 4bb89d7c86e1
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: []
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    record: 7a89eec2736e
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  nvidia/Qwen3.8-27B-NVFP4:
+    record: 7f1f6bec6d5c
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: []
+  openai/gpt-oss-120b:
+    record: ee38d30eba90
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  openai/gpt-oss-20b:
+    record: f46bf9ddd189
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  openbmb/MiniCPM5-2B:
+    record: 61d002972ce9
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  ornith-ai/Ornith-1.5-35B-A3B:
+    record: 9a3097cf1fd6
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    record: 990da54b23ca
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    record: c12fba809aea
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_gemm, norm_rope, quant]
+    residue: [kernel_cutlass_device_kernel]
+  zai-org/GLM-5:
+    record: 316594b1a6e3
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  zai-org/GLM-5-FP8:
+    record: ede810424727
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  zai-org/GLM-5.1:
+    record: 988b0f89efd7
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  zai-org/GLM-5.1-FP8:
+    record: c40d6f52a495
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  zai-org/GLM-5.2:
+    record: f120aa894d14
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope]
+    residue: []
+  zai-org/GLM-5.2-FP8:
+    record: 6278ad713f62
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  zai-org/GLM-5.3:
+    record: 49bd561c4a37
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope, quant]
+    residue: []
+  zai-org/GLM-5.3-BF16:
+    record: b8041c5d294d
+    roles: [activation, attention, dsa_indexer, gemm, infra, moe_gemm, moe_infra, norm_rope]
+    residue: []

@@ -96,7 +96,37 @@ def apply_model_default_args(
             tokens.append(_stringify(value))
 
 
-def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, *, backend: str) -> None:
+def quant_family_of(quantization: dict[str, Any] | None) -> str | None:
+    """Collapse an artifact's quantization block (config.json ``quantization_config`` merged with the
+    modelopt ``hf_quant_config``, see utils._bundled_quantization) onto the collector's quant families:
+    nvfp4 / mxfp4 / fp8_block / fp8 / int4_wo. None when the artifact declares no quantization."""
+    if not quantization:
+        return None
+    algo = str(quantization.get("quant_algo") or "").upper()
+    method = str(quantization.get("quant_method") or "").lower()
+    if algo == "MIXED_PRECISION":
+        # modelopt per-layer table: the MoE experts' algo decides the MoE kernel family (nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+        # 92 `*.mlp.experts` layers NVFP4, 506 linear-attention / dense layers FP8); fall back to the most common algo
+        layers = quantization.get("quantized_layers") or {}
+        algos = [str((v or {}).get("quant_algo") or "").upper() for k, v in layers.items() if isinstance(v, dict)]
+        experts = [str((v or {}).get("quant_algo") or "").upper() for k, v in layers.items()
+                   if isinstance(v, dict) and "experts" in str(k)]
+        pick = experts or algos
+        algo = max(set(pick), key=pick.count) if pick else ""
+        quantization = {**quantization, "quant_algo": algo}
+    if algo == "NVFP4" or method in ("modelopt_fp4", "nvfp4"):
+        return "nvfp4"
+    if algo == "MXFP4" or method == "mxfp4":
+        return "mxfp4"
+    if algo.startswith("FP8") or method in ("fp8", "modelopt_fp8", "modelopt"):
+        return "fp8_block" if quantization.get("weight_block_size") else "fp8"
+    if method in ("awq", "gptq", "compressed-tensors") and int(quantization.get("bits") or quantization.get("weight_bits") or 0) == 4:
+        return "int4_wo"
+    return method or algo.lower() or None
+
+
+def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, *, backend: str,
+                      quantization: dict[str, Any] | None = None) -> None:
     """Apply the hardware-derived ``moe_backend`` selection (fill-if-absent, MoE-only).
 
     ``hardware`` is the resolved hardware-profile dict (``ResolvedFacts.hardware``).
@@ -119,6 +149,12 @@ def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, 
       by :func:`apply_model_default_args`), not this hardware fact.
     """
     choice = ((hardware or {}).get("moe_backend") or {}).get(backend)
+    if isinstance(choice, dict):
+        # keyed by the artifact's quantization family: on SM89 trtllm 1.3.0rc29 serves NVFP4 MoE only
+        # through MARLIN (weight-only), which in turn rejects bf16/fp8 MoE layers, so one hardware-wide
+        # value cannot be right (opharness findings sm89_trtllm_rc29_probe_2026_10_04). Unknown family
+        # -> the profile's "default" entry, else nothing (the builder/template default applies).
+        choice = choice.get(quant_family_of(quantization) or "", choice.get("default"))
     if not choice:
         return
     # GUARD: hardware moe_backend applies to MoE deployments only.
@@ -126,7 +162,12 @@ def apply_moe_backend(context: dict[str, Any], hardware: dict[str, Any] | None, 
         return
     if backend == "trtllm":
         moe = context.setdefault("moe_config", {})
-        if isinstance(moe, dict) and not moe.get("backend"):
+        # a user/recipe `moe_backend` param (the generic spelling the sglang branch below honours) counts as
+        # "already set" here too: until 2026-10-04 the hardware fill ignored it and the trtllm template never
+        # read it, so `--generator-set params.agg.moe_backend=...` was silently dropped on trtllm
+        user_set = context.get("moe_backend") or any(
+            context.get(f"{role}_moe_backend") for role in ("prefill", "decode", "agg", "encode"))
+        if isinstance(moe, dict) and not moe.get("backend") and not user_set:
             moe["backend"] = choice
     elif backend == "sglang":
         if not context.get("moe_backend"):

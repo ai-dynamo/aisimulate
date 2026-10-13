@@ -679,8 +679,58 @@ class AlltoallBenchmarkResult:
     combine_low_precision_error: Optional[BaseException] = field(default=None, compare=False)
 
 
+def _agree_graph_capturable(func, label, device) -> None:
+    """Capture ``func`` once on every rank and agree on the outcome BEFORE any
+    rank replays a graph.
+
+    benchmark_with_power captures locally and then replays the graph for its
+    warmups. These kernels are collectives: had capture failed on one rank
+    while its peers' capture succeeded, the peers' first replay would wait for
+    a transfer the failed rank never issues and the job would hang instead of
+    failing. The probe runs after one eager call (lazy kernel/workspace
+    initialisation is not capturable) and makes the capture outcome symmetric:
+    every rank raises, the run loop records the classified failure and all
+    ranks skip the case together — the agreement the loop already performs for
+    measured cases. The moe_a2a row has no column that could record an
+    eager-timed measurement, so the eager fallback used until 2026-10-12 is
+    gone (layer_permissions.md: measurement-method degradation is allowed only
+    when recorded in the output row).
+    """
+    import torch
+    import torch.distributed as dist
+
+    func()
+    torch.cuda.synchronize()
+    capture_error: BaseException | None = None
+    probe = torch.cuda.CUDAGraph()
+    try:
+        with torch.cuda.graph(probe):
+            func()
+        torch.cuda.synchronize()
+    except Exception as error:
+        capture_error = error
+    finally:
+        del probe
+
+    failed_here = capture_error is not None
+    failed_anywhere = failed_here
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        agreement = torch.tensor([1 if failed_here else 0], dtype=torch.int32, device=device)
+        dist.all_reduce(agreement, op=dist.ReduceOp.MAX)
+        failed_anywhere = bool(int(agreement.item()))
+    if failed_anywhere:
+        detail = f"{type(capture_error).__name__}: {capture_error}" if failed_here else "capture failed on a peer rank"
+        raise TrtllmAlltoallBenchmarkError(
+            f"CUDA graph capture of {label} failed ({detail}); the case fails classified instead of "
+            "shipping an eager launch-loop floor the moe_a2a row could not label"
+        )
+
+
 def _benchmark_op(func, label, device, ep_rank, num_warmup, num_iterations):
     """Benchmark a single operation using shared benchmark_with_power.
+
+    CUDA-graph timed only: ``_agree_graph_capturable`` runs first so a capture
+    failure fails the case on every rank at once (see its docstring).
 
     ``measure_power=False``: the moe_a2a table emits NO power column BY RULING
     (Task 4 review, see ``collect_moe_a2a._power_columns``): the ruling is per
@@ -688,18 +738,21 @@ def _benchmark_op(func, label, device, ep_rank, num_warmup, num_iterations):
     ``helper.log_perf`` writes the header from the first row — so this writer
     must not sample or emit power either.
     """
+    _agree_graph_capturable(func, label, device)
     with benchmark_with_power(
         device=device,
         kernel_func=func,
         num_warmups=num_warmup,
         num_runs=num_iterations,
         measure_power=False,
-        allow_graph_fail=True,
     ) as results:
         latency = results["latency_ms"]
+        if not results.get("used_cuda_graph", False):
+            raise TrtllmAlltoallBenchmarkError(
+                f"{label} was not timed under CUDA-graph replay; refusing to record an eager measurement"
+            )
         if ep_rank == 0:
-            mode = "CUDA Graph" if results["used_cuda_graph"] else "Eager"
-            print(f"    [{label}] {mode} timing: {latency:.3f} ms")
+            print(f"    [{label}] CUDA Graph timing: {latency:.3f} ms")
     return latency
 
 

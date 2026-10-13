@@ -1,0 +1,352 @@
+_meta:
+  platform: sm90
+  framework: trtllm
+  version: 1.3.0rc29
+  taxonomy: kernel_taxonomy_sm90.yaml
+  kind: summary
+  generated: '2026-10-01T18:42:19'
+  summary:
+    repos: 76
+    repos_with_residue: 55
+    residue_kernels: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, _relu2_kernel, _reset_recurrent_state_rows_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit',
+      'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel', 'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel',
+      'tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel', 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+results:
+  MiniMaxAI/MiniMax-M2:
+    record: 325bc366082d
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  MiniMaxAI/MiniMax-M2.5:
+    record: d9055d13a34c
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  MiniMaxAI/MiniMax-M2.7:
+    record: 146bcae51d03
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen1.5-MoE-A2.7B:
+    record: d5bcc258608e
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-0.6B:
+    record: d988095e8e40
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-1.7B:
+    record: 2b0340075788
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-235B-A22B:
+    record: fa5b92618530
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-235B-A22B-FP8:
+    record: e8302ed985a5
+    roles: [attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-235B-A22B-Instruct-2507:
+    record: 429d45f91432
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-30B-A3B:
+    record: 137df4adb627
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-30B-A3B-FP8:
+    record: 1e28ce3daa7e
+    roles: [attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-32B:
+    record: bd0714e819ba
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-32B-FP8:
+    record: 3a44788d9b1b
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-32B-FP8-Static-PerTensor:
+    record: 77e91df204b4
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: []
+  Qwen/Qwen3-8B:
+    record: 8053ebf3c1ab
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-Coder-480B-A35B-Instruct:
+    record: e5ecb9e3373c
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-VL-235B-A22B-Instruct:
+    record: 924deebf143f
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-VL-2B-Instruct:
+    record: a1255b13536c
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-30B-A3B-Instruct:
+    record: 31af0f62c7a0
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: []
+  Qwen/Qwen3-VL-32B-Instruct:
+    record: cadb6d078b50
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-32B-Thinking:
+    record: bfe99f9c6d74
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-4B-Instruct:
+    record: e5f17e773af5
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3-VL-8B-Instruct:
+    record: d55ba2896c86
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  Qwen/Qwen3.5-0.8B:
+    record: 8acc8f1cde17
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_finish_reasons_kernel, _reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-122B-A10B:
+    record: aeb099963094
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-27B:
+    record: 34114c71d6d0
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-2B:
+    record: c65db153af4f
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_finish_reasons_kernel, _reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-35B-A3B:
+    record: b812f5a8d4fc
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-397B-A17B:
+    record: 0031fd321893
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-4B:
+    record: ec1addf2d7fa
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_finish_reasons_kernel, _reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.5-9B:
+    record: c04b7712de4e
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_finish_reasons_kernel, _reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  Qwen/Qwen3.8-27B:
+    record: 5bd7f33cafa6
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_reset_recurrent_state_rows_kernel]
+  Qwen/Qwen3.8-27B-FP8:
+    record: 3b064929f649
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_reset_recurrent_state_rows_kernel]
+  TokenRhythm/NeoHorse-1-9B:
+    record: 028168b055ed
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_finish_reasons_kernel, _reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  deepseek-ai/DeepSeek-R1:
+    record: 59895c4c9b7f
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+    kv_variant_residue: ['tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel']
+  deepseek-ai/DeepSeek-V3:
+    record: c20f9e200c18
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+    kv_variant_residue: ['tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel']
+  deepseek-ai/DeepSeek-V3.2:
+    record: ee10e3fcc654
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int, long>']
+  deepseek-ai/DeepSeek-V4-Flash:
+    record: a42845621a0d
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope, routing]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  deepseek-ai/DeepSeek-V4-Flash-0731:
+    record: ccd7ce86d246
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope, routing]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  deepseek-ai/DeepSeek-V4-Pro:
+    record: e32333abf778
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  deepseek-ai/DeepSeek-V4-Pro-0813:
+    record: f29559d658b1
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  meta-llama/Llama-4-Maverick-17B-128E-Instruct:
+    record: f2041fe4addf
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  meta-llama/Llama-4-Scout-17B-16E-Instruct:
+    record: 3319ff6299fe
+    roles: [activation, attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  meta-llama/Meta-Llama-3.1-405B:
+    record: fb48215e3557
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  meta-llama/Meta-Llama-3.1-70B:
+    record: a0758284a5c1
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  meta-llama/Meta-Llama-3.1-8B:
+    record: 97153000626b
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: [_finish_reasons_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  mistralai/Mixtral-8x22B-v0.1:
+    record: 19ec89bd8555
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel]
+  mistralai/Mixtral-8x7B-v0.1:
+    record: f59d8a9428ab
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_finish_reasons_kernel]
+  moonshotai/Kimi-K2-Instruct:
+    record: 0d11b6f37ecb
+    roles: [activation, attention, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+    kv_variant_residue: ['tensorrt_llm::_v1::kernels::quantizeCopyInputToFp8Kernel']
+  nvidia/Llama-3.1-70B-Instruct-FP8:
+    record: b8f4be5c1497
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope, quant]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/Llama-3_3-Nemotron-Super-49B-v1:
+    record: 69502cbe68cb
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: []
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
+    record: 5a16f220eba5
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
+    record: d473f59b4bff
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
+    record: 4ec27c6b8736
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    record: 959cff29a065
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
+    record: 4589cf8106bd
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
+    record: 6cc4da8779d4
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    record: ac0e1bf922f0
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
+    record: ff905c369605
+    roles: [attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/Nemotron-H-56B-Base-8K:
+    record: 4df63f4f9d7a
+    roles: [attention, gemm, infra, kvcache, linear_attention, norm_rope]
+    residue: [_relu2_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  nvidia/Qwen3.6-27B-NVFP4:
+    record: 75358fe618cc
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, norm_rope, quant]
+    residue: [_reset_recurrent_state_rows_kernel]
+  nvidia/Qwen3.6-35B-A3B-NVFP4:
+    record: 2b050f72b813
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  openai/gpt-oss-120b:
+    record: d846f0a7edd2
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  openai/gpt-oss-20b:
+    record: e986fdafc426
+    roles: [attention, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  openbmb/MiniCPM5-2B:
+    record: bd8ce37b3ad8
+    roles: [activation, attention, gemm, infra, kvcache, norm_rope]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  ornith-ai/Ornith-1.5-35B-A3B:
+    record: fc0454e2b91c
+    roles: [activation, attention, gemm, infra, kvcache, linear_attention, moe_gemm, moe_infra, norm_rope, quant, routing]
+    residue: [_reset_recurrent_state_rows_kernel, 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK']
+  sgl-project/DeepSeek-V4-Flash-FP8:
+    record: ed6aa95d4ff9
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope, routing]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  sgl-project/DeepSeek-V4-Pro-FP8:
+    record: 9a697473977d
+    roles: [activation, attention, dsa_indexer, gemm, infra, mhc, moe_infra, norm_rope]
+    residue: [_deepseek_v4_local_to_global_kernel, _finish_reasons_kernel, _quant_scatter_kernel, 'fused_fma_kernels::fused_pmap_gemm_fma_ksplit', 'tensorrt_llm::_v1::kernels::compressor::pagedKvCompressKernel',
+      'tensorrt_llm::_v1::kernels::compressor::postProcessScatterKernel', 'tensorrt_llm::_v1::kernels::compressor::prefillReductionKernel', 'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesRowsTiledKernel',
+      'tensorrt_llm::_v1::kernels::computeSlidingBlockTablesWithScratchKernel', 'tensorrt_llm::_v1::kernels::deepseekV4QNormKernel', 'tensorrt_llm::_v1::kernels::gate_forward_kernel', 'tensorrt_llm::_v1::kernels::mhc::mhcBigFuseKernel',
+      'tensorrt_llm::_v1::kernels::mhc::mhcGemmSqrsumFmaKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcHcHeadApplyKernel', 'tensorrt_llm::_v1::kernels::mhc::mhcPostMappingKernel', 'tensorrt_llm::_v1::kernels::mlaRoPEInplaceKernel',
+      'void at::native::searchsorted_cuda_kernel<int, long>']
+  zai-org/GLM-5:
+    record: cde00756292e
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel', 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int,
+        long>']
+  zai-org/GLM-5-FP8:
+    record: 9fe00d2a0af8
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int, long>']
+  zai-org/GLM-5.1:
+    record: 42f947510b7a
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel', 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int,
+        long>']
+  zai-org/GLM-5.1-FP8:
+    record: 524d0113b3b7
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int, long>']
+  zai-org/GLM-5.2:
+    record: c67f4023ea6e
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel', 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int,
+        long>']
+  zai-org/GLM-5.2-FP8:
+    record: a6cff3a72037
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int, long>']
+  zai-org/GLM-5.3:
+    record: e595fe11c761
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int, long>']
+  zai-org/GLM-5.3-BF16:
+    record: d7a03e2f3294
+    roles: [activation, attention, dsa_indexer, gemm, infra, kvcache, moe_gemm, moe_infra, norm_rope, routing]
+    residue: ['tensorrt_llm::_v1::kernels::dsv3MinLatencyKernels::fused_a_gemm_kernel', 'tensorrt_llm::batch_manager::kv_cache_manager_v2::copyBatchBlockOffsetsToDeviceK', 'void at::native::searchsorted_cuda_kernel<int,
+        long>']

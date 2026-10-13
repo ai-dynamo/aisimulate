@@ -1,0 +1,10 @@
+{
+ "verdict": "platform-floor",
+ "gate_name": "dsa_ctx_fp8_DeepSeek-V3.2",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "sglang",
+ "version": "0.5.21",
+ "sm": "sm89",
+ "note": "Ada: sparse (DSA) MLA kernels are SM90+/SM10x only (sglang 0.5.21: 'Sparse Attention Forward Kernel is only supported on SM90/SM100'); DeepSeek-V3.2 / GLM-5.x NVFP4 fail at boot, no serving record can exist (findings sm89_*_probe_2026_10_04)",
+ "graded_at": "2026-10-05T05:19:47"
+}

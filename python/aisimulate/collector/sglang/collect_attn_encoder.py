@@ -5,21 +5,37 @@
 
 SM dispatch mirrors ``VisionAttention._determine_attention_backend``:
 
-- CUDA SM == 90 (Hopper)     -> ``flash_attn_varlen_func``           (FA3)
-- CUDA SM == 100 (Blackwell) -> ``flash_attn_varlen_func(ver=4)``    (FA4)
-- other CUDA (SM<90, SM120)  -> ``context_attention_fwd``            (Triton)
+- capability major 9  (SM90, Hopper)            -> ``flash_attn_varlen_func``         (FA3)
+- capability major 10 (SM100/SM103, B200/B300)  -> ``flash_attn_varlen_func(ver=4)``  (FA4)
+- other CUDA (SM<90, SM120)                     -> ``context_attention_fwd``          (Triton)
+
+Serving branches on the capability MAJOR (layers/attention/vision.py:1298-1303 @0.5.21:
+``major == 9 -> fa3``, ``major == 10 -> fa4``, else ``triton_attn``), so SM103 shares the FA4
+lane with SM100. The collector's earlier ``sm == 100`` test sent SM103 down the Triton path
+(B300 encoder gate failed, 2026-10-05) — a wrong-kernel measurement, not a crash.
 
 Quant: bf16 only. SGLang upstream does not support fp8 ViT FMHA.
 """
 
-__compat__ = "sglang==0.5.14"
+# 0.5.21 added 2026-10-01 (H20/sm90 collector port: op_smoke + path gates in the v0.5.21 image; findings hopper_sglang_collector_port_0514_to_0521_2026_10_01). Releases in between are unvalidated and excluded.
+__compat__ = "sglang>=0.5.14,<=0.5.21,!=0.5.15,!=0.5.16,!=0.5.17,!=0.5.18,!=0.5.19,!=0.5.20"
 
 from typing import NamedTuple
 
-import pkg_resources
+from importlib.metadata import version as _dist_version  # setuptools/pkg_resources is absent from recent framework images
 import torch
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+
+
+def serving_vision_backend(sm_version: int) -> str:
+    """The vision-attention backend sglang selects for a CUDA capability (vision.py:1298-1303 @0.5.21)."""
+    major = sm_version // 10
+    if major == 9:
+        return "fa3"
+    if major == 10:
+        return "fa4"
+    return "triton_attn"
 
 
 class Timing(NamedTuple):
@@ -80,11 +96,15 @@ def _build_kernel_runner(
     max_seqlen = seq_len
     softmax_scale = head_dim**-0.5
 
-    sm = get_sm_version()  # 90 / 100 / 120 / ...
+    sm = get_sm_version()  # 90 / 100 / 103 / 120 / ...
 
-    if sm == 90:
+    backend = serving_vision_backend(sm)
+    if backend == "fa3":
         # Matches VisionFlash3Attention.forward.
-        from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
+            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+        except ImportError:
+            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -101,9 +121,12 @@ def _build_kernel_runner(
 
         return run_iter, "flash_attention_v3"
 
-    if sm == 100:
+    if backend == "fa4":
         # Matches VisionFlash4Attention.forward.
-        from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
+        try:  # sglang>=0.5.21 (layers/attention/vision.py:55)
+            from sglang.kernels.ops.attention.flash_attention import flash_attn_varlen_func
+        except ImportError:
+            from sglang.jit_kernel.flash_attention import flash_attn_varlen_func
 
         def run_iter():
             flash_attn_varlen_func(
@@ -120,10 +143,13 @@ def _build_kernel_runner(
 
         return run_iter, "flash_attention_v4"
 
-    # SM<90 or SM>100: Triton path matching VisionTritonAttention.forward.
-    from sglang.srt.layers.attention.triton_ops.prefill_attention import (
-        context_attention_fwd,
-    )
+    # every other capability (SM<90, SM120): Triton path matching VisionTritonAttention.forward.
+    try:  # sglang>=0.5.21 (layers/attention/vision.py imports it from kernels/ops/attention)
+        from sglang.kernels.ops.attention.prefill_attention import context_attention_fwd
+    except ImportError:
+        from sglang.srt.layers.attention.triton_ops.prefill_attention import (
+            context_attention_fwd,
+        )
 
     seq_lens = torch.full(
         (batch_size,),
@@ -158,6 +184,9 @@ def run_encoder_attention_torch(
     perf_filename,
     device="cuda:0",
 ):
+    from collector.sglang.runtime_compat import ensure_offline_runtime_published
+
+    ensure_offline_runtime_published()  # sglang>=0.5.20 backends read get_exec()/get_parallel()
     torch_device = torch.device(device)
     torch.cuda.set_device(device)
 
@@ -193,7 +222,7 @@ def run_encoder_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name="encoder_attention",
         kernel_source=backend_tag,
