@@ -1856,16 +1856,20 @@ def _build_fake_summary(
 
 def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     """run_single_agg builds ModelConfig with given dims and calls predict_agg_worker once."""
+    from types import SimpleNamespace
+
     from aisimulate.sdk import predict
 
     captured: dict = {}
+    loaded_spec = {"gpu": {"sm_version": 90}}
 
     def fake_get_database(*a, **kw):
-        return "db"
+        return SimpleNamespace(system_spec=loaded_spec)
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
+        captured["system_spec"] = system_spec
         return MagicMock(name=f"backend-{name}")
 
     def fake_get_model(model_path, model_config, backend_name):
@@ -1898,6 +1902,8 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     assert mc.tp_size == 4 and mc.pp_size == 1 and mc.moe_tp_size == 1 and mc.moe_ep_size == 1
     # ctx_tokens defaults to isl
     assert captured["predict_kwargs"]["ctx_tokens"] == t.isl
+    # Backend classification uses the loaded spec (custom-root systems).
+    assert captured["system_spec"] is loaded_spec
 
 
 def test_run_single_agg_rejects_disagg_task():
@@ -1919,7 +1925,7 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
@@ -1952,7 +1958,7 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     def fake_get_database(*a, **kw):
         return "db"
 
-    def fake_get_backend(name):
+    def fake_get_backend(name, system=None, system_spec=None):
         from unittest.mock import MagicMock
 
         return MagicMock()
