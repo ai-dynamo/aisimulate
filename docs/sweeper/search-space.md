@@ -99,6 +99,17 @@ smallest preset class shown in the table. Use `null` for an inactive knob only w
 allows it; see the [Planner interval rules](../replay/dynamo.md).
 A mapping is one atomic candidate choice; values inside it are not independently combined.
 
+Explicit parallelism presets may include hybrid attention TP/DP and MoE EP
+shapes outside the default automatic search menu, such as vLLM TP2/DP4/EP8.
+Every role must have a positive integer replica count. Presets must satisfy
+backend topology rules, the GPU budget, runner support,
+and KV capacity. The default menu continues to use its existing pure patterns.
+Explicit pins are also independent of the automatic menu's 16-GPU worker limit.
+Mixed MoE tensor/expert parallelism is allowed where the backend topology rules
+permit it (TensorRT-LLM/SGLang); vLLM still rejects mixed MoE TP/EP. Admission
+checks topology and memory, not complete timing-data coverage. Candidate evaluation
+still rejects a pin if the selected estimator lacks the required timing data.
+
 Explicit parallelism presets are validated strictly. If a candidate exceeds
 `optimization.constraints.max_candidate_gpus`, recommendation stops before search
 and reports the candidate, its `used_gpus`, and the configured limit. Remove that

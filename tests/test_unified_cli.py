@@ -1946,6 +1946,42 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
 
 
+def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
+    shape = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 4, "moe_tensor": 1, "moe_expert": 8}
+    config = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "zai-org/GLM-5.2-FP8",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.24.0",
+            "context_length": 8192,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"preset": [shape]},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 512},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 6},
+        },
+        "evaluation": {"sla": {"ttft_ms": 2000, "itl_ms": 50}},
+        "optimization": {"target": "min_gpus", "constraints": {"max_candidate_gpus": 8}},
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 42},
+    }
+    path = tmp_path / "recommend.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["recommend", "-c", str(path), "--output-dir", str(output)]) == 0
+    report = json.loads((output / "recommendation.json").read_text())
+    assert report["counts"]["feasible"] == 1
+    saved = yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    assert saved["engine"]["workers"]["aggregated"]["parallelism"] == shape
+
+
 @pytest.mark.parametrize("output_format", ["table", "json"])
 @pytest.mark.parametrize("roles", [("aggregated",), ("prefill", "decode")])
 @pytest.mark.parametrize(
