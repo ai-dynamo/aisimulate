@@ -387,13 +387,17 @@ pub(crate) fn load_weka_agentic_graph_cached(
     let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
     let path_key = (canonical_path.clone(), options.nested_timestamp_basis);
 
-    let known_digest = cache
-        .lock()
-        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
-        .path_digests
-        .get(&path_key)
-        .cloned();
-    if use_cache && let Some(known_digest) = known_digest {
+    let known_digest = if use_cache {
+        cache
+            .lock()
+            .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
+            .path_digests
+            .get(&path_key)
+            .cloned()
+    } else {
+        None
+    };
+    if let Some(known_digest) = known_digest {
         // A path is only a lookup hint. Re-hash its current bytes before every
         // reuse so replacing or editing a corpus can never return a stale
         // compiled graph. This still avoids the expensive snapshot, parse,

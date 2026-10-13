@@ -1455,8 +1455,12 @@ impl WorkloadDriver {
             graph_digest: context.graph.graph_digest.clone(),
             nodes: Vec::new(),
             plays: Vec::new(),
-            hash_values: Arc::clone(&context.graph.hash_values),
+            hash_values: Arc::default(),
         };
+        // Number the view's hashes locally so prompt numbering below is sized
+        // to the selected plays, not the whole corpus.
+        let mut view_hash_ids = FxHashMap::default();
+        let mut view_hash_values = Vec::new();
         let mut source_nodes = Vec::new();
         for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
             let mut nodes = Vec::new();
@@ -1467,6 +1471,14 @@ impl WorkloadDriver {
                 }
                 let source_index = snapshot.source_index(&request.source_request_id)?;
                 let mut node = context.graph.nodes[source_index].clone();
+                for hash_id in &mut node.hash_ids {
+                    let source_hash_id = *hash_id;
+                    *hash_id = *view_hash_ids.entry(source_hash_id).or_insert_with(|| {
+                        view_hash_values.push(context.graph.hash_value(source_hash_id));
+                        // A subset of graph-local IDs, which already fit in u32.
+                        (view_hash_values.len() - 1) as u32
+                    });
+                }
                 node.request_id = request.identity.request_id.clone();
                 node.play_id = snapshot.evidence.play_id.clone();
                 node.source_play_ordinal = Some(cohort_index);
@@ -1504,6 +1516,7 @@ impl WorkloadDriver {
                 root_nodes,
             });
         }
+        view.hash_values = view_hash_values.into();
         // The existing executor compiles the retained dependency structure. Its
         // temporary numbering is replaced by the full prepared context below.
         // No lane activation may renormalize the restored initial timers.
