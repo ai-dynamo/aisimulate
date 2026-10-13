@@ -123,7 +123,7 @@ class Glm53FlashModel(BaseModel):
         # constructor rejecting it.
         if self._nextn or model_config.decoder_replay or self._num_layers != len(d.layer_types):
             raise NotImplementedError(
-                "GLM-5.3-Flash text baseline requires all45 layers, nextn=0 and no decoder replay"
+                "GLM-5.3-Flash text baseline requires all 45 layers, nextn=0 and no decoder replay"
             )
         if model_config.moe_backend in {"megamoe", "wideep"}:
             raise NotImplementedError("GLM-5.3-Flash baseline uses tensor-parallel local experts")
@@ -294,21 +294,9 @@ class Glm53FlashModel(BaseModel):
                         topk=d.num_experts_per_tok,
                         **identity,
                     ),
-                    ops.MoE(
-                        f"{phase}_moe_{layer}",
-                        1,
-                        h,
-                        d.moe_intermediate_size,
-                        d.num_experts_per_tok,
-                        d.n_routed_experts,
-                        tp,
-                        1,
-                        model_config.moe_quant_mode,
-                        "power_law_1.01"
-                        if model_config.workload_distribution == "power_law"
-                        else model_config.workload_distribution,
-                        1,
-                    ),
+                    # The same instance as the measured child: SOL and
+                    # SILICON must price one routed-expert geometry.
+                    moe,
                 ]
             module = _native(
                 "Glm53Ffn",
