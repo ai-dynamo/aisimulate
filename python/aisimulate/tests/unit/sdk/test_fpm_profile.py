@@ -680,6 +680,7 @@ def profile_memory(profile_dict, monkeypatch):
 def test_profile_memory_uses_declared_bounds_without_graph_or_timing_data(profile_memory):
     result = profile_memory(cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
     assert result["source"] == "profile"
+    assert result["kvcache_quant_mode"] == "fp8"
     assert result["total_gpu_capacity_bytes"] == 1000
     assert result["total_kv_size_bytes"] == 580  # 1000 * .8 - 200 - 20
     assert result["kv_size_per_token_bytes"] == 10
@@ -741,6 +742,7 @@ def grouped_profile(profile_dict):
 
 def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
     result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
+    assert result["kvcache_quant_mode"] == "fp8"
     assert result["total_kv_size_bytes"] == 580
     assert result["tolerance_adjusted"]["total_kv_size_bytes"] == 522
     assert result["total_kv_size_tokens"] is None
@@ -866,6 +868,7 @@ def test_runtime_linear_memory_uses_observation_and_canonical_budget(runtime_pro
         _ = parsed.non_kv_bytes
     monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
     result = profile_memory(context_length=1024, gpu_memory_capacity_bytes_override=2000, tolerance_fraction=0.1)
+    assert result["kvcache_quant_mode"] == "fp8"
     # The observed 600-byte pool remains fixed on a larger modeled device.
     # Ten bytes/token gives 60 raw tokens and 54 after a 10% safety margin.
     assert result["total_kv_size_bytes"] == 600

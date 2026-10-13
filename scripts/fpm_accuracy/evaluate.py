@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from scripts.fpm_accuracy.dashboard.measurement_heatmaps import _axis_values, _bin_index, measurement_workload_heatmaps
+from scripts.fpm_accuracy.dashboard.workloads import workload_details, workload_summary
 from scripts.fpm_accuracy.exceptions import DependencyError
 from scripts.fpm_accuracy.hf.models import MeasurementCase
 from scripts.fpm_accuracy.models.aic_predictors import AicFpmPredictor, AicRegressionPredictor
@@ -193,6 +194,7 @@ def evaluate_case(
     details: list | None = None,
 ) -> dict:
     config = case.configuration
+    collection = workload_details(case)
     ids = [item.observation_id for item in case.observations]
     orders = [item.order for item in case.observations]
     if len(ids) != len(set(ids)) or orders != sorted(set(orders)):
@@ -225,6 +227,7 @@ def evaluate_case(
                 "configuration_id": config.configuration_id,
                 "snapshot_id": config.snapshot_id,
                 "membership_sha256": case.measurement_membership_sha256,
+                "collection": collection,
                 "workload_heatmaps": {key: value.model_dump(mode="json") for key, value in heatmaps.items()},
                 "methods": {
                     method: [
@@ -262,5 +265,6 @@ def evaluate_case(
         "skipped_count": sum(issue.count for issue in case.issues),
         "configuration_manifest": config.manifest_path,
         "measurement_manifest": config.measurements.manifest_path,
+        "collection": workload_summary(collection),
         "results": results,
     }
