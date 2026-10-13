@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import math
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -13,7 +15,7 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.config.cli import CorePredictionConfig
-from aisimulate.output import prepare_output_directory
+from aisimulate.output import prepare_output_directory, write_prediction_report, write_prediction_stdout
 from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
 from aisimulate.sweeper.config import Candidate
@@ -2377,3 +2379,35 @@ def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
     assert report["counts"]["feasible"] == 1
     saved = yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
     assert saved["engine"]["workers"]["aggregated"]["parallelism"] == shape
+
+
+@pytest.mark.parametrize("with_details", [False, True])
+def test_streamed_prediction_outputs_match_one_shot_json(tmp_path, with_details) -> None:
+    record = {
+        "request_id": 'ä-ид \u2603 "q"',
+        "ttft_ms": 1e-05,
+        "e2e_latency_ms": 1e16,
+        "itl_ms": math.nan,
+        "metadata": {"z": [1, 2.5], "a": {}},
+        "routing_history": [],
+    }
+    summary = {"completed_requests": 2, "per_request": [record, {**record, "ttft_ms": None}]}
+    details = {"sections": {"summary": {"metrics": summary}}} if with_details else None
+    power = {"energy_j": 3.5}
+
+    # stdout: old path was json.dumps of the payload, compact with sorted keys.
+    stdout = io.StringIO()
+    write_prediction_stdout(stdout, summary, "json", details=details, power_diagnostics=power)
+    payload = {"summary": summary, "power_diagnostics": power, **({"details": details} if details else {})}
+    assert stdout.getvalue() == json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    # prediction.json: old path was json.dumps(indent=2, sort_keys=True) + "\n".
+    native = {**summary, "power_diagnostics": power, **({"details": details} if details else {})}
+    path = write_prediction_report(tmp_path, native)
+    assert path.read_bytes() == (json.dumps(native, indent=2, sort_keys=True) + "\n").encode()
+
+
+def test_failed_prediction_report_leaves_no_file(tmp_path):
+    with pytest.raises(TypeError):
+        write_prediction_report(tmp_path, {"bad": object()})
+    assert list(tmp_path.iterdir()) == []

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use rand::rngs::StdRng;
@@ -260,10 +261,25 @@ struct HashIdInterner {
 
 impl HashIdInterner {
     fn intern_all(&mut self, hash_ids: Vec<u64>) -> Result<Vec<u32>> {
-        hash_ids
-            .into_iter()
-            .map(|hash_id| self.intern(hash_id))
-            .collect()
+        // Collecting through `Result` loses the size hint; keep exact capacity.
+        let mut interned = Vec::with_capacity(hash_ids.len());
+        for hash_id in hash_ids {
+            interned.push(self.intern(hash_id)?);
+        }
+        Ok(interned)
+    }
+
+    fn len(&self) -> usize {
+        self.canonical_ids.len()
+    }
+
+    /// Source hash for each assigned ID, indexed by ID.
+    fn into_values(self) -> Vec<u64> {
+        let mut values = vec![0; self.canonical_ids.len()];
+        for (hash_id, canonical_id) in self.canonical_ids {
+            values[canonical_id as usize] = hash_id;
+        }
+        values
     }
 
     fn intern(&mut self, hash_id: u64) -> Result<u32> {
@@ -1277,6 +1293,8 @@ struct AgenticTraceBuilder {
     header: AgenticMooncakeHeader,
     nodes: Vec<AgenticNode>,
     request_ids: std::collections::HashSet<String>,
+    // Provisional row-order IDs; `finish` renumbers them in graph order.
+    hash_ids: HashIdInterner,
 }
 
 /// Incremental builder for an already-versioned agentic request stream.
@@ -1337,6 +1355,7 @@ impl AgenticTraceBuilder {
             header,
             nodes: Vec::new(),
             request_ids: std::collections::HashSet::new(),
+            hash_ids: HashIdInterner::default(),
         })
     }
 
@@ -1458,6 +1477,11 @@ impl AgenticTraceBuilder {
                 line_idx,
             )
         });
+        let hash_ids = self.hash_ids.intern_all(hash_ids)?;
+        // Graph IDs stay below u32::MAX, as the driver's numbering always has.
+        if self.hash_ids.len() > u32::MAX as usize {
+            bail!("trace contains more unique hash IDs than u32 can represent");
+        }
         self.nodes.push(AgenticNode {
             replay_key,
             request_id: raw.request_id,
@@ -1585,7 +1609,9 @@ impl AgenticTraceBuilder {
         } else {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
-        let graph_digest = canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes)?;
+        let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
+        let graph_digest =
+            canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
 
         Ok(AgenticTrace {
             block_size: self.header.block_size,
@@ -1593,8 +1619,27 @@ impl AgenticTraceBuilder {
             graph_digest,
             nodes: self.nodes,
             plays,
+            hash_values,
         })
     }
+}
+
+/// Renumbers provisional hash IDs first-seen over the sorted nodes, the
+/// numbering agentic prompts have always used, and returns each new ID's
+/// source hash.
+fn renumber_hash_ids(nodes: &mut [AgenticNode], interner: HashIdInterner) -> Arc<[u64]> {
+    let provisional = interner.into_values();
+    let mut renumbered = vec![u32::MAX; provisional.len()];
+    let mut hash_values = Vec::with_capacity(provisional.len());
+    for hash_id in nodes.iter_mut().flat_map(|node| node.hash_ids.iter_mut()) {
+        let slot = &mut renumbered[*hash_id as usize];
+        if *slot == u32::MAX {
+            *slot = hash_values.len() as u32;
+            hash_values.push(provisional[*hash_id as usize]);
+        }
+        *hash_id = *slot;
+    }
+    hash_values.into()
 }
 
 impl AgenticTrace {
@@ -1681,8 +1726,9 @@ impl AgenticTrace {
         for node in &mut self.nodes {
             node.not_before_ms -= min_timestamp_ms;
         }
-        self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)
-            .expect("validated agentic graph remains serializable after normalization");
+        self.graph_digest =
+            canonical_agentic_graph_digest(self.block_size, &mut self.nodes, &self.hash_values)
+                .expect("validated agentic graph remains serializable after normalization");
         self
     }
 
@@ -1697,7 +1743,8 @@ impl AgenticTrace {
                 dependency.delay_ms /= ratio;
             }
         }
-        self.graph_digest = canonical_agentic_graph_digest(self.block_size, &mut self.nodes)?;
+        self.graph_digest =
+            canonical_agentic_graph_digest(self.block_size, &mut self.nodes, &self.hash_values)?;
         Ok(self)
     }
 
@@ -1772,7 +1819,11 @@ fn validate_agentic_trace_is_acyclic(
     )
 }
 
-fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) -> Result<String> {
+fn canonical_agentic_graph_digest(
+    block_size: usize,
+    nodes: &mut [AgenticNode],
+    hash_values: &[u64],
+) -> Result<String> {
     struct Blake3Writer<'a>(&'a mut blake3::Hasher);
 
     impl std::io::Write for Blake3Writer<'_> {
@@ -1789,7 +1840,107 @@ fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) 
     #[derive(Serialize)]
     struct CanonicalGraph<'a> {
         block_size: usize,
+        nodes: CanonicalNodes<'a>,
+    }
+
+    struct CanonicalNodes<'a> {
         nodes: &'a [AgenticNode],
+        hash_values: &'a [u64],
+    }
+
+    impl Serialize for CanonicalNodes<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(
+                self.nodes
+                    .iter()
+                    .map(|node| CanonicalNode::new(node, self.hash_values)),
+            )
+        }
+    }
+
+    // The digest contract is `AgenticNode`'s serialized form with source hash
+    // values in place of graph-local IDs: same fields, order and attributes.
+    #[derive(Serialize)]
+    struct CanonicalNode<'a> {
+        request_id: &'a str,
+        play_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        source_play_ordinal: Option<usize>,
+        session_id: &'a str,
+        model: &'a str,
+        input_length: usize,
+        max_output_tokens: usize,
+        output_token_ids: &'a Option<Vec<u32>>,
+        replay_key: &'a Option<String>,
+        hash_ids: SourceHashes<'a>,
+        not_before_ms: f64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        recorded_api_time_ms: Option<f64>,
+        priority: i32,
+        strict_priority: u32,
+        policy_class: &'a Option<String>,
+        dependencies: &'a [AgenticDependency],
+    }
+
+    impl<'a> CanonicalNode<'a> {
+        fn new(node: &'a AgenticNode, hash_values: &'a [u64]) -> Self {
+            // Exhaustive so that a new node field must be placed in the digest.
+            let AgenticNode {
+                request_id,
+                play_id,
+                source_play_ordinal,
+                session_id,
+                model,
+                input_length,
+                max_output_tokens,
+                output_token_ids,
+                replay_key,
+                hash_ids,
+                not_before_ms,
+                recorded_api_time_ms,
+                recorded_interval_ms: _,
+                priority,
+                strict_priority,
+                policy_class,
+                dependencies,
+            } = node;
+            Self {
+                request_id,
+                play_id,
+                source_play_ordinal: *source_play_ordinal,
+                session_id,
+                model,
+                input_length: *input_length,
+                max_output_tokens: *max_output_tokens,
+                output_token_ids,
+                replay_key,
+                hash_ids: SourceHashes {
+                    hash_ids,
+                    hash_values,
+                },
+                not_before_ms: *not_before_ms,
+                recorded_api_time_ms: *recorded_api_time_ms,
+                priority: *priority,
+                strict_priority: *strict_priority,
+                policy_class,
+                dependencies,
+            }
+        }
+    }
+
+    struct SourceHashes<'a> {
+        hash_ids: &'a [u32],
+        hash_values: &'a [u64],
+    }
+
+    impl Serialize for SourceHashes<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_seq(
+                self.hash_ids
+                    .iter()
+                    .map(|&hash_id| self.hash_values[hash_id as usize]),
+            )
+        }
     }
 
     for node in nodes.iter_mut() {
@@ -1804,7 +1955,10 @@ fn canonical_agentic_graph_digest(block_size: usize, nodes: &mut [AgenticNode]) 
     let mut hasher = blake3::Hasher::new();
     serde_json::to_writer(
         Blake3Writer(&mut hasher),
-        &CanonicalGraph { block_size, nodes },
+        &CanonicalGraph {
+            block_size,
+            nodes: CanonicalNodes { nodes, hash_values },
+        },
     )?;
     Ok(hasher.finalize().to_hex().to_string())
 }

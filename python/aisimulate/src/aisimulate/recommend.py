@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import logging
 import math
@@ -79,8 +80,13 @@ def _run_recommendation(
 
     checkpoint("requested_config", config.model_dump(mode="json"))
     budget = resolve_budget(config.execution.resources, discover_host())
+    from .runner import EngineReplayRunnerFactory
     from .sweeper.search import Sweeper
 
+    if isinstance(runner_factory, EngineReplayRunnerFactory):
+        # Every candidate replays the same traffic, so each sweep worker keeps
+        # the trace graphs it loads instead of rebuilding them per candidate.
+        runner_factory = dataclasses.replace(runner_factory, trace_graph_cache=True)
     runner_factory = GuardedRunnerFactory(runner_factory, stack, config.execution.resources)
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
