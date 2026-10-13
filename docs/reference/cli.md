@@ -222,7 +222,8 @@ Normal prediction output includes timing provenance without `--detail`. The
 performance-database backend version, including resolution of version aliases.
 Fixed/polynomial timing and FPM estimators report a null data version with a
 `data_version_unavailable_reason`; custom runners that omit provenance report an
-explicit `unavailable_reason`. These are the executed estimator's values, not the
+explicit `unavailable_reason`. Malformed runner provenance fails before report
+output with a diagnostic naming the invalid field. These are the executed estimator's values, not the
 requested `auto` mode. The same fields appear in saved `prediction.json`.
 
 <a id="prediction-details"></a>

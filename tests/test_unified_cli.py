@@ -2382,3 +2382,30 @@ def test_predict_reports_effective_timing_provenance_without_details(
         assert "Timing (aggregated): estimator=op_level; source=aic; data_version=0.24.0" in stdout
     else:
         assert "Timing (runner): unavailable (runner did not report" in stdout
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        [],
+        "bad",
+        {"aggregated": None},
+        {"aggregated": {}},
+        {"aggregated": {"estimator": "op_level", "timing_source": "aic"}},
+        {"aggregated": {"unavailable_reason": True}},
+    ],
+)
+def test_predict_rejects_malformed_runner_provenance_before_output(tmp_path, monkeypatch, capsys, provenance):
+    class MalformedRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["prediction_provenance"] = provenance
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(MalformedRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(_prediction_config().model_dump(mode="json", exclude_none=True)))
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 1
+    assert "runner prediction_provenance" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
