@@ -479,9 +479,7 @@ def test_public_session_never_answers_glm_from_a_borrowed_runtime(tmp_path, shar
     # Reduce the graph to one mHC `pre` site to isolate the borrowed lookup
     # (without the guard this returned the 0.30.0 row: 7 ms, labelled silicon).
     model.context_ops = [
-        op
-        for op in model.context_ops
-        if json.loads(op._spec_json()).get("Glm53Mhc", {}).get("role") == "pre"
+        op for op in model.context_ops if json.loads(op._spec_json()).get("Glm53Mhc", {}).get("role") == "pre"
     ][:1]
     model.generation_ops = []
     assert len(model.context_ops) == 1
