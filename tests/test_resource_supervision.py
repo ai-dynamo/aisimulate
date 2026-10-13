@@ -722,6 +722,162 @@ def _output_bytes(output):
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
 @pytest.mark.parametrize(
+    "input_kind", ["config", "config_alias", "trace", "trace_alias", "trace_directory", "trace_directory_alias"]
+)
+def test_overwrite_rejects_input_output_collisions_before_starting_worker(
+    tmp_path, monkeypatch, capsys, command, input_kind
+):
+    from aisimulate import supervision
+
+    config = _small_cli_config(tmp_path, command)
+    raw = yaml.safe_load(config.read_text())
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    (output / "prediction.json").write_text("previous prediction")
+    (output / "resource-runtime.json").write_text("previous resources")
+    (output / "recommendations/0002.yaml").write_text("previous candidate")
+    if input_kind.startswith("config"):
+        target = output / "recommendations/0001.yaml"
+        target.write_text(yaml.safe_dump(raw))
+        config = target
+    else:
+        target = output / "requests.jsonl"
+        target.write_text('{"timestamp":0,"input_length":8,"output_length":2,"hash_ids":[]}\n')
+        trace = target
+        if input_kind == "trace_alias":
+            trace = tmp_path / "trace-alias.jsonl"
+            trace.symlink_to(target)
+        if input_kind.startswith("trace_directory"):
+            trace = output
+            if input_kind == "trace_directory_alias":
+                trace = tmp_path / "trace-directory-alias"
+                trace.symlink_to(output, target_is_directory=True)
+        raw["traffic"] = {
+            "source": {
+                "type": "trace",
+                "format": "dynamo" if input_kind.startswith("trace_directory") else "mooncake",
+                "paths": [str(trace)],
+            },
+            "load": {"type": "trace_timestamps"},
+        }
+        config.write_text(yaml.safe_dump(raw))
+    if input_kind == "config_alias":
+        config = tmp_path / "config-alias.yaml"
+        config.symlink_to(target)
+    original = _output_bytes(output)
+
+    def unexpected_worker(*args, **kwargs):
+        pytest.fail("input/output collisions must be rejected before starting the worker")
+
+    monkeypatch.setattr(supervision, "run_process", unexpected_worker)
+    with pytest.raises(SystemExit) as error:
+        supervision.main([command, "--config", str(config), "--output-dir", str(output), "--overwrite"])
+    assert error.value.code == 2
+    assert "would remove input file" in capsys.readouterr().err
+    assert _output_bytes(output) == original
+
+
+def test_overwrite_preserves_inputs_that_are_not_known_output_files(tmp_path):
+    from aisimulate.output import prepare_output_directory
+
+    (tmp_path / "config.yaml").write_text("input config")
+    (tmp_path / "trace.jsonl").write_text("input trace")
+    (tmp_path / "prediction.json").write_text("previous prediction")
+    stale = tmp_path / "resource-runtime.json"
+    stale.symlink_to(stale)
+    (tmp_path / "recommendations").mkdir()
+    (tmp_path / "recommendations/0001.yaml").write_text("previous candidate")
+    prepare_output_directory(
+        tmp_path,
+        overwrite=True,
+        input_paths=[tmp_path / "config.yaml", tmp_path / "trace.jsonl"],
+    )
+    assert _output_bytes(tmp_path) == {"config.yaml": b"input config", "trace.jsonl": b"input trace"}
+
+
+def test_overwrite_protects_relative_trace_directory_before_removing_other_outputs(tmp_path, monkeypatch):
+    from aisimulate.output import prepare_output_directory
+
+    output = tmp_path / "trace"
+    output.mkdir()
+    (output / "requests.jsonl").write_text("input trace")
+    (output / "prediction.json").write_text("previous prediction")
+    before = _output_bytes(output)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="would remove input file"):
+        prepare_output_directory("trace", overwrite=True, input_paths=["trace"])
+    assert _output_bytes(output) == before
+
+
+def test_public_cli_rejects_reusing_recommendation_directory_without_deleting_config(tmp_path):
+    import subprocess
+
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    config = output / "recommendations/0001.yaml"
+    config.write_bytes(_small_cli_config(tmp_path, "predict").read_bytes())
+    (output / "recommendation.json").write_text("previous recommendation")
+    before = _output_bytes(output)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "predict",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "would remove input file" in result.stderr
+    assert _output_bytes(output) == before
+
+
+def test_public_cli_preserves_a_trace_directory_entry_pointing_outside_the_directory(tmp_path):
+    import subprocess
+
+    fixture = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces/weka/a.json"
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(fixture.read_bytes())
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    entry = traces / "requests.jsonl"
+    entry.write_bytes(source.read_bytes())
+    config = _small_cli_config(tmp_path, "predict")
+    raw = yaml.safe_load(config.read_text())
+    raw["traffic"] = {
+        "source": {"type": "trace", "format": "weka", "paths": [str(traces)]},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+    }
+    config.write_text(yaml.safe_dump(raw))
+    command = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config)]
+    # The same corpus is a valid directory input when results go elsewhere.
+    control = subprocess.run(
+        [*command, "--output-dir", str(tmp_path / "control")], capture_output=True, text=True, timeout=30
+    )
+    assert control.returncode == 0, control.stderr
+
+    entry.unlink()
+    entry.symlink_to(source)
+    before = _output_bytes(traces)
+    result = subprocess.run(
+        [*command, "--output-dir", str(traces), "--overwrite"], capture_output=True, text=True, timeout=15
+    )
+    assert result.returncode == 2, result.stderr
+    assert "would remove input file" in result.stderr
+    assert entry.is_symlink()
+    assert _output_bytes(traces) == before
+    assert source.read_bytes() == fixture.read_bytes()
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+@pytest.mark.parametrize(
     "extra,error",
     [
         (["--set", "foo.bar=1"], "unknown top-level section 'foo'"),

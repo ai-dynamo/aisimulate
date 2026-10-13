@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -23,7 +23,7 @@ _RECOMMENDATION_NAME = re.compile(r"^[0-9]{4}\.yaml$")
 _COMPACT_JSON = json.JSONEncoder(sort_keys=True, separators=(",", ":"))
 
 
-def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
+def prepare_output_directory(path: str | Path, *, overwrite: bool, input_paths: Iterable[str | Path] = ()) -> Path:
     """Create an output directory without deleting unrelated user files."""
 
     root = Path(path)
@@ -33,26 +33,43 @@ def prepare_output_directory(path: str | Path, *, overwrite: bool) -> Path:
         raise ValueError(f"output directory {root} is not empty; pass --overwrite to replace known AISimulate outputs")
     root.mkdir(parents=True, exist_ok=True)
     if overwrite:
-        for name in (
-            "prediction.json",
-            "fpm-coverage.json",
-            "recommendation.json",
-            "recommendation.csv",
-            "requests.jsonl",
-            "resource-plan.json",
-            "resource-runtime.json",
-            "execution-events.jsonl",
-            "afd-replay-spec.json",
-            "afd-qualification.json",
-        ):
-            target = root / name
-            if target.is_file() or target.is_symlink():
-                target.unlink()
+        targets = [
+            root / name
+            for name in (
+                "prediction.json",
+                "fpm-coverage.json",
+                "recommendation.json",
+                "recommendation.csv",
+                "requests.jsonl",
+                "resource-plan.json",
+                "resource-runtime.json",
+                "execution-events.jsonl",
+                "afd-replay-spec.json",
+                "afd-qualification.json",
+            )
+        ]
         recommendations = root / "recommendations"
         if recommendations.is_dir():
-            for target in recommendations.iterdir():
-                if _RECOMMENDATION_NAME.fullmatch(target.name) and (target.is_file() or target.is_symlink()):
-                    target.unlink()
+            targets.extend(
+                target for target in recommendations.iterdir() if _RECOMMENDATION_NAME.fullmatch(target.name)
+            )
+        targets = [target for target in targets if target.is_file() or target.is_symlink()]
+        inputs = {Path(input_path).resolve() for input_path in input_paths}
+        input_directories = [source for source in inputs if source.is_dir()]
+        for target in targets:
+            try:
+                resolved = target.resolve()
+            except RuntimeError:
+                # Python 3.11/3.12 cannot resolve a stale symlink loop, but
+                # removing that directory entry still requires no traversal.
+                resolved = target.absolute()
+            entry = target.parent.resolve() / target.name
+            if resolved in inputs or any(
+                resolved.is_relative_to(directory) or entry.is_relative_to(directory) for directory in input_directories
+            ):
+                raise ValueError(f"--overwrite would remove input file {target}; choose a different output directory")
+        for target in targets:
+            target.unlink()
     return root
 
 
