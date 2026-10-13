@@ -28,6 +28,7 @@ import pytest
 
 from aisimulate.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
+    FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
     fpm_expected_result_paths,
 )
@@ -1230,7 +1231,8 @@ while True:
 def test_fpm_exec_consumes_only_contract_environment():
     """Everything fpm_exec.sh needs from the Generator travels through the
     fpm_env.sh exports. The Collector separately stages the configurable
-    readiness budget; completion-barrier timeout remains operator-tunable."""
+    readiness and finalization budgets; completion-barrier timeout remains
+    operator-tunable."""
 
     script = FPM_EXEC.read_text()
     # Match complete shell identifiers. DYN_FPM_* exports configure the native
@@ -1240,7 +1242,7 @@ def test_fpm_exec_consumes_only_contract_environment():
     assert {"FPM_NODE_RANK", "FPM_MASTER_ADDR", "FPM_BENCHMARK_OUTPUT_PATH"} <= consumed
     allowed = set(FPM_ENV_EXPORTED_VARS) | {
         "FPM_COMPLETION_BARRIER_TIMEOUT_SECONDS",
-        "FPM_FINALIZATION_TIMEOUT_SECONDS",
+        FPM_FINALIZATION_TIMEOUT_ENV,
         "FPM_READINESS_TIMEOUT_SECONDS",
         "FPM_SLURM_CPUS_PER_TASK",
         "FPM_SLURM_CPU_BIND",
