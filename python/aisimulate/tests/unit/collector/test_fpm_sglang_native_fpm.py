@@ -127,3 +127,16 @@ def test_seeded_pool_rejects_an_unpinned_tokenizer(tmp_path, monkeypatch):
     tokenizer.all_special_ids = [7]
     with pytest.raises(RuntimeError, match="special ids inside"):
         drv.seeded_pool(tokenizer, model_dir, "rev")
+
+
+@pytest.mark.parametrize("version", ["0.5.21", "0.5.20+local", "0.5.2"])
+def test_unqualified_sglang_runtime_fails_before_any_output(tmp_path, monkeypatch, version):
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: version)
+    out = tmp_path / "out"
+    argv = ["--model", "m", "--model-revision", "r", "--tp", "2", "--quant", "fp8", "--mem-fraction", "0.8"]
+    argv += ["--phase", "decode", "--points", str(tmp_path / "points.json"), "--out", str(out)]
+    with pytest.raises(ValueError, match="unqualified GLM backend runtime"):
+        drv.main(argv)
+    assert not out.exists()

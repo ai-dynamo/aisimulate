@@ -538,6 +538,13 @@ def main(argv=None) -> int:
     parser.add_argument("--ipc", default="")
     parser.add_argument("--run-id", default=os.environ.get("SLURM_JOB_ID", "local"))
     args = parser.parse_args(argv)
+    # Only the qualified stock SGLang release may produce an artifact; a local
+    # build or another release fails before any output or server exists.
+    import importlib.metadata
+
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    validate_backend_version("sglang", importlib.metadata.version("sglang"))
     args.ipc = args.ipc or f"ipc:///tmp/glm53-sglang-fpm-{args.run_id}"
     if args.out.exists():
         raise SystemExit(f"refusing to overwrite {args.out}")
@@ -599,8 +606,6 @@ def main(argv=None) -> int:
         probe = stream.collect(lambda messages: bool(messages), timeout=30)
         if not probe:
             raise RuntimeError("no native FPM message received from attention-TP rank 0")
-        import importlib.metadata
-
         provenance = {
             "run_id": args.run_id,
             "worker_id": str(probe[-1].get("worker_id", "")),
