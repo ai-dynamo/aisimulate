@@ -2035,10 +2035,11 @@ def test_predict_discloses_kv_precision_without_detail(
 
 
 @pytest.mark.parametrize("output_format", ["table", "json"])
-@pytest.mark.parametrize("available", [False, True])
+@pytest.mark.parametrize("provenance_state", ["omitted", "null", "empty", "available"])
 def test_predict_reports_effective_timing_provenance_without_details(
-    tmp_path, monkeypatch, capsys, output_format, available
+    tmp_path, monkeypatch, capsys, output_format, provenance_state
 ):
+    available = provenance_state == "available"
     provenance = {
         "aggregated": {
             "estimator": "op_level",
@@ -2052,8 +2053,10 @@ def test_predict_reports_effective_timing_provenance_without_details(
         def run(self, *args, **kwargs):
             report = super().run(*args, **kwargs)
             assert not self.output_requirements.capture_performance_diagnostics
-            if available:
-                report.metadata["prediction_provenance"] = provenance
+            if provenance_state != "omitted":
+                report.metadata["prediction_provenance"] = {"null": None, "empty": {}, "available": provenance}[
+                    provenance_state
+                ]
             return report
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(ProvenanceRunner()))

@@ -204,9 +204,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             version_key = "data_version" if entry.get("data_version") is not None else "data_version_unavailable_reason"
             required = ("estimator", "timing_source", version_key)
         if any(not isinstance(entry.get(key), str) or not entry[key].strip() for key in required):
-            raise _CliExecutionError(
-                f"runner prediction_provenance.{role} requires nonempty strings for {required}"
-            )
+            raise _CliExecutionError(f"runner prediction_provenance.{role} requires nonempty strings for {required}")
     summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
     if "summary" in native:
