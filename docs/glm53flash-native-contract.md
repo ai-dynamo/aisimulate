@@ -121,7 +121,10 @@ SILICON fails closed. Construction requires every consumed table
 exact requested runtime: the primary file of that system/backend/version or
 a donor declared in its `reuse.yaml`. Earlier-version siblings and
 cross-backend fill do not satisfy readiness, and the GLM attention table is
-read from the exact primary only. At query time a generic child that answers
+read from the exact primary only. Readiness also requires GLM attention rows for
+each op's exact geometry and mHC rows tagged
+`architecture=Glm5NextForConditionalGeneration` for each role; same-shape mHC
+rows from another model never price GLM. At query time a generic child that answers
 from its analytical fallback, for example a KDA kernel miss, is an error in
 SILICON. Strict evaluation also sets `enable_shared_layer=False`, so no
 earlier-version rows are merged into the exact tables. HYBRID keeps each

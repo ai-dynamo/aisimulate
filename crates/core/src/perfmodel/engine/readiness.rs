@@ -276,22 +276,61 @@ impl Availability<'_> {
         use Op::*;
         let (name, measured) = match op {
             Glm53Attention(o) if o.layer_kind == "sparse_mla" => {
-                let path = self.db.glm53_attention.primary_path().map(|p| p.to_owned());
-                let found = match path {
-                    Some(path) if path.is_file() => {
-                        let reader = PerfReader::open(&path)?;
-                        reader.rows()?.next().is_some()
-                    }
-                    _ => false,
-                };
-                return if found {
+                use crate::perf_database::glm53flash::BASENAME;
+                if !self
+                    .db
+                    .glm53_attention
+                    .primary_path()
+                    .is_some_and(|path| path.is_file())
+                {
+                    return Err(self.exact_miss(BASENAME));
+                }
+                // Load and validate the table, then require this op's exact
+                // geometry so a missing TP/checkpoint/phase fails here rather
+                // than on the first step.
+                return if self.db.glm53_attention.covers(o)? {
                     Ok(())
                 } else {
-                    Err(self.exact_miss(crate::perf_database::glm53flash::BASENAME))
+                    Err(AicError::PerfDatabase(format!(
+                        "GLM-5.3-Flash SILICON has no {BASENAME} rows for {} \
+                         (tp_size={}, checkpoint_format={}, is_context={}) on the exact \
+                         runtime {}/{} under {}",
+                        o.name,
+                        o.tp_size,
+                        o.checkpoint_format,
+                        o.is_context,
+                        self.db.backend,
+                        self.db.version,
+                        self.db.data_root.display(),
+                    )))
                 };
             }
-            // mHC reads mhc_module_perf rows directly (GLM role semantics).
-            Glm53Mhc(_) => return self.exact("mhc_module_perf.parquet"),
+            // mHC reads GLM-tagged mhc_module_perf rows directly (GLM role
+            // semantics); another model's rows of the same shape never count.
+            Glm53Mhc(o) => {
+                use crate::operators::glm53flash::MHC_ARCHITECTURE;
+                self.exact("mhc_module_perf.parquet")?;
+                return if self.db.mhc.has_architecture_rows(
+                    MHC_ARCHITECTURE,
+                    &o.role,
+                    o.hc_mult,
+                    o.hidden_size,
+                )? {
+                    Ok(())
+                } else {
+                    Err(AicError::PerfDatabase(format!(
+                        "GLM-5.3-Flash SILICON has no {MHC_ARCHITECTURE} mhc_module_perf rows \
+                         for role {} (hc_mult={}, hidden_size={}) on the exact runtime {}/{} \
+                         under {}",
+                        o.role,
+                        o.hc_mult,
+                        o.hidden_size,
+                        self.db.backend,
+                        self.db.version,
+                        self.db.data_root.display(),
+                    )))
+                };
+            }
             Glm53Attention(o) => (&o.name, &o.measured),
             Glm53Ffn(o) => (&o.name, &o.measured),
             Glm53Primitive(o) => (&o.name, &o.measured),
@@ -621,9 +660,9 @@ mod tests {
             "hidden_size": 4096, "hc_mult": 4, "sinkhorn_iters": 20,
         }}))
         .unwrap();
-        let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
-        sparse.checkpoint_format = "fp8".into();
-        let sparse = Op::Glm53Attention(sparse);
+        let mut sparse_op = crate::operators::glm53flash::tests::attention("sparse_mla");
+        sparse_op.checkpoint_format = "fp8".into();
+        let sparse = Op::Glm53Attention(sparse_op.clone());
         let load_shared = |mode, shared| {
             PerfDatabase::load_resolved(
                 root.path(),
@@ -645,10 +684,68 @@ mod tests {
             validate(&load(DatabaseMode::Hybrid), [op].into_iter()).unwrap();
             validate(&load(DatabaseMode::Sol), [op].into_iter()).unwrap();
         }
-        table(&data.join(format!("mhc/vllm/{RUNTIME}/mhc_module_perf.parquet")));
-        table(&data.join(format!(
+        let mhc_table = data.join(format!("mhc/vllm/{RUNTIME}/mhc_module_perf.parquet"));
+        std::fs::create_dir_all(mhc_table.parent().unwrap()).unwrap();
+        let mhc_rows = |architecture| {
+            [
+                Col::Str("architecture", vec![architecture; 2]),
+                Col::Str("op_name", vec!["pre"; 2]),
+                Col::I64("num_tokens", vec![16, 1024]),
+                Col::I64("hc_mult", vec![4; 2]),
+                Col::I64("hidden_size", vec![4096; 2]),
+                Col::F64("latency", vec![0.02, 0.04]),
+                Col::Str("kernel_source", vec!["fixture"; 2]),
+            ]
+        };
+        // Same-shape rows from another model are not GLM mHC evidence.
+        write_parquet(&mhc_table, &mhc_rows("DeepseekV4ForCausalLM"));
+        let error = validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&mhc].into_iter(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("for role pre"), "{error}");
+        write_parquet(
+            &mhc_table,
+            &mhc_rows(crate::operators::glm53flash::MHC_ARCHITECTURE),
+        );
+        let attention_table = data.join(format!(
             "glm53_attention/vllm/{RUNTIME}/glm53_attention_module_perf.parquet"
-        )));
+        ));
+        // A present but invalid GLM attention table fails readiness through
+        // the loader's validation instead of passing on row count.
+        table(&attention_table);
+        let error = validate(
+            &load_shared(DatabaseMode::Silicon, false),
+            [&sparse].into_iter(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, AicError::InvalidPerfData(_)), "{error}");
+        write_parquet(
+            &attention_table,
+            &crate::perf_database::glm53flash::tests::rows(
+                &sparse_op,
+                &[(1, 0, 512, 1.0), (1, 0, 4096, 6.0)],
+                "n/a",
+            ),
+        );
+        // Valid rows for another geometry do not cover a TP4 or decode op.
+        let mut tp4 = sparse_op.clone();
+        tp4.tp_size = 4;
+        tp4.num_heads = 16;
+        let mut decode = sparse_op.clone();
+        decode.is_context = false;
+        for uncovered in [tp4, decode] {
+            let error = validate(
+                &load_shared(DatabaseMode::Silicon, false),
+                [&Op::Glm53Attention(uncovered)].into_iter(),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("rows for") && error.to_string().contains("exact"),
+                "{error}"
+            );
+        }
         // The exact tables exist, but the shared layer would merge the
         // earlier runtime's mHC rows into the same reader.
         let error = validate(&load(DatabaseMode::Silicon), [&mhc].into_iter()).unwrap_err();
@@ -695,6 +792,10 @@ mod tests {
             write_parquet(
                 &dir.join("mhc_module_perf.parquet"),
                 &[
+                    Col::Str(
+                        "architecture",
+                        vec![crate::operators::glm53flash::MHC_ARCHITECTURE; 2],
+                    ),
                     Col::Str("op_name", vec![role; 2]),
                     Col::I64("num_tokens", vec![16, 1024]),
                     Col::I64("hc_mult", vec![4; 2]),
@@ -731,7 +832,10 @@ mod tests {
         );
         assert!(error.to_string().contains("0.30.0"), "{error}");
         let exact = load(false);
-        validate(&exact, [&op].into_iter()).unwrap();
+        // Without sharing, the exact runtime has no GLM `pre` row: readiness
+        // and the lookup both miss.
+        let error = validate(&exact, [&op].into_iter()).unwrap_err();
+        assert!(error.to_string().contains("for role pre"), "{error}");
         assert!(pre.query(&exact, &c).is_err());
         // Every public entry point (forward-pass model, InferenceSession, CLI)
         // builds its engine through Engine::build, which enforces the same

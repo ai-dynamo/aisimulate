@@ -565,6 +565,9 @@ impl Glm53AttentionOp {
     }
 }
 
+/// `architecture` value the mHC collectors write for GLM-5.3-Flash rows.
+pub const MHC_ARCHITECTURE: &str = "Glm5NextForConditionalGeneration";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Glm53MhcOp {
     pub name: String,
@@ -605,7 +608,7 @@ impl Glm53MhcOp {
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
         if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
             return Err(AicError::ModelConfig(
-                "GLM mHC requires TP1/2/4, multiplier4 and20 Sinkhorn iterations".into(),
+                "GLM mHC requires TP1/2/4, multiplier 4 and 20 Sinkhorn iterations".into(),
             ));
         }
         if x <= 0.0 {
@@ -656,7 +659,10 @@ impl Glm53MhcOp {
             self.sol(&db.system_spec, tokens)
                 .map_or(f64::NAN, |r| r.latency_ms * sites)
         };
-        match db.mhc.query_module(
+        // Only rows the collector tagged as GLM-5.3-Flash answer: another
+        // model's rows of the same shape time different call sites.
+        match db.mhc.query_architecture_module(
+            MHC_ARCHITECTURE,
             &self.role,
             ctx.num_tokens,
             self.hc_mult,
@@ -1430,25 +1436,27 @@ pub(crate) mod tests {
         // gb300/sglang/0.5.14 carries DeepSeek-V4-Flash mHC rows (hc4, hidden 4096)
         // but no KDA rows for GLM's 32-head TP2 shard.
         let silicon = db(DatabaseMode::Silicon);
-        // One GLM pre site is half of a two-site row (RMSNorm inside the row).
-        let mhc = mhc_site("pre");
         let c = ctx(8, 1, 0, false);
-        let got = mhc.query(&silicon, &c).unwrap();
-        let row = silicon
-            .mhc
-            .query_module("pre", 8, 4, 4096, &|_, _| f64::NAN)
-            .unwrap();
-        assert!((got.latency_ms - 0.5 * row.latency).abs() < 1e-15 && got.latency_ms > 0.0);
-        assert_eq!(got.source, Source::Silicon);
-        // No fused_post_pre rows in this runtime: SILICON fails, HYBRID is SOL.
-        let fused = mhc_site("fused_post_pre");
-        assert!(fused.query(&silicon, &c).is_err());
-        let hybrid_fused = fused.query(&db(DatabaseMode::Hybrid), &c).unwrap();
-        assert_eq!(hybrid_fused.source, Source::Sol);
-        assert_eq!(
-            hybrid_fused.latency_ms,
-            fused.sol(&silicon.system_spec, 8.0).unwrap().latency_ms
+        // The DeepSeek-V4-Flash `pre` row has GLM's shape, but it times
+        // another model's call sites: it is never GLM SILICON evidence.
+        // SILICON fails, HYBRID reports labelled SOL.
+        assert!(
+            silicon
+                .mhc
+                .query_module("pre", 8, 4, 4096, &|_, _| f64::NAN)
+                .is_ok()
         );
+        for role in ["pre", "fused_post_pre"] {
+            let mhc = mhc_site(role);
+            let err = mhc.query(&silicon, &c).unwrap_err();
+            assert!(err.to_string().contains(MHC_ARCHITECTURE), "{err}");
+            let hybrid = mhc.query(&db(DatabaseMode::Hybrid), &c).unwrap();
+            assert_eq!(hybrid.source, Source::Sol);
+            assert_eq!(
+                hybrid.latency_ms,
+                mhc.sol(&silicon.system_spec, 8.0).unwrap().latency_ms
+            );
+        }
 
         let mut kda = attention("kda");
         kda.backend = "sglang".into();
@@ -1661,19 +1669,29 @@ pub(crate) mod tests {
         let dir = root.path().join("data/gb300/mhc/vllm").join(RUNTIME);
         std::fs::create_dir_all(&dir).unwrap();
         let ops = ["pre", "post", "fused_post_pre", "expand", "contract"];
-        let op_names: Vec<&str> = ops.iter().flat_map(|op| [*op, *op]).collect();
+        let mut op_names: Vec<&str> = ops.iter().flat_map(|op| [*op, *op]).collect();
+        // A DeepSeek-V4-Flash `pre` row of the same shape is listed first; it
+        // would win the architecture-free merge but must never price GLM.
+        op_names.insert(0, "pre");
+        let mut architectures = vec![MHC_ARCHITECTURE; 10];
+        architectures.insert(0, "DeepseekV4ForCausalLM");
+        let mut tokens = [16, 1024].repeat(5);
+        tokens.insert(0, 1024);
         write_parquet(
             &dir.join("mhc_module_perf.parquet"),
             &[
+                Col::Str("architecture", architectures),
                 Col::Str("op_name", op_names),
-                Col::I64("num_tokens", [16, 1024].repeat(5)),
-                Col::I64("hc_mult", vec![4; 10]),
-                Col::I64("hidden_size", vec![4096; 10]),
+                Col::I64("num_tokens", tokens),
+                Col::I64("hc_mult", vec![4; 11]),
+                Col::I64("hidden_size", vec![4096; 11]),
                 Col::F64(
                     "latency",
-                    vec![0.02, 0.04, 0.01, 0.03, 0.03, 0.07, 0.01, 0.03, 0.005, 0.017],
+                    vec![
+                        9.0, 0.02, 0.04, 0.01, 0.03, 0.03, 0.07, 0.01, 0.03, 0.005, 0.017,
+                    ],
                 ),
-                Col::Str("kernel_source", vec!["fixture"; 10]),
+                Col::Str("kernel_source", vec!["fixture"; 11]),
             ],
         );
         let load = |mode| {

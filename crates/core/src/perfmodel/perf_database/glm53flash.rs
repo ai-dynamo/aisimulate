@@ -145,6 +145,24 @@ impl Glm53AttentionTable {
         self.path.as_deref()
     }
 
+    /// Loaded and validated geometry grids; a missing file is empty.
+    fn grids(&self) -> Result<&BTreeMap<String, BatchCurves>, AicError> {
+        self.grids
+            .get_or_init(|| match &self.path {
+                Some(path) => load(path).map_err(|e| format!("{}: {e}", path.display())),
+                None => Ok(BTreeMap::new()),
+            })
+            .as_ref()
+            .map_err(|e| invalid(e.clone()))
+    }
+
+    /// Whether the validated table holds rows for this op's exact geometry
+    /// (TP/heads, checkpoint, backend and phase). Load or validation
+    /// failures are errors, not a coverage gap.
+    pub fn covers(&self, op: &Glm53AttentionOp) -> Result<bool, AicError> {
+        Ok(self.grids()?.contains_key(&geometry(op)?))
+    }
+
     /// `sol(batch, prefix, x)` is the operator's analytical latency; it anchors
     /// utilization interpolation and boundary holds. `Ok(None)` is a coverage
     /// gap (no file or no rows for this geometry).
@@ -156,12 +174,7 @@ impl Glm53AttentionTable {
         x: u32,
         sol: &dyn Fn(f64, f64, f64) -> Result<f64, AicError>,
     ) -> Result<Option<f64>, AicError> {
-        let grids = self.grids.get_or_init(|| match &self.path {
-            Some(path) => load(path).map_err(|e| format!("{}: {e}", path.display())),
-            None => Ok(BTreeMap::new()),
-        });
-        let grids = grids.as_ref().map_err(|e| invalid(e.clone()))?;
-        let Some(batches) = grids.get(&geometry(op)?) else {
+        let Some(batches) = self.grids()?.get(&geometry(op)?) else {
             return Ok(None);
         };
         if batch == 0 || x == 0 {
@@ -351,7 +364,7 @@ fn load(path: &Path) -> Result<BTreeMap<String, BatchCurves>, AicError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::operators::glm53flash::tests::attention;
     use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
@@ -359,7 +372,7 @@ mod tests {
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-    fn rows(
+    pub(crate) fn rows(
         op: &Glm53AttentionOp,
         points: &[(i64, i64, i64, f64)],
         regime: &'static str,
