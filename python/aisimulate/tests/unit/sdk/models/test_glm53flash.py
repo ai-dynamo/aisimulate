@@ -423,3 +423,74 @@ def test_pinned_checkpoints_resolve_offline_to_bundled_revision(path, monkeypatc
     assert network_calls == []
     assert resolved == local
     assert resolved.get("quantization_config", {}).get("ignore") != ["model.layers.45.mtp"]
+
+
+def _borrowed_mhc_root(tmp_path):
+    """Review probe: vLLM 0.31.0 has only a `post` mHC row; 0.30.0 has a 14 ms
+    `pre` row with the same (hc_mult, hidden_size) key."""
+    import shutil
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "systems"
+    root.mkdir()
+    shutil.copy(Path(aisimulate_core.__file__).parent / "systems" / "gb300.yaml", root / "gb300.yaml")
+    for version, role, latency in (("0.31.0", "post", 0.03), ("0.30.0", "pre", 14.0)):
+        directory = root / "data/gb300/mhc/vllm" / version
+        directory.mkdir(parents=True)
+        pq.write_table(
+            pa.table(
+                {
+                    "op_name": [role, role],
+                    "num_tokens": [16, 1024],
+                    "hc_mult": [4, 4],
+                    "hidden_size": [4096, 4096],
+                    "latency": [latency, latency],
+                    "kernel_source": ["fixture", "fixture"],
+                }
+            ),
+            directory / "mhc_module_perf.parquet",
+        )
+    return root
+
+
+@pytest.mark.parametrize("shared_layer", [True, False])
+def test_public_session_never_answers_glm_from_a_borrowed_runtime(tmp_path, shared_layer):
+    # InferenceSession (and the legacy CLI built on it) constructs its engine
+    # through the same Engine::build guard as RustForwardPassPerfModel: a
+    # SILICON GLM engine must not merge another runtime's rows.
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.backends.factory import get_backend
+    from aisimulate_core.sdk.config import RuntimeConfig
+    from aisimulate_core.sdk.perf_database import PerfDatabase
+    from aisimulate_core.sdk.rust_engine_step import _engine_handle_cache_clear
+
+    root = _borrowed_mhc_root(tmp_path)
+    database = PerfDatabase(
+        "gb300",
+        "vllm",
+        "0.31.0",
+        systems_root=str(root),
+        database_mode="SILICON",
+        shared_layer=shared_layer,
+    )
+    model = build("zai-org/GLM-5.3-Flash", "vllm", 2)
+    # Reduce the graph to one mHC `pre` site to isolate the borrowed lookup
+    # (without the guard this returned the 0.30.0 row: 7 ms, labelled silicon).
+    model.context_ops = [
+        op
+        for op in model.context_ops
+        if json.loads(op._spec_json()).get("Glm53Mhc", {}).get("role") == "pre"
+    ][:1]
+    model.generation_ops = []
+    assert len(model.context_ops) == 1
+    session = InferenceSession(model, database, get_backend("vllm"))
+    _engine_handle_cache_clear()
+    try:
+        match = "enable_shared_layer=False" if shared_layer else None
+        with pytest.raises(PerfDataNotAvailableError, match=match) as error:
+            session.run_static_latency_only(RuntimeConfig(batch_size=1, isl=128, osl=2), "static_ctx")
+        assert ("0.30.0" in str(error.value)) is shared_layer
+    finally:
+        _engine_handle_cache_clear()

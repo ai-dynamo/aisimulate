@@ -50,6 +50,96 @@ pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), 
     Ok(())
 }
 
+/// Sources of one GLM-consumed table, refusing any borrowed file. The
+/// generic readers merge every resolved source into one table, so with the
+/// shared layer on a nearest-earlier or cross-backend file could answer a
+/// GLM lookup with another runtime's row, labelled silicon.
+fn glm53_exact_sources(
+    db: &PerfDatabase,
+    name: &str,
+) -> Result<Vec<crate::perf_database::source_resolution::PrioritizedSource>, AicError> {
+    let sources = db
+        .source_resolver
+        .prioritized_sources_for(name, &db.data_root)?;
+    if let Some(borrowed) = sources.iter().find(|source| {
+        !matches!(source.channel, "primary" | "declared_reuse") && source.source.path().is_file()
+    }) {
+        return Err(AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash SILICON reads {name} only from the exact runtime {}/{}, but \
+             the shared layer also loads {} ({} channel, version {}); set \
+             enable_shared_layer=False",
+            db.backend,
+            db.version,
+            borrowed.source.path().display(),
+            borrowed.channel,
+            borrowed.version,
+        )));
+    }
+    Ok(sources)
+}
+
+/// Generic tables a GLM-5.3-Flash op reads in SILICON.
+fn glm53_tables(op: &Op, tables: &mut std::collections::BTreeSet<&'static str>) {
+    use Op::*;
+    let measured = match op {
+        Glm53Mhc(_) => {
+            tables.insert("mhc_module_perf.parquet");
+            return;
+        }
+        Glm53Attention(o) => &o.measured,
+        Glm53Ffn(o) => &o.measured,
+        Glm53Primitive(o) => &o.measured,
+        TokenScale(o) => return glm53_tables(&o.op, tables),
+        Overlap(o) => {
+            for child in o.group_a.iter().chain(&o.group_b) {
+                glm53_tables(child, tables);
+            }
+            return;
+        }
+        Fallback(o) => {
+            glm53_tables(&o.primary, tables);
+            for child in &o.fallback {
+                glm53_tables(child, tables);
+            }
+            return;
+        }
+        _ => return,
+    };
+    for child in measured {
+        match child {
+            Gemm(_) => tables.insert("gemm_perf.parquet"),
+            Moe(_) => tables.insert("moe_perf.parquet"),
+            Kda(_) => tables.insert("kda_perf.parquet"),
+            Mhc(_) => tables.insert("mhc_module_perf.parquet"),
+            CustomAllReduce(comm) if comm.tp_size > 1 => {
+                tables.insert("custom_allreduce_perf.parquet")
+            }
+            _ => false,
+        };
+    }
+}
+
+/// Engine-construction guard shared by every entry point (forward-pass model,
+/// `InferenceSession`, CLI): a SILICON engine containing GLM-5.3-Flash ops
+/// must not load any of their tables from a borrowed source. Other models
+/// and other modes are untouched.
+pub(super) fn validate_glm53_sources<'a>(
+    db: &PerfDatabase,
+    ops: impl Iterator<Item = &'a Op>,
+) -> Result<(), AicError> {
+    if db.database_mode != DatabaseMode::Silicon {
+        return Ok(());
+    }
+    let mut tables = std::collections::BTreeSet::new();
+    for op in ops {
+        glm53_tables(op, &mut tables);
+    }
+    for name in tables {
+        glm53_exact_sources(db, name)?;
+    }
+    Ok(())
+}
+
 struct Availability<'a> {
     db: &'a PerfDatabase,
     tables: HashMap<String, bool>,
@@ -133,8 +223,7 @@ impl Availability<'_> {
     /// `reuse.yaml` donor. Nearest-earlier siblings and cross-backend fill
     /// are not admitted for GLM SILICON: the generic readers merge every
     /// resolved source into one table, so a borrowed source (shared layer
-    /// on) could answer a GLM lookup with another runtime's row. Its
-    /// presence is rejected here rather than filtered per lookup.
+    /// on) is rejected by [`glm53_exact_sources`].
     fn exact(&mut self, name: &str) -> Result<(), AicError> {
         let key = format!("exact:{name}");
         if let Some(found) = self.tables.get(&key) {
@@ -144,25 +233,7 @@ impl Availability<'_> {
                 Err(self.exact_miss(name))
             };
         }
-        let sources = self
-            .db
-            .source_resolver
-            .prioritized_sources_for(name, &self.db.data_root)?;
-        if let Some(borrowed) = sources.iter().find(|source| {
-            !matches!(source.channel, "primary" | "declared_reuse")
-                && source.source.path().is_file()
-        }) {
-            return Err(AicError::PerfDatabase(format!(
-                "GLM-5.3-Flash SILICON reads {name} only from the exact runtime {}/{}, but \
-                 the shared layer also loads {} ({} channel, version {}); set \
-                 enable_shared_layer=False",
-                self.db.backend,
-                self.db.version,
-                borrowed.source.path().display(),
-                borrowed.channel,
-                borrowed.version,
-            )));
-        }
+        let sources = glm53_exact_sources(self.db, name)?;
         let mut found = false;
         for source in sources {
             if !matches!(source.channel, "primary" | "declared_reuse")
@@ -662,6 +733,30 @@ mod tests {
         let exact = load(false);
         validate(&exact, [&op].into_iter()).unwrap();
         assert!(pre.query(&exact, &c).is_err());
+        // Every public entry point (forward-pass model, InferenceSession, CLI)
+        // builds its engine through Engine::build, which enforces the same
+        // restriction before any query.
+        let build = |db: PerfDatabase| {
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "glm53-borrowed-mhc", "system_name": "gb300", "backend": "vllm",
+                "backend_version": "0.31.0", "tp_size": 2, "pp_size": 1,
+                "database_mode": DatabaseMode::Silicon,
+            }))
+            .unwrap();
+            Engine::build(
+                EngineSpec::new(config, vec![op.clone()], vec![]),
+                Arc::new(db),
+            )
+        };
+        let error = build(load(true)).err().unwrap();
+        assert!(
+            error.to_string().contains("enable_shared_layer=False"),
+            "{error}"
+        );
+        build(load(false)).unwrap();
+        let hybrid = load(true).with_mode(DatabaseMode::Hybrid, TransferPolicy::ALL);
+        validate_glm53_sources(&hybrid, [&op].into_iter()).unwrap();
     }
 
     #[test]
