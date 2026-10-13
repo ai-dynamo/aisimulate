@@ -3471,6 +3471,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "        }\n",
         f"            {_MARKER}"
         "            session_id: None,\n"
+        "            kv_hint: None,\n"
         "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
         "            images: {\n"
         "                assert!(\n"
@@ -3497,12 +3498,16 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "path": request.path,
         "struct": "Request",
         "before_sha256": request.sha256,
-        "inserted_fields": ["session_id", "images"],
+        "inserted_fields": ["session_id", "images", "kv_hint"],
         "rejected_lifecycle_events": ["TtftMilestone"],
         "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
     }
-    assert (dynamo / placement.path).read_text() == sources[placement.path]
-    assert records[1]["inserted_fields"] == []
+    expected_placement = sources[placement.path].replace(
+        "            }),\n        }\n",
+        "            }),\n" + f"            {_MARKER}" + "            kv_hints: None,\n        }\n",
+    )
+    assert (dynamo / placement.path).read_text() == expected_placement
+    assert records[1]["inserted_fields"] == ["kv_hints"]
 
 
 # Each case would otherwise insert `session_id: None`; no file may be written.

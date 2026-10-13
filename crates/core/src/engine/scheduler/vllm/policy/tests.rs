@@ -944,6 +944,7 @@ mod trtllm {
             arrival_timestamp_ms: None,
             session_id: None,
             images: Vec::new(),
+            kv_hint: None,
         });
     }
 

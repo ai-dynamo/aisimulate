@@ -32,7 +32,7 @@ use super::{
     },
     state::AggRequestState,
 };
-use crate::engine::{Command, CommandResult, LifecycleEvent};
+use crate::engine::{Command, CommandResult, KvHintSource, LifecycleEvent};
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::loadgen::{AgenticPreparationTransition, ReplayRequestPayload};
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -55,6 +55,9 @@ pub(crate) struct AggRuntimeStats {
     semantic_drain_count: usize,
 }
 
+/// A placed request waiting for tokenization: request, id, worker and resolved KV hint.
+type TokenizingDispatch = (DirectRequest, Uuid, usize, Option<KvHintSource>);
+
 pub(crate) struct AggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
     Observation: ReplayEngineObservation,
@@ -76,7 +79,7 @@ where
     events: BinaryHeap<SimulationEvent<Observation::Batch>>,
     placement: PlacementPolicyImpl,
     /// Optional per-worker tokenization between placement and the engine.
-    tokenization: Option<TokenizationStage<(DirectRequest, Uuid, usize)>>,
+    tokenization: Option<TokenizationStage<TokenizingDispatch>>,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -305,6 +308,7 @@ where
         request: DirectRequest,
         uuid: Uuid,
         worker_idx: usize,
+        kv_hint: Option<KvHintSource>,
     ) -> anyhow::Result<()> {
         if let Some(tokenization) = &mut self.tokenization {
             let (logical_worker_id, _) =
@@ -319,10 +323,11 @@ where
                 logical_worker_id,
                 input_tokens,
                 uuid,
-                (request, uuid, worker_idx),
+                (request, uuid, worker_idx, kv_hint),
             )?;
         } else {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+            self.engine
+                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
         }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
@@ -353,6 +358,7 @@ where
                         placement.scheduler_id
                     )
                 })?;
+            let kv_hint = self.engine.kv_hint_source(&placement)?;
             self.collector.on_route_released(
                 uuid,
                 ReplayRequestPool::Agg,
@@ -371,7 +377,7 @@ where
                     anyhow::anyhow!("offline replay missing queued request state for {uuid}")
                 })?
                 .take_queued_request(uuid, placement.scheduler_id)?;
-            self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
+            self.dispatch_to_worker(request, uuid, placement.scheduler_id, kv_hint)?;
         }
         Ok(())
     }
@@ -425,6 +431,7 @@ where
                             placement.scheduler_id
                         )
                     })?;
+                let kv_hint = self.engine.kv_hint_source(&placement)?;
                 self.collector.on_route_immediate(
                     uuid,
                     ReplayRequestPool::Agg,
@@ -447,6 +454,7 @@ where
                     request.into_direct_request(),
                     uuid,
                     placement.scheduler_id,
+                    kv_hint,
                 )?;
             }
             PlacementDecision::Queued => {
@@ -876,8 +884,10 @@ where
         };
         let released = tokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
-        for (tokenized_ms, (request, uuid, worker_idx)) in released {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+        for (tokenized_ms, (request, uuid, worker_idx, kv_hint)) in released {
+            let kv_hint = self.engine.live_kv_hint(kv_hint);
+            self.engine
+                .dispatch(worker_idx, request, kv_hint, self.now_ms)?;
             self.collector.on_tokenized(uuid, tokenized_ms);
         }
         Ok(changed)
@@ -1069,6 +1079,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -1512,6 +1523,7 @@ where
             let topology = self.engine.worker_topology(id).unwrap_or(WorkerTopology {
                 worker_id: id,
                 scheduler_ids: Vec::new(),
+                router_hint: self.engine.accepts_kv_hints(),
             });
             let placements = self.placement.worker_draining(topology, self.now_ms)?;
             released.extend(placements.iter().map(|placement| placement.request_id));
@@ -1526,6 +1538,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -1760,6 +1773,7 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.kvcr = self.engine.kvcr_stats();
         self.collector.g2_domains = self.engine.g2_domains();
         if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
             self.collector.set_agentic_snapshots(snapshots);
@@ -2779,6 +2793,7 @@ mod host_offload_tests {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 }),
                 released: Vec::new(),
@@ -2819,6 +2834,7 @@ mod host_offload_tests {
                     scheduler_id: 1,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 })
                 .collect())
@@ -3174,8 +3190,8 @@ where
     }
 
     /// Drain the accumulated measurements into a report stamped with `wall_ms`,
-    /// leaving this runtime's collector empty. G3 counters remain cumulative
-    /// over the reusable runtime, like its retained cache contents.
+    /// leaving this runtime's collector empty. G3 and KVCR counters remain
+    /// cumulative over the reusable runtime, like its retained cache contents.
     pub(crate) fn take_report_dynamic(
         &mut self,
         wall_ms: f64,
@@ -3189,6 +3205,7 @@ where
         self.collector
             .set_runtime_evidence(std::mem::replace(&mut self.evidence, next_evidence).finish());
         self.collector.g3_offload = self.engine.g3_stats();
+        self.collector.kvcr = self.engine.kvcr_stats();
         self.collector.g2_domains = self.engine.g2_domains();
         if let Some(phases) = self.admission.agentic_phase_evidence() {
             self.collector.set_agentic_phases(phases);

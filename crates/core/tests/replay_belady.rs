@@ -21,6 +21,7 @@ fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayReques
         output_token_ids: None,
         dp_rank: None,
         prefill_dp_rank: None,
+        kv_hints: None,
         session_id: None,
         turn_index: None,
         metadata: Value::Null,
