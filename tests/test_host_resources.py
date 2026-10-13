@@ -7,6 +7,7 @@ import gzip
 import json
 import os
 from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -377,6 +378,32 @@ def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypa
     assert received[0][1] == received[1][1]
     assert searched[0] == received[0][1]
     assert searched[0].isl == received[0][1].isl
+
+
+def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    raw = _config()
+    raw["traffic"]["load"]["concurrency"] = 8
+    config = CoreRecommendationConfig.model_validate(raw)
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    factories = []
+
+    class CaptureSweeper:
+        def __init__(self, *, runner_factory, **kwargs):
+            factories.append(runner_factory)
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    resolved = EngineReplayRunnerFactory()
+    assert recommendation._run_recommendation(config, stack="engine", runner_factory=resolved) == "result"
+
+    assert factories[0].factory == replace(resolved, trace_graph_cache=True)
+    assert resolved.trace_graph_cache is False
 
 
 def test_resource_refusal_is_not_a_failed_replay_observation():

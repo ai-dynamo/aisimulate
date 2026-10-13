@@ -368,25 +368,35 @@ pub fn load_weka_agentic_graph_with_options(
     expected_block_size: Option<usize>,
     options: WekaImportOptions,
 ) -> Result<(AgenticTrace, WekaResolvedTimestampBasis)> {
-    load_weka_agentic_graph_with_cache_status(path.as_ref(), expected_block_size, options)
+    load_weka_agentic_graph_cached(path.as_ref(), expected_block_size, options, false)
         .map(|(graph, resolved, _cache_hit)| (graph, resolved))
 }
 
-fn load_weka_agentic_graph_with_cache_status(
+/// Loads a Weka corpus, optionally through the process-wide graph cache.
+///
+/// The cache keeps a full copy of the graph for the life of the process, so
+/// only callers that load the same corpus repeatedly, such as sweep workers,
+/// should use it. Returns whether the graph came from the cache.
+pub(crate) fn load_weka_agentic_graph_cached(
     path: &Path,
     expected_block_size: Option<usize>,
     options: WekaImportOptions,
+    use_cache: bool,
 ) -> Result<(AgenticTrace, WekaResolvedTimestampBasis, bool)> {
     let canonical_path = canonical_source_path(path)?;
     let cache = WEKA_GRAPH_CACHE.get_or_init(|| Mutex::new(WekaGraphCache::default()));
     let path_key = (canonical_path.clone(), options.nested_timestamp_basis);
 
-    let known_digest = cache
-        .lock()
-        .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
-        .path_digests
-        .get(&path_key)
-        .cloned();
+    let known_digest = if use_cache {
+        cache
+            .lock()
+            .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?
+            .path_digests
+            .get(&path_key)
+            .cloned()
+    } else {
+        None
+    };
     if let Some(known_digest) = known_digest {
         // A path is only a lookup hint. Re-hash its current bytes before every
         // reuse so replacing or editing a corpus can never return a stale
@@ -425,6 +435,9 @@ fn load_weka_agentic_graph_with_cache_status(
     let mut builder = AgenticGraphBuilder::new(header)?;
     importer.for_each_row(|row| builder.push(row))?;
     let graph = builder.finish()?;
+    if !use_cache {
+        return Ok((graph, resolved_timestamp_basis, false));
+    }
     let mut cache = cache
         .lock()
         .map_err(|_| anyhow!("Weka graph cache lock is poisoned"))?;
@@ -3060,32 +3073,55 @@ mod tests {
         let path = directory.path().join("trace.json");
         write_trace(&path, serde_json::json!([request(0.0, 4, 1, &[1])]));
 
-        let (first, _, first_hit) =
-            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
-                .unwrap();
-        let (second, _, second_hit) =
-            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
-                .unwrap();
+        let load = |block_size| {
+            load_weka_agentic_graph_cached(&path, Some(block_size), Default::default(), true)
+        };
+        let (first, _, first_hit) = load(4).unwrap();
+        let (second, _, second_hit) = load(4).unwrap();
         assert!(!first_hit);
         assert!(second_hit);
         assert_eq!(first.identity(), second.identity());
 
         write_trace(&path, serde_json::json!([request(0.0, 8, 0, &[1, 2])]));
-        let (changed, _, changed_hit) =
-            load_weka_agentic_graph_with_cache_status(&path, Some(4), WekaImportOptions::default())
-                .unwrap();
+        let (changed, _, changed_hit) = load(4).unwrap();
         assert!(!changed_hit);
         assert_ne!(first.source().digest, changed.source().digest);
         assert_eq!(changed.nodes()[0].max_output_tokens(), 0);
 
-        let error =
-            load_weka_agentic_graph_with_cache_status(&path, Some(8), WekaImportOptions::default())
-                .unwrap_err();
+        let error = load(8).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("does not match configured block size")
         );
+    }
+
+    #[test]
+    fn uncached_loads_neither_read_nor_fill_the_graph_cache() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("trace.json");
+        // Content no other test writes, so the shared cache cannot hold it.
+        write_trace(
+            &path,
+            serde_json::json!([request(0.0, 12, 3, &[71, 72, 73])]),
+        );
+        let load =
+            |cache| load_weka_agentic_graph_cached(&path, Some(4), Default::default(), cache);
+
+        let (uncached, _, uncached_hit) = load(false).unwrap();
+        let (_, _, repeated_hit) = load(false).unwrap();
+        let (cached, _, first_cached_hit) = load(true).unwrap();
+        assert!(!uncached_hit && !repeated_hit);
+        assert!(
+            !first_cached_hit,
+            "uncached loads must not populate the cache"
+        );
+        assert_eq!(uncached.identity(), cached.identity());
+
+        let (_, _, cached_hit) = load(true).unwrap();
+        let (_, _, bypass_hit) = load(false).unwrap();
+        assert!(cached_hit);
+        assert!(!bypass_hit, "uncached loads must not read the cache");
     }
 
     #[test]

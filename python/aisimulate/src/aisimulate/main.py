@@ -32,11 +32,11 @@ from .config_adapter import (
 from .detail import build_prediction_details, energy_diagnostics
 from .estimator_readiness import perf_data_missing_message
 from .output import (
-    format_prediction_stdout,
     format_recommendation_stdout,
     prepare_output_directory,
     write_fpm_coverage,
     write_prediction_report,
+    write_prediction_stdout,
     write_recommendation_csv,
     write_recommendation_result,
     write_recommendations,
@@ -235,14 +235,13 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             f"saved full report to: {report_path}\n"
         )
         return 1
-    sys.stdout.write(
-        format_prediction_stdout(
-            summary,
-            args.format,
-            details=details,
-            power_diagnostics=power_diagnostics,
-            diagnostics_top_n=args.diagnostics_top_n,
-        )
+    write_prediction_stdout(
+        sys.stdout,
+        summary,
+        args.format,
+        details=details,
+        power_diagnostics=power_diagnostics,
+        diagnostics_top_n=args.diagnostics_top_n,
     )
     sys.stdout.write("\n")
     if args.format == "table":
