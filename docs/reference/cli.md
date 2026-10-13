@@ -318,6 +318,14 @@ Unsupported stack, backend, or policy combinations are reported as errors.
 
 ## Troubleshooting
 
+When no requests complete, `predict` saves its report but exits `1`. The table
+marks the prediction invalid; JSON includes `prediction_status: invalid`,
+`stop_reason: no_completed_requests`, and an actionable `diagnostic`. Serving
+latency and throughput values, including processing-rate aliases, are `null`
+(unavailable), not valid zero samples. The invalid banner also appears in analytical EPD tables.
+The stop reason identifies the observed outcome, not a proven scheduler cause.
+Check KV capacity against request lengths, context limits, and traffic stop limits.
+
 | Symptom | What to check | Example fix |
 |---|---|---|
 | `aisimulate: command not found` | The environment containing AISimulate must be active. | From the tutorial directory, run `source .venv/bin/activate`, then `python -m pip show aisimulate`. |
