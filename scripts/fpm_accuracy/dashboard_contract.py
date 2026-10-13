@@ -10,7 +10,16 @@ import math
 import re
 import zipfile
 
-from scripts.fpm_accuracy.contract import COUNTS, HF_REPO, METHODS, keys, require, sha, strict_json, validate_summary
+from scripts.fpm_accuracy.contract import (
+    COUNTS,
+    HF_REPO,
+    LEGACY_METHODS,
+    keys,
+    require,
+    sha,
+    strict_json,
+    validate_summary,
+)
 
 BASELINE = "8dad9634735b6875e22a90927216e542e73ba237"
 MAX_FILE = 64 * 1024 * 1024
@@ -309,7 +318,8 @@ def population(summary):
             row["membership_sha256"],
             row["parser_policy_id"],
             row["ordering"],
-            [(method, row["results"].get(method, {}).get("artifact")) for method in METHODS],
+            # FPM inputs only: adding a method without inputs is not a population change.
+            [(method, row["results"].get(method, {}).get("artifact")) for method in LEGACY_METHODS],
         )
         for row in summary["rows"]
     )

@@ -271,3 +271,30 @@ def test_fpm_entrypoints_do_not_shadow_standard_library_types(module):
     )
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_summary_methods_accept_legacy_and_learned_lists(summary):
+    from scripts.fpm_accuracy.contract import LEGACY_METHODS, validate_summary
+
+    def fresh():
+        return json.loads(json.dumps(summary))
+
+    current = fresh()
+    validate_summary(current)
+    legacy = fresh()
+    legacy["methods"] = list(LEGACY_METHODS)
+    for row in legacy["rows"]:
+        row["results"].pop("learned", None)
+    validate_summary(legacy)
+    mixed = fresh()
+    mixed["methods"] = list(LEGACY_METHODS)  # rows still carry learned
+    with pytest.raises(ValueError, match="unexpected or missing public fields"):
+        validate_summary(mixed)
+    reordered = fresh()
+    reordered["methods"] = ["learned", *LEGACY_METHODS]
+    with pytest.raises(ValueError, match="unexpected predictors"):
+        validate_summary(reordered)
+    with_input = fresh()
+    with_input["rows"][0]["results"]["learned"]["artifact"] = with_input["rows"][0]["results"]["warmup"]["artifact"]
+    with pytest.raises(ValueError, match="learned has no FPM input"):
+        validate_summary(with_input)

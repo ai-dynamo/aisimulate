@@ -231,6 +231,10 @@ async def check_evaluation_banner(page, date="2026-09-17"):
 async def check_predictor_views(page, url, data, screenshot):
     """Unequal counts distinguish configuration means from weighted/model means."""
     summary = copy.deepcopy(data)
+    # Learned scores alternate observations only: it gets its own column but never wins Best,
+    # even with the lowest MAPE.
+    for row in summary["rows"]:
+        row["results"]["learned"]["metrics"]["all"]["mape_pct"] = 0.5
     second = copy.deepcopy(summary["rows"][0])
     second.update(configuration_id="alpha-small", parallelism="tp8", measurement_count=10)
     for method, mape in (("regression", 20), ("warmup", 0), ("nowarmup", None)):
@@ -276,8 +280,10 @@ async def check_predictor_views(page, url, data, screenshot):
     await page.get_by_role("link", name="Predictors", exact=True).click()
     await expect(page.locator('.fpm-tabs [aria-current="page"]')).to_have_text("Predictors")
     await check_evaluation_banner(page)
-    await expect(page.locator(".summary-card")).to_have_count(3)
-    await expect(page.locator("thead th")).to_have_count(8)
+    await expect(page.locator(".summary-card")).to_have_count(4)
+    await expect(page.locator("thead th")).to_have_count(9)
+    await expect(page.locator("#learned-value")).to_have_text("0.50%")
+    await expect(page.locator("#learned-count")).to_have_text("3 / 4 configurations with MAPE")
     await expect(page.locator("#overview-body")).not_to_contain_text("predicted")
     await expect(page.locator("#overview-body")).not_to_contain_text("coverage")
     await expect(page.locator("#regression-value")).to_have_text("20.83%")
@@ -410,6 +416,10 @@ async def check():
             summary["snapshot"]["branch"] = branch
             if branch != "main":
                 summary["rows"][0]["model"] = "Release/Alpha"
+                # Evaluations published before the learned method list three methods.
+                summary["methods"] = summary["methods"][:3]
+                for row in summary["rows"]:
+                    row["results"].pop("learned", None)
                 summary["snapshot"].update(run_id="456", run_attempt="2")
             path = f"branches/{artifact_key(branch)}/summary.json"
             target = site / "fpm-accuracy" / path

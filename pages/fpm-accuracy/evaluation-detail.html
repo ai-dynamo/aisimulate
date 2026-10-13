@@ -28,7 +28,7 @@ SPDX-License-Identifier: Apache-2.0
       }
     </script>
     <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
-    <link rel="stylesheet" href="./styles.css?v=compact-workload-text-1" />
+    <link rel="stylesheet" href="./styles.css?v=learned-method-1" />
   </head>
   <body>
     <header class="top-header">
@@ -88,7 +88,7 @@ SPDX-License-Identifier: Apache-2.0
 <label class="fpm-wide-control">Configuration<select id="configuration-filter"></select></label><p id="detail-evidence"></p>
 <section id="dataset-workload" class="matrix-panel" aria-live="polite"></section>
 <section class="matrix-panel table-scroll"><h3>Phase summary</h3><table id="phase-summary"></table></section>
-<section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option></select></label>
+<section class="fpm-filters"><label>Method<select id="method-filter"><option value="regression">Regression</option><option value="warmup">FPM (KV warmup on)</option><option value="nowarmup">FPM (KV warmup off)</option><option value="learned">Learned (fpm5)</option></select></label>
 <label>Workload<select id="phase-filter"><option>prefill</option><option>decode</option><option>mixed</option></select></label></section>
 <p id="variant-evidence" class="variant-evidence"></p>
 <div class="fpm-heatmaps"><section class="matrix-panel table-scroll"><h3>Measured workload distribution</h3><div id="distribution"></div></section>
@@ -96,6 +96,6 @@ SPDX-License-Identifier: Apache-2.0
 <p>Only measured traffic contributes to these maps. MAPE uses successful predictions; missing predictions reduce coverage.</p></main>
     <script src="./navigation.js?v=collection-parquet-1" defer></script>
     <script src="./collection.js?v=plain-collection-summary-1" defer></script>
-    <script src="./dashboard.js?v=collection-parquet-1" defer></script>
+    <script src="./dashboard.js?v=learned-method-1" defer></script>
   </body>
 </html>

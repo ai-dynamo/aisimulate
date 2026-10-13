@@ -13,7 +13,9 @@ from pathlib import PurePosixPath
 
 REPO = "ai-dynamo/aisimulate"
 HF_REPO = "nvidia/aisimulate-fpm-dataset"
-METHODS = ("warmup", "nowarmup", "regression")
+# Evaluations before the learned method publish LEGACY_METHODS; both remain valid.
+LEGACY_METHODS = ("warmup", "nowarmup", "regression")
+METHODS = (*LEGACY_METHODS, "learned")
 WORKLOADS = ("all", "prefill", "decode", "mixed")
 COUNTS = ("measured_count", "predicted_count", "unavailable_count", "error_count", "tuning_error_count")
 
@@ -75,7 +77,7 @@ def strict_json(data):
 def validate_summary(summary):
     keys(summary, ("schema_version", "snapshot", "methods", "rows"))
     require(type(summary["schema_version"]) is int and summary["schema_version"] in (1, 2), "unsupported schema")
-    require(summary["methods"] == list(METHODS), "unexpected predictors")
+    require(summary["methods"] in (list(LEGACY_METHODS), list(METHODS)), "unexpected predictors")
     snapshot = summary["snapshot"]
     keys(
         snapshot,
@@ -216,7 +218,7 @@ def validate_summary(summary):
         )
         for name in ("measurement_count", "skipped_count"):
             require(type(row[name]) is int and row[name] >= 0, "invalid measurement count")
-        keys(row["results"], METHODS if row["status"] == "ready" else ())
+        keys(row["results"], summary["methods"] if row["status"] == "ready" else ())
         for method, result in row["results"].items():
             keys(result, ("status", "artifact", "metrics"))
             require(
@@ -225,7 +227,7 @@ def validate_summary(summary):
             )
             artifact = result["artifact"]
             if artifact is not None:
-                require(method != "regression", "regression has no FPM input")
+                require(method in ("warmup", "nowarmup"), f"{method} has no FPM input")
                 keys(artifact, ("id", "path", "sha256", "metadata_path", "metadata_sha256"))
                 text(artifact["id"])
                 for name in ("path", "metadata_path"):
