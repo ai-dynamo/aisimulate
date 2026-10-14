@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 SLOTS = {"current": "0.24.0", "next": "0.27.1"}
 
 
-@pytest.mark.parametrize("mode", ["auto", "op_level"])
+@pytest.mark.parametrize("mode", ["auto", "op_level", "fpm_interpolation"])
 def test_a100_fp8_is_rejected_before_replay(mode):
     config = ForwardPassPerfModelConfig(
         model="Qwen/Qwen3-32B-FP8",
