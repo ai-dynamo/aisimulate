@@ -642,8 +642,6 @@ def _bind_sglang_cli_args(cli_args: str, prefix: str) -> str:
         "--kv-cache-dtype": "$[[ variables.KV_CACHE_DTYPE ]]",
         "--cuda-graph-bs": f"$[[ variables.{prefix}_CUDA_GRAPH_BS ]]",
         "--cuda-graph-bs-decode": f"$[[ variables.{prefix}_CUDA_GRAPH_BS ]]",
-        "--cuda-graph-max-bs": f"$[[ variables.{prefix}_BATCH_SIZE ]]",
-        "--cuda-graph-max-bs-decode": f"$[[ variables.{prefix}_BATCH_SIZE ]]",
         "--speculative-algorithm": f"$[[ variables.{prefix}_SPECULATIVE_ALGORITHM ]]",
     }
     attention_var = f"$[[ variables.{prefix}_ENABLE_ATTENTION_DP ]]"

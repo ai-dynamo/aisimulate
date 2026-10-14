@@ -76,6 +76,8 @@ def test_sglang_graph_options_match_runtime(version, mode, target):
                 assert bs_flag + " " in script
                 assert max_flag + " " in script
         sflow = artifacts["sflow.yaml"]
+        # Graph capture maximum is independent of the serving request limit.
+        assert max_flag + " 16" in sflow
         for role, sizing in request.topology.roles.items():
             prefix = {"agg": "AGG", "prefill": "CTX", "decode": "GEN"}[role]
             assert bs_flag + " ${{ variables." + prefix + "_CUDA_GRAPH_BS }}" in sflow

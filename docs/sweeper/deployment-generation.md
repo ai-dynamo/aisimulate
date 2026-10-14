@@ -159,6 +159,7 @@ when benchmark rules set them on a prefill worker. SGLang's separate
 `--cuda-graph-bs-prefill` controls prefill **token** capture sizes; the generator
 leaves it at the runtime default instead of copying request batch sizes into it.
 Kubernetes, run scripts, sflow and Slurm use the same versioned CLI output.
+Expanded sflow preserves the graph capture maximum separately from the serving batch limit.
 Older runtime images should use an explicit backend version rather than `current`.
 
 ## 4. Launch on the serving host
