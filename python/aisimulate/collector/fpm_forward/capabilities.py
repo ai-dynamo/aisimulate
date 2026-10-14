@@ -297,6 +297,10 @@ def resolve_model_capability(
     context_op, generation_op = _attention_ops(source_name)
     requested_kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv_cache_dtypes))
     resolved_kv = tuple(dict.fromkeys(native_kv if value == "auto" else value for value in requested_kv))
+    # vLLM v0.27.0 config/cache.py:CacheDType has no literal "int8" option.
+    # Do not restrict valid KV alternatives to the checkpoint-inferred default.
+    if checkpoint_native_dtypes and backend == "vllm" and "int8" in resolved_kv:
+        raise ValueError("vLLM FPM collection does not support KV-cache dtype 'int8'; select bfloat16 or fp8")
     database = None
     if not checkpoint_native_dtypes:
         database = get_database(system, backend, version)

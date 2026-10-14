@@ -620,6 +620,23 @@ def test_missing_requested_topology_raises_before_memory_admission(monkeypatch, 
         _plan(profile)
 
 
+def test_versioned_vllm_collection_rejects_invalid_int8_cache_token(no_models_or_timing_data):
+    profile = _profile()
+    with pytest.raises(ValueError, match="vLLM FPM collection does not support KV-cache dtype 'int8'"):
+        capabilities.resolve_model_capability(
+            backend="vllm",
+            model_path=profile["model"],
+            model_architecture=profile["architecture"],
+            selected_ops={"dsa_context_module", "dsa_generation_module"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("int8",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_profile_collection_rejects_kv_dtype_missing_from_profile(no_models_or_timing_data):
     profile = _profile()
     options = replace(
