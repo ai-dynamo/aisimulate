@@ -146,6 +146,31 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
+def _assert_native_afd_prediction(
+    output: Path, summary: dict[str, Any], *, mode: str, role_types: dict[str, str]
+) -> None:
+    report = json.loads((output / "prediction.json").read_text(encoding="utf-8"))
+    saved_summary = report.get("summary", report)
+    for field, expected in (("completed_requests", 4), ("total_input_tokens", 32), ("total_output_tokens", 12)):
+        assert summary[field] == saved_summary[field] == expected
+    replay_spec = json.loads((output / "afd-replay-spec.json").read_text(encoding="utf-8"))
+    qualification = json.loads((output / "afd-qualification.json").read_text(encoding="utf-8"))
+    deployment = replay_spec["backend_deployment"]
+    assert replay_spec["api_version"] == 1
+    assert deployment["deployment_mode"] == qualification["identity"]["deployment_mode"] == mode
+    assert qualification["schema_version"] == 2
+    assert qualification["qualification"]["status"] == "qualified_for_replay_contract"
+    assert qualification["qualification"]["native_deployment_supported"] is False
+    assert qualification["deployment_plan"]["launch"]["supported"] is False
+    roles = qualification["deployment_plan"]["roles"]
+    assert {role: plan["type"] for role, plan in roles.items()} == role_types
+    for role, worker_type in role_types.items():
+        if worker_type == "afd":
+            assert roles[role]["schema_version"] == 2
+            assert roles[role]["performance_model"]["provider"] == "afd"
+            assert deployment["performance_model_metadata"][role]["provider"] == "afd"
+
+
 # Inferred state geometry: model, fixed blocks fitting one state-bearing request, expected report.
 _AUTO_STATE = {
     "auto-k3": (
@@ -305,17 +330,7 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     assert summary["completed_requests"] > 0
     assert saved_summary["completed_requests"] == summary["completed_requests"]
     if config_path.name == "11-synthetic-afd.yaml":
-        replay_spec = json.loads((output / "afd-replay-spec.json").read_text(encoding="utf-8"))
-        qualification = json.loads((output / "afd-qualification.json").read_text(encoding="utf-8"))
-        assert replay_spec["backend_deployment"]["deployment_mode"] == "afd"
-        assert qualification["qualification"] == {
-            "execution": "analytical_foreground",
-            "native_deployment_reason": (
-                "AISimulate does not provide a physical AFD serving adapter or launch renderer"
-            ),
-            "native_deployment_supported": False,
-            "status": "qualified_for_analytical_replay",
-        }
+        _assert_native_afd_prediction(output, summary, mode="agg", role_types={"aggregated": "afd"})
     if "-trace-weka-" in config_path.name:
         assert "heuristically resolved one nested timestamp basis" in result.stderr
         assert "complete Weka corpus" in result.stderr
@@ -400,7 +415,7 @@ def test_agentx_replay_cli_table_and_help_identify_qualification(tmp_path: Path)
     ids=lambda path: path.stem,
 )
 def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path) -> None:
-    CoreRecommendationConfig.from_yaml(config_path)
+    requested = CoreRecommendationConfig.from_yaml(config_path)
     output = tmp_path / config_path.stem
     result = _run_cli(
         "recommend",
@@ -464,13 +479,16 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             for key in ("mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
                 assert metrics[key] == pytest.approx(candidate.metrics[key])
         if config_path.name == "07-afd-plus-pd.yaml":
-            qualification = json.loads((prediction_output / "afd-qualification.json").read_text(encoding="utf-8"))
-            assert qualification["identity"]["deployment_mode"] == "afd+pd"
-            assert qualification["deployment_plan"]["pools"]["companion"]["role"] in {
-                "prefill",
-                "decode",
-            }
-            assert qualification["deployment_plan"]["launch"]["supported"] is False
+            assert concrete.engine.model == requested.engine.model == "Qwen/Qwen3-30B-A3B"
+            assert concrete.engine.backend_version == requested.engine.backend_version == "0.5.14"
+            for role in ("prefill", "decode"):
+                assert getattr(concrete.engine.workers, role).type == getattr(requested.engine.workers, role).type
+            _assert_native_afd_prediction(
+                prediction_output,
+                json.loads(prediction.stdout),
+                mode="disagg",
+                role_types={"prefill": "monolithic", "decode": "afd"},
+            )
 
     if config_path.name == "06-override-parallel-mappings-agg-disagg.yaml":
         assert generated_modes == {"aggregated", "disaggregated"}

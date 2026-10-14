@@ -1,0 +1,1193 @@
+{
+  "cases": {
+    "deepseek_v32_tp2": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "deepseek-ai/DeepSeek-V3.2",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "two_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 269.275938,
+        "mean_tpot_ms": 24.976877,
+        "mean_ttft_ms": 94.437799,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "54ec6ba85797c83b75d9dd117c491d7fdb51b438421dc748c9b344dc28d6920e",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "deepseek_v32_tp4_trace": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "deepseek-ai/DeepSeek-V3.2",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 4
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {}
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 264.831897,
+        "mean_tpot_ms": 18.85205929464286,
+        "mean_ttft_ms": 114.62633,
+        "total_input_tokens": 576,
+        "total_output_tokens": 34
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "845e0ff10669ff3a9a3bec59472b223ce3a5ea1979387e47308c4153909f5fce",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": "251ab0118ad1739ae119f968bb71babe0568f57ddf593278acc72490bffb66f6"
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": true
+    },
+    "deepseek_v3_tp1": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "deepseek-ai/DeepSeek-V3",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 1
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 252.51240199999995,
+        "mean_tpot_ms": 29.213496999999993,
+        "mean_ttft_ms": 48.017922999999996,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "625394af5b084d0fcc23b19236478cc4907d60a2f89b50099d74ca42309c2422",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "mimo_tp2": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "XiaomiMiMo/MiMo-V2-Flash",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 109.85842400000001,
+        "mean_tpot_ms": 12.673601000000003,
+        "mean_ttft_ms": 21.143217,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "d4d64d7802d9f8cc94feeddaf1900c6a4d5c83658874a1ab1f4afabd4a9b6d6a",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "mimo_tp4_trace": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "XiaomiMiMo/MiMo-V2-Flash",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "two_stage",
+                "tp_a": 4
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {}
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 94.11118700000002,
+        "mean_tpot_ms": 8.317731991071431,
+        "mean_ttft_ms": 27.899058,
+        "total_input_tokens": 576,
+        "total_output_tokens": 34
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "84f55616db4e03481133abbf1abc1ff7a38a441831242f054a9944da6daac351",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": "251ab0118ad1739ae119f968bb71babe0568f57ddf593278acc72490bffb66f6"
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": true
+    },
+    "qwen_tp1_mtp": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "nextn": 3,
+          "nextn_accepted": 1.5,
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 1
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 46.764711000000005,
+        "mean_tpot_ms": 4.8529542857142856,
+        "mean_ttft_ms": 12.794031,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "88224c67eaf742054e69353def7427601f1d04393b6ae150b84fe57d35a05402",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "oracle": "Native replay with nextn=3; injected communication work is 17/16 for 48 target layers, independently anchored by Rust MTP communication tests.",
+      "trace": false
+    },
+    "qwen_tp2": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 66.74191300000001,
+        "mean_tpot_ms": 7.703450000000002,
+        "mean_ttft_ms": 12.817763,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "8506c004d18b22465e507785aaacfafcc0a75b45da0207eb3d51255c5554897b",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp2_cached_chunked": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "chunked_prefill_size": 128,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 1,
+            "type": "concurrency"
+          },
+          "source": {
+            "cached_prefix_tokens": 256,
+            "input_tokens": 512,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 332.098849,
+        "mean_tpot_ms": 7.852440999999999,
+        "mean_ttft_ms": 28.05762525,
+        "total_input_tokens": 2048,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "bd653973585319e370150600025ef9766fe6d6c8cb8bf4d3c3fa0397fb17e979",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp2_hetero": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "f_system": "b200_sxm",
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 59.08718999999999,
+        "mean_tpot_ms": 7.008021999999999,
+        "mean_ttft_ms": 10.031036,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "2c8e793df9081117985fe7f6d1dabff8a22ede872629dcc2304ac37ce14757f1",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp2_mtp": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "nextn": 3,
+          "nextn_accepted": 1.5,
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 43.45337,
+        "mean_tpot_ms": 4.3765152857142855,
+        "mean_ttft_ms": 12.817763,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "15963a9b45b3eba436e5a4db5f9329f937c1dca39d045f52498783e59ef208cc",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "oracle": "Native replay with nextn=3; injected communication work is 17/16 for 48 target layers, independently anchored by Rust MTP communication tests.",
+      "trace": false
+    },
+    "qwen_tp2_pd_decode": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "disaggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "decode": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            },
+            "prefill": {
+              "parallelism": {
+                "attention_data": 1,
+                "moe_expert": 8,
+                "moe_tensor": 1,
+                "pipeline": 1,
+                "replicas": 1,
+                "tensor": 8
+              }
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 101.44430400000003,
+        "mean_tpot_ms": 7.703450000000004,
+        "mean_ttft_ms": 34.039116500000006,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "06d966ea8bf146e347a6fdfddf7303a19819b1802b75dcd8ebda270747278943",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp2_pd_prefill": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "disaggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "decode": {
+              "parallelism": {
+                "attention_data": 1,
+                "moe_expert": 8,
+                "moe_tensor": 1,
+                "pipeline": 1,
+                "replicas": 1,
+                "tensor": 8
+              }
+            },
+            "prefill": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 2
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 53.33737000000001,
+        "mean_tpot_ms": 5.065056714285715,
+        "mean_ttft_ms": 17.881973,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "fcd0ec47274b06fb4ad019de87bc013d485bcbabb4994b742eb7c2a7125a7a86",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp4": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "two_stage",
+                "tp_a": 4
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 66.75144599999999,
+        "mean_tpot_ms": 7.730126999999998,
+        "mean_ttft_ms": 12.640557,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "d9eb300fd60caeae4daa549ed8fc79f92019eb40eb7a128cf78a072b384d9d39",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    },
+    "qwen_tp8": {
+      "config": {
+        "engine": {
+          "backend": "sglang",
+          "backend_version": "0.5.14",
+          "context_length": 2048,
+          "hardware": "h200_sxm",
+          "mode": "aggregated",
+          "model": "Qwen/Qwen3-30B-A3B",
+          "workers": {
+            "aggregated": {
+              "afd": {
+                "a_batch_size": 4,
+                "n_a_nodes": 1,
+                "n_f_nodes": 1,
+                "num_microbatches": 2,
+                "pipeline_layout": "four_stage",
+                "tp_a": 8
+              },
+              "type": "afd"
+            }
+          }
+        },
+        "evaluation": {
+          "sla": {
+            "itl_ms": 30,
+            "ttft_ms": 800
+          }
+        },
+        "traffic": {
+          "load": {
+            "concurrency": 4,
+            "type": "concurrency"
+          },
+          "source": {
+            "input_tokens": 128,
+            "output_tokens": 8,
+            "type": "synthetic"
+          },
+          "stop": {
+            "requests": 4
+          }
+        }
+      },
+      "expected": {
+        "completed_requests": 4,
+        "duration_ms": 62.48172099999999,
+        "mean_tpot_ms": 7.214607999999999,
+        "mean_ttft_ms": 11.979465,
+        "total_input_tokens": 512,
+        "total_output_tokens": 32
+      },
+      "generation": {
+        "baseline_commit": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+        "binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+        "build_command": "PYO3_PYTHON=<venv>/bin/python cargo rustc -p aisimulate-core --release --features extension-module --offline -- -C link-arg=-undefined -C link-arg=dynamic_lookup",
+        "command": [
+          "aisimulate",
+          "predict",
+          "--stack",
+          "engine",
+          "--config",
+          "<generated-layout.yaml>",
+          "--output-dir",
+          "<temporary>",
+          "--format",
+          "json"
+        ],
+        "config_sha256": "79664422fc7d74ed2d1e28908b0d08f10b62fcb0618a3bbac195db079c195f75",
+        "data_tree": "40309de023ff69daa42589ca958a382c704cf576",
+        "features": [
+          "extension-module"
+        ],
+        "native_source_commit": "4849d6676280aafe963d795a757d087a24d8f8a7",
+        "reason": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+        "source_commit": "7392d688601c99c5048fba27c70547a586495c2c",
+        "source_tree": "b3bbc557dc6d0f54f9ef0de5ab734ea929da8617",
+        "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)",
+        "trace_sha256": null
+      },
+      "modeling_change": "Conserve actual replica/microbatch token populations and schedule return combine, shared merge and token all-gather on A after transfer; preserve source-layer dependencies and shared hardware precision resolution. Request/token/GPU accounting remains unchanged.",
+      "trace": false
+    }
+  },
+  "description": "Source-ordered AFD expectations, including pure TP1 and actual-batch prefill.",
+  "schema_version": 1
+}

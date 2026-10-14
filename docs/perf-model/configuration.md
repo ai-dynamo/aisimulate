@@ -71,8 +71,9 @@ agg configurations omit them; AFD derives pool identities through the same
 | `afd_pool_role` | absent | `a` emits attention, shared and dense computation; `f` emits routed computation. Used for selective pool compilation and retained in canonical/cache identity. |
 
 Selective pool compilation requires SGLang, PP1/CP1/DCP1 and op-level estimation.
-Every AFD pool carries its role and a typed source layer plan. Public YAML is
-described in [the analytical engine configuration](../replay/engine/analytical.md).
+Every AFD pool carries its role and a typed source layer plan. See
+[AFD execution plans](../sweeper/afd-topology.md#performance-model) for ownership
+and [AFD configuration](../replay/engine/analytical.md#afd) for public YAML.
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 

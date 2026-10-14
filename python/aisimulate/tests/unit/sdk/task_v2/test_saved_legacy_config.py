@@ -101,7 +101,7 @@ def test_removed_serving_mode_has_actionable_migration_error(use_override):
         Task.from_yaml(saved, **overrides)
     assert "aisimulate recommend" in str(caught.value)
     assert "aisimulate predict" in str(caught.value)
-    assert "engine.afd" in str(caught.value)
+    assert "workers.<role>.afd" in str(caught.value)
 
 
 def test_valid_serving_mode_override_takes_precedence():

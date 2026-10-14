@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import heapq
 import importlib
 import json
 import logging
@@ -18,23 +17,28 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
-from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate.sweeper.afd_parallel import AFDTopology, validate_afd_model
+from aisimulate_core._native import (
+    AFD_DEFAULT_ROUTING_LOCATION,
+    resolve_afd_parallelism,
+    validate_afd_attention_tp,
+    validate_afd_routing_location,
+)
 
-from .capacity import materialize_aic_num_gpu_blocks
+from .capacity import materialize_aic_num_gpu_blocks, resolve_model_context_length
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
 from .power import normalize_power_summary, power_metadata
-from .sweeper.afd_engine import AFDForegroundEngine
-from .sweeper.afd_parallel import AFDPhase, AFDTopology
-from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
+    REPLAY_SPEC_API_VERSION,
     BackendDeploymentSpec,
     EncoderPoolSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
     RunnerCapabilities,
+    resolve_afd_replay_identity,
 )
 from .traffic import materialize_configured_traffic
 
@@ -47,12 +51,6 @@ _SUPPORTED_BACKEND_TOPOLOGIES = (
     ("sglang", "disagg"),
     ("trtllm", "agg"),
     ("trtllm", "disagg"),
-    ("vllm", "afd"),
-    ("vllm", "afd+pd"),
-    ("sglang", "afd"),
-    ("sglang", "afd+pd"),
-    ("trtllm", "afd"),
-    ("trtllm", "afd+pd"),
 )
 
 _RUNTIME_TRAFFIC_FIELDS = frozenset(
@@ -137,227 +135,6 @@ class EngineReplayRuntime(Protocol):
 
 
 @dataclass(frozen=True)
-class AFDCompanionTiming:
-    """Static opposite-phase timing used by an `afd+pd` replay."""
-
-    phase: AFDPhase | str
-    latency_ms: float
-    batch_capacity_per_worker: int
-    workers: int
-    provenance: dict[str, JSONValue] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        phase = AFDPhase(self.phase)
-        if phase is AFDPhase.BOTH:
-            raise ValueError("AFD companion timing must describe prefill or decode")
-        if (
-            isinstance(self.latency_ms, bool)
-            or not isinstance(self.latency_ms, (int, float))
-            or not math.isfinite(float(self.latency_ms))
-            or self.latency_ms <= 0.0
-        ):
-            raise ValueError("AFD companion latency_ms must be finite and positive")
-        _positive_int(self.batch_capacity_per_worker, "AFD companion batch_capacity_per_worker")
-        _positive_int(self.workers, "AFD companion workers")
-        object.__setattr__(self, "phase", phase)
-        object.__setattr__(self, "latency_ms", float(self.latency_ms))
-
-    @property
-    def total_batch_capacity(self) -> int:
-        return self.batch_capacity_per_worker * self.workers
-
-
-@runtime_checkable
-class AFDCompanionPerformanceModel(Protocol):
-    """Measure the regular P/D side of an `afd+pd` deployment."""
-
-    def measure(self, spec: ReplaySpec) -> AFDCompanionTiming: ...
-
-
-class AICAFDCompanionPerformanceModel:
-    """Use AIC static estimation for the regular companion phase."""
-
-    def __init__(self, estimator: Any | None = None) -> None:
-        self._estimator = estimator
-
-    def measure(self, spec: ReplaySpec) -> AFDCompanionTiming:
-        deployment = spec.backend_deployment
-        role = _afd_companion_role(deployment)
-        raw_args = deployment.prefill_engine_args if role == "prefill" else deployment.decode_engine_args
-        args = _required_engine_args(raw_args, role)
-        workload = spec.workload
-        isl = _positive_int(workload.get("isl"), "isl")
-        osl = _positive_int(workload.get("osl"), "osl")
-        token_capacity = _positive_int(args.get("max_num_batched_tokens"), f"{role}_max_num_batched_tokens")
-        sequence_capacity = _positive_int(args.get("max_num_seqs"), f"{role}_max_num_seqs")
-        tokens_per_sequence = isl if role == "prefill" else 1
-        batch_capacity = min(sequence_capacity, max(1, token_capacity // tokens_per_sequence))
-        workers = deployment.num_prefill_workers if role == "prefill" else deployment.num_decode_workers
-        workers = _positive_int(workers, f"num_{role}_workers")
-
-        timing_model = args.get("timing_model")
-        if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
-            if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["moe_kernel_source"]):
-                raise ValueError("moe_kernel_source is not supported by fixed AFD companion timing")
-            key = "prefill_ms" if role == "prefill" else "decode_ms"
-            latency = _positive_number(timing_model.get(key), f"{role} timing_model.{key}")
-            return AFDCompanionTiming(
-                phase=role,
-                latency_ms=latency,
-                batch_capacity_per_worker=batch_capacity,
-                workers=workers,
-                provenance={"provider": "fixed", "field": key},
-            )
-
-        timing_overrides = _pop_aic_timing_overrides(dict(args), role)
-        estimator = self._estimator
-        if estimator is None:
-            from aisimulate.legacy_cli.api import cli_estimate
-
-            estimator = cli_estimate
-        prefix = f"{role}_"
-        parallel = deployment.parallel_config
-        forward_model = timing_overrides.get("forward_model", "op_level")
-        kwargs: dict[str, Any] = {
-            "mode": "static_ctx" if role == "prefill" else "static_gen",
-            "backend_name": deployment.backend,
-            "backend_version": deployment.backend_version,
-            "forward_model": forward_model,
-            "isl": isl,
-            "osl": osl,
-            "batch_size": batch_capacity,
-            "tp_size": _positive_int(parallel.get(f"{prefix}tp"), f"parallel_config.{prefix}tp"),
-            "pp_size": _positive_int(parallel.get(f"{prefix}pp", 1), f"parallel_config.{prefix}pp"),
-            "attention_dp_size": _positive_int(
-                parallel.get(f"{prefix}attention_dp", 1),
-                f"parallel_config.{prefix}attention_dp",
-            ),
-        }
-        for source, target in (
-            (f"{prefix}moe_tp", "moe_tp_size"),
-            (f"{prefix}moe_ep", "moe_ep_size"),
-        ):
-            if parallel.get(source) is not None:
-                kwargs[target] = _positive_int(parallel[source], f"parallel_config.{source}")
-        # Timing identity must agree with deployment topology and provenance.
-        for identity_field, parameter in (
-            ("backend_version", "backend_version"),
-            ("pp", "pp_size"),
-            ("moe_tp_size", "moe_tp_size"),
-            ("moe_ep_size", "moe_ep_size"),
-        ):
-            if identity_field in timing_overrides and timing_overrides[identity_field] != kwargs.get(parameter):
-                raise ValueError(
-                    f"{role} AFD companion {identity_field}={timing_overrides[identity_field]!r} "
-                    f"conflicts with deployment value {kwargs.get(parameter)!r}; "
-                    "set identity fields in BackendDeploymentSpec"
-                )
-        if args.get("aic_nextn") is not None:
-            kwargs["nextn"] = _positive_int(args["aic_nextn"], "aic_nextn")
-        model_name = args.get("aic_model_path")
-        hardware = args.get("aic_system")
-        if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
-            raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
-        fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
-        has_fpm_selector = "fpm_fmha_dtype" in timing_overrides
-        metric = "ttft" if role == "prefill" else "tpot"
-        source = "aisimulate.legacy_cli.api.cli_estimate"
-        try:
-            if fpm_parquet_path is not None or has_fpm_selector:
-                # The canonical API is the only path that preserves FPM selectors.
-                if forward_model != "fpm":
-                    raise ValueError("FPM controls require forward_model='fpm'")
-                quantization = {}
-                for field, parameter in (
-                    ("gemm_dtype", "gemm_quant_mode"),
-                    ("moe_dtype", "moe_quant_mode"),
-                    ("fmha_dtype", "fmha_quant_mode"),
-                    ("fpm_fmha_dtype", "fpm_fmha_quant_mode"),
-                    ("kv_cache_dtype", "kvcache_quant_mode"),
-                    ("comm_dtype", "comm_quant_mode"),
-                ):
-                    if field in timing_overrides:
-                        quantization[parameter] = timing_overrides[field]
-                sharded_moe = kwargs.get("moe_tp_size", 1) * kwargs.get("moe_ep_size", 1) > 1
-                estimator_config = (
-                    {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
-                    if fpm_parquet_path is not None
-                    else {}
-                )
-                config = ForwardPassPerfModelConfig(
-                    model=model_name,
-                    system=hardware,
-                    backend=deployment.backend,
-                    backend_version=deployment.backend_version,
-                    worker_type=role,
-                    tp=kwargs["tp_size"],
-                    pp=kwargs["pp_size"],
-                    attention_dp=kwargs["attention_dp_size"],
-                    moe_tp_size=kwargs.get("moe_tp_size") if sharded_moe else None,
-                    moe_ep_size=kwargs.get("moe_ep_size") if sharded_moe else None,
-                    nextn=kwargs.get("nextn", 0),
-                    kv_block_size=args.get("block_size"),
-                    estimation_mode="fpm_interpolation",
-                    estimator_config=estimator_config,
-                    systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
-                    **quantization,
-                    **{
-                        name: timing_overrides[name]
-                        for name in (
-                            "attention_backend",
-                            "moe_backend",
-                            "moe_kernel_source",
-                            "enable_eplb",
-                            "wideep_num_slots",
-                            "decoder_replay",
-                            "database_mode",
-                            "enable_shared_layer",
-                            "strict_provenance",
-                        )
-                        if name in timing_overrides
-                    },
-                )
-                model = RustForwardPassPerfModel.best_available(config)
-                try:
-                    latency = model.static_phase_latency(
-                        batch_size=batch_capacity, input_tokens=isl, output_tokens=osl, prefill=role == "prefill"
-                    )
-                    if role == "decode":
-                        latency /= max(1, osl - 1)
-                finally:
-                    model.close()
-                raw = {metric: latency}
-                source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
-            else:
-                if timing_overrides.get("moe_kernel_source") is not None:
-                    raise ValueError("moe_kernel_source is not supported by the AFD companion legacy estimator")
-                result = estimator(model_name, hardware, **kwargs)
-                raw = getattr(result, "raw", None)
-        except Exception as exc:
-            raise InvalidRunnerError(
-                f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
-            ) from exc
-        if not isinstance(raw, Mapping):
-            raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
-        latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
-        return AFDCompanionTiming(
-            phase=role,
-            latency_ms=latency,
-            batch_capacity_per_worker=batch_capacity,
-            workers=workers,
-            provenance={
-                "provider": "aic",
-                "source": source,
-                "backend_version": deployment.backend_version,
-                "forward_model": forward_model,
-                **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
-                **({"fpm_fmha_dtype": timing_overrides["fpm_fmha_dtype"]} if has_fpm_selector else {}),
-                "metric": metric,
-            },
-        )
-
-
-@dataclass(frozen=True)
 class EngineReplayRunnerFactory:
     """Create reusable engine-only Runners for Sweeper candidates.
 
@@ -372,15 +149,11 @@ class EngineReplayRunnerFactory:
     # Only worth its retained memory when one process runs many candidates.
     trace_graph_cache: bool = field(default=False, kw_only=True)
     runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
-    afd_companion_model: AFDCompanionPerformanceModel | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
 
     def capabilities(self) -> RunnerCapabilities:
         return RunnerCapabilities(
-            replay_spec_api_version=1,
+            replay_spec_api_version=REPLAY_SPEC_API_VERSION,
+            supported_worker_types=("monolithic", "afd"),
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
@@ -421,7 +194,6 @@ class EngineReplayRunnerFactory:
             determinism=self.determinism,
             trace_graph_cache=self.trace_graph_cache,
             runtime=self.runtime,
-            afd_companion_model=self.afd_companion_model,
         )
 
 
@@ -435,7 +207,6 @@ class EngineReplayRunner:
     determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
     trace_graph_cache: bool = field(default=False, kw_only=True)
     runtime: EngineReplayRuntime | None = None
-    afd_companion_model: AFDCompanionPerformanceModel | None = None
 
     def _resolve_runtime(self) -> EngineReplayRuntime:
         if self.runtime is not None:
@@ -470,15 +241,16 @@ class EngineReplayRunner:
         output_requirements = output_requirements or ReplayOutputRequirements()
         if self.determinism not in {"random", "canonical_v1"}:
             raise ValueError(f"unsupported replay determinism: {self.determinism!r}")
-        if self.determinism != "random" and (
-            spec.backend_deployment.deployment_mode in {"afd", "afd+pd"} or spec.backend_deployment.encoder is not None
-        ):
+        if self.determinism != "random" and (spec.backend_deployment.encoder is not None):
             raise InvalidRunnerError("canonical determinism requires native text replay")
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
+        if spec.backend_deployment.has_afd and spec.workload.get("images") is not None:
+            raise InvalidRunnerError("image workloads are unsupported for AFD")
         self.capabilities.require_compatible(spec)
+        spec = resolve_afd_replay_identity(spec)
         encoder = spec.backend_deployment.encoder
         if (
             encoder is None
@@ -493,16 +265,6 @@ class EngineReplayRunner:
             # Only the workload driver lays image placeholders into prompts; a
             # materialized request list would silently run the workload text-only.
             raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
-        if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
-            if spec.workload.get("images") is not None:
-                raise InvalidRunnerError("image workloads are unsupported for AFD")
-            return _run_afd_replay(
-                spec,
-                trace_block_size=self.trace_block_size,
-                companion_model=self.afd_companion_model,
-                include_report=output_requirements.include_raw_report,
-                capture_per_request=output_requirements.capture_per_request,
-            )
         if encoder is not None:
             from .sweeper.config import OptimizationGoal
             from .sweeper.epd import apply_encoder_overlay, replay_workload
@@ -624,6 +386,8 @@ class EngineReplayRunner:
                 resolved_basis,
             )
         if memory_diagnostics is not None:
+            for role, memory in report.get("afd_memory", {}).items():
+                memory_diagnostics[role] = {"scope": "afd_partition_per_gpu", "status": "available", **memory}
             report = {**report, "memory_diagnostics": memory_diagnostics}
         state_sizes = {
             role: metadata["state_cache"]
@@ -677,348 +441,253 @@ class EngineReplayRunner:
         """
 
 
-def _afd_companion_role(deployment) -> str:
-    has_prefill = deployment.prefill_engine_args is not None
-    has_decode = deployment.decode_engine_args is not None
-    if has_prefill == has_decode:
-        raise ValueError("afd+pd requires exactly one prefill or decode companion engine")
-    return "prefill" if has_prefill else "decode"
+_AFD_TOPOLOGY_FIELDS = frozenset(AFDTopology.__dataclass_fields__) | {
+    "a_replica_count",
+    "f_rank_count",
+    "a_gpu_count",
+    "f_gpu_count",
+    "f_moe_tp_size",
+    "chunked_prefill_size",
+}
 
 
-def _afd_topology(deployment) -> AFDTopology:
-    raw = deployment.parallel_config.get("afd")
-    if not isinstance(raw, Mapping):
-        raise ValueError("AFD deployment requires parallel_config.afd")
-    values = dict(raw)
-    values.pop("ffn_tp", None)
-    topology = AFDTopology(**values)
-    if topology.adapter_topology != deployment.deployment_mode:
-        raise ValueError(f"AFD topology advertises {topology.adapter_topology!r}, not {deployment.deployment_mode!r}")
-    return topology
-
-
-def _afd_layer_measurements(deployment) -> tuple[AFDLayerTimes, ...]:
-    metadata = deployment.performance_model_metadata.get("afd")
-    if not isinstance(metadata, Mapping):
-        raise ValueError("AFD deployment is missing performance_model_metadata.afd")
-    if metadata.get("measurement_required") is not False:
-        raise ValueError("AFD deployment performance measurement is unresolved")
-    raw_measurements = metadata.get("measurements")
-    if not isinstance(raw_measurements, list) or not raw_measurements:
-        raise ValueError("AFD deployment requires a non-empty measurements list")
-    measurements: list[AFDLayerTimes] = []
-    for index, raw in enumerate(raw_measurements):
-        if not isinstance(raw, Mapping):
-            raise TypeError(f"AFD measurement {index} must be a mapping")
-        try:
-            measurements.append(
-                AFDLayerTimes(
-                    phase=raw["phase"],
-                    attention_ms=raw["attention_ms"],
-                    ffn_ms=raw["ffn_ms"],
-                    a_to_f_ms=raw["a_to_f_ms"],
-                    f_to_a_ms=raw["f_to_a_ms"],
-                    num_layers=raw["num_layers"],
-                    provenance=raw.get("provenance", {}),
-                )
-            )
-        except KeyError as exc:
-            raise ValueError(f"AFD measurement {index} is missing {exc.args[0]!r}") from exc
-    return tuple(measurements)
-
-
-def _afd_total_gpus(deployment, topology: AFDTopology) -> int:
-    expected = topology.total_gpus
-    if deployment.deployment_mode == "afd+pd":
-        role = _afd_companion_role(deployment)
-        prefix = f"{role}_"
-        parallel = deployment.parallel_config
-        replicas = _positive_int(
-            parallel.get(f"{prefix}replicas"),
-            f"parallel_config.{prefix}replicas",
-        )
-        tp = _positive_int(parallel.get(f"{prefix}tp"), f"parallel_config.{prefix}tp")
-        dp = _positive_int(
-            parallel.get(f"{prefix}attention_dp", 1),
-            f"parallel_config.{prefix}attention_dp",
-        )
-        pp = _positive_int(
-            parallel.get(f"{prefix}pp", 1),
-            f"parallel_config.{prefix}pp",
-        )
-        expected += replicas * tp * dp * pp
-    provenance = deployment.parallel_config.get("afd_provenance")
-    if isinstance(provenance, Mapping):
-        accounting = provenance.get("gpu_accounting")
-        if isinstance(accounting, Mapping) and accounting.get("total_gpus") is not None:
-            recorded = _positive_int(accounting["total_gpus"], "AFD total_gpus")
-            if recorded != expected:
-                raise ValueError(f"AFD provenance total_gpus={recorded} conflicts with topology accounting={expected}")
-    return expected
-
-
-def _plan_afd_phase(
-    engine: AFDForegroundEngine,
-    phase: AFDPhase,
-    *,
-    input_length: int,
-    output_length: int,
-) -> tuple[float, int]:
-    # Every pass of a phase has the same evaluation, so plan one pass to keep the
-    # engine's validation and reuse its step and interval count for every pass.
-    planned = engine.execute_pass(
-        phase=phase,
-        now_ms=0.0,
-        input_length=input_length,
-        output_length=output_length,
-    )
-    engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
-    return planned.evaluation.step_latency_ms, len(planned.intervals)
-
-
-def _run_afd_phase(plan: tuple[float, int], *, start_ms: float, passes: int) -> tuple[float, int]:
-    step_ms, intervals_per_pass = plan
-    cursor = start_ms
-    # Add one step per pass, as the engine does, so pass boundaries round identically.
-    for _ in range(passes):
-        cursor += step_ms
-    return cursor, intervals_per_pass * passes
-
-
-def _request_passes_sla(record: Mapping[str, JSONValue], sla: Mapping[str, JSONValue]) -> bool:
-    comparisons = (
-        ("ttft_ms", "ttft_ms"),
-        ("itl_ms", "tpot_ms"),
-        ("e2e_ms", "e2e_latency_ms"),
-    )
-    return all(sla.get(bound) is None or float(record[metric]) <= float(sla[bound]) for bound, metric in comparisons)
-
-
-def _run_afd_replay(
+def _materialize_afd_engine_role(
+    deployment: BackendDeploymentSpec,
     spec: ReplaySpec,
-    *,
-    trace_block_size: int,
-    companion_model: AFDCompanionPerformanceModel | None,
-    include_report: bool,
-    capture_per_request: bool,
-) -> ReplayReport:
+    role: str,
+) -> dict[str, JSONValue]:
+    """Materialize one independent A/F pool in its deployment role."""
+    if deployment is not spec.backend_deployment:
+        spec = replace(spec, backend_deployment=deployment)
+    spec = resolve_afd_replay_identity(spec)
     deployment = spec.backend_deployment
-    topology = _afd_topology(deployment)
-    measurements = _afd_layer_measurements(deployment)
-    if spec.workload.get("trace_path") is not None:
-        raise ValueError(
-            "AFD engine replay requires concrete synthetic isl/osl measurements; trace replay is not supported"
-        )
-    if spec.workload.get("random_range_ratio", 1.0) != 1.0:
-        raise ValueError("AFD engine replay requires random_range_ratio=1.0 to match measured sequence lengths")
-    if spec.workload.get("max_sim_time_ms") is not None:
-        raise ValueError("AFD engine replay does not yet support max_sim_time_ms")
-    requests, max_in_flight = _materialize_requests(spec, trace_block_size)
-    if not requests:
-        raise ValueError("AFD engine replay requires at least one request")
-    input_length = _positive_int(spec.workload.get("isl"), "isl")
-    output_length = _positive_int(spec.workload.get("osl"), "osl")
-    engine = AFDForegroundEngine(topology, measurements)
-
-    companion: AFDCompanionTiming | None = None
-    if deployment.deployment_mode == "afd":
-        if topology.phase is not AFDPhase.BOTH:
-            raise ValueError("pure AFD replay requires phase='both'; use afd+pd for a single AFD phase")
-        batch_capacity = topology.total_batch_size
-    else:
-        if topology.phase is AFDPhase.BOTH:
-            raise ValueError("afd+pd replay requires one concrete AFD phase")
-        companion = (companion_model or AICAFDCompanionPerformanceModel()).measure(spec)
-        expected_companion = AFDPhase.DECODE if topology.phase is AFDPhase.PREFILL else AFDPhase.PREFILL
-        if companion.phase is not expected_companion:
-            raise ValueError(
-                f"AFD companion phase {companion.phase.value!r} does not complement {topology.phase.value!r}"
-            )
-        batch_capacity = min(topology.total_batch_size, companion.total_batch_capacity)
-    if max_in_flight is not None:
-        batch_capacity = min(batch_capacity, max_in_flight)
-    batch_capacity = _positive_int(batch_capacity, "AFD replay batch capacity")
-
-    ordered_requests = sorted(requests, key=lambda request: float(request["arrival_time_ms"]))
-    # Each slot admits one request and becomes available again only when that
-    # request finishes both phases, including time queued between the pools.
-    admission_slots = [0.0] * min(max_in_flight, len(requests)) if max_in_flight is not None else None
-    request_records: list[dict[str, JSONValue]] = []
-    next_request = 0
-    afd_available_ms = 0.0
-    companion_available_ms = 0.0
-    if companion is not None:
-        raw_args = (
-            deployment.prefill_engine_args if companion.phase is AFDPhase.PREFILL else deployment.decode_engine_args
-        )
-        companion_available_ms = _startup_delay_ms(_required_engine_args(raw_args, companion.phase.value))
-    afd_phases = (AFDPhase.PREFILL, AFDPhase.DECODE) if topology.phase is AFDPhase.BOTH else (topology.phase,)
-    pass_plans = {
-        phase: _plan_afd_phase(engine, phase, input_length=input_length, output_length=output_length)
-        for phase in afd_phases
-    }
-    afd_passes = 0
-    afd_intervals = 0
-    batch_count = 0
-    while next_request < len(ordered_requests):
-        first_phase_available = (
-            afd_available_ms
-            if deployment.deployment_mode == "afd" or topology.phase is AFDPhase.PREFILL
-            else companion_available_ms
-        )
-        batch_start = max(
-            first_phase_available,
-            _nonnegative_time(ordered_requests[next_request]["arrival_time_ms"], "arrival_time_ms"),
-            admission_slots[0] if admission_slots is not None else 0.0,
-        )
-        batch = []
-        while next_request < len(ordered_requests) and len(batch) < batch_capacity:
-            request = ordered_requests[next_request]
-            arrival = _nonnegative_time(request["arrival_time_ms"], "arrival_time_ms")
-            if admission_slots is not None:
-                if not admission_slots:
-                    break
-                arrival = max(arrival, admission_slots[0])
-            if arrival > batch_start and batch:
-                break
-            if arrival > batch_start:
-                batch_start = arrival
-            if (
-                _positive_int(request["input_tokens"], "request input_tokens") != input_length
-                or _positive_int(request["output_tokens"], "request output_tokens") != output_length
-            ):
-                raise ValueError("AFD request lengths must match the measured workload isl/osl")
-            if admission_slots is not None:
-                heapq.heappop(admission_slots)
-                request["arrival_time_ms"] = arrival
-            batch.append(request)
-            next_request += 1
-        batch_count += 1
-
-        decode_passes = max(output_length - 1, 0)
-        if deployment.deployment_mode == "afd":
-            prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
-            decode_end, decode_intervals = _run_afd_phase(
-                pass_plans[AFDPhase.DECODE], start_ms=prefill_end, passes=decode_passes
-            )
-            afd_available_ms = decode_end
-            afd_passes += 1 + decode_passes
-            afd_intervals += interval_count + decode_intervals
-        elif topology.phase is AFDPhase.PREFILL:
-            assert companion is not None
-            prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
-            afd_available_ms = prefill_end
-            decode_end = prefill_end
-            if decode_passes:
-                decode_start = max(prefill_end, companion_available_ms)
-                decode_end = decode_start + companion.latency_ms * decode_passes
-                companion_available_ms = decode_end
-            afd_passes += 1
-            afd_intervals += interval_count
-        else:
-            assert companion is not None
-            prefill_start = max(batch_start, companion_available_ms)
-            prefill_end = prefill_start + companion.latency_ms
-            companion_available_ms = prefill_end
-            decode_end = prefill_end
-            if decode_passes:
-                decode_start = max(prefill_end, afd_available_ms)
-                decode_end, interval_count = _run_afd_phase(
-                    pass_plans[AFDPhase.DECODE], start_ms=decode_start, passes=decode_passes
-                )
-                afd_available_ms = decode_end
-                afd_passes += decode_passes
-                afd_intervals += interval_count
-
-        for request in batch:
-            if admission_slots is not None:
-                heapq.heappush(admission_slots, decode_end)
-            arrival = float(request["arrival_time_ms"])
-            request_records.append(
-                {
-                    "id": str(request["id"]),
-                    "arrival_time_ms": arrival,
-                    "ttft_ms": prefill_end - arrival,
-                    "tpot_ms": (decode_end - prefill_end) / decode_passes if decode_passes else 0.0,
-                    "e2e_latency_ms": decode_end - arrival,
-                    "output_tokens": output_length,
-                }
-            )
-
-    first_arrival = min(float(request["arrival_time_ms"]) for request in ordered_requests)
-    end_ms = max(float(record["arrival_time_ms"]) + float(record["e2e_latency_ms"]) for record in request_records)
-    duration_ms = end_ms - first_arrival
-    if duration_ms <= 0.0:
-        raise InvalidRunnerError("AFD replay produced a non-positive duration")
-    completed = len(request_records)
-    output_tokens = completed * output_length
-    sla = _materialize_sla(spec)
-    good_output_tokens = sum(
-        int(record["output_tokens"]) for record in request_records if _request_passes_sla(record, sla)
+    raw = getattr(deployment, "agg_engine_args" if role == "aggregated" else f"{role}_engine_args") or {}
+    topology = raw.get("afd")
+    if not isinstance(topology, Mapping):
+        raise InvalidRunnerError("AFD replay requires parallel_config.afd topology provenance")
+    unknown = set(topology) - _AFD_TOPOLOGY_FIELDS
+    if unknown:
+        raise InvalidRunnerError(f"unknown AFD topology fields: {sorted(unknown)}")
+    a_tp_size = _positive_int(topology.get("a_tp_size"), "a_tp_size")
+    validate_afd_attention_tp(a_tp_size)
+    # Reject unsupported topology before resolving model features. The second
+    # resolution below also verifies expert divisibility against source facts.
+    resolve_afd_parallelism(
+        a_tp_size,
+        _positive_int(topology.get("n_a_nodes"), "n_a_nodes"),
+        _positive_int(topology.get("n_f_nodes"), "n_f_nodes"),
+        _positive_int(topology.get("gpus_per_node"), "gpus_per_node"),
+        topology.get("f_moe_ep_size"),
+        None,
+        f_gpus_per_node=topology.get("f_gpus_per_node"),
     )
-    total_gpus = _afd_total_gpus(deployment, topology)
-    mean_ttft = sum(float(record["ttft_ms"]) for record in request_records) / completed
-    mean_tpot = sum(float(record["tpot_ms"]) for record in request_records) / completed
-    mean_e2e = sum(float(record["e2e_latency_ms"]) for record in request_records) / completed
-    input_tokens = completed * input_length
-    duration_s = duration_ms / 1_000.0
-    metrics = {
-        "duration_ms": duration_ms,
-        "num_requests": float(completed),
-        "total_input_tokens": float(input_tokens),
-        "total_output_tokens": float(output_tokens),
-        "request_throughput_rps": completed / duration_s,
-        "input_throughput_tok_s": input_tokens / duration_s,
-        "output_throughput_tok_s": output_tokens * 1_000.0 / duration_ms,
-        "total_throughput_tok_s": (input_tokens + output_tokens) / duration_s,
-        "gpu_hours": total_gpus * duration_ms / 3_600_000.0,
-        "num_ttft_samples": float(completed),
-        "num_tpot_samples": float(completed if output_length > 1 else 0),
-        "num_e2e_latency_samples": float(completed),
-        "mean_ttft_ms": mean_ttft,
-        "mean_tpot_ms": mean_tpot,
-        "mean_e2e_latency_ms": mean_e2e,
-        "mean_output_token_throughput_per_user": 1_000.0 / mean_tpot if mean_tpot > 0.0 else 0.0,
-        "completed_requests": float(completed),
-        "error_rate": 0.0,
-        "num_total_gpus": float(total_gpus),
-    }
-    if sla:
-        metrics["goodput_completed_requests"] = float(
-            sum(1 for record in request_records if _request_passes_sla(record, sla))
+    routing_location = topology.get("routing_location", AFD_DEFAULT_ROUTING_LOCATION)
+    validate_afd_routing_location(routing_location)
+    metadata = deployment.performance_model_metadata.get(role)
+    if not isinstance(metadata, Mapping):
+        raise InvalidRunnerError("pure AFD replay requires performance_model_metadata.afd")
+    model = str(metadata.get("model") or "")
+    if not model:
+        raise InvalidRunnerError("AFD deployment metadata is missing the model identity")
+    backend = str(deployment.backend)
+    if backend != "sglang":
+        raise InvalidRunnerError(
+            f"AFD on the continuous path anchors the SGLang scheduler and perf data, got "
+            f"backend={backend!r}; set engine.backend='sglang'"
         )
-        metrics["goodput_request_throughput_rps"] = metrics["goodput_completed_requests"] / duration_s
-        metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
-    metrics.update(normalize_power_summary({}))
-    summary: dict[str, JSONValue] = {
-        "executor": "afd_foreground",
-        "deployment_mode": deployment.deployment_mode,
-        "phase": topology.phase.value,
-        "batches": batch_count,
-        "afd_passes": afd_passes,
-        "afd_stage_intervals": afd_intervals,
-        "batch_capacity": batch_capacity,
-        "companion": companion.provenance if companion is not None else None,
+    hardware = str(metadata.get("hardware") or topology.get("a_system") or "")
+    backend_version = str(deployment.backend_version or "")
+    # Workloads whose per-request lengths vary cannot be priced at one frozen
+    # measurement point, so they take the instantaneous path (prefill always
+    # evaluates at the actual batch geometry; variable-length decode evaluates
+    # at the current mean KV position). Two sources of variation: trace /
+    # session / agentic traffic carries per-request lengths, and synthetic
+    # traffic with `random_range_ratio < 1.0` samples them around the declared
+    # isl/osl. Only fixed synthetic traffic (ratio 1.0) keeps the
+    # frozen stride-averaged decode identity. NOTE: the compiler stamps
+    # `source_type` on EVERY workload (including "synthetic"), so the
+    # variable-length test must key on the source KIND, not its presence.
+    source_type = spec.workload.get("source_type")
+    # Trace-like sources carry no usable declared lengths at all: isl/osl are
+    # placeholders and the KV window has to come from the model. Synthetic
+    # traffic with ratio < 1.0 still declares real upper bounds, so it varies
+    # the pricing identity without needing the whole context window reserved.
+    placeholder_lengths = spec.workload.get("trace_path") is not None or source_type not in (None, "synthetic")
+    variable_length_traffic = (
+        placeholder_lengths or _random_range_ratio(spec.workload.get("random_range_ratio", 1.0)) != 1.0
+    )
+    isl_value = spec.workload.get("isl")
+    osl_value = spec.workload.get("osl")
+    isl = _positive_int(1 if placeholder_lengths and isl_value is None else isl_value, "isl")
+    osl = _positive_int(2 if placeholder_lengths and osl_value is None else osl_value, "osl")
+    model_config = validate_afd_model(model)
+    hidden_size = _positive_int(model_config.get("hidden_size"), "hidden_size")
+    layers = model_config.get("layers")
+    num_layers = _positive_int(layers if layers is not None else model_config.get("num_hidden_layers"), "layers")
+    num_experts = int(model_config.get("num_experts") or 0)
+    if "num_experts" in topology and topology["num_experts"] != num_experts:
+        raise InvalidRunnerError("AFD num_experts disagrees with model source metadata")
+    topk = int(model_config.get("topk") or 0) if num_experts else 0
+    a_pool = {
+        "system": str(topology.get("a_system") or hardware),
+        "a_tp_size": a_tp_size,
+        "n_a_nodes": _positive_int(topology.get("n_a_nodes"), "n_a_nodes"),
+        "batch_size_per_a_replica": _positive_int(topology.get("batch_size_per_a_replica"), "batch_size_per_a_replica"),
     }
-    metadata: dict[str, JSONValue] = {"afd_replay": summary}
-    native_report: dict[str, JSONValue] = {
-        "summary": dict(metrics),
-        "afd_replay": summary,
+    f_pool = {
+        "system": str(topology.get("f_system") or hardware),
+        "f_moe_ep_size": topology.get("f_moe_ep_size"),
+        "n_f_nodes": _positive_int(topology.get("n_f_nodes"), "n_f_nodes"),
     }
-    if capture_per_request:
-        # Preserve the runner-level compatibility projection while also exposing
-        # the public CLI's canonical native-report shape.
-        metadata["per_request"] = request_records
-        native_report["per_request"] = request_records
-    if include_report or capture_per_request:
-        metadata["native_report"] = native_report
-    if include_report:
-        metadata["afd_report"] = {"metrics": metrics, **summary}
-    metrics.update(normalize_power_summary(metrics))
-    metadata["power"] = power_metadata(metrics)
-    return ReplayReport(metrics=metrics, metadata=metadata)
+    gpus_per_node = _positive_int(topology.get("gpus_per_node"), "gpus_per_node")
+    geometry = json.loads(
+        resolve_afd_parallelism(
+            a_pool["a_tp_size"],
+            a_pool["n_a_nodes"],
+            f_pool["n_f_nodes"],
+            gpus_per_node,
+            f_pool["f_moe_ep_size"],
+            num_experts,
+            f_gpus_per_node=topology.get("f_gpus_per_node"),
+        )
+    )
+    for name in ("a_replica_count", "f_rank_count", "a_gpu_count", "f_gpu_count", "f_moe_tp_size"):
+        if name in topology and topology[name] != geometry[name]:
+            raise InvalidRunnerError(f"AFD {name} disagrees with the pool geometry")
+    f_pool["f_moe_ep_size"] = geometry["f_moe_ep_size"]
+    afd_config: dict[str, JSONValue] = {
+        "a_pool": a_pool,
+        "f_pool": f_pool,
+        "gpus_per_node": gpus_per_node,
+        "f_gpus_per_node": topology.get("f_gpus_per_node") or gpus_per_node,
+        "num_microbatches": _positive_int(topology.get("num_microbatches"), "num_microbatches"),
+        "pipeline_layout": topology.get("pipeline_layout", "four_stage"),
+        "comm_overhead_factor": float(topology.get("comm_overhead_factor", 1.0)),
+        "routing_location": routing_location,
+    }
+    estimator_raw = metadata.get("estimator") if isinstance(metadata.get("estimator"), dict) else {}
+    estimator_config: dict[str, JSONValue] = dict(estimator_raw)
+    if isinstance(estimator_config.get("transfer_policy"), str):
+        estimator_config["transfer_policy"] = [estimator_config["transfer_policy"]]
+    nextn = int(metadata.get("nextn") or 0)
+    context_length = metadata.get("context_length")
+    if context_length is None and placeholder_lengths:
+        # Trace/agentic workloads carry placeholder isl/osl (1/2 above); an
+        # absent window would make the memory gate reserve KV for a 3-token
+        # sequence and pass deployments that OOM in reality. Reserve the
+        # model's full context instead, matching the compiler path's "max"
+        # resolution (conservative by design).
+        context_length = resolve_model_context_length(model)
+    if context_length is not None:
+        context_length = _positive_int(context_length, "context_length")
+    timing_config: dict[str, JSONValue] = {
+        "model": model,
+        "backend_version": backend_version or None,
+        "isl": isl,
+        "osl": osl,
+        "num_layers": num_layers,
+        "hidden_size": hidden_size,
+        "num_experts": num_experts,
+        "topk": topk,
+        "model_shape": {key: model_config[key] for key in ("num_shared_experts", "num_moe_layers")},
+        # Pinned before hashing/saving the ReplaySpec, with Rust-owned defaults.
+        "frozen_decode_identity": metadata["frozen_decode_identity"],
+        # Rank-owned topology, backend, MTP depth and context window are
+        # resolved by Rust once; the provider carries only its own inputs.
+        "quant": metadata.get("quant") if isinstance(metadata.get("quant"), dict) else {},
+        "estimator": estimator_config,
+        **{
+            name: metadata[name]
+            for name in ("attention_backend", "moe_kernel_source")
+            if metadata.get(name) is not None
+        },
+    }
+    # The derivation below pins BOTH the prompt window and the KV window at
+    # context_length, so an explicit window smaller than the declared workload
+    # cannot be honored: it would silently chunk the prompt and undersize the
+    # derived KV capacity below the in-flight footprint. Variable-length
+    # traffic is exempt because its isl/osl are upper bounds, not per-request
+    # lengths.
+    declared_window = int(context_length or 0)
+    if declared_window and not variable_length_traffic and declared_window < isl + osl:
+        raise InvalidRunnerError(
+            f"engine.context_length={declared_window} cannot hold isl+osl={isl + osl}. The AFD "
+            "scheduler derivation pins the prompt window and the KV window at context_length, so a "
+            "smaller window would silently chunk the prompt and undersize the derived KV capacity "
+            "below the in-flight footprint, truncating admission under max_num_seqs. Raise "
+            "context_length to at least isl+osl, or use 'max'."
+        )
+    # Continuous-batching scheduler derivation (SglangCore injection):
+    # - max_num_seqs mirrors the pool's in-flight capacity
+    #   (a_replica_count * a_batch_size, the timing provider's total_batch_size);
+    # - num_gpu_blocks is intentionally NOT set: the native provider derives
+    #   the rank's KV capacity from the per-pool memory gate's A-pool budget
+    #   at construction, so runtime retraction reflects physical OOM;
+    # - chunked_prefill_size / max_prefill_tokens default to the prompt window
+    #   so every prompt pre-fills in a single pass; an explicit
+    #   afd.chunked_prefill_size smaller than the prompt enables SGLang's
+    #   native chunked prefill — each chunk pass is priced at its actual
+    #   (chunk tokens, prefix) geometry by the provider, never a full frozen
+    #   prompt step;
+    # - max_model_len makes an over-long single prompt fail loudly inside
+    #   SglangCore instead of being silently dropped.
+    block_size = 1  # SGLang page_size; read from SglangConfig once it exposes one.
+    a_replica_count = a_pool["n_a_nodes"] * gpus_per_node // a_pool["a_tp_size"]
+    max_num_seqs = a_replica_count * a_pool["batch_size_per_a_replica"]
+    explicit_chunk = (
+        _positive_int(topology["chunked_prefill_size"], "afd.chunked_prefill_size")
+        if topology.get("chunked_prefill_size") is not None
+        else None
+    )
+    prompt_window = explicit_chunk or int(context_length or 0) or isl
+    engine: dict[str, JSONValue] = {
+        "backend": backend,
+        "afd": afd_config,
+        "max_num_seqs": max_num_seqs,
+        "block_size": block_size,
+        # Preserve the declaration. Rust derives the scheduler's isl+osl cap
+        # separately so a reload retains phase-specific memory reservations.
+        "max_model_len": context_length,
+        "sglang": {
+            "chunked_prefill_size": prompt_window,
+            "max_prefill_tokens": prompt_window,
+        },
+        "timing_model": {"type": "external", "provider": "afd", "config": timing_config},
+    }
+    if nextn > 0:
+        # MTP benefit side: the timing config's nextn prices verification
+        # and approximate draft work (cost side). The burst sampler that emits the
+        # accepted tokens is built by the scheduling core from the RANK
+        # config's aic_nextn — without it the decode passes silently emit one
+        # token per pass.
+        if nextn > 5:
+            raise InvalidRunnerError(f"AFD aic_nextn must be in 1..=5, got {nextn}")
+        nextn_accepted = metadata.get("nextn_accepted")
+        if nextn_accepted is None:
+            raise InvalidRunnerError(
+                "AFD metadata nextn>0 requires nextn_accepted (average accepted draft tokens per step)"
+            )
+        engine["aic_nextn"] = nextn
+        engine["aic_nextn_accept_rates"] = _accept_rates_for_expected(nextn, nextn_accepted, role="afd")
+    for key in ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth", "kv_transfer_timing_mode"):
+        if key in raw:
+            engine[key] = raw[key]
+    return {"rank": engine}
+
+
+def _materialize_deployment_role(deployment, spec, raw, role, memory_diagnostics):
+    if role in deployment.afd_roles:
+        if "rank" in raw:
+            raise InvalidRunnerError(f"AFD {role} requires flat role arguments, not a nested rank descriptor")
+        return _materialize_afd_engine_role(deployment, spec, role)
+    return _materialize_engine_role(
+        deployment.backend,
+        deployment.backend_version,
+        deployment.parallel_config,
+        raw,
+        role,
+        memory_diagnostics=memory_diagnostics,
+    )
 
 
 def _materialize_engine_execution_spec(
@@ -1040,14 +709,7 @@ def _materialize_engine_execution_spec(
     if deployment_mode == "agg":
         raw_engine_args = _required_engine_args(deployment.agg_engine_args, "aggregated")
         execution_model = _execution_target_model(deployment, "aggregated", raw_engine_args)
-        engine = _materialize_engine_role(
-            deployment.backend,
-            deployment.backend_version,
-            deployment.parallel_config,
-            raw_engine_args,
-            "aggregated",
-            memory_diagnostics=memory_diagnostics,
-        )
+        engine = _materialize_deployment_role(deployment, spec, raw_engine_args, "aggregated", memory_diagnostics)
         _require_parallel_match(
             deployment.parallel_config,
             "replicas",
@@ -1064,22 +726,8 @@ def _materialize_engine_execution_spec(
     elif deployment_mode == "disagg":
         raw_prefill = _required_engine_args(deployment.prefill_engine_args, "prefill")
         raw_decode = _required_engine_args(deployment.decode_engine_args, "decode")
-        prefill = _materialize_engine_role(
-            deployment.backend,
-            deployment.backend_version,
-            deployment.parallel_config,
-            raw_prefill,
-            "prefill",
-            memory_diagnostics=memory_diagnostics,
-        )
-        decode = _materialize_engine_role(
-            deployment.backend,
-            deployment.backend_version,
-            deployment.parallel_config,
-            raw_decode,
-            "decode",
-            memory_diagnostics=memory_diagnostics,
-        )
+        prefill = _materialize_deployment_role(deployment, spec, raw_prefill, "prefill", memory_diagnostics)
+        decode = _materialize_deployment_role(deployment, spec, raw_decode, "decode", memory_diagnostics)
         _require_parallel_match(
             deployment.parallel_config,
             "prefill_replicas",

@@ -1279,7 +1279,7 @@ def test_worker_hardware_requires_concrete_sku(recommend, role, value):
 
 
 @pytest.mark.parametrize("recommend", [False, True])
-@pytest.mark.parametrize("mode,role", [("aggregated", "aggregated"), ("afd", "decode")])
+@pytest.mark.parametrize("mode,role", [("aggregated", "aggregated")])
 def test_worker_hardware_rejects_non_pd_modes(recommend, mode, role):
     schema = CoreRecommendationConfig if recommend else CorePredictionConfig
     raw = _pd_hardware_config(recommend=recommend)
@@ -1489,7 +1489,7 @@ def test_aggregated_deployment_rejects_prefill_and_decode_cp_together() -> None:
         }
     )
     with pytest.raises(ValueError, match="at most one of parallelism.prefill_context"):
-        _deployment(config.engine, workload={}, afd_performance_model=None)
+        _deployment(config.engine, workload={})
 
 
 def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
@@ -1504,7 +1504,7 @@ def test_aggregated_deployment_accepts_one_context_parallel_knob() -> None:
             }
         }
     )
-    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    spec = _deployment(config.engine, workload={})
     # cp=1 is not spelled out, so pre-CP deployments stay byte-identical.
     assert "cp" not in spec.parallel_config
     assert spec.parallel_config["dcp"] == 4
@@ -1529,20 +1529,15 @@ def test_afd_companion_rejects_context_parallelism(knob: str) -> None:
     config = CorePredictionConfig.model_validate(
         {
             "engine": {
-                "mode": "afd",
+                "mode": "disaggregated",
                 "model": str(tiny_model),
                 "hardware": "h200_sxm",
-                "backend": "vllm",
+                "backend": "sglang",
                 "context_length": 2048,
-                "afd": {
-                    "phase": "decode",
-                    "combined_with_pd": True,
-                    "n_a_nodes": 1,
-                    "n_f_nodes": 1,
-                    "tp_a": 8,
-                    "a_batch_size": 8,
+                "workers": {
+                    "decode": {"type": "afd", "afd": {"n_a_nodes": 1, "n_f_nodes": 1, "tp_a": 1, "a_batch_size": 8}},
+                    "prefill": {"parallelism": {knob: 2}},
                 },
-                "workers": {"prefill": {"parallelism": {knob: 2}}},
             }
         }
     )
@@ -1566,7 +1561,7 @@ def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() 
             }
         }
     )
-    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    spec = _deployment(config.engine, workload={})
     assert spec.parallel_config["prefill_cp"] == 2
     assert "prefill_dcp" not in spec.parallel_config
     assert "decode_cp" not in spec.parallel_config
@@ -1605,7 +1600,7 @@ def test_disaggregated_context_parallel_layout_rules(backend: str, prefill: dict
         }
     )
     with pytest.raises(ValueError, match=needle):
-        _deployment(config.engine, workload={}, afd_performance_model=None)
+        _deployment(config.engine, workload={})
 
 
 def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dcp() -> None:
@@ -1625,7 +1620,7 @@ def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dc
             }
         }
     )
-    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    spec = _deployment(config.engine, workload={})
     assert (spec.parallel_config["prefill_cp"], spec.parallel_config["prefill_dcp"]) == (2, 2)
     assert spec.parallel_config["decode_dcp"] == 8
 

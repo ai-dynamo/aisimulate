@@ -35,9 +35,6 @@ pytestmark = pytest.mark.unit
         "static_ctx",
         "static_gen",
         "run_disagg",
-        "afd_prefill",
-        "afd_decode",
-        "afd_both",
     ],
 )
 def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, explicit):
@@ -51,7 +48,7 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
 
     def capture(model_path, model_config, backend_name):
         captured.append(real_get_model(model_path, model_config, backend_name))
-        if (entry != "run_disagg" and not entry.startswith("afd_")) or len(captured) == 2:
+        if entry != "run_disagg" or len(captured) == 2:
             raise ModelBuilt
         return captured[-1]
 
@@ -103,11 +100,6 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
                 role=entry,
                 latency_correction=1.0,
             )
-        elif entry.startswith("afd_"):
-            session = inference_session.AFDInferenceSession(
-                path, mc, mc, db, backend, config.AFDConfig(gpus_per_node=8)
-            )
-            session.run_afd(rt, phase=entry.removeprefix("afd_"), free_gpu_memory_fraction=0.9)
         else:
             session = inference_session.DisaggInferenceSession(db, backend, db, backend)
             if entry == "run_disagg":
@@ -117,7 +109,7 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
                 session.get_worker_candidates(path, mc, parallel, [1], rt, entry)
 
     expected = explicit or (
-        common.FMHAQuantMode.fp8 if entry in {"decode", "static_gen", "afd_decode"} else common.FMHAQuantMode.bfloat16
+        common.FMHAQuantMode.fp8 if entry in {"decode", "static_gen"} else common.FMHAQuantMode.bfloat16
     )
     block = next(op for op in captured[0].context_ops if op._name == "context_mla_block")
     specs = json.loads(block._spec_json())["Fallback"]
@@ -129,8 +121,6 @@ def test_direct_context_construction_uses_runtime_precision(monkeypatch, entry, 
         assert mc.fmha_quant_mode == common.FMHAQuantMode.fp8
     else:
         assert mc.fmha_quant_mode == explicit
-    if entry.startswith("afd_"):
-        assert captured[1].config.fmha_quant_mode == expected
 
 
 def test_mla_precision_resolver_export_identity():

@@ -31,13 +31,12 @@ import yaml
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.main import main
-from aisimulate.runner import AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
+from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sdk import common, models
 from aisimulate.sdk import config as sdk_config
 from aisimulate.sdk.backends.factory import get_backend
 from aisimulate.sdk.operations import FPMForwardOp
 from aisimulate.sdk.perf_database import PerfDatabase
-from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec, ReplaySpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
@@ -857,54 +856,6 @@ def fpm_session(tmp_path):
     return model, database, backend, isl, osl
 
 
-def test_afd_companion_packaged_fpm_selector_reaches_native_loader(fpm_session):
-    _, database, _, isl, osl = fpm_session
-    topology = AFDTopology(
-        n_a_nodes=1,
-        n_f_nodes=1,
-        gpus_per_node=1,
-        tp_a=1,
-        a_batch_size=1,
-        num_microbatches=1,
-        phase="decode",
-        combined_with_pd=True,
-    )
-    spec = ReplaySpec(
-        backend_deployment=BackendDeploymentSpec(
-            deployment_mode=topology.adapter_topology,
-            backend=BACKEND,
-            backend_version=VERSION,
-            parallel_config={
-                "prefill_tp": 1,
-                "prefill_pp": 1,
-                "prefill_attention_dp": 1,
-                "prefill_moe_tp": 1,
-                "prefill_moe_ep": 1,
-            },
-            prefill_engine_args={
-                "max_num_batched_tokens": isl,
-                "max_num_seqs": 1,
-                "aic_model_path": "Qwen/Qwen3-0.6B",
-                "aic_system": SYSTEM,
-                "aic_forward_model": "fpm",
-                "aic_fpm_fmha_dtype": "fp8",
-                "systems_path": database.systems_root,
-            },
-            num_prefill_workers=1,
-        ),
-        workload={"isl": isl, "osl": osl},
-        goal={"target": "throughput", "sla": None},
-        concurrency=1,
-    )
-
-    timing = AICAFDCompanionPerformanceModel().measure(spec)
-
-    # The data tree has a separate fp8 selector row with latency 22.0 + 1.0.
-    assert timing.latency_ms == pytest.approx(23.0)
-    assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
-    assert timing.provenance["fpm_fmha_dtype"] == "fp8"
-
-
 class TestFPMStaticAndMixed:
     @pytest.mark.parametrize("ctx_tokens", [256, 512])
     @pytest.mark.parametrize("gen_requests", [0, 2])
@@ -1578,148 +1529,6 @@ def test_canonical_config_retains_inactive_fpm_controls_when_reloaded(tmp_path):
     assert resolved["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == path
     model.close()
     reloaded.close()
-
-
-@pytest.mark.parametrize(
-    ("phase", "companion_role", "latency"), [("decode", "prefill", 22.0), ("prefill", "decode", 6.0)]
-)
-@pytest.mark.parametrize("output_tokens", [2, 4])
-@pytest.mark.parametrize("identity_fields", ["default", "prefixed", "plain"])
-def test_external_fpm_pair_drives_afd_companion_replay(
-    external_fpm_config, phase, companion_role, latency, output_tokens, identity_fields, tmp_path, monkeypatch
-):
-    config, systems_root = external_fpm_config
-    raw = config.model_dump(mode="json", exclude_none=True)
-    raw["traffic"]["source"]["output_tokens"] = output_tokens
-    engine = raw["engine"]
-    engine["mode"] = "afd"
-    engine["afd"] = {
-        "phase": phase,
-        "combined_with_pd": True,
-        "n_a_nodes": 1,
-        "n_f_nodes": 1,
-        "tp_a": 1,
-        "a_batch_size": 1,
-        "num_microbatches": 1,
-    }
-    worker = engine["workers"].pop("aggregated")
-    worker["scheduler"] = {"max_sequences": 1, "max_batched_tokens": 512}
-    engine["workers"] = {companion_role: worker}
-
-    class AFDPerformanceFixture:
-        def measure(self, request):
-            return (
-                AFDLayerTimes(
-                    phase=request.topology.phase.value,
-                    attention_ms=1.0,
-                    ffn_ms=2.0,
-                    a_to_f_ms=0.1,
-                    f_to_a_ms=0.1,
-                    num_layers=2,
-                    provenance={"provider": "test"},
-                ),
-            )
-
-    spec = prediction_to_replay_spec(
-        CorePredictionConfig.model_validate(raw), afd_performance_model=AFDPerformanceFixture()
-    )
-    expected_path = worker["timing"]["fpm_parquet_path"]
-    if identity_fields != "default":
-        # Neither model-default precision nor the built-in systems directory
-        # can satisfy this cell. Exercise the real companion compiler/loader.
-        custom_system = "custom_fpm_companion"
-        shutil.copy(systems_root / f"{SYSTEM}.yaml", systems_root / f"{custom_system}.yaml")
-        monkeypatch.delenv("AICONFIGURATOR_SYSTEMS_PATH")
-        model = models.get_model(
-            engine["model"],
-            _model_config(
-                forward_model="fpm",
-                gemm_quant_mode=common.GEMMQuantMode.fp8,
-                moe_quant_mode=common.MoEQuantMode.fp8,
-                fmha_quant_mode=common.FMHAQuantMode.fp8,
-                fpm_fmha_quant_mode=common.FMHAQuantMode.bfloat16,
-                kvcache_quant_mode=common.KVCacheQuantMode.fp8,
-                comm_quant_mode=common.CommQuantMode.fp8,
-            ),
-            BACKEND,
-        )
-        identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
-        rows = [
-            _row(
-                row["workload_kind"],
-                row["batch_size"],
-                row["total_prefill_tokens"],
-                row["total_kv_read_tokens"],
-                row["latency_ms"],
-                model_path=model.model_path,
-                identity=identity,
-            )
-            | {"system": custom_system}
-            for row in pq.read_table(expected_path).to_pylist()
-        ]
-        expected_path = _write_pair(str(tmp_path / "custom-pair"), rows, sidecar_overrides={"system": custom_system})
-        args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
-        args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
-        prefix = "aic_" if identity_fields == "prefixed" else ""
-        args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
-        args[f"{prefix}fpm_fmha_dtype"] = "bfloat16"
-        args.update(
-            {
-                "aic_pp_size": 1,
-                f"{prefix}moe_tp_size": 1,
-                f"{prefix}moe_ep_size": 1,
-            }
-        )
-        if identity_fields == "plain":
-            args["backend_version"] = args.pop("aic_backend_version")
-            args["forward_model"] = args.pop("aic_forward_model")
-            args["fpm_parquet_path"] = args.pop("aic_fpm_parquet_path")
-    report = EngineReplayRunnerFactory().create(0).run(spec)
-    assert not (systems_root / "data").exists()
-    assert report.metrics["completed_requests"] == 1
-    companion = report.metadata["afd_replay"]["companion"]
-    assert companion["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
-    assert companion["fpm_parquet_path"] == expected_path
-    assert report.metrics["mean_ttft_ms" if companion_role == "prefill" else "mean_tpot_ms"] == pytest.approx(latency)
-
-
-@pytest.fixture(params=["prefill", "decode"])
-def external_fpm_companion_spec(external_fpm_config, request):
-    config, _systems_root = external_fpm_config
-    role = request.param
-    spec = ReplaySpec(
-        backend_deployment=BackendDeploymentSpec(
-            deployment_mode="afd+pd",
-            backend=BACKEND,
-            backend_version=VERSION,
-            parallel_config={f"{role}_tp": 1},
-            **{
-                f"{role}_engine_args": {
-                    "aic_model_path": config.engine.model,
-                    "aic_system": SYSTEM,
-                    "aic_forward_model": "fpm",
-                    "aic_fpm_parquet_path": config.engine.workers.aggregated.timing.fpm_parquet_path,
-                    "max_num_batched_tokens": 512,
-                    "max_num_seqs": 1,
-                },
-                f"num_{role}_workers": 1,
-            },
-        ),
-        workload={"isl": 512, "osl": 2},
-        goal={"target": "throughput", "sla": None},
-        concurrency=1,
-    )
-    return spec, role
-
-
-def test_external_fpm_companion_timing(external_fpm_companion_spec):
-    spec, role = external_fpm_companion_spec
-
-    timing = AICAFDCompanionPerformanceModel().measure(spec)
-
-    assert timing.phase.value == role
-    assert timing.latency_ms == pytest.approx(22.0 if role == "prefill" else 6.0)
-    assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
 
 
 def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_fpm_config, tmp_path, capsys):

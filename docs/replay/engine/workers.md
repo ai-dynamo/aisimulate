@@ -10,6 +10,14 @@ identical workers. This page covers the role's shape and scheduler. KV cache,
 timing and P/D transfer have their own pages; see the
 [engine overview](README.md#read-by-block).
 
+<a id="worker-types"></a>
+
+`workers.aggregated`, `workers.prefill`, and `workers.decode` default to
+`type: monolithic`; existing ordinary worker configurations need no changes.
+`type: afd` uses a separate A/F configuration and supports the four combinations
+in [AFD](analytical.md#deployment-combinations). Its public phase is determined
+by the role, not a second configuration field.
+
 Merge this fragment into an existing `engine` block from the [engine overview](README.md):
 
 ```yaml
@@ -30,8 +38,10 @@ engine:
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
+| `workers.<role>.type` | `monolithic` | fixed | `monolithic` uses the ordinary fields below; `afd` requires a role-local `afd` block described in [AFD](analytical.md#afd). |
+| `workers.<role>.afd` | Required for `type: afd` | Topology domain | An independent A/F pool pair. AFD accepts this block, `context_length` and `startup_seconds`; the ordinary hardware, parallelism, scheduler, KV cache and timing blocks are rejected. A/F hardware lives inside `afd`. |
 | `workers.<role>.hardware` | `engine.hardware` | fixed | `prefill` and `decode` in disaggregated mode only. One concrete system identifier; `auto` is rejected. |
-| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode`; aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
+| `workers.<role>.context_length` | `engine.context_length` | fixed | Positive token limit. Recommendation accepts it for `prefill` and `decode` and for every AFD role; ordinary aggregated recommendations use `engine.context_length`. See [Context limits](#context-limits). |
 | `workers.<role>.startup_seconds` | `0` | fixed | Nonnegative. Delay before a worker added during the run becomes ready. Initial workers are ready at time zero. |
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
@@ -59,8 +69,9 @@ backend fails validation.
 ## Context limits
 
 Each worker's `context_length` overrides `engine.context_length` for that role.
-Prediction supports the override on aggregated, prefill and decode workers;
-aggregated recommendations must use the shared engine field.
+Prediction supports the override on aggregated, prefill and decode workers.
+Ordinary aggregated recommendations use the shared engine field; AFD
+recommendations accept a local limit on every role.
 Saved candidate YAML keeps inherited limits unset on the worker, so editing
 `engine.context_length` still updates every worker without an explicit override.
 
@@ -72,8 +83,8 @@ Trace traffic is checked by runtime admission, not this fixed-length validator.
 Sweeper uses the role limit, then the shared limit, then the model's maximum
 context for KV-feasibility filtering. Generated worker payloads use the role
 or shared limit; if both are unset, `max_model_len` remains unset. The model
-fallback used for filtering is not copied into that payload. AFD companion
-workers follow the same rule for their role. These are serving limits, not
+fallback used for filtering is not copied into that payload. Ordinary roles
+paired with AFD follow the same rule for their role. These are serving limits, not
 measured performance data.
 
 ## Parallelism

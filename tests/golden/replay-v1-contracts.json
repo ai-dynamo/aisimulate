@@ -1,0 +1,79 @@
+{
+  "source_commit": "f3a3e3156530574f5e7a10446f19e571b82db871",
+  "cases": [
+    {
+      "mode": "agg",
+      "deployment": {
+        "deployment_mode": "agg",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "num_workers": 1,
+        "agg_engine_args": {
+          "aic_tp_size": 2,
+          "aic_model_path": "example/model",
+          "timing_model": {
+            "type": "fixed",
+            "prefill_ms": 1,
+            "decode_ms": 2
+          }
+        },
+        "parallel_config": {
+          "tp": 2,
+          "pp": 1,
+          "attention_dp": 1,
+          "replicas": 1
+        }
+      },
+      "spec": {
+        "workload": {
+          "isl": 128,
+          "osl": 32,
+          "source_type": "synthetic",
+          "random_range_ratio": 1.0
+        },
+        "goal": {
+          "target": "throughput"
+        },
+        "concurrency": 4
+      },
+      "canonical_json": "{\"adapters\":{},\"api_version\":1,\"backend_deployment\":{\"agg_engine_args\":{\"aic_model_path\":\"example/model\",\"aic_tp_size\":2,\"timing_model\":{\"decode_ms\":2,\"prefill_ms\":1,\"type\":\"fixed\"}},\"backend\":\"sglang\",\"backend_version\":\"0.5.14\",\"decode_engine_args\":null,\"deployment_mode\":\"agg\",\"encoder\":null,\"forward_pass_estimators\":{},\"num_decode_workers\":0,\"num_prefill_workers\":0,\"num_workers\":1,\"parallel_config\":{\"attention_dp\":1,\"pp\":1,\"replicas\":1,\"tp\":2},\"performance_model_metadata\":{},\"prefill_engine_args\":null},\"concurrency\":4,\"execution_mode\":\"offline\",\"goal\":{\"target\":\"throughput\"},\"workload\":{\"isl\":128,\"osl\":32,\"random_range_ratio\":1.0,\"source_type\":\"synthetic\"}}",
+      "sha256": "11401608fdbdad71aa519aebf5925923c48109f15fe022298a49416d660e28a9"
+    },
+    {
+      "mode": "disagg",
+      "deployment": {
+        "deployment_mode": "disagg",
+        "backend": "sglang",
+        "backend_version": "0.5.14",
+        "num_prefill_workers": 1,
+        "num_decode_workers": 2,
+        "prefill_engine_args": {
+          "aic_tp_size": 2
+        },
+        "decode_engine_args": {
+          "aic_tp_size": 4
+        },
+        "parallel_config": {
+          "prefill_tp": 2,
+          "decode_tp": 4,
+          "prefill_replicas": 1,
+          "decode_replicas": 2
+        }
+      },
+      "spec": {
+        "workload": {
+          "isl": 128,
+          "osl": 32,
+          "source_type": "synthetic",
+          "random_range_ratio": 1.0
+        },
+        "goal": {
+          "target": "throughput"
+        },
+        "concurrency": 4
+      },
+      "canonical_json": "{\"adapters\":{},\"api_version\":1,\"backend_deployment\":{\"agg_engine_args\":null,\"backend\":\"sglang\",\"backend_version\":\"0.5.14\",\"decode_engine_args\":{\"aic_tp_size\":4},\"deployment_mode\":\"disagg\",\"encoder\":null,\"forward_pass_estimators\":{},\"num_decode_workers\":2,\"num_prefill_workers\":1,\"num_workers\":0,\"parallel_config\":{\"decode_replicas\":2,\"decode_tp\":4,\"prefill_replicas\":1,\"prefill_tp\":2},\"performance_model_metadata\":{},\"prefill_engine_args\":{\"aic_tp_size\":2}},\"concurrency\":4,\"execution_mode\":\"offline\",\"goal\":{\"target\":\"throughput\"},\"workload\":{\"isl\":128,\"osl\":32,\"random_range_ratio\":1.0,\"source_type\":\"synthetic\"}}",
+      "sha256": "cd0e3e94075903981b35e450170a3398dcfbac36d26671303eeb0495dc1bae12"
+    }
+  ]
+}

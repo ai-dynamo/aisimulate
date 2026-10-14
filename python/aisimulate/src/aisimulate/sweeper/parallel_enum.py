@@ -25,6 +25,11 @@ feasibility of each shape is applied separately by :mod:`aisimulate.sweeper.mode
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .afd_parallel import AFDTopology
+
 from dataclasses import dataclass
 
 # GPUs-per-worker ladder (matches AIC's default num_gpu_per_worker).
@@ -87,8 +92,8 @@ class DisaggParallelConfig:
     config sharing the GPU budget. prefill and decode are independent (shape and
     replica count may differ)."""
 
-    prefill: ReplicaParallelConfig
-    decode: ReplicaParallelConfig
+    prefill: ReplicaParallelConfig | AFDTopology
+    decode: ReplicaParallelConfig | AFDTopology
 
     @property
     def total_gpus(self) -> int:

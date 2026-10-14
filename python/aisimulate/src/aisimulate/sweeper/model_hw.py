@@ -228,6 +228,14 @@ def parallel_configs_for(
         else:
             raise ValueError(f"deployment_mode must be 'agg' or 'disagg', got {deployment_mode!r}")
 
+    if profile is None and candidate_configs is not None:
+        # Preserve authored pin order while preparing memory only for reachable shapes.
+        # The enumeration remains the source of truth for backend/GPU legality.
+        legal = set(configs)
+        configs = [config for config in candidate_configs if config in legal]
+        if not configs:
+            raise NoViableParallelConfig("no pinned parallel configuration is legal within the GPU budget")
+
     # KV-cache validity: keep configs whose every role-shape holds a max_seq_len sequence.
     def resolved_role_seq_len(role: str) -> int:
         configured_role_seq_len = (role_max_seq_len or {}).get(role)

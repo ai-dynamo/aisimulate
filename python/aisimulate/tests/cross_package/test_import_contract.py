@@ -63,7 +63,6 @@ def test_native_afd_stub_matches_runtime_signature(name):
 
 
 CORE_SDK_LEAF_MODULES = [
-    "afd_partition",
     "attention_lanes",
     "backends.base_backend",
     "backends.factory",
@@ -115,7 +114,6 @@ CORE_SDK_LEAF_MODULES = [
     "models.qwen3vl",
     "models.step3p7",
     "models.vit_ops",
-    "operations.afd_transfer",
     "operations.attention",
     "operations.base",
     "operations.communication",
@@ -376,6 +374,8 @@ def test_operations_baseline_exports_survive() -> None:
     baseline = {
         # (Mamba2 removed deliberately: the deprecated composite's window
         #  closed with the deprecation-cleanup PR.)
+        # (AFDTransfer/AFDCombine excluded: the AFD comm ops are native Rust
+        #  `Op` variants — schema 22 — not Python ops.)
         "FPMForwardOp",
         "Mamba2Kernel",
         "GDNKernel",
@@ -388,8 +388,6 @@ def test_operations_baseline_exports_survive() -> None:
         "GenerationMLA",
         "CustomAllReduce",
         "MoEAllToAll",
-        "AFDTransfer",
-        "AFDCombine",
         "Embedding",
         "ElementWise",
         "P2P",
