@@ -411,8 +411,9 @@ class FPMCollectionOptions:
             or self.prefill_cudagraph_policy != "runtime"
         ):
             raise ValueError(
-                "DeepSeek V4.1 requires eager execution; use runtime prefill policy "
-                "without CUDA graph captures (cudagraph_mode=NONE)"
+                "DeepSeek V4.1 requires eager execution; pass --fpm-enforce-eager, or use "
+                "--fpm-prefill-cudagraph-policy runtime without CUDA graph capture flags "
+                "(cudagraph_mode=NONE)"
             )
         return replace(self, enforce_eager=True)
 

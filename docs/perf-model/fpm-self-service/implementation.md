@@ -510,6 +510,9 @@ In vLLM, `--enforce-eager` disables both CUDA graphs and `torch.compile`;
 `cudagraph_mode=NONE` only disables CUDA graphs and may leave compilation enabled. See the
 [CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
 
+For direct `collector --fpm` calls, pass `--fpm-enforce-eager`, or select
+`--fpm-prefill-cudagraph-policy runtime` without CUDA graph capture flags.
+
 The collector and runtime probe recognize `DeepseekV41ForCausalLM` from the
 resolved model config
 and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
