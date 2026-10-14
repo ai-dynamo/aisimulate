@@ -2827,6 +2827,7 @@ def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
 @pytest.mark.parametrize(
     "graph_args",
     [
+        {"fpm_cudagraph_mode": "FULL"},
         {"fpm_cudagraph_capture_sizes": [1, 2]},
         {"fpm_max_cudagraph_capture_size": 8},
         {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},

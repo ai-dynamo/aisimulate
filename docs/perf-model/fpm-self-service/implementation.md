@@ -501,11 +501,11 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 ### Serving roles and CUDA graph settings
 
-The original DeepSeek V4.1 GB200 TP4 bring-up loaded the model, but graph
-compilation exceeded the allocation time limit and the run was terminated;
-see the [historical startup report](https://github.com/ai-dynamo/aisimulate/blob/2718db360b3d832062d63e28c2a3fae58a21874c/python/aisimulate/collector/fpm_forward/runtime/dsv41/README.md#L3-L8).
-That change introduced the collector's eager-only requirement. Compiled and
-CUDA-graph execution still need separate qualification for this collection path.
+DeepSeek V4.1 requires eager execution to avoid the graph-compilation startup
+timeout that motivated this collection policy; see the
+[historical startup evidence](../../../benchmarks/evidence/dsv41-eager-startup.md).
+Compiled and CUDA-graph execution still need separate qualification for this
+collection path.
 In vLLM, `--enforce-eager` disables both CUDA graphs and `torch.compile`;
 `cudagraph_mode=NONE` only disables CUDA graphs and may leave compilation enabled. See the
 [CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
