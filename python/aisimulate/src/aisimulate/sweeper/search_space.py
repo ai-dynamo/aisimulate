@@ -658,6 +658,7 @@ def enumerate_branches(
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()
         }
         profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
+        candidate_configs = profile_configs if profile_configs is not None else pinned
 
         def matches_custom(config: _ParallelConfig) -> bool:
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
@@ -678,7 +679,7 @@ def enumerate_branches(
                         ss,
                         backend=backend,
                         max_seq_len=max_seq_len,
-                        candidate_configs=profile_configs,
+                        candidate_configs=candidate_configs,
                     )
                 else:
                     legal = parallel_configs_for(
@@ -694,7 +695,7 @@ def enumerate_branches(
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                         **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
-                        **({"candidate_configs": profile_configs} if profile_configs is not None else {}),
+                        **({"candidate_configs": candidate_configs} if candidate_configs is not None else {}),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

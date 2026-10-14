@@ -150,6 +150,9 @@ def format_prediction_stdout(
         f"KV cache ({role}): {precision['dtype']} (source: {precision['source']})"
         for role, precision in summary.get("kv_cache_precision", {}).items()
     ]
+    invalid_banner = ""
+    if summary.get("prediction_status") == "invalid":
+        invalid_banner = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n"
     if summary.get("metric_semantics") == "analytical_epd_overlay":
         lines = ["AISimulate analytical EPD (aggregate estimates; no encoder queue simulation)"]
         for name in (
@@ -167,9 +170,9 @@ def format_prediction_stdout(
         lines.append(format_power_summary(summary))
         lines.extend(precision_lines)
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
-        return "\n".join(lines)
+        return invalid_banner + "\n".join(lines)
 
-    table = format_report_table(summary)
+    table = invalid_banner + format_report_table(summary)
     if precision_lines:
         table += "\n" + "\n".join(precision_lines)
     if summary.get("agentic_qualification") == "functional_only":
