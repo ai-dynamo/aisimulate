@@ -1070,13 +1070,18 @@ def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architect
         )
 
 
-@pytest.mark.parametrize("layer_count", [0, 1, 5])
-def test_incomplete_layer_types_cannot_select_a_generic_template(tmp_path, layer_count):
+@pytest.mark.parametrize(
+    "declared_layers,layer_count,error",
+    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+)
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_count, error):
     config = _unknown_fp8_moe_config()
+    config["num_hidden_layers"] = declared_layers
     config["layer_types"] = ["full_attention"] * layer_count
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match="layer_types must have one entry per num_hidden_layers"):
+    with pytest.raises(ValueError, match=error):
         resolve_model_capability(
             backend="vllm",
             model_path=str(path),

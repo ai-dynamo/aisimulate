@@ -56,15 +56,17 @@ def _attention_template(
         return "dsa_module", "moe_msa"
     layer_types = config.get("layer_types")
     layers = config.get("num_hidden_layers")
+    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
+        raise ValueError("num_hidden_layers must be a positive integer")
     if "layer_types" in config and (
-        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != int(layers))
+        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
     ):
         raise ValueError("layer_types must have one entry per num_hidden_layers")
     allowed_layers = {"full_attention", "sliding_attention"}
     if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
         allowed_layers.add("deepseek_sparse_attention")
-    if layer_types is not None and (
-        any(not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types)
+    if layer_types is not None and any(
+        not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types
     ):
         raise ValueError(
             f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "
