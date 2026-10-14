@@ -1022,22 +1022,41 @@ fn aggregated_prefill_batch_uses_the_final_prefill_forward_once(
     }
 }
 
-#[test]
-fn first_token_timing_fix_preserves_speculative_verification() {
+#[rstest::rstest]
+#[case::vllm_prefill_only(Backend::Vllm, 1, 10.0, 10.0, &[])]
+#[case::vllm_full_round(Backend::Vllm, 3, 10.0, 12.0, &[5])]
+#[case::vllm_truncated_last_round(Backend::Vllm, 4, 10.0, 14.0, &[5, 7])]
+#[case::trtllm_first_output_unchanged(Backend::Trtllm, 1, 12.0, 12.0, &[4])]
+#[case::trtllm_truncated_last_round_unchanged(Backend::Trtllm, 3, 12.0, 14.0, &[4, 6])]
+#[case::trtllm_full_round_unchanged(Backend::Trtllm, 4, 12.0, 14.0, &[4, 6])]
+fn speculative_first_output_and_verification_follow_backend_policy(
+    #[case] backend: Backend,
+    #[case] output_tokens: usize,
+    #[case] first_token_ms: f64,
+    #[case] terminal_ms: f64,
+    #[case] decode_contexts: &[usize],
+) {
     let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec(Backend::Vllm);
+    let mut replay = recording_timing_spec(backend);
     let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
     config.rank.aic_nextn = Some(1);
     config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
     replay.engine = serde_json::to_value(config).unwrap();
-    replay.requests = vec![request("request", 0.0, 4, 1)];
+    replay.requests = vec![request("request", 0.0, 4, output_tokens)];
     let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-    assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
-    assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
-    assert_eq!(
-        *timing.calls.lock().unwrap(),
-        vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
+    assert_eq!(report.per_request[0].output_length, output_tokens);
+    assert_eq!(report.per_request[0].first_token_ms, Some(first_token_ms));
+    assert_eq!(report.per_request[0].terminal_time_ms, terminal_ms);
+    // Hand oracle: prefill costs 10 ms, every verification costs 2 ms, and
+    // K=1/all-accept emits two tokens per round. vLLM's initial prefill emits
+    // one base token; TRT-LLM keeps its existing initial verification burst.
+    let mut expected = vec![TimingCall::Prefill(1, 4, 0)];
+    expected.extend(
+        decode_contexts
+            .iter()
+            .map(|&context| TimingCall::Decode(1, context, context)),
     );
+    assert_eq!(*timing.calls.lock().unwrap(), expected);
 }
 
 #[rstest::rstest]
