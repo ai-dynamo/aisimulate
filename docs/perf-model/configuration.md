@@ -263,6 +263,12 @@ for execution and cache combinations.
 
 ### KV precision and token capacity
 
+FP8 tensor-core compute is rejected during estimator construction on pre-SM89
+GPUs, including `a100_sxm`. Choose a BF16 checkpoint on A100, or an FP8-capable
+GPU with matching backend timing data. This checks compute precision, not weight
+storage or KV dtype: weight-only formats that compute in BF16 remain distinct.
+Missing hardware metadata still follows the system-spec/data diagnostics.
+
 An explicit `engine.kvcache_quant_mode` or worker timing override takes precedence,
 subject to model/backend and profile validation. An FPM profile supplies its
 recorded `kv_cache_dtype`. Otherwise, the first matching rule below applies:

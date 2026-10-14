@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::AicError;
-use crate::common::enums::{DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
+use crate::common::enums::{ComputeDtype, DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
 use crate::config::PerfSource;
 use crate::operators::Op;
 use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
@@ -364,6 +364,26 @@ impl Availability<'_> {
 
     fn op(&mut self, op: &Op) -> Result<(), AicError> {
         use Op::*;
+        let quant = match op {
+            Gemm(gemm) => Some(gemm.quant_mode.mapping()),
+            Moe(moe) => Some(moe.quant_mode.mapping()),
+            _ => None,
+        };
+        // FP8 tensor-core compute starts at SM89 (Ada). Weight-only formats
+        // that dequantize to BF16 must not be rejected by their storage name.
+        // https://docs.nvidia.com/cuda/archive/12.9.0/ada-tuning-guide/index.html
+        if let Some(quant) = quant
+            && quant.compute_dtype == Some(ComputeDtype::Fp8)
+            && let Some(sm) = self.db.system_spec.gpu.sm_version
+            && sm < 89
+        {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "GPU {} (SM{sm}) does not support FP8 tensor-core compute required by quant mode '{}'. \
+                 Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
+                 with matching backend performance data.",
+                self.db.system, quant.name,
+            )));
+        }
         // CSA context parallelism consumes both sparse correction tables even
         // when its base module uses the analytic SOL. HCA never consumes them.
         if let Dsv4Context(module) = op
@@ -643,6 +663,35 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn fp8_compute_capability_is_checked_before_tables_and_sol() {
+        let root = systems();
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            for sm in [Some(80), Some(86), Some(89), Some(90), None] {
+                let path = root.path().join("b200_sxm.yaml");
+                let mut spec: serde_yaml::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+                std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::Fp8Block));
+                let result = validate(&db, [&op].into_iter());
+                if sm.is_some_and(|value| value < 89) {
+                    assert!(matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                } else {
+                    assert!(!matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                }
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::W4a16Nvfp4));
+                assert!(!matches!(
+                    validate(&db, [&op].into_iter()),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+        }
     }
 
     #[test]
