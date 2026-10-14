@@ -638,6 +638,8 @@ registered. Use a qualified model-specific runtime adapter and verified cache
 profile; a generic planning success does not establish support.
 Sparse-attention layer declarations are accepted only for the collector's
 supported DSA architectures; the layer name alone does not establish support.
+Unknown architectures can still use generic MLA/GQA planning when their
+declared layer layout is supported.
 An explicit `layer_types` list must have one entry per declared model layer.
 The declared `num_hidden_layers` must be a positive integer; fractional counts
 are rejected rather than rounded or truncated.
