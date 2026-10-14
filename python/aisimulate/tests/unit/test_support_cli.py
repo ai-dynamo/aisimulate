@@ -20,7 +20,8 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.support.schema import SupportRequest
+from aisimulate.support.fpm import _resolve_execution, fpm_cli_args
+from aisimulate.support.schema import CollectionSpec, SupportRequest
 
 pytestmark = pytest.mark.unit
 
@@ -1364,3 +1365,46 @@ def test_scripted_init_requires_context_evidence(tmp_path, capsys):
         cli.main(_init_args(tmp_path / "request.yaml", context_length=None))
     assert error.value.code == 2
     assert "--context-length is required" in capsys.readouterr().err
+
+
+def test_onboard_explicit_eager_round_trip_and_collector_flag(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    path = tmp_path / "request.yaml"
+    args = _init_args(
+        path,
+        model="deepseek-ai/DeepSeek-V4.1-Flash",
+        model_kind="moe",
+        tensor_parallel=4,
+        worker_type="aggregated",
+        cudagraph_mode="NONE",
+        gpu="b200_sxm",
+        framework_version="0.27.0",
+    )
+    assert cli.main([*args, "--enforce-eager"]) == 0
+    request = SupportRequest.from_yaml(path)
+    assert request.collection.enforce_eager is True
+    output = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "-c", str(path), "--output-dir", str(output)]) == 0
+    assert cli.main(["onboard", "collect-fpm", "-c", str(output / "request.yaml"), "--output-dir", str(output)]) == 0
+    assert "--fpm-enforce-eager" in capsys.readouterr().out
+    assert SupportRequest.from_yaml(output / "request.yaml").collection.enforce_eager is True
+    _, resolved = _resolve_execution(fpm_cli_args(request, output_dir=output, plan_only=True))
+    assert resolved[0].options.enforce_eager is True
+    assert resolved[0].cells
+
+
+def test_none_graph_policy_does_not_silently_select_eager():
+    legacy = CollectionSpec(prefill_cudagraph_policy="runtime", cudagraph_mode="NONE")
+    assert legacy.enforce_eager is False
+    assert "enforce_eager" not in legacy.model_dump()
+    assert CollectionSpec.model_validate(legacy.model_dump()).model_dump() == legacy.model_dump()
+
+
+@pytest.mark.parametrize("mode", [None, "NONE", "FULL"])
+def test_onboard_eager_does_not_accept_graph_capture(tmp_path, mode):
+    path = tmp_path / "request.yaml"
+    args = _init_args(path, tensor_parallel=2, worker_type="aggregated", cudagraph_mode=mode)
+    with pytest.raises(SystemExit) as error:
+        cli.main([*args, "--enforce-eager", "--cudagraph-capture-sizes", "1", "2"])
+    assert error.value.code == 2
+    assert not path.exists()

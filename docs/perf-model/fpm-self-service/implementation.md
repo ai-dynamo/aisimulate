@@ -507,6 +507,7 @@ The following optional settings describe vLLM's configuration for the selected r
 
 | Option | Meaning |
 | --- | --- |
+| `--enforce-eager` | Explicit eager execution, saved as `collection.enforce_eager` and emitted as `--fpm-enforce-eager`. Required by the DeepSeek V4.1 collector. Defaults to false; `NONE` alone does not enable eager execution. Requires runtime prefill policy with no capture sizes and no graph mode other than `NONE`. |
 | `--cudagraph-mode` | Configured vLLM mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY` or `FULL_AND_PIECEWISE`. Runtime/backend support still needs verification. |
 | `--cudagraph-capture-sizes 1 2 4 8 16` | Increasing, distinct positive capture sizes; use `--prefill-cudagraph-policy runtime` to avoid a competing legacy override. |
 | `--max-cudagraph-capture-size 2048` | Maximum capture size for this serving configuration. In aggregated mode it is passed to both phase launches. When a capture list is also supplied, it must equal the largest listed size. Mode `NONE` rejects capture settings. |

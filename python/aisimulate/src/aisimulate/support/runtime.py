@@ -236,6 +236,7 @@ def checkpoint_launch(
                 "max_num_batched_tokens": max_tokens,
                 "max_num_seqs": max_sequences,
                 "gpu_memory_utilization": collection.memory_fraction,
+                "enforce_eager": collection.enforce_eager,
                 "prefill_cudagraph_policy": collection.prefill_cudagraph_policy,
                 "max_prefill_cudagraph_size": collection.max_prefill_cudagraph_size,
                 **{
@@ -376,6 +377,7 @@ def _request_launch(request: SupportRequest, launch: dict[str, Any]) -> dict[str
         max_num_batched_tokens=scheduler["max_batched_tokens"],
         max_num_seqs=scheduler["max_sequences"],
         gpu_memory_utilization=request.collection.memory_fraction,
+        enforce_eager=request.collection.enforce_eager,
         prefill_cudagraph_policy=request.collection.prefill_cudagraph_policy,
         max_prefill_cudagraph_size=request.collection.max_prefill_cudagraph_size
         or (2048 if request.collection.prefill_cudagraph_policy == "explicit" else None),

@@ -212,6 +212,7 @@ def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, 
         or plan.options.prefill_cudagraph_policy != request.collection.prefill_cudagraph_policy
         or plan.options.prefill_sampling != sampling
         or plan.options.worker_type != request.worker_type
+        or plan.options.enforce_eager != request.collection.enforce_eager
         or plan.options.cudagraph_mode != request.collection.cudagraph_mode
         or plan.options.cudagraph_capture_sizes
         != (

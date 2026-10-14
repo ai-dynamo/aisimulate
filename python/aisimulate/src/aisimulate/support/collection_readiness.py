@@ -200,6 +200,7 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         and plan.options.prefill_cudagraph_policy == request.collection.prefill_cudagraph_policy
         and plan.options.max_prefill_cudagraph_size == request.collection.max_prefill_cudagraph_size
         and plan.options.worker_type == request.worker_type
+        and plan.options.enforce_eager == request.collection.enforce_eager
         and plan.options.cudagraph_mode == request.collection.cudagraph_mode
         and plan.options.cudagraph_capture_sizes
         == (
