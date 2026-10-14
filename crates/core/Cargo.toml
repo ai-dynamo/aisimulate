@@ -46,6 +46,10 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 xxhash-rust = { workspace = true }
 
+[build-dependencies]
+serde_json = { workspace = true }
+sha2 = "0.10"
+
 [features]
 default = []
 python = ["dep:pyo3"]

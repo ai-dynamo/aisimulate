@@ -5337,9 +5337,16 @@ fn scan_weka_requests(
     scanned.map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
+/// Build-time input hashes used only by source/binary qualification tooling.
+#[pyfunction]
+fn _build_source_files_json() -> &'static str {
+    include_str!(concat!(env!("OUT_DIR"), "/build-source-files.json"))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_build_source_files_json, module)?)?;
     module.add_function(wrap_pyfunction!(
         engine_launch_from_replay_role_json,
         module

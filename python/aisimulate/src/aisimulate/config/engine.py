@@ -11,6 +11,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
+    BeforeValidator,
     Field,
     PrivateAttr,
     StrictBool,
@@ -22,6 +23,7 @@ from pydantic import (
 from aisimulate.fpm_profile import FpmModelProfile
 
 from .common import (
+    AFD_UNSUPPORTED_MODEL_CONTROLS,
     ENGINE_MODEL_CONTROL_FIELDS,
     Choices,
     IntegerRange,
@@ -41,12 +43,10 @@ CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 Fraction = Annotated[float, Field(strict=True, gt=0, le=1, allow_inf_nan=False)]
-EngineMode = Literal["aggregated", "disaggregated", "afd"]
+EngineMode = Literal["aggregated", "disaggregated"]
 Backend = Literal["vllm", "sglang", "trtllm"]
 KvBytesPerToken = PositiveInt | Literal["auto"]
-AFDPhase = Literal["prefill", "decode", "both"]
-AFDPipelineModel = Literal["optimistic", "conservative", "serial"]
-AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "ffn_tp"]
+AFDExpertParallel = PositiveInt | Literal["n_f_nodes", "f_gpu_count"]
 
 
 def resolve_block_size(backend: str, configured: int | None) -> int:
@@ -60,27 +60,41 @@ def resolve_block_size(backend: str, configured: int | None) -> int:
 ReplayEstimationMode = Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"]
 
 
+def _default_afd_routing_location() -> str:
+    # Ordinary config parsing must remain runtime-free before resource supervision.
+    from aisimulate_core._native import AFD_DEFAULT_ROUTING_LOCATION
+
+    return AFD_DEFAULT_ROUTING_LOCATION
+
+
 class AFDTopologyPredictionConfig(StrictModel):
     """One concrete attention/FFN-disaggregated topology."""
 
-    phase: AFDPhase
-    combined_with_pd: bool = Field(strict=True)
     n_a_nodes: PositiveInt
     n_f_nodes: PositiveInt
     tp_a: PositiveInt
     a_batch_size: PositiveInt
-    f_moe_ep_size: PositiveInt = 1
+    f_moe_ep_size: PositiveInt | None = None
     num_microbatches: PositiveInt = 3
-    pipeline_model: AFDPipelineModel = "optimistic"
+    pipeline_layout: Literal["four_stage", "two_stage"] = "four_stage"
     comm_overhead_factor: PositiveFloat = 1.0
-    boundary_on_attn: bool = Field(default=True, strict=True)
+    routing_location: Literal["a", "f"] = Field(default_factory=_default_afd_routing_location)
+    # Chunked-prefill window (SGLang native chunking). Unset pins the window
+    # at the prompt length so every prompt pre-fills in ONE pass (the
+    # conservative single-pass identity); a smaller explicit value lets long
+    # prompts chunk across multiple prefill passes, each priced at its actual
+    # (chunk tokens, prefix) geometry.
+    chunked_prefill_size: PositiveInt | None = None
+    # Optional per-pool perf-DB systems for heterogeneous A/F SKU pairs.
+    # Omit for homogeneous deployments (both pools inherit the
+    # top-level ``hardware``). Node width is resolved independently per pool.
+    a_system: str | None = None
+    f_system: str | None = None
 
 
 class AFDSearchRecommendationConfig(StrictModel):
     """Finite AFD topology domain for a recommendation run."""
 
-    phase: AFDPhase
-    combined_with_pd: bool = Field(strict=True)
     # This is deliberately required. AFD batches must be memory-qualified for
     # the target model/hardware rather than inherited from an implicit default.
     a_batch_size: PositiveInt | Choices[PositiveInt] | IntegerRange
@@ -89,13 +103,20 @@ class AFDSearchRecommendationConfig(StrictModel):
     num_microbatches: PositiveInt | Choices[PositiveInt] | IntegerRange = Field(
         default_factory=lambda: Choices[PositiveInt](choices=[2, 3, 4])
     )
-    pipeline_model: AFDPipelineModel | Choices[AFDPipelineModel] = Field(
-        default_factory=lambda: Choices[AFDPipelineModel](choices=["optimistic", "conservative"])
-    )
+    pipeline_layout: Literal["four_stage", "two_stage"] = "four_stage"
     comm_overhead_factor: PositiveFloat = 1.0
-    boundary_on_attn: bool = Field(default=True, strict=True)
+    routing_location: Literal["a", "f"] = Field(default_factory=_default_afd_routing_location)
+    a_system: str | None = None
+    f_system: str | None = None
+    chunked_prefill_size: PositiveInt | None = None
     max_af_ratio: PositiveFloat = 4.0
-    max_candidates: PositiveInt = 10_000
+
+    @field_validator("a_batch_size", "tp_a", "num_microbatches")
+    @classmethod
+    def _reject_log_domains(cls, value):
+        if isinstance(value, IntegerRange) and value.range.scale == "log":
+            raise ValueError("AFD integer domains do not support log ranges; use choices or a linear range")
+        return value
 
 
 class ParallelismPresetConfig(StrictModel):
@@ -427,6 +448,13 @@ class TimingConfig(StrictModel):
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
     transfer_policy: str | list[str] | None = None
 
+    @field_validator("estimator_config", mode="before")
+    @classmethod
+    def _reject_retired_afd_pricing(cls, value):
+        if isinstance(value, Mapping) and "afd" in value:
+            raise ValueError("frozen_decode_identity has been removed; regenerate the AFD configuration/ReplaySpec")
+        return value
+
     @field_validator("database_mode", mode="before")
     @classmethod
     def _normalize_database_mode(cls, value):
@@ -587,6 +615,7 @@ class VisionPredictionConfig(StrictModel):
 
 
 class WorkerPredictionConfig(StrictModel):
+    type: Literal["monolithic"] = "monolithic"
     hardware: str | None = Field(default=None, min_length=1)
     context_length: PositiveInt | None = None
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
@@ -604,6 +633,66 @@ def _frontend_implies_host_loop(value: Any) -> Any:
         and (value.get("frontend") is not None or value.get("host_profile") is not None)
     ):
         return {**value, "host_loop": True}
+    return value
+
+
+class AFDWorkerPredictionConfig(StrictModel):
+    type: Literal["afd"]
+    afd: AFDTopologyPredictionConfig
+    context_length: PositiveInt | None = None
+    startup_seconds: NonNegativeFloat = 0.0
+    parallelism: ParallelismPredictionConfig | None = None
+    scheduler: SchedulerPredictionConfig | None = None
+    kv_cache: KvCachePredictionConfig | None = None
+    timing: TimingConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_common_fields(cls, value):
+        from ..afd_config import normalize_afd_worker_input
+
+        return normalize_afd_worker_input(value)
+
+    @model_validator(mode="after")
+    def _validate_common_fields(self):
+        from ..afd_config import validate_afd_worker
+
+        return validate_afd_worker(self)
+
+    @model_serializer(mode="wrap")
+    def _serialize_common_fields(self, handler, info):
+        payload = handler(self)
+        for name in ("parallelism", "scheduler", "kv_cache", "timing"):
+            if name not in payload:
+                continue
+            value = getattr(self, name)
+            if value is None:
+                payload.pop(name, None)
+            else:
+                include = info.include.get(name) if isinstance(info.include, dict) else None
+                exclude = info.exclude.get(name) if isinstance(info.exclude, dict) else None
+                payload[name] = value.model_dump(
+                    mode=info.mode,
+                    exclude_unset=True,
+                    exclude_none=info.exclude_none,
+                    exclude_defaults=info.exclude_defaults,
+                    include=None if include is True else include,
+                    exclude=exclude,
+                )
+        return payload
+
+
+def is_afd_worker(worker) -> bool:
+    return worker is not None and worker.type == "afd"
+
+
+def has_afd(workers) -> bool:
+    return any(is_afd_worker(getattr(workers, role)) for role in ("aggregated", "prefill", "decode"))
+
+
+def _default_worker_type(value):
+    if isinstance(value, dict) and "type" not in value:
+        return {"type": "monolithic", **value}
     return value
 
 
@@ -732,11 +821,23 @@ def _lift_plain_worker(value: Any) -> Any:
     return value
 
 
+PredictionWorker = Annotated[
+    WorkerPredictionConfig | AFDWorkerPredictionConfig,
+    Field(discriminator="type"),
+    BeforeValidator(_default_worker_type),
+]
+HostPredictionWorker = Annotated[
+    HostWorkerPredictionConfig | AFDWorkerPredictionConfig,
+    Field(discriminator="type"),
+    BeforeValidator(_default_worker_type),
+]
+
+
 class WorkersPredictionConfig(StrictModel):
     encoder: EncoderPredictionConfig | None = None
-    aggregated: HostWorkerPredictionConfig | None = None
-    prefill: HostWorkerPredictionConfig | None = None
-    decode: WorkerPredictionConfig | None = None
+    aggregated: HostPredictionWorker | None = None
+    prefill: HostPredictionWorker | None = None
+    decode: PredictionWorker | None = None
 
     _lift_plain_worker = field_validator("aggregated", "prefill", mode="before")(_lift_plain_worker)
 
@@ -748,7 +849,7 @@ class WorkersPredictionConfig(StrictModel):
             ("decode", 256),
         ):
             worker = getattr(self, role)
-            if worker is None or "max_sequences" in worker.scheduler.model_fields_set:
+            if worker is None or is_afd_worker(worker) or "max_sequences" in worker.scheduler.model_fields_set:
                 continue
             scheduler = worker.scheduler.model_copy(update={"max_sequences": max_sequences})
             setattr(self, role, worker.model_copy(update={"scheduler": scheduler}))
@@ -801,15 +902,34 @@ class EstimatorPolicyConfig(StrictModel):
         active = self.nextn or any(
             is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
         )
-        mode = getattr(self, "mode", "aggregated")
-        modes = mode.choices if hasattr(mode, "choices") else [mode]
-        if "afd" in modes and self.enable_chunked_prefill is not None:
-            raise ValueError("enable_chunked_prefill is unsupported for AFD")
         workers = getattr(self, "workers", None)
-        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
+        roles = [
+            w
+            for role in ("aggregated", "prefill", "decode")
+            if (w := getattr(workers, role, None)) is not None and not is_afd_worker(w)
+        ]
+        if workers is not None and has_afd(workers) and self.enable_chunked_prefill is not None:
+            raise ValueError(
+                "enable_chunked_prefill is unsupported for AFD; "
+                "use workers.<role>.afd.chunked_prefill_size to size the chunked-prefill window"
+            )
+        if workers is not None and has_afd(workers):
+            # The native AFD path supports nextn (the Rust
+            # SpeculativeDecodeSampler carries acceptance) and the quant-mode
+            # controls and kernel selectors (per-pool explicit overrides). Pool-shaping
+            # controls the AFD model does not consume stay rejected.
+            unsupported_afd = [
+                name
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if name in AFD_UNSUPPORTED_MODEL_CONTROLS and is_active_engine_model_control(name, getattr(self, name))
+            ]
+            if unsupported_afd:
+                raise ValueError(f"engine model controls {unsupported_afd} are unsupported for AFD")
+            if active and any(worker is not None and worker.timing.type != "default" for worker in roles):
+                raise ValueError("engine model controls require default timing in every regular language role")
+            return self
         if active and (
-            "afd" in modes
-            or getattr(workers, "encoder", None) is not None
+            getattr(workers, "encoder", None) is not None
             or any(worker is not None and worker.timing.type != "default" for worker in roles)
         ):
             raise ValueError("engine model controls require default timing in every regular language role")
@@ -831,6 +951,13 @@ class EstimatorPolicyConfig(StrictModel):
             self.systems_paths = [self.systems_path]
         return self
 
+    @field_validator("estimator_config", mode="before")
+    @classmethod
+    def _reject_retired_afd_pricing(cls, value):
+        if isinstance(value, Mapping) and "afd" in value:
+            raise ValueError("frozen_decode_identity has been removed; regenerate the AFD configuration/ReplaySpec")
+        return value
+
     @field_validator("database_mode", mode="before")
     @classmethod
     def _normalize_database_mode(cls, value):
@@ -838,8 +965,6 @@ class EstimatorPolicyConfig(StrictModel):
 
     @model_validator(mode="after")
     def _supported_estimator_policies(self):
-        mode = getattr(self, "mode", "aggregated")
-        modes = mode.choices if hasattr(mode, "choices") else [mode]
         workers = getattr(self, "workers", None)
         custom_policy = (
             self.database_mode != "SILICON"
@@ -851,11 +976,14 @@ class EstimatorPolicyConfig(StrictModel):
             or getattr(self, "enable_shared_layer", None) is not None
             or getattr(self, "strict_provenance", None) is not None
         )
-        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
-        unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        roles = [
+            w
+            for role in ("aggregated", "prefill", "decode")
+            if (w := getattr(workers, role, None)) is not None and not is_afd_worker(w)
+        ]
+        unsupported_provider = getattr(workers, "encoder", None) is not None
         if self.systems_paths not in (None, ["default"]) and unsupported_provider:
-            unsupported = "AFD" if "afd" in modes else "encoder pools"
-            raise ValueError(f"engine.systems_paths does not support {unsupported}")
+            raise ValueError("engine.systems_paths does not support analytical encoder pools")
         if unsupported_provider and any(
             worker is not None
             and (
@@ -870,8 +998,7 @@ class EstimatorPolicyConfig(StrictModel):
         ):
             raise ValueError("estimator policies require regular language workers with default timing")
         if custom_policy and (
-            "afd" in modes
-            or getattr(workers, "encoder", None) is not None
+            getattr(workers, "encoder", None) is not None
             or any(worker is not None and worker.timing.type != "default" for worker in roles)
         ):
             raise ValueError("estimator policies require regular language workers with default timing in every role")
@@ -911,7 +1038,6 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     kv_transfer: KvTransferConfig | None = None
     tokenization: TokenizationConfig | None = None
     detokenization: DetokenizationConfig | None = None
-    afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -939,29 +1065,23 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
                 raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
-        if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
+        if self.tokenization is not None and (has_afd(self.workers) or self.workers.encoder is not None):
             raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
         if (
             self.detokenization is not None
             and self.detokenization.active
-            and (self.mode == "afd" or self.workers.encoder is not None)
+            and (has_afd(self.workers) or self.workers.encoder is not None)
         ):
             raise ValueError("engine.detokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.tokenization is not None and any(
-            worker is not None and (worker.frontend is not None or worker.host_profile is not None)
+            worker is not None
+            and not is_afd_worker(worker)
+            and (worker.frontend is not None or worker.host_profile is not None)
             for worker in (self.workers.aggregated, self.workers.prefill)
         ):
             raise ValueError("engine.tokenization and SGLang frontend stages both price request tokenization; use one")
-        if self.mode == "afd":
-            _validate_prediction_afd(self)
-        else:
-            if self.afd is not None:
-                raise ValueError("engine.afd requires engine.mode='afd'")
-            _validate_worker_roles(
-                modes={self.mode},
-                workers=self.workers,
-                has_transfer=self.kv_transfer is not None,
-            )
+        _validate_afd_workers(self)
+        _validate_worker_roles(modes={self.mode}, workers=self.workers, has_transfer=self.kv_transfer is not None)
         _validate_decode_radix_cache(
             backends={self.backend},
             workers=self.workers,
@@ -1091,6 +1211,7 @@ class KvCacheRecommendationConfig(StrictModel):
 
 
 class WorkerRecommendationConfig(StrictModel):
+    type: Literal["monolithic"] = "monolithic"
     hardware: str | None = Field(default=None, min_length=1)
     context_length: PositiveInt | None = None
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
@@ -1138,6 +1259,13 @@ class HostWorkerRecommendationConfig(WorkerRecommendationConfig):
         return self
 
 
+class AFDWorkerRecommendationConfig(AFDWorkerPredictionConfig):
+    afd: AFDSearchRecommendationConfig
+    parallelism: ParallelismRecommendationConfig | None = None
+    scheduler: SchedulerRecommendationConfig | None = None
+    kv_cache: KvCacheRecommendationConfig | None = None
+
+
 class EncoderRecommendationConfig(StrictModel):
     """Finite encoder domains; scalar values pin a single choice."""
 
@@ -1165,11 +1293,25 @@ class EncoderRecommendationConfig(StrictModel):
         return self
 
 
+RecommendationWorker = Annotated[
+    WorkerRecommendationConfig | AFDWorkerRecommendationConfig,
+    Field(discriminator="type"),
+    BeforeValidator(_default_worker_type),
+]
+
+
+HostRecommendationWorker = Annotated[
+    HostWorkerRecommendationConfig | AFDWorkerRecommendationConfig,
+    Field(discriminator="type"),
+    BeforeValidator(_default_worker_type),
+]
+
+
 class WorkersRecommendationConfig(StrictModel):
     encoder: EncoderRecommendationConfig | None = None
-    aggregated: HostWorkerRecommendationConfig | None = None
-    prefill: HostWorkerRecommendationConfig | None = None
-    decode: WorkerRecommendationConfig | None = None
+    aggregated: HostRecommendationWorker | None = None
+    prefill: HostRecommendationWorker | None = None
+    decode: RecommendationWorker | None = None
 
     _lift_plain_worker = field_validator("aggregated", "prefill", mode="before")(_lift_plain_worker)
 
@@ -1187,7 +1329,6 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
-    afd: AFDSearchRecommendationConfig | None = None
 
     @field_validator("model", "hardware")
     @classmethod
@@ -1201,21 +1342,15 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_fpm_profile(self, modes, backends)
-        if self.workers.aggregated is not None and self.workers.aggregated.context_length is not None:
+        if (
+            self.workers.aggregated is not None
+            and not is_afd_worker(self.workers.aggregated)
+            and self.workers.aggregated.context_length is not None
+        ):
             raise ValueError("workers.aggregated.context_length must be set as engine.context_length")
         _validate_worker_hardware(modes=modes, workers=self.workers)
-        if "afd" in modes:
-            if modes != {"afd"}:
-                raise ValueError("AFD recommendation mode cannot be mixed with aggregated/disaggregated modes")
-            _validate_recommendation_afd(self)
-        else:
-            if self.afd is not None:
-                raise ValueError("engine.afd requires engine.mode='afd'")
-            _validate_worker_roles(
-                modes=modes,
-                workers=self.workers,
-                has_transfer=self.kv_transfer is not None,
-            )
+        _validate_afd_workers(self)
+        _validate_worker_roles(modes=modes, workers=self.workers, has_transfer=self.kv_transfer is not None)
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         if isinstance(self.backend_version, dict):
             unknown = sorted(set(self.backend_version) - backends)
@@ -1239,7 +1374,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         return
     if engine.model != profile.model:
         raise ValueError("engine.model must match engine.fpm_profile.model")
-    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+    if backends != {"vllm"} or has_afd(engine.workers) or engine.workers.encoder is not None:
         raise ValueError("FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders")
     backend_version = requested_backend_version(engine.backend_version, "vllm")
     if (
@@ -1259,7 +1394,7 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
         raise ValueError("engine.context_length exceeds the FPM profile context_length")
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None:
+        if worker is None or is_afd_worker(worker):
             continue
         if worker.timing.type != "default":
             raise ValueError("engine.fpm_profile requires default timing for every worker")
@@ -1304,14 +1439,14 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
     if engine.nextn or engine.nextn_accepted is not None:
         raise ValueError("speculation cannot be combined with nextn or nextn_accepted")
     supported_backends = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
-    if not backends <= supported_backends or "afd" in modes or engine.workers.encoder is not None:
+    if not backends <= supported_backends or has_afd(engine.workers) or engine.workers.encoder is not None:
         raise ValueError(
             f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
             "aggregated/disaggregated language workers"
         )
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None:
+        if worker is None or is_afd_worker(worker):
             continue
         if worker.kv_cache.host_offload is not None:
             raise ValueError(f"{kind} speculation does not support host_offload")
@@ -1326,7 +1461,7 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
 def _validate_worker_hardware(*, modes: set[str], workers) -> None:
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(workers, role)
-        if worker is None or worker.hardware is None:
+        if worker is None or is_afd_worker(worker) or worker.hardware is None:
             continue
         if role == "aggregated" or "disaggregated" not in modes or "afd" in modes:
             raise ValueError("worker hardware overrides require prefill/decode workers in disaggregated mode")
@@ -1339,7 +1474,9 @@ def _workers_with_host_offload(workers) -> list[tuple[str, Any]]:
     return [
         (role, worker)
         for role in ("aggregated", "prefill", "decode")
-        if (worker := getattr(workers, role)) is not None and worker.kv_cache.host_offload is not None
+        if (worker := getattr(workers, role)) is not None
+        and not is_afd_worker(worker)
+        and worker.kv_cache.host_offload is not None
     ]
 
 
@@ -1350,7 +1487,7 @@ def _configured_worker_roles(workers) -> set[str]:
 def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> None:
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None:
+        if worker is None or is_afd_worker(worker):
             continue
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
@@ -1368,11 +1505,13 @@ def _validate_decode_radix_cache(*, backends: set[str], workers, speculative: bo
     """
     for role in ("aggregated", "prefill"):
         worker = getattr(workers, role)
-        if worker is not None and worker.kv_cache.decode_radix_cache:
+        if worker is not None and not is_afd_worker(worker) and worker.kv_cache.decode_radix_cache:
             raise ValueError(f"workers.{role}.kv_cache.decode_radix_cache applies only to the decode role")
     decode = workers.decode
-    if decode is None or not decode.kv_cache.decode_radix_cache:
+    if decode is None or is_afd_worker(decode) or not decode.kv_cache.decode_radix_cache:
         return
+    if has_afd(workers):
+        raise ValueError("decode_radix_cache is unsupported for AFD")
     if "sglang" not in backends:
         raise ValueError("workers.decode.kv_cache.decode_radix_cache is supported only for backend=sglang")
     if not decode.kv_cache.prefix_caching:
@@ -1417,7 +1556,7 @@ def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
     """The aggregated worker hosts the loop in aggregated mode, the prefill worker in disaggregated mode."""
     for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
         worker = getattr(engine.workers, role)
-        if worker is None or (not worker.host_loop and worker.vision is None):
+        if worker is None or is_afd_worker(worker) or (not worker.host_loop and worker.vision is None):
             continue
         if engine.mode != mode:
             raise ValueError(f"workers.{role}.host_loop and workers.{role}.vision require engine.mode={mode}")
@@ -1428,59 +1567,20 @@ def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
         require_native_vl_parallelism(worker)
 
 
-def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
+def _validate_afd_workers(engine) -> None:
+    if not has_afd(engine.workers):
+        return
     if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support encoder pools")
-    afd = engine.afd
-    if afd is None:
-        raise ValueError("engine.mode='afd' requires engine.afd")
-    if engine.kv_transfer is not None:
-        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
-    configured = _configured_worker_roles(engine.workers)
-    if afd.combined_with_pd:
-        if afd.phase == "both":
-            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
-        companion = "decode" if afd.phase == "prefill" else "prefill"
-        if configured != {companion}:
-            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true requires only workers.{companion}")
-        # The AFD replay prices its companion from the companion model, which
-        # does not model async-scheduling admission.
-        if getattr(engine.workers, companion).scheduler.async_scheduling:
-            raise ValueError(f"AFD companion workers.{companion}.scheduler.async_scheduling=true is not modeled")
-    else:
-        if afd.phase != "both":
-            raise ValueError("pure AFD prediction requires phase='both'; use combined_with_pd=true for one phase")
-        if configured:
-            raise ValueError("pure AFD prediction rejects regular aggregated/prefill/decode workers")
-
-
-def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
-    if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support encoder pools")
-    afd = engine.afd
-    if afd is None:
-        raise ValueError("engine.mode='afd' requires engine.afd")
-    if engine.kv_transfer is not None:
-        raise ValueError("AFD mode rejects kv_transfer; A/F transfers are modeled by engine.afd")
-    configured = _configured_worker_roles(engine.workers)
-    if afd.combined_with_pd:
-        if afd.phase == "both":
-            raise ValueError("AFD+P/D requires phase='prefill' or phase='decode'")
-        companion = "decode" if afd.phase == "prefill" else "prefill"
-        unexpected = configured - {companion}
-        if unexpected:
-            raise ValueError(f"AFD phase={afd.phase!r} combined_with_pd=true accepts only optional workers.{companion}")
-    else:
-        if afd.phase != "both":
-            raise ValueError("pure AFD recommendation requires phase='both'; use combined_with_pd=true for one phase")
-        if configured:
-            raise ValueError("pure AFD recommendation rejects regular aggregated/prefill/decode workers")
+        raise ValueError("AFD does not support encoder pools (analytical or native EPD)")
+    backends = set(engine.backend.choices) if isinstance(engine.backend, Choices) else {engine.backend}
+    if backends != {"sglang"}:
+        raise ValueError("AFD workers require engine.backend='sglang'")
 
 
 def _validate_prediction_hicache(engine: EnginePredictionConfig) -> None:
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None or worker.kv_cache.hicache is None:
+        if worker is None or is_afd_worker(worker) or worker.kv_cache.hicache is None:
             continue
         if engine.backend != "sglang" or engine.mode != "aggregated" or role != "aggregated":
             raise ValueError("hicache requires backend=sglang and mode=aggregated")
@@ -1494,7 +1594,7 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
     configured = _workers_with_host_offload(engine.workers)
     if not configured:
         return
-    if engine.mode == "afd":
+    if has_afd(engine.workers):
         raise ValueError("host_offload is supported only for aggregated or disaggregated language workers")
     if engine.backend != "vllm":
         raise ValueError("host_offload is supported only for backend=vllm")
@@ -1521,7 +1621,7 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
     roles = []
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None or worker.kv_cache.state_cache is None:
+        if worker is None or is_afd_worker(worker) or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
         if (
@@ -1601,7 +1701,7 @@ def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) ->
 def _validate_recommendation_host(engine: EngineRecommendationConfig, *, modes: set[str], backends: set[str]) -> None:
     for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
         worker = getattr(engine.workers, role)
-        if worker is None or (not worker.host_loop and worker.vision is None):
+        if worker is None or is_afd_worker(worker) or (not worker.host_loop and worker.vision is None):
             continue
         if modes != {mode}:
             raise ValueError(f"host recommendation on workers.{role} requires concrete mode={mode}")
@@ -1642,7 +1742,7 @@ def _validate_backend_block_sizes(*, backends: set[str], modes: set[str], worker
         roles.extend(("prefill", "decode"))
     for role in roles:
         worker = getattr(workers, role)
-        if worker is None:
+        if worker is None or is_afd_worker(worker):
             continue
         value = worker.kv_cache.block_size
         if value is None:
