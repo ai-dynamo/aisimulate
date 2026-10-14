@@ -839,6 +839,12 @@ Successful formal collection and resume verify that the published data uses the 
 
 ### Check timing readiness before full collection
 
+For a request containing an FPM profile, `onboard collect-fpm` preview runs the
+collector's CPU planning checks before printing the command. A checkpoint-native
+KV mismatch fails here, before workers launch. Planning may resolve checkpoint
+metadata from local files, the packaged cache or Hugging Face. It does not verify
+GPU execution or make a historical profile invalid for prediction.
+
 Apply this procedure independently to every selected precision/topology configuration before new full collection. The readiness gate governs collection; it does not require recollecting compatible historical formal data that can already be used by ordinary prediction/recommendation. Historical data reuse retains the separate identity, memory, query-coverage and accuracy checks, including recorded provenance gaps. First inspect any saved native campaign artifacts:
 
 ```bash
