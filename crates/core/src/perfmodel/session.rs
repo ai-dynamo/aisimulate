@@ -301,7 +301,7 @@ pub(crate) fn get_mix_step_ops(
     let effective_isl_combined = (ctx_tokens + gen_tokens).max(1);
     let mut total = 0.0_f64;
     for op in context_ops {
-        if op.is_context_attention() {
+        if op.is_context_attention() || op.name().starts_with("draft_") {
             continue;
         }
         let x = if op.is_logits_gemm() {
@@ -338,7 +338,7 @@ pub(crate) fn get_mix_step_ops(
     let ctx_attn_batch = ((ctx_tokens + isl_eff_pass2 - 1) / isl_eff_pass2).max(1);
     let scale_factor = ((isl_eff_pass2 + ctx_tokens - 1) / ctx_tokens.max(1)).max(1) as f64;
     for op in context_ops {
-        if !op.is_context_attention() {
+        if !op.is_context_attention() && !op.name().starts_with("draft_") {
             continue;
         }
         let ctx = RuntimeContext {
@@ -363,7 +363,7 @@ pub(crate) fn get_mix_step_ops(
     // batch-1 generation_attention and inflate the step latency.
     if decode_batch > 0 {
         for op in generation_ops {
-            if !op.is_generation_attention() {
+            if !op.is_generation_attention() && !op.name().starts_with("draft_") {
                 continue;
             }
             let ctx = RuntimeContext {

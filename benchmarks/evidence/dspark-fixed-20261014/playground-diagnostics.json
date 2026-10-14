@@ -1,0 +1,762 @@
+{
+  "accuracy_mape": null,
+  "eligible_points": 0,
+  "diagnostic_points": [
+    {
+      "k": 3,
+      "batch": 1,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 9.554466232657433,
+      "observed_counter_round_median_ms": 9.535425053588275,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.4310344827586206,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.6276863225051739,
+          "verify_ms": 5.8244563983703355,
+          "total_ms": 6.452142720875509
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.6297956975051738,
+          "verify_ms": 5.7652220233703355,
+          "total_ms": 6.39501772087551
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -32.469877816702045,
+        -33.067765742714535
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 3,
+      "batch": 4,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 11.1293806694448,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 2.088803088803089,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.7171784712843153,
+          "verify_ms": 7.866637368779345,
+          "total_ms": 8.58381584006366
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.7486339400343155,
+          "verify_ms": 7.8232904937793455,
+          "total_ms": 8.571924433813662
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -22.872475162700376,
+        -22.97932213472144
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 3,
+      "batch": 16,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 14.077178202569485,
+      "observed_counter_round_median_ms": 13.17708578741027,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.1597633136094676,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.9518610178778211,
+          "verify_ms": 11.441451663346127,
+          "total_ms": 12.393312681223948
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.9748063303778209,
+          "verify_ms": 11.493892288346128,
+          "total_ms": 12.468698618723948
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -11.961669427742153,
+        -11.426150615554068
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 3,
+      "batch": 64,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 19.530468620359898,
+      "observed_counter_round_median_ms": 18.082078237132002,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.075003998080921,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.1626193341383997,
+          "verify_ms": 14.547287659269253,
+          "total_ms": 15.709906993407653
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.1710474591383997,
+          "verify_ms": 14.699212659269255,
+          "total_ms": 15.870260118407655
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -19.56205814216577,
+        -18.74101729508216
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 3,
+      "batch": 128,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 26.080027222633362,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 2.1135277440259213,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.500132590147028,
+          "verify_ms": 19.179829518649495,
+          "total_ms": 20.679962108796524
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.519325558897028,
+          "verify_ms": 19.369220143649496,
+          "total_ms": 20.888545702546523
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -20.705749529089566,
+        -19.905966645546478
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 3,
+      "batch": 256,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark3.jsonl",
+      "source_sha256": "6442c47c23f394598dbaf75f65d8f2b94015fa749b2b96c69e19a73235f54911",
+      "observed_sse_gap_median_ms": 129.78849932551384,
+      "observed_counter_round_median_ms": 94.08697318159764,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.1310410813891942,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.8927785644964756,
+          "verify_ms": 24.98451281280942,
+          "total_ms": 26.877291377305895
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.9232660644964756,
+          "verify_ms": 25.30948156280942,
+          "total_ms": 27.232747627305898
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -79.29146918487996,
+        -79.01759572779615
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 1,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 10.173343122005463,
+      "observed_counter_round_median_ms": 10.186862171988707,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.061224489795918,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.7031824372811655,
+          "verify_ms": 6.251109610658659,
+          "total_ms": 6.954292047939825
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.7070824372811655,
+          "verify_ms": 6.284373673158659,
+          "total_ms": 6.991456110439825
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -31.642018119910503,
+        -31.276709862297412
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 4,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 11.812376789748669,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 2.851674641148325,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.8414687449898856,
+          "verify_ms": 8.362380158293062,
+          "total_ms": 9.203848903282948
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.8715156199898856,
+          "verify_ms": 8.420459845793062,
+          "total_ms": 9.291975465782947
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -22.08300609517911,
+        -21.336953339932766
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 16,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 15.417019836604595,
+      "observed_counter_round_median_ms": 14.069883857189954,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.016189290161893,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.0559645639115636,
+          "verify_ms": 12.113333848309042,
+          "total_ms": 13.169298412220606
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.0609239389115634,
+          "verify_ms": 12.17256978580904,
+          "total_ms": 13.233493724720603
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -14.57948065324032,
+        -14.163088165065801
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 64,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 23.942124098539352,
+      "observed_counter_round_median_ms": 20.978741994050125,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.8878466969238525,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.4089083828264286,
+          "verify_ms": 17.60362731117269,
+          "total_ms": 19.01253569399912
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.4243513515764286,
+          "verify_ms": 17.774285123672687,
+          "total_ms": 19.198636475249117
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -20.589603429718146,
+        -19.812309065675688
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 128,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 132.50686321407557,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 2.9018308719401174,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.8002500063720748,
+          "verify_ms": 22.037717843836027,
+          "total_ms": 23.837967850208102
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.8288484438720751,
+          "verify_ms": 22.294897531336026,
+          "total_ms": 24.123745975208102
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -82.01001271028812,
+        -81.79434227777755
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 5,
+      "batch": 256,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark5.jsonl",
+      "source_sha256": "96dde06e5547550e891e0a8983a9151d2d018b56e7e3e1f4ec1a4248d8e03a4e",
+      "observed_sse_gap_median_ms": 131.11636321991682,
+      "observed_counter_round_median_ms": 79.02039545588195,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 2.9252593044539354,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 2.55448309178221,
+          "verify_ms": 34.11919533075722,
+          "total_ms": 36.67367842253943
+        },
+        {
+          "context": 264,
+          "draft_ms": 2.5972986655686596,
+          "verify_ms": 34.65213628771496,
+          "total_ms": 37.24943495328362
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -72.02967080391943,
+        -71.59055205733058
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 1,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 10.6421560049057,
+      "observed_counter_round_median_ms": 10.62701398595458,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.880952380952381,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.7576082857952927,
+          "verify_ms": 6.670869321059502,
+          "total_ms": 7.428477606854795
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.7821989107952928,
+          "verify_ms": 6.796631821059503,
+          "total_ms": 7.578830731854795
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -30.197625336158392,
+        -28.784818336047774
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 4,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 12.325864285230637,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 3.0555555555555554,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 0.8706162373611027,
+          "verify_ms": 8.82278883557432,
+          "total_ms": 9.693405072935423
+        },
+        {
+          "context": 264,
+          "draft_ms": 0.9073709248611027,
+          "verify_ms": 8.98229508557432,
+          "total_ms": 9.889666010435423
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -21.357197770297823,
+        -19.764928595833783
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 16,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 16.656169667840004,
+      "observed_counter_round_median_ms": 15.307349548914033,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.4273972602739726,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.1259588762011172,
+          "verify_ms": 12.578104820373206,
+          "total_ms": 13.704063696574323
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.1311385637011173,
+          "verify_ms": 12.644136070373204,
+          "total_ms": 13.775274634074322
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -17.723798629198967,
+        -17.29626373420151
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 64,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 26.578071992844343,
+      "observed_counter_round_median_ms": 21.207303824749857,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.1266673780813146,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 1.6078097307759776,
+          "verify_ms": 19.179829518649495,
+          "total_ms": 20.78763924942547
+        },
+        {
+          "context": 264,
+          "draft_ms": 1.6307280901509775,
+          "verify_ms": 19.369220143649496,
+          "total_ms": 20.999948233800474
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -21.78650409622579,
+        -20.987691509548462
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 128,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 124.54766780138016,
+      "observed_counter_round_median_ms": null,
+      "counter_observation_count": 0,
+      "measured_accepted_drafts_per_round": 3.0800844104457927,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 2.1028178186009825,
+          "verify_ms": 24.98451281280942,
+          "total_ms": 27.087330631410403
+        },
+        {
+          "context": 264,
+          "draft_ms": 2.1353326623509825,
+          "verify_ms": 25.30948156280942,
+          "total_ms": 27.444814225160403
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -78.25143488466811,
+        -77.9644093625844
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    },
+    {
+      "k": 7,
+      "batch": 256,
+      "observation_count": 3,
+      "source": "measurements/static_batch/wave_dspark7.jsonl",
+      "source_sha256": "c65bb4faa0ad6662f4dc7335d64343fbbe5278ea34d59ee82313b9e1326c5510",
+      "observed_sse_gap_median_ms": 126.36890355497599,
+      "observed_counter_round_median_ms": 69.05038999670762,
+      "counter_observation_count": 2,
+      "measured_accepted_drafts_per_round": 3.149102326704774,
+      "predictions": [
+        {
+          "context": 64,
+          "draft_ms": 3.288894828551101,
+          "verify_ms": 41.96419884127536,
+          "total_ms": 45.25309366982646
+        },
+        {
+          "context": 264,
+          "draft_ms": 3.3497256117518988,
+          "verify_ms": 42.76352846741939,
+          "total_ms": 46.11325407917129
+        }
+      ],
+      "diagnostic_gap_percent": [
+        -64.18969192833157,
+        -63.50901781852525
+      ],
+      "eligible_for_accuracy": false,
+      "exclusions": [
+        "SSE chunk gap is not a measured operator round",
+        "per-round KV, graph path and adaptive verification are not established",
+        "runtime 0.25.1-dev and op database 0.24.0 are different identities",
+        "draft/verify split is predicted, not independently measured"
+      ],
+      "modeling_assumptions": [
+        "DSpark host sampling and launch overhead is unmodeled",
+        "V4 draft SWA uses a window-capped HCA latency proxy",
+        "V4 target verification uses token-basis attention; wide-query measurements are missing",
+        "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates"
+      ]
+    }
+  ]
+}

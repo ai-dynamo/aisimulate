@@ -722,6 +722,7 @@ mod tests {
                 op: Box::new(OpSpec::Gemm(gemm())),
                 numerator: 5,
                 denominator: 6,
+                max_sequence_length: None,
             }),
             OpSpec::Dsv41Attention(Dsv41AttentionOp {
                 name: "v41_attention".into(),
@@ -972,6 +973,7 @@ mod tests {
                 op: Box::new(OpSpec::Gemm(gemm())),
                 numerator: 5,
                 denominator: 6,
+                max_sequence_length: None,
             })),
             TOKEN_SCALE_INDEX,
             "TokenScale index moved"

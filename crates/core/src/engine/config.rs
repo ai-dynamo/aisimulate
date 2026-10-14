@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::engine::common::speculative::normalize_conditional_accept_rates;
+use crate::engine::common::speculative::normalize_speculative_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
 use crate::perfmodel::FpmCacheGroup;
@@ -335,6 +335,10 @@ fn is_default_shared_host_offload_bandwidth(value: &f64) -> bool {
     *value == DEFAULT_SHARED_HOST_OFFLOAD_BANDWIDTH_GBPS
 }
 
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
 fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
@@ -533,6 +537,9 @@ pub struct EngineConfig {
     /// MTP/EAGLE draft-token count. One verification forward can emit up to
     /// `aic_nextn + 1` output tokens.
     pub aic_nextn: Option<usize>,
+    /// Fixed-length DSpark scheduling; compute identity remains in the timing model.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aic_dspark: bool,
     /// Conditional draft acceptance rates, comma-separated.
     ///
     /// Entry `i` is the probability that draft `i` is accepted given that
@@ -551,6 +558,10 @@ pub struct EngineConfig {
     pub emit_kv_token_ids: bool,
     /// Bytes transferred per prompt token for disaggregated handoff timing.
     pub kv_transfer_bytes_per_token: Option<usize>,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub kv_transfer_draft_bytes_per_token: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_transfer_draft_window: Option<usize>,
     /// Physical KV-cache bytes occupied by one token for host offload.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_bytes_per_token: Option<usize>,
@@ -624,6 +635,8 @@ struct EngineConfigWire {
     #[serde(default)]
     aic_nextn: Option<usize>,
     #[serde(default)]
+    aic_dspark: bool,
+    #[serde(default)]
     aic_nextn_accept_rates: Option<String>,
     #[serde(default = "default_aic_mtp_seed")]
     aic_mtp_seed: u64,
@@ -637,6 +650,10 @@ struct EngineConfigWire {
     emit_kv_token_ids: bool,
     #[serde(default, alias = "kv_bytes_per_token")]
     kv_transfer_bytes_per_token: Option<usize>,
+    #[serde(default)]
+    kv_transfer_draft_bytes_per_token: usize,
+    #[serde(default)]
+    kv_transfer_draft_window: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_cache_bytes_per_token: Option<usize>,
     #[serde(default)]
@@ -696,6 +713,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             speedup_ratio: wire.speedup_ratio,
             decode_speedup_ratio: wire.decode_speedup_ratio,
             aic_nextn: wire.aic_nextn,
+            aic_dspark: wire.aic_dspark,
             aic_nextn_accept_rates: wire.aic_nextn_accept_rates,
             aic_mtp_seed: wire.aic_mtp_seed,
             worker_type: wire.worker_type,
@@ -703,6 +721,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             emit_kv_events: wire.emit_kv_events,
             emit_kv_token_ids: wire.emit_kv_token_ids,
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
+            kv_transfer_draft_bytes_per_token: wire.kv_transfer_draft_bytes_per_token,
+            kv_transfer_draft_window: wire.kv_transfer_draft_window,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
             kv_cache_groups: wire.kv_cache_groups,
             kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
@@ -739,6 +759,7 @@ impl Default for EngineConfig {
             speedup_ratio: 1.0,
             decode_speedup_ratio: 1.0,
             aic_nextn: None,
+            aic_dspark: false,
             aic_nextn_accept_rates: None,
             aic_mtp_seed: default_aic_mtp_seed(),
             worker_type: WorkerType::Aggregated,
@@ -746,6 +767,8 @@ impl Default for EngineConfig {
             emit_kv_events: false,
             emit_kv_token_ids: false,
             kv_transfer_bytes_per_token: None,
+            kv_transfer_draft_bytes_per_token: 0,
+            kv_transfer_draft_window: None,
             kv_cache_bytes_per_token: None,
             kv_cache_groups: Vec::new(),
             kv_cache_capacity_bytes: None,
@@ -862,8 +885,18 @@ impl EngineConfig {
             self.decode_speedup_ratio.is_finite() && self.decode_speedup_ratio >= 0.0,
             "decode_speedup_ratio must be finite and non-negative"
         );
+        ensure!(
+            !self.aic_dspark
+                || (self.aic_nextn.is_some()
+                    && matches!(self.backend, Backend::Vllm | Backend::Sglang)),
+            "dspark requires a speculative depth and vllm or sglang"
+        );
         if let Some(nextn) = self.aic_nextn {
-            normalize_conditional_accept_rates(nextn, self.aic_nextn_accept_rates.as_deref())?;
+            normalize_speculative_accept_rates(
+                nextn,
+                self.aic_nextn_accept_rates.as_deref(),
+                self.aic_dspark,
+            )?;
             ensure!(
                 self.decode_speedup_ratio == 1.0,
                 "aic_nextn requires decode_speedup_ratio=1.0 because MTP output acceleration is modeled by burst sampling"

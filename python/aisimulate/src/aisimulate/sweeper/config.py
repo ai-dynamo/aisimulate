@@ -36,7 +36,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig
+from ..config.engine import SpeculationConfig
 
 
 class OptimizationTarget(str, Enum):
@@ -563,7 +563,7 @@ class SearchSpace(BaseModel):
     kvcache_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
-    speculation: NgramSpeculationConfig | None = None
+    speculation: SpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
     # Attention--FFN disaggregation. The A/F topology is a finite, complete
@@ -684,12 +684,19 @@ class SearchSpace(BaseModel):
                 raise ValueError("systems_path conflicts with systems_paths")
             self.systems_paths = [self.systems_path]
         if self.speculation is not None:
+            kind = self.speculation.kind
+            supported = {"vllm", "sglang"} if kind == "dspark" else {"vllm"}
             if self.aic_nextn is not None:
                 raise ValueError("speculation cannot be combined with aic_nextn")
-            if self.backend != ["vllm"] or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode):
-                raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+            if not set(self.backend) <= supported or any(
+                mode not in {"agg", "disagg"} for mode in self.deployment_mode
+            ):
+                raise ValueError(
+                    f"{kind} speculation requires {' or '.join(sorted(supported))} "
+                    "aggregated/disaggregated language workers"
+                )
             if self.encoder is not None:
-                raise ValueError("ngram speculation does not support EPD")
+                raise ValueError(f"{kind} speculation does not support EPD")
             roles = []
             if "agg" in self.deployment_mode:
                 roles.append("agg")
@@ -697,9 +704,9 @@ class SearchSpace(BaseModel):
                 roles.extend(("prefill", "decode"))
             for role in roles:
                 if getattr(self, f"{role}_native_host_offload") is not None:
-                    raise ValueError("ngram speculation does not support host_offload")
+                    raise ValueError(f"{kind} speculation does not support host_offload")
                 if getattr(self, f"{role}_forward_model") not in (None, "op_level"):
-                    raise ValueError("ngram speculation requires op_level timing")
+                    raise ValueError(f"{kind} speculation requires op_level timing")
         for field_name, allowed in SEARCH_CHOICES.items():
             values = getattr(self, field_name)
             if not values:

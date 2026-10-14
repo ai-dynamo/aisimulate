@@ -41,8 +41,8 @@ Transition-state limitations (tracked for follow-ups):
 * MLA / DSA / linear-attention modules have no width channel yet: on those
   targets (e.g. DeepSeek-V4) verify attention keeps the conservative
   token-basis price.
-* ``DraftOpSpec.query_overrides`` (e.g. a sliding-window KV cap) cannot
-  ride the wire; schemes requiring them fail before materialization.
+* Draft sequence-length caps ride the typed TokenScale wrapper. Other query
+  overrides remain unsupported.
 * Per-round host-side scheduling glue (draft assembly, acceptance
   processing, KV bookkeeping) is NOT modeled: it is stack-version software
   cost outside the op tables, and small (~1.7 ms chain / ~3.6 ms tree per
@@ -108,9 +108,13 @@ def materialize_spec_scheme(model) -> None:
     context_specs = scheme.build_draft_context_ops(model)
     # Validate both phases before modifying the model. Silently dropping these
     # overrides changes the requested workload (notably DSpark V4's KV cap).
-    for spec in [*generation_specs, *context_specs]:
+    if any(spec.query_overrides for spec in context_specs):
+        raise ValueError("Only draft attention sequence-length overrides in generation are supported")
+    for spec in generation_specs:
         if spec.query_overrides:
-            raise ValueError("DraftOpSpec.query_overrides are unsupported by the compiled engine")
+            if set(spec.query_overrides) != {"s"}:
+                raise ValueError("Only draft attention sequence-length overrides are supported")
+            positive_integer(spec.query_overrides["s"], "draft max_sequence_length")
 
     # Shallow-copy before renaming/folding: the specs' op objects belong to
     # the scheme (some schemes cache a built draft model), and callers may
@@ -119,6 +123,10 @@ def materialize_spec_scheme(model) -> None:
         op = copy.copy(spec.op)
         op._name = f"draft_{op._name}"
         _fold_width(op, spec.tokens_per_request, verify_width)
+        if spec.query_overrides:
+            op._draft_max_sequence_length = spec.query_overrides["s"]
+            if not hasattr(op, "_draft_token_width"):
+                op._draft_token_width = (1, 1)
         model.generation_ops.append(op)
 
     for spec in context_specs:

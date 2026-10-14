@@ -96,6 +96,30 @@ The cost configuration is retained in provenance and saved recommendations.
 Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
 configuration; they do not change the model's target-verification graph.
 
+Fixed-length DSpark uses `ForwardPassSpeculationConfig::Dspark` through the
+same constructor. Its JSON form is:
+
+```json
+{"kind":"dspark","params":{"num_speculative_tokens":6,"adaptive_verification":false}}
+```
+
+Optional `draft_model_path`, `draft_revision` and `draft_config` live in
+`params`. Rust resolves the full draft configuration once and retains it in
+serialization, cache identity and provenance. A separate checkpoint should
+supply its path and immutable revision (or a content snapshot). Rust rejects
+adaptive verification, legacy `nextn` combinations and explicit FPM modes.
+Auto may select op-level but cannot fall through to speculative FPM.
+
+`predict_decode_latency_total` takes sequence count and past-KV totals for
+DSpark and widens target queries internally. Packed iteration telemetry keeps
+its existing query-token convention: supply K+1 decode query rows per sequence
+and the corresponding per-query KV total. Draft width, verification width and
+window-capped KV remain separate inside compiled execution. Provenance lists
+`modeling_assumptions`, including V4 attention proxies and missing wide-query
+measurements. Acceptance is a
+Replay progress assumption and never reduces current-round cost.
+
+
 ### Estimator controls
 
 `estimator_config` is passed intact through the Python facade, CLI, Sweeper,

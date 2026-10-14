@@ -91,7 +91,7 @@ def _run_recommendation(
     if config.engine.workers.encoder is not None and (stack != "engine" or adapter_configs):
         raise ValueError("analytical EPD requires --stack engine without adapters")
     if config.engine.speculation is not None and (stack != "engine" or adapter_configs):
-        raise ValueError("ngram speculation requires --stack engine without adapters")
+        raise ValueError(f"{config.engine.speculation.kind} speculation requires --stack engine without adapters")
     smart = recommendation_to_sweeper(config, adapter_configs=adapter_configs, stack=stack)
     if config.traffic is None:
         workload = smart.workload
@@ -944,6 +944,9 @@ def _candidate_prediction(
         estimator = deployment.forward_pass_estimators.get(role)
         if estimator is not None:
             resolved = estimator.config
+            resolved_speculation = resolved.get("speculation")
+            if resolved_speculation and resolved_speculation["kind"] == "dspark":
+                engine["speculation"].update(deepcopy(resolved_speculation["params"]))
             timing = {
                 "type": "default",
                 "estimation_mode": resolved["estimation_mode"],

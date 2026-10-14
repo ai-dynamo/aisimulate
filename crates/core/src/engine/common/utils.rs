@@ -13,6 +13,8 @@ pub fn prefill_handoff_transfer_timing(
     kv_bytes_per_token: Option<usize>,
     state_bytes: usize,
     mode: KvTransferTimingMode,
+    draft_bytes_per_token: usize,
+    draft_window: Option<usize>,
 ) -> HandoffTransferTiming {
     HandoffTransferTiming {
         mode: match mode {
@@ -21,8 +23,12 @@ pub fn prefill_handoff_transfer_timing(
         },
         full_prompt_tokens: num_input_tokens,
         kv_bytes_per_token,
-        state_bytes,
         bandwidth_gb_s: kv_transfer_bandwidth,
+        state_bytes: state_bytes.saturating_add(
+            num_input_tokens
+                .min(draft_window.unwrap_or(usize::MAX))
+                .saturating_mul(draft_bytes_per_token),
+        ),
     }
 }
 
@@ -67,6 +73,22 @@ pub fn compute_prefill_handoff_delay_ms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn draft_handoff_caps_window_and_preserves_other_state() {
+        let timing = prefill_handoff_transfer_timing(
+            4096,
+            Some(1.0),
+            Some(1000),
+            50_000,
+            KvTransferTimingMode::DestinationMissing,
+            128,
+            Some(512),
+        );
+        assert_eq!(timing.state_bytes, 50_000 + 128 * 512);
+        assert!((timing.delay_ms(0).unwrap() - 0.115536).abs() < 1e-12);
+        assert!((timing.delay_ms(100).unwrap() - 0.215536).abs() < 1e-12);
+    }
 
     #[test]
     fn test_prefill_handoff_delay_only_applies_to_completed_prefill() {

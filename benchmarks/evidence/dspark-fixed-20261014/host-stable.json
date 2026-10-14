@@ -1,0 +1,316 @@
+{
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "python": "3.11.14",
+  "build_profile": "release",
+  "threads": 1,
+  "trace_sha256": "d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86d",
+  "identities": {
+    "base": {
+      "revision": "cb71f236a7a4d658f6be90ada3c37241d209fadb",
+      "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "native_sha256": "7f8bcb2ee23aba1363ddc4bf93fe62a36d6f4f510cb64e93e8375e689652cf81",
+      "uv_lock_sha256": "27912793e92d99436659ee30751e6f255dd43edd12f33f6703a5d48ee99e4b0d"
+    },
+    "head": {
+      "revision": "9d841505d30a53fe6852fc5618886e76c8596721",
+      "diff_sha256": "25feab68b5b98d696f57f4e593d30c3549ec9b04b92f21c7ce3de2911963179f",
+      "native_sha256": "812e98bf58432455977b358c757901c1a79a2cd80cc234ceb434948aeb8f5f39",
+      "uv_lock_sha256": "27912793e92d99436659ee30751e6f255dd43edd12f33f6703a5d48ee99e4b0d"
+    }
+  },
+  "runs": [
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": -1,
+      "wall_seconds": 2.7692657919833437,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 205324288
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 2.6788872499600984,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 207110144
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 0,
+      "wall_seconds": 2.4702234999858774,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206454784
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 2.572596625017468,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 207847424
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 1,
+      "wall_seconds": 2.6844014159869403,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206962688
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 2.555815917032305,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 208109568
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 2,
+      "wall_seconds": 2.4933426250354387,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 207110144
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 2.422326416010037,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 207126528
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 3,
+      "wall_seconds": 2.4084931250545196,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206848000
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 3,
+      "wall_seconds": 2.338523124984931,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206962688
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 4,
+      "wall_seconds": 2.464194583008066,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206798848
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 4,
+      "wall_seconds": 2.4315607079770416,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 207175680
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": -1,
+      "wall_seconds": 4.047506375005469,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206028800
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 4.168996041989885,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206405632
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 0,
+      "wall_seconds": 3.822277874976862,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205504512
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 3.786542165966239,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209158144
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 1,
+      "wall_seconds": 3.848363084020093,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206684160
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 3.670449708995875,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205340672
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 2,
+      "wall_seconds": 3.7729852499905974,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209141760
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 3.9568609169800766,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206569472
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 3,
+      "wall_seconds": 4.246334582974669,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206356480
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 3,
+      "wall_seconds": 4.182482749980409,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206815232
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 4,
+      "wall_seconds": 4.072609750030097,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206258176
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 4,
+      "wall_seconds": 4.067429000046104,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205324288
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 3.7155105409910902,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209141760
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 3.7091548750177026,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205914112
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 4.0110435410169885,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206962688
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 3.667232708015945,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209469440
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 3,
+      "wall_seconds": 4.187757249979768,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 207306752
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 4,
+      "wall_seconds": 4.01870949997101,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209354752
+    }
+  ],
+  "medians_seconds": {
+    "control/base": 2.4702234999858774,
+    "control/head": 2.4315607079770416,
+    "agentx/base": 3.848363084020093,
+    "agentx/head": 3.9568609169800766,
+    "agentx-dspark/head": 4.0110435410169885
+  },
+  "installed_dependency_versions_match": false,
+  "native_binary_matches_release_artifact": true,
+  "common_dependency_versions_match": true,
+  "head_only_optional_packages": [
+    "certifi",
+    "charset-normalizer",
+    "idna",
+    "requests",
+    "urllib3"
+  ],
+  "qualification": "preliminary; full installed dependency set differs",
+  "config_sha256": {
+    "control": "41a46152ab101136977a5a835144ede5d3d453367d61d9758ca6bb37c298624e",
+    "agentx": "6e9368d68bf76fa4af0400fd70c38fe2edba8d0234ad4723c992969528e0a80f",
+    "agentx-dspark": "36aa5866aa19632a5c555475f3c1103a0df033c1301263cfbfca18301df9c19e"
+  }
+}

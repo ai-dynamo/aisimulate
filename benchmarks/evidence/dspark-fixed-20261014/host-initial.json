@@ -1,0 +1,226 @@
+{
+  "platform": "macOS-26.7.1-arm64-arm-64bit",
+  "python": "3.11.14",
+  "build_profile": "release",
+  "threads": 1,
+  "trace_sha256": "d65b573413396bb689cf7e1d5c85c50ea970ad7ad5714c0a78d4f75102e5d86d",
+  "identities": {
+    "base": {
+      "revision": "cb71f236a7a4d658f6be90ada3c37241d209fadb",
+      "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "native_sha256": "7f8bcb2ee23aba1363ddc4bf93fe62a36d6f4f510cb64e93e8375e689652cf81",
+      "uv_lock_sha256": "27912793e92d99436659ee30751e6f255dd43edd12f33f6703a5d48ee99e4b0d"
+    },
+    "head": {
+      "revision": "9d841505d30a53fe6852fc5618886e76c8596721",
+      "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "native_sha256": "812e98bf58432455977b358c757901c1a79a2cd80cc234ceb434948aeb8f5f39",
+      "uv_lock_sha256": "27912793e92d99436659ee30751e6f255dd43edd12f33f6703a5d48ee99e4b0d"
+    }
+  },
+  "runs": [
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": -1,
+      "wall_seconds": 23.08349166699918,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 226918400
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 2.8449336670455523,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206995456
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 0,
+      "wall_seconds": 4.193860583007336,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 209567744
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 2.8041924170101993,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 205815808
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 1,
+      "wall_seconds": 2.524644208024256,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 208797696
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 2.720533500018064,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206176256
+    },
+    {
+      "case": "control",
+      "build": "base",
+      "repeat": 2,
+      "wall_seconds": 2.4037140409927815,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 206880768
+    },
+    {
+      "case": "control",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 2.533642875030637,
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "peak_rss_bytes": 205340672
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": -1,
+      "wall_seconds": 4.079368583043106,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206749696
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 3.8637791670043953,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205438976
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 0,
+      "wall_seconds": 3.8226685840054415,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 204308480
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 3.8037930409773253,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206618624
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 1,
+      "wall_seconds": 4.036622042011004,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206356480
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 3.998693083995022,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 207175680
+    },
+    {
+      "case": "agentx",
+      "build": "base",
+      "repeat": 2,
+      "wall_seconds": 4.041989042016212,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 207093760
+    },
+    {
+      "case": "agentx",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 3.9482517080032267,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 206962688
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": -1,
+      "wall_seconds": 4.2231719580013305,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 208207872
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 0,
+      "wall_seconds": 3.663413667003624,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 209321984
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 1,
+      "wall_seconds": 4.086945458024275,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 208371712
+    },
+    {
+      "case": "agentx-dspark",
+      "build": "head",
+      "repeat": 2,
+      "wall_seconds": 3.62793454201892,
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "peak_rss_bytes": 205946880
+    }
+  ],
+  "medians_seconds": {
+    "control/base": 2.524644208024256,
+    "control/head": 2.720533500018064,
+    "agentx/base": 4.036622042011004,
+    "agentx/head": 3.9482517080032267,
+    "agentx-dspark/head": 3.663413667003624
+  },
+  "installed_dependency_versions_match": false,
+  "native_binary_matches_release_artifact": true,
+  "common_dependency_versions_match": true,
+  "head_only_optional_packages": [
+    "certifi",
+    "charset-normalizer",
+    "idna",
+    "requests",
+    "urllib3"
+  ],
+  "qualification": "preliminary; full installed dependency set differs",
+  "config_sha256": {
+    "control": "41a46152ab101136977a5a835144ede5d3d453367d61d9758ca6bb37c298624e",
+    "agentx": "6e9368d68bf76fa4af0400fd70c38fe2edba8d0234ad4723c992969528e0a80f",
+    "agentx-dspark": "36aa5866aa19632a5c555475f3c1103a0df033c1301263cfbfca18301df9c19e"
+  }
+}

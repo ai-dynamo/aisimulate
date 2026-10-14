@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, field_validator, model_serializer, model_validator
+from pydantic import Field, StrictBool, TypeAdapter, field_validator, model_serializer, model_validator
 
 from aisimulate.fpm_profile import FpmModelProfile
 
@@ -300,6 +300,40 @@ class NgramSpeculationConfig(StrictModel):
         return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 
 
+class DSparkSpeculationConfig(StrictModel):
+    """Fixed compute width with separately supplied workload acceptance."""
+
+    kind: Literal["dspark"]
+    num_speculative_tokens: Annotated[int, Field(strict=True, ge=1, lt=0xFFFF_FFFF)]
+    draft_model_path: str | None = Field(default=None, min_length=1)
+    draft_revision: str | None = Field(default=None, min_length=1)
+    draft_config: dict[str, Any] | None = None
+    adaptive_verification: Literal[False] = False
+    accepted_tokens: NonNegativeFloat | None = None
+    acceptance_rates: list[Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]] | None = None
+    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+
+    @model_validator(mode="after")
+    def _validate_acceptance(self) -> DSparkSpeculationConfig:
+        if (self.accepted_tokens is None) == (self.acceptance_rates is None):
+            raise ValueError("dspark requires exactly one of accepted_tokens and acceptance_rates")
+        if self.accepted_tokens is not None and self.accepted_tokens > self.num_speculative_tokens:
+            raise ValueError("accepted_tokens must be within [0, num_speculative_tokens]")
+        if self.acceptance_rates is not None and len(self.acceptance_rates) != self.num_speculative_tokens:
+            raise ValueError("acceptance_rates must contain one conditional probability per speculative token")
+        return self
+
+    def cost_config(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "params": self.model_dump(exclude={"kind", "accepted_tokens", "acceptance_rates", "seed"}),
+        }
+
+
+SpeculationConfig = Annotated[NgramSpeculationConfig | DSparkSpeculationConfig, Field(discriminator="kind")]
+SPECULATION_ADAPTER = TypeAdapter(SpeculationConfig)
+
+
 class TimingConfig(StrictModel):
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -551,7 +585,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     enable_shared_layer: StrictBool | None = None
     strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    speculation: NgramSpeculationConfig | None = None
+    speculation: SpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
@@ -770,7 +804,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | dict[str, str] | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    speculation: NgramSpeculationConfig | None = None
+    speculation: SpeculationConfig | None = None
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
     kv_transfer: KvTransferConfig | None = None
     afd: AFDSearchRecommendationConfig | None = None
@@ -882,16 +916,20 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         return
     if engine.nextn:
         raise ValueError("speculation cannot be combined with nextn")
-    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
-        raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+    kind = engine.speculation.kind
+    supported = {"vllm", "sglang"} if kind == "dspark" else {"vllm"}
+    if not backends <= supported or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError(
+            f"{kind} speculation requires {' or '.join(sorted(supported))} aggregated/disaggregated language workers"
+        )
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError("ngram speculation does not support host_offload")
+            raise ValueError(f"{kind} speculation does not support host_offload")
         if worker.timing.forward_model != "op_level":
-            raise ValueError("ngram speculation requires op_level timing")
+            raise ValueError(f"{kind} speculation requires op_level timing")
 
 
 def _validate_worker_hardware(*, modes: set[str], workers) -> None:

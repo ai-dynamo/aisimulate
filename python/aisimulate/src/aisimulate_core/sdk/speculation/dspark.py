@@ -2,6 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Includes changes adapted from:
 # https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/src/aiconfigurator_core/sdk/speculation/dspark.py
+# V4 context preparation is modified from vLLM (Apache-2.0), copyright
+# contributors to the vLLM project, revision c227aaa3f8edd02dae4583e27246430eebabfb25:
+# vllm/models/deepseek_v4/nvidia/dspark.py and
+# vllm/v1/worker/gpu/spec_decode/dflash/speculator.py.
+# https://github.com/vllm-project/vllm/tree/c227aaa3f8edd02dae4583e27246430eebabfb25
 
 """DSpark speculative decoding (semi-autoregressive block drafting).
 
@@ -21,7 +26,7 @@ implementation ``models/deepseek_v4/nvidia/dspark.py`` /
 * Per verify round: ONE parallel backbone forward over
   ``N = num_draft_tokens`` query tokens per request (anchor + N-1 noise),
   a ``main_proj`` injection GEMM (concat of the target-layer aux hiddens,
-  ``3h -> h``) once per request, the draft-logits head GEMM over the N
+  ``3h -> h``) over the padded N+1 target query rows, the draft-logits head GEMM over the N
   positions, then N sequential Markov-bias steps (rank ``markov_rank``).
 * Target verify width = ``N + 1`` (N drafts + bonus).
 
@@ -41,14 +46,18 @@ Dense targets (second family, ground facts from
 * Same round structure: one parallel N-token forward, main_proj, head
   over N positions, N sequential Markov-bias steps, verify width N + 1.
 
-Draft compute reuses existing op classes and perf tables only — no new
-collector data is required for this scheme.
+Draft compute reuses existing op classes. V4 SWA and wide-query verify
+attention still require matched measurements; existing tables are proxies.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import ClassVar
 
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common
 from aisimulate_core.sdk.speculation.base import (
     DraftOpSpec,
     SpecSchemeBase,
@@ -62,6 +71,7 @@ from aisimulate_core.sdk.speculation.dense_draft import (
     dense_block_ops,
     dense_kv_bytes_per_sequence,
 )
+from aisimulate_core.sdk.utils import _download_hf_json, _load_model_config_from_model_path
 
 # V4-family drafts derive geometry from the target model; dense-family
 # drafts carry their own geometry (draft_geometry is not None).
@@ -71,6 +81,40 @@ _SUPPORTED_BACKENDS = ("vllm", "sglang")
 # Ratio-0 (pure SWA) draft layers are approximated with the HCA module,
 # exactly as DeepSeekV4Model does for the target's own ratio-0 layers.
 _SWA_LATENCY_PROXY_RATIO = 128
+
+
+def resolve_draft_config(model_path: str, draft_model_path: str | None, revision: str | None) -> str:
+    """Load artifact metadata once; Rust retains the complete snapshot in identity."""
+    path = draft_model_path or model_path
+    if revision is not None:
+        if Path(path).exists():
+            raise ValueError("draft_revision requires a Hugging Face repository, not a local path")
+        config = _download_hf_json(path, "config.json", revision=revision)
+    else:
+        config = _load_model_config_from_model_path(path)
+    return json.dumps(config, allow_nan=False)
+
+
+def draft_transfer_geometry(model_path: str, speculation: dict, kv_dtype: str, tp: int) -> dict:
+    """Prepared draft KV footprint for a source-owned P/D handoff.
+
+    Full source window is sent once, even when target KV has a destination
+    prefix hit: the scalar prefix cache does not prove a draft-state hit.
+    """
+    params = speculation["params"]
+    draft = params["draft_config"]
+    dtype_bytes = common.KVCacheQuantMode[kv_dtype].value.memory
+    if "dspark_block_size" in draft:
+        target = _load_model_config_from_model_path(model_path)
+        per_token = int(draft.get("n_mtp_layers", 3) * target["head_dim"] * dtype_bytes)
+        window = int(target["sliding_window"])
+    else:
+        geometry = DenseDraftGeometry.from_hf_config(draft)
+        per_token = int(
+            2 * geometry.num_layers * ((geometry.num_kv_heads + tp - 1) // tp) * geometry.head_dim * dtype_bytes
+        )
+        window = geometry.sliding_window
+    return {"kv_transfer_draft_bytes_per_token": per_token, "kv_transfer_draft_window": window}
 
 
 @register_spec_scheme("dspark")
@@ -318,10 +362,19 @@ class DSparkScheme(SpecSchemeBase):
         # Window-capped drafts (V4) pin the attention KV length; full-attention
         # dense drafts follow the target's sequence length (no override).
         # Dense attention carries window_size through its native operation.
-        # The V4 proxy still needs a query override and fails materialization.
+        # The compiled TokenScale wrapper carries the V4 sequence-length cap.
         window = None if self.draft_geometry is not None else self._sliding_window(model)
         kv_cap = window + n_tokens if window else None
-        specs = [DraftOpSpec(op=self._main_proj_op(model), tokens_per_request=1)]
+        # vLLM pads context preparation to the complete target verify width,
+        # including rejected positions, before the K-token parallel draft.
+        specs = (
+            [
+                DraftOpSpec(op=spec.op, tokens_per_request=self.verify_width())
+                for spec in self.build_draft_context_ops(model)
+            ]
+            if self.draft_geometry is None
+            else [DraftOpSpec(op=self._main_proj_op(model), tokens_per_request=1)]
+        )
         for op in self._block_ops(model, is_context=False):
             overrides = {"s": kv_cap} if kv_cap and op._name == "dspark_attention" else None
             specs.append(DraftOpSpec(op=op, tokens_per_request=n_tokens, query_overrides=overrides))
@@ -354,11 +407,29 @@ class DSparkScheme(SpecSchemeBase):
         return specs
 
     def build_draft_context_ops(self, model) -> list[DraftOpSpec]:
-        # DFlash-style context-KV precompute: the draft blocks ingest the
-        # prompt once (window-capped attention), plus the injection GEMM
-        # over the prompt's aux hiddens.
         specs = [DraftOpSpec(op=self._main_proj_op(model), tokens_per_request=1)]
-        specs.extend(DraftOpSpec(op=op, tokens_per_request=1) for op in self._block_ops(model, is_context=True))
+        if self.draft_geometry is not None:
+            specs.extend(DraftOpSpec(op=op, tokens_per_request=1) for op in self._block_ops(model, is_context=True))
+            return specs
+        h = model._hidden_size
+        v4 = model.extra_params
+        # Independent cost model of vLLM's context-KV preparation, modified from
+        # the serving contract (Apache-2.0, copyright vLLM contributors):
+        # https://github.com/vllm-project/vllm/blob/c227aaa3f8edd02dae4583e27246430eebabfb25/vllm/models/deepseek_v4/nvidia/dspark.py
+        # No attention or MoE forward is executed over the context. Elementwise
+        # norm/RoPE/quant/write remains an explicit bandwidth approximation.
+        context_ops = [
+            ops.ElementWise("dspark_main_norm", 1, h, h, 0.8),
+            ops.GEMM(
+                "dspark_context_kv_proj",
+                self.num_draft_layers,
+                v4.q_lora_rank + v4.head_dim,
+                h,
+                model.config.gemm_quant_mode,
+            ),
+            ops.ElementWise("dspark_context_kv_store", self.num_draft_layers, v4.head_dim, v4.head_dim, 0.8),
+        ]
+        specs.extend(DraftOpSpec(op=op, tokens_per_request=1) for op in context_ops)
         return specs
 
     # ------------------------------------------------------------------

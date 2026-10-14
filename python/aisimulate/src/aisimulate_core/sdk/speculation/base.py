@@ -54,6 +54,7 @@ class SpeculationConfig:
     params: dict = field(default_factory=dict)
     draft_model_path: str | None = None
     draft_config: dict | None = None
+    draft_revision: str | None = None
 
     def identity_hash(self) -> str:
         """Content hash for cache keys — independent of display names.
@@ -68,8 +69,26 @@ class SpeculationConfig:
             "draft_model_path": self.draft_model_path,
             "draft_config": self.draft_config,
         }
+        if self.draft_revision is not None:
+            payload["draft_revision"] = self.draft_revision
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def from_forward_pass_config(value: dict | None) -> SpeculationConfig | None:
+    """Translate the resolved canonical wire identity into graph inputs."""
+    if value is None:
+        return None
+    if value["kind"] == "dspark":
+        params = value["params"]
+        return SpeculationConfig(
+            kind="dspark",
+            params={"num_draft_tokens": params["num_speculative_tokens"]},
+            draft_model_path=params.get("draft_model_path"),
+            draft_config=params["draft_config"],
+            draft_revision=params.get("draft_revision"),
+        )
+    return SpeculationConfig(**value)
 
 
 def positive_integer(value: Any, name: str) -> int:

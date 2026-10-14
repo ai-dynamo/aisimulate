@@ -61,7 +61,20 @@ pub enum ForwardPassFallbackPolicy {
     deny_unknown_fields
 )]
 pub enum ForwardPassSpeculationConfig {
-    Ngram { num_speculative_tokens: u32 },
+    Ngram {
+        num_speculative_tokens: u32,
+    },
+    Dspark {
+        num_speculative_tokens: u32,
+        #[serde(default)]
+        draft_model_path: Option<String>,
+        #[serde(default)]
+        draft_revision: Option<String>,
+        #[serde(default)]
+        draft_config: Option<serde_json::Map<String, serde_json::Value>>,
+        #[serde(default)]
+        adaptive_verification: bool,
+    },
 }
 
 impl ForwardPassSpeculationConfig {
@@ -69,8 +82,38 @@ impl ForwardPassSpeculationConfig {
         match self {
             Self::Ngram {
                 num_speculative_tokens,
+            }
+            | Self::Dspark {
+                num_speculative_tokens,
+                ..
             } => *num_speculative_tokens,
         }
+    }
+
+    pub fn is_dspark(&self) -> bool {
+        matches!(self, Self::Dspark { .. })
+    }
+
+    pub(crate) fn modeling_assumptions(&self) -> Vec<String> {
+        let Self::Dspark { draft_config, .. } = self else {
+            return Vec::new();
+        };
+        let mut assumptions = vec!["DSpark host sampling and launch overhead is unmodeled".into()];
+        if draft_config
+            .as_ref()
+            .is_some_and(|c| c.contains_key("dspark_block_size"))
+        {
+            assumptions.extend([
+                "V4 draft SWA uses a window-capped HCA latency proxy".into(),
+                "V4 target verification uses token-basis attention; wide-query measurements are missing".into(),
+                "V4 context KV preparation follows padded vLLM queries; norm and KV-store use bandwidth estimates".into(),
+            ]);
+        }
+        assumptions
+    }
+
+    pub fn kind(&self) -> &'static str {
+        if self.is_dspark() { "dspark" } else { "ngram" }
     }
 }
 
@@ -300,6 +343,34 @@ impl ForwardPassPerfModelConfig {
             ));
         }
         self.validate()?;
+        if let Some(ForwardPassSpeculationConfig::Dspark {
+            draft_model_path,
+            draft_revision,
+            draft_config,
+            ..
+        }) = &mut self.speculation
+        {
+            if draft_config.is_none() {
+                #[cfg(feature = "python")]
+                {
+                    *draft_config = Some(crate::py::resolve_dspark_draft_config(
+                        &self.model,
+                        draft_model_path.as_deref(),
+                        draft_revision.as_deref(),
+                    )?);
+                }
+                #[cfg(not(feature = "python"))]
+                {
+                    let _ = (draft_model_path, draft_revision);
+                    return Err(invalid_config(
+                        "resolving DSpark draft metadata requires the python feature or explicit draft_config",
+                    ));
+                }
+            }
+        }
+        if self.speculation.as_ref().is_some_and(|s| s.is_dspark()) {
+            self.validate()?;
+        }
         Ok((self, registered))
     }
 
@@ -410,23 +481,75 @@ impl ForwardPassPerfModelConfig {
         }
         if let Some(speculation) = &self.speculation {
             if self.nextn != 0 {
-                return Err(invalid_config(
-                    "ngram speculation cannot be combined with nextn",
-                ));
+                return Err(invalid_config("speculation cannot be combined with nextn"));
             }
-            if self.backend != BackendKind::Vllm {
+            if !speculation.is_dspark() && self.backend != BackendKind::Vllm {
                 return Err(invalid_config("ngram speculation requires backend=vllm"));
             }
-            if !(1..=5).contains(&speculation.num_speculative_tokens()) {
+            if !speculation.is_dspark() && !(1..=5).contains(&speculation.num_speculative_tokens())
+            {
                 return Err(invalid_config(
                     "ngram num_speculative_tokens must be in 1..=5",
                 ));
+            }
+            if let ForwardPassSpeculationConfig::Dspark {
+                num_speculative_tokens,
+                adaptive_verification,
+                draft_model_path,
+                draft_revision,
+                draft_config,
+            } = speculation
+            {
+                if *num_speculative_tokens == 0 || *num_speculative_tokens == u32::MAX {
+                    return Err(invalid_config(
+                        "dspark num_speculative_tokens must be in 1..u32::MAX",
+                    ));
+                }
+                if *adaptive_verification {
+                    return Err(invalid_config(
+                        "dspark adaptive_verification is unsupported; use false",
+                    ));
+                }
+                if !matches!(self.backend, BackendKind::Vllm | BackendKind::Sglang) {
+                    return Err(invalid_config("dspark requires backend=vllm or sglang"));
+                }
+                if draft_model_path
+                    .as_ref()
+                    .is_some_and(|s| s.trim().is_empty())
+                    || draft_revision.as_ref().is_some_and(|s| s.trim().is_empty())
+                {
+                    return Err(invalid_config("dspark draft identity must not be blank"));
+                }
+                if draft_config.as_ref().is_some_and(|c| c.is_empty()) {
+                    return Err(invalid_config("dspark draft_config must not be empty"));
+                }
+                if draft_model_path.is_some() && draft_revision.is_none() && draft_config.is_none()
+                {
+                    return Err(invalid_config(
+                        "separate dspark drafts require draft_revision or an explicit draft_config snapshot",
+                    ));
+                }
+                if draft_config.as_ref().is_some_and(|c| {
+                    c.get("dspark_bonus_anchor")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                        || c.get("sample_from_anchor")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(false)
+                }) {
+                    return Err(invalid_config(
+                        "dspark requires the K-query anchor layout; bonus-anchor drafts are unsupported",
+                    ));
+                }
             }
             if !matches!(
                 self.estimation_mode,
                 EstimationMode::Auto | EstimationMode::OpLevel
             ) {
-                return Err(invalid_config("ngram speculation requires op_level timing"));
+                return Err(invalid_config(format!(
+                    "{} speculation requires op_level timing",
+                    speculation.kind()
+                )));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -782,6 +905,47 @@ mod tests {
                 num_speculative_tokens: depth,
             });
             assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn dspark_identity_roundtrips_and_rejects_adaptive_and_fpm() {
+        for k in [3, 5, 6, 7] {
+            let raw = serde_json::json!({
+                "speculation": {"kind": "dspark", "params": {
+                    "num_speculative_tokens": k,
+                    "draft_config": {"dspark_block_size": 5, "dspark_target_layer_ids": [40, 41, 42]}
+                }}
+            });
+            let cfg = config(raw.clone());
+            cfg.validate().unwrap();
+            let encoded = serde_json::to_value(&cfg).unwrap();
+            assert_eq!(
+                encoded["speculation"]["params"]["adaptive_verification"],
+                false
+            );
+            assert_eq!(
+                serde_json::from_value::<ForwardPassPerfModelConfig>(encoded).unwrap(),
+                cfg
+            );
+            for overrides in [
+                serde_json::json!({"adaptive_verification": true}),
+                serde_json::json!({"num_speculative_tokens": 0}),
+                serde_json::json!({"draft_config": {}}),
+            ] {
+                let mut changed = raw.clone();
+                changed["speculation"]["params"]
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(overrides.as_object().unwrap().clone());
+                assert!(config(changed).validate().is_err());
+            }
+            let mut changed = cfg;
+            changed.estimation_mode = EstimationMode::FpmInterpolation;
+            assert!(changed.validate().is_err());
+            changed.estimation_mode = EstimationMode::OpLevel;
+            changed.nextn = 1;
+            assert!(changed.validate().is_err());
         }
     }
 

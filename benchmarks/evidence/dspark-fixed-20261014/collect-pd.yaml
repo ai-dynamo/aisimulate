@@ -1,0 +1,64 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aisim-dspark-results-20261014
+  namespace: spec-decoding-eval
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: vast
+  resources:
+    requests: {storage: 5Gi}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aisim-dspark-pd-20261014-kai
+  namespace: spec-decoding-eval
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 5400
+  template:
+    metadata:
+      labels:
+        app: aisim-dspark-pd-20261014
+        kai.scheduler/queue: dynamo
+    spec:
+      schedulerName: kai-scheduler
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-B200
+      tolerations:
+        - {key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}
+      containers:
+        - name: collect
+          image: vllm/vllm-openai:v0.29.0@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+          command: [python3, /scripts/collect_pd.py]
+          env:
+            - {name: PYTHONUNBUFFERED, value: '1'}
+            - {name: HF_HUB_OFFLINE, value: '1'}
+            - {name: TRANSFORMERS_OFFLINE, value: '1'}
+            - {name: TMPDIR, value: /tmp}
+            - {name: VLLM_CACHE_ROOT, value: /results/cache/vllm}
+            - {name: TRITON_CACHE_DIR, value: /results/cache/triton}
+            - {name: TILELANG_CACHE_DIR, value: /results/cache/tilelang}
+          resources:
+            requests: {cpu: '32', memory: 512Gi, nvidia.com/gpu: '8'}
+            limits: {cpu: '32', memory: 512Gi, nvidia.com/gpu: '8'}
+          volumeMounts:
+            - {name: scripts, mountPath: /scripts, readOnly: true}
+            - {name: models, mountPath: /models, readOnly: true}
+            - {name: results, mountPath: /results}
+            - {name: tmp, mountPath: /tmp}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: scripts
+          configMap: {name: aisim-dspark-scripts-20261014}
+        - name: models
+          persistentVolumeClaim: {claimName: shared-model-cache, readOnly: true}
+        - name: results
+          persistentVolumeClaim: {claimName: aisim-dspark-results-20261014}
+        - name: tmp
+          emptyDir: {}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 32Gi}

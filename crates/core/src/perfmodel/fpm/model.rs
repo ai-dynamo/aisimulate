@@ -65,6 +65,8 @@ pub struct ForwardPassPerfProvenance {
     pub requested_estimation_mode: EstimationMode,
     pub selected_estimation_mode: EstimationMode,
     pub selection_failures: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modeling_assumptions: Vec<String>,
 }
 
 /// Prediction backend currently used by `ForwardPassPerfModel`.
@@ -443,8 +445,10 @@ impl ForwardPassPerfModel {
                 continue;
             }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
-                let error =
-                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
+                let error = AicError::UnsupportedModel(format!(
+                    "{} speculation requires op_level timing",
+                    config.speculation.as_ref().unwrap().kind()
+                ));
                 failures.push(format!("{mode:?}: {error}"));
                 last_error = Some(error);
                 continue;
@@ -462,6 +466,7 @@ impl ForwardPassPerfModel {
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
                 model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
                 model.provenance = Some(ForwardPassPerfProvenance {
+                    modeling_assumptions: Vec::new(),
                     config: resolved,
                     selected_systems_root: None,
                     requested_estimation_mode,
@@ -492,6 +497,10 @@ impl ForwardPassPerfModel {
                         .then(FpmCoverageState::default);
                     model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
                     model.provenance = Some(ForwardPassPerfProvenance {
+                        modeling_assumptions: candidate
+                            .speculation
+                            .as_ref()
+                            .map_or_else(Vec::new, |s| s.modeling_assumptions()),
                         config: candidate,
                         selected_systems_root: Some(root),
                         requested_estimation_mode,
@@ -950,6 +959,20 @@ impl ForwardPassPerfModel {
             .as_ref()
             .map(FpmCoverageState::lock)
             .transpose()?;
+        // Public decode convenience uses sequence count. Packed iteration
+        // telemetry retains its existing query-token convention.
+        let width = self
+            .provenance
+            .as_ref()
+            .and_then(|p| p.config.speculation.as_ref())
+            .filter(|s| s.is_dspark())
+            .map_or(1, |s| s.num_speculative_tokens() + 1);
+        let batch_size = batch_size
+            .checked_mul(width)
+            .ok_or_else(|| AicError::InvalidEngineConfig("DSpark query batch overflow".into()))?;
+        let total_past_kv_tokens = total_past_kv_tokens.checked_mul(width).ok_or_else(|| {
+            AicError::InvalidEngineConfig("DSpark query KV total overflow".into())
+        })?;
         engine.predict_decode_latency_total_with_coverage(
             batch_size,
             total_past_kv_tokens,

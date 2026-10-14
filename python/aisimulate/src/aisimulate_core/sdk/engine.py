@@ -215,6 +215,7 @@ def _as_engine_op(op: Any) -> Operation:
                             "op": json.loads(op._spec_json()),
                             "numerator": numerator,
                             "denominator": denominator,
+                            "max_sequence_length": getattr(op, "_draft_max_sequence_length", None),
                         }
                     }
                 )
@@ -606,7 +607,7 @@ def compile_engine(
 
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
-    from aisimulate_core.sdk.speculation import SpeculationConfig
+    from aisimulate_core.sdk.speculation.base import from_forward_pass_config
 
     if backend == "vllm" and attention_backend == "FLASHINFER_MLA":
         attention_backend = "flashinfer"
@@ -620,7 +621,7 @@ def compile_engine(
             moe_backend=moe_backend,
             moe_kernel_source=moe_kernel_source,
         )
-        resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
+        resolved_speculation = from_forward_pass_config(speculation)
         model_config = build_model_config(
             tp_size=tp_size,
             dcp_size=dcp_size,

@@ -1,0 +1,70 @@
+[
+  {
+    "case": "control",
+    "build": "base",
+    "metrics": {
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "mean_ttft_ms": 390.62798917187524,
+      "mean_tpot_ms": 14.569088791584662,
+      "mean_e2e_latency_ms": 2240.902265703123,
+      "duration_ms": 4515.708879000001,
+      "output_throughput_tok_s": 3628.223262175444
+    }
+  },
+  {
+    "case": "control",
+    "build": "head",
+    "metrics": {
+      "completed_requests": 128,
+      "total_output_tokens": 16384,
+      "mean_ttft_ms": 390.62798917187524,
+      "mean_tpot_ms": 14.569088791584662,
+      "mean_e2e_latency_ms": 2240.902265703123,
+      "duration_ms": 4515.708879000001,
+      "output_throughput_tok_s": 3628.223262175444
+    }
+  },
+  {
+    "case": "agentx",
+    "build": "base",
+    "metrics": {
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "mean_ttft_ms": 132.56601028621887,
+      "mean_tpot_ms": 5.6109138556736475,
+      "mean_e2e_latency_ms": 5074.1385298463,
+      "duration_ms": 93883027.48018506,
+      "output_throughput_tok_s": 1.22002882815187
+    },
+    "agentic_lifecycle_digest": "90e25a95b0517941a1b76f577d201998d6d39103452ed633c7402e100676b7a1"
+  },
+  {
+    "case": "agentx",
+    "build": "head",
+    "metrics": {
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "mean_ttft_ms": 132.56601028621887,
+      "mean_tpot_ms": 5.6109138556736475,
+      "mean_e2e_latency_ms": 5074.1385298463,
+      "duration_ms": 93883027.48018506,
+      "output_throughput_tok_s": 1.22002882815187
+    },
+    "agentic_lifecycle_digest": "90e25a95b0517941a1b76f577d201998d6d39103452ed633c7402e100676b7a1"
+  },
+  {
+    "case": "agentx-dspark",
+    "build": "head",
+    "metrics": {
+      "completed_requests": 129,
+      "total_output_tokens": 114540,
+      "mean_ttft_ms": 145.49927497908638,
+      "mean_tpot_ms": 2.107440987206567,
+      "mean_e2e_latency_ms": 2069.26519828,
+      "duration_ms": 93859082.45992504,
+      "output_throughput_tok_s": 1.2203400778918234
+    },
+    "agentic_lifecycle_digest": "ad354462c15b4530f1cd5254137de7e8a0c5652a93f5e5e1cf85f862b0770082"
+  }
+]

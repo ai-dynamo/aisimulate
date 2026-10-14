@@ -5,14 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 
 # Speculative decoding
 
-Replay supports two speculative-decoding inputs. They cannot be combined.
+Replay supports three speculative-decoding inputs. They cannot be combined.
 
 | Input | Drafts from | Configure with |
 | --- | --- | --- |
 | [Prompt lookup (ngram)](#prompt-lookup-ngram) | Earlier tokens of the request | `engine.speculation` |
+| [Fixed-length DSpark](#dspark) | A parallel draft backbone | `engine.speculation` |
 | [MTP / EAGLE](#mtp) | A draft head of the model | `engine.nextn`, `engine.nextn_accepted` |
 
-In both cases you provide how often draft tokens are accepted. That rate
+For each scheme you provide how often draft tokens are accepted. That rate
 depends on the workload, so Replay does not predict it. Each decode round then
 emits a sampled number of tokens, and its cost is a verification pass over the
 draft tokens.
@@ -21,10 +22,15 @@ draft tokens.
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.speculation` | Unset (off) | fixed | Optional ngram block below. Rejected together with `engine.nextn > 0`. |
-| `engine.speculation.kind` | Required | fixed | `ngram`. |
-| `engine.speculation.num_speculative_tokens` | Required | fixed | Integer from 1 to 5. |
-| `engine.speculation.acceptance_rates` | Required | fixed | Exactly one value per draft token, each in `[0, 1]`. |
+| `engine.speculation` | Unset (off) | fixed | Optional ngram or DSpark block below. Rejected together with `engine.nextn > 0`. |
+| `engine.speculation.kind` | Required | fixed | `ngram` or `dspark`. |
+| `engine.speculation.num_speculative_tokens` | Required | fixed | Ngram: 1–5. DSpark: positive integer below `2^32 - 1`. |
+| `engine.speculation.acceptance_rates` | Required for ngram | fixed | Exactly K conditional probabilities in `[0, 1]`. DSpark requires this or `accepted_tokens`, never both. |
+| `engine.speculation.accepted_tokens` | Unset | fixed | DSpark only. Expected accepted draft tokens in `[0, K]`, excluding the bonus token. |
+| `engine.speculation.adaptive_verification` | `false` | fixed | DSpark only; `true` is rejected. |
+| `engine.speculation.draft_model_path` | Target checkpoint | fixed | DSpark draft checkpoint; omit for bundled drafts. |
+| `engine.speculation.draft_revision` | Unset | fixed | DSpark HF draft revision. Separate checkpoints require this or an explicit config snapshot. Use an immutable commit for reproducibility. |
+| `engine.speculation.draft_config` | Resolved from checkpoint | fixed | Optional complete draft config snapshot. Retained in cost identity and provenance. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
 | `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted tokens per round, in `[0, nextn]`. |
@@ -74,6 +80,53 @@ or G3 offload. Agentic traffic and the Dynamo stack are not supported.
 Deployment artifacts are not generated for ngram candidates.
 
 Prompt lookup is unrelated to `kv_cache.prefix_caching`.
+
+<a id="dspark"></a>
+
+## Fixed-length DSpark
+
+```yaml
+engine:
+  estimation_mode: op_level
+  fallback_policy: deny
+  speculation:
+    kind: dspark
+    num_speculative_tokens: 6
+    adaptive_verification: false
+    accepted_tokens: 2.77
+    seed: 42
+```
+
+K counts proposed drafts, excluding the bonus. The example commits an average
+of 3.77 tokens per round. Fractional `accepted_tokens` uses adjacent-integer
+sampling: 2 or 3 accepted drafts, plus one bonus. Conditional rates instead
+sample successive acceptance until the first rejection. Output/context limits
+clip committed progress; they do not change the configured cost width.
+
+Supported paths are vLLM and SGLang aggregated/P/D workers, including AgentX
+multi-turn replay, with op-level timing. Fixed/polynomial round costs can test
+scheduler behavior. FPM, adaptive verification, external cache/offload, AFD,
+EPD and online deployment generation remain unsupported. Legacy MTP limits
+and layer scaling do not apply to DSpark.
+
+The graph prices context projection/KV preparation, one parallel K-token
+draft, logits, sequential Markov steps and K+1 target verification. V4 context
+preparation follows the pinned vLLM padded-query contract. SGLang uses this
+cost approximation pending matched operation measurements. V4 draft attention
+uses a window-capped HCA proxy; target wide-query attention remains a token-basis
+proxy. These are coverage limitations, not measured kernel equivalence. Host
+sampling/launch overhead and eager-versus-graph differences are not calibrated.
+
+Automatic capacity includes draft weights and draft KV, reserving speculative
+positions for every configured active sequence. Shared target embedding/head
+weights are counted once. The scalar capacity and target prefix-cache model
+remain approximations to V4's grouped cache. Fixed block capacities are user
+inputs and must already account for the draft's resident memory.
+
+Recommendations retain DSpark and acceptance settings unchanged. The source
+checkpoint must actually contain DSpark metadata; the older bundled V4 target
+configs alone are insufficient. Use the matching checkpoint or an explicit
+resolved draft snapshot.
 
 <a id="mtp"></a>
 

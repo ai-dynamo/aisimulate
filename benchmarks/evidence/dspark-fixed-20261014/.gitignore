@@ -1,0 +1,3 @@
+# Raw upstream source/config inspection stays local; receipts record hashes.
+runtime-inspection.log
+raw/

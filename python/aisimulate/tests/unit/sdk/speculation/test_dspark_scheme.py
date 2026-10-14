@@ -85,10 +85,12 @@ class TestParamResolution:
 
 
 class TestValidation:
-    def test_rejects_v4_query_overrides_at_model_boundary(self):
+    def test_materializes_v4_window_cap_at_model_boundary(self):
         cfg = _model_config(speculation=_spec_config(num_draft_tokens=7))
-        with pytest.raises(ValueError, match="query_overrides are unsupported"):
-            models.get_model("deepseek-ai/DeepSeek-V4-Flash", cfg, "sglang")
+        model = models.get_model("deepseek-ai/DeepSeek-V4-Flash", cfg, "sglang")
+        attention = next(op for op in model.generation_ops if op._name == "draft_dspark_attention")
+        assert attention._draft_max_sequence_length == 135
+        assert attention._draft_token_width == (7, 8)
 
     def test_rejects_non_v4_family(self):
         cfg = sdk_config.ModelConfig(
@@ -118,7 +120,7 @@ class TestDraftOpGraph:
         # Backbone forward runs at the draft block width N.
         assert by_name["dspark_attention"].tokens_per_request == 7
         # Injection projection runs once per request per round.
-        assert by_name["dspark_main_proj"].tokens_per_request == 1
+        assert by_name["dspark_main_proj"].tokens_per_request == 8
         # Draft attention KV is window-capped: pinned s, independent of target isl.
         overrides = by_name["dspark_attention"].query_overrides
         assert overrides is not None and overrides["s"] <= 128 + 7
@@ -130,7 +132,9 @@ class TestDraftOpGraph:
         specs = model.spec_scheme.build_draft_context_ops(model)
         assert specs, "DSpark needs a context-KV precompute pass"
         names = [s.op._name for s in specs]
-        assert any("attention" in n for n in names)
+        assert "dspark_context_kv_proj" in names
+        assert "dspark_context_kv_store" in names
+        assert not any("attention" in n or "moe" in n for n in names)
 
 
 class TestAccounting:

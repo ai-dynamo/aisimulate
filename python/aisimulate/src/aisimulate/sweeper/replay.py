@@ -327,6 +327,7 @@ class RunnerCapabilities:
     supported_agentic_backends: tuple[str, ...] = ("*",)
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
+    supported_agentic_speculation_kinds: tuple[str, ...] = ()
     supports_agentic_snapshots: bool = False
     supports_agentic_warmup: bool = False
     supports_cached_prefix_tokens: bool = False
@@ -553,8 +554,11 @@ class RunnerCapabilities:
                 raise ValueError("agentic replay does not support G3 offload")
             _require_agentic_g2_scope(spec, roles)
             for rank in ranks:
-                if not self.supports_agentic_speculative_decoding and any(
-                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
+                spec_kind = (rank.get("speculation") or {}).get("kind")
+                if (
+                    not self.supports_agentic_speculative_decoding
+                    and spec_kind not in self.supported_agentic_speculation_kinds
+                    and any(rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation"))
                 ):
                     raise ValueError("agentic replay requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]

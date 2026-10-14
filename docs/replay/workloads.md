@@ -494,3 +494,16 @@ native `ReplaySpec.max_in_flight` selects source-side concurrency. The SDK's
 which are distinct from this public YAML. See [Sweeper SDK](../sweeper/sdk.md)
 for that mapping and [candidate-relative load](../sweeper/search-space.md)
 for capacity-based search. Do not substitute SDK YAML for CLI YAML.
+
+### AgentX with fixed-length DSpark
+
+The offline engine stack accepts `engine.speculation.kind: dspark` for vLLM
+and SGLang aggregated/P/D AgentX replay. Multi-token rounds use the existing
+completion, dependency, tool-delay, fork/join, warmup and snapshot machinery.
+Ngram, legacy MTP, and external cache/offload combinations retain their guards.
+Functional replay support does not establish measured AgentX accuracy.
+
+Match closed-loop session concurrency with `agentic_lanes`, not an open-loop
+replay of measured request timestamps. Freeze the corpus, snapshot seed,
+warmup and metric window before comparing results. Streaming chunk gaps are
+not per-token latency when a speculative round commits several tokens.

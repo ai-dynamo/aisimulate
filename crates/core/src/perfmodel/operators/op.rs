@@ -199,6 +199,19 @@ pub struct TokenScaleOp {
     pub numerator: u32,
     #[serde(deserialize_with = "positive_token_width")]
     pub denominator: u32,
+    /// Bound draft attention to its resident window, including query positions.
+    #[serde(default, deserialize_with = "positive_sequence_cap")]
+    pub max_sequence_length: Option<u32>,
+}
+
+fn positive_sequence_cap<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    let value = Option::<u32>::deserialize(d)?;
+    if value == Some(0) {
+        return Err(serde::de::Error::custom(
+            "draft sequence cap must be positive",
+        ));
+    }
+    Ok(value)
 }
 
 fn positive_token_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
@@ -213,7 +226,7 @@ fn positive_token_width<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D
 
 impl TokenScaleOp {
     pub fn scale_tokens(&self, value: u32) -> Result<u32, AicError> {
-        if self.numerator == 0 || self.denominator == 0 {
+        if self.numerator == 0 || self.denominator == 0 || self.max_sequence_length == Some(0) {
             return Err(AicError::InvalidEngineConfig(
                 "draft token widths must be positive".into(),
             ));
@@ -581,6 +594,7 @@ impl Op {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,
                     num_tokens: op.scale_tokens(ctx.num_tokens)?,
+                    s: op.max_sequence_length.map_or(ctx.s, |cap| ctx.s.min(cap)),
                     ..*ctx
                 };
                 op.op.query(db, &scaled)
@@ -790,6 +804,7 @@ mod tests {
                     op: Box::new(leaf.clone()),
                     numerator,
                     denominator,
+                    max_sequence_length: None,
                 });
                 let query = RuntimeContext {
                     batch_size: 32 * denominator,
@@ -822,6 +837,7 @@ mod tests {
                 op: Box::new(silicon_leaf()),
                 numerator,
                 denominator,
+                max_sequence_length: None,
             });
             let json = serde_json::to_string(&wrapped).unwrap();
             assert!(
@@ -837,9 +853,48 @@ mod tests {
             op: Box::new(silicon_leaf()),
             numerator: u32::MAX,
             denominator: 1,
+            max_sequence_length: None,
         };
         assert!(wrapped.scale_tokens(2).is_err());
         assert_eq!(wrapped.scale_tokens(1).unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn dspark_window_caps_attention_without_padding_short_contexts() {
+        use crate::common::enums::{DatabaseMode, KvCacheQuantMode, TransferPolicy};
+        let (_tmp, db) = one_row_gemm_db();
+        let db = db.with_mode(DatabaseMode::Sol, TransferPolicy::default());
+        let leaf = Op::GenerationAttention(GenerationAttentionOp::new(
+            "draft_attention",
+            8,
+            8,
+            128,
+            KvCacheQuantMode::Bfloat16,
+        ));
+        let capped = Op::TokenScale(TokenScaleOp {
+            op: Box::new(leaf.clone()),
+            numerator: 1,
+            denominator: 1,
+            max_sequence_length: Some(134),
+        });
+        for length in [32, 134, 8192] {
+            let query = RuntimeContext { s: length, ..ctx() };
+            let expected = RuntimeContext {
+                s: length.min(134),
+                ..query
+            };
+            assert_eq!(
+                capped.query(&db, &query).unwrap().latency_ms,
+                leaf.query(&db, &expected).unwrap().latency_ms
+            );
+        }
+        let short = capped
+            .query(&db, &RuntimeContext { s: 32, ..ctx() })
+            .unwrap();
+        let long = capped
+            .query(&db, &RuntimeContext { s: 8192, ..ctx() })
+            .unwrap();
+        assert!(short.latency_ms < long.latency_ms);
     }
 
     // Zero-valued composite provenance oracle (review #1552 round 4): the

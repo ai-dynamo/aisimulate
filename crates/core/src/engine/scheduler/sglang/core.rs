@@ -24,7 +24,7 @@ use crate::engine::common::protocols::{
     DirectRequest, KvEventPublishers, MockEngineArgs, OutputSignal, WorkerType,
 };
 use crate::engine::common::speculative::{
-    SpeculativeDecodeSampler, normalize_conditional_accept_rates,
+    SpeculativeDecodeSampler, normalize_speculative_accept_rates,
 };
 use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
@@ -188,9 +188,12 @@ impl SglangCore {
         let config = SglangConfig::from_args(&args);
         let total_tokens = args.num_gpu_blocks * args.block_size;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
-            let rates =
-                normalize_conditional_accept_rates(nextn, args.aic_nextn_accept_rates.as_deref())
-                    .expect("normalized MTP acceptance rates");
+            let rates = normalize_speculative_accept_rates(
+                nextn,
+                args.aic_nextn_accept_rates.as_deref(),
+                args.aic_dspark,
+            )
+            .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
 
@@ -519,6 +522,8 @@ impl SglangCore {
             self.config.kv_transfer_bytes_per_token,
             0,
             self.config.kv_transfer_timing_mode,
+            self.config.kv_transfer_draft_bytes_per_token,
+            self.config.kv_transfer_draft_window,
         );
         let payload = HeldSglangPrefill { request };
         let released = match self.source_holds.complete_source(uuid, payload) {

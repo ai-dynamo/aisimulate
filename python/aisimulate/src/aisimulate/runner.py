@@ -22,7 +22,7 @@ from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfM
 
 from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig
+from .config.engine import SPECULATION_ADAPTER, StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -403,6 +403,7 @@ class EngineReplayRunnerFactory:
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=True,
             supports_agentic_speculative_decoding=False,
+            supported_agentic_speculation_kinds=("dspark",),
             agentic_qualification="functional_only",
         )
 
@@ -1700,11 +1701,10 @@ def _materialize_engine_role(
     speculation_raw = rank.pop("speculation", None)
     speculation = None
     if speculation_raw is not None:
-        from .config.engine import NgramSpeculationConfig
-
-        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
-        if backend != "vllm" or rank.get("native_host_offload") is not None:
-            raise ValueError("ngram speculation requires vllm without host_offload")
+        speculation = SPECULATION_ADAPTER.validate_python(speculation_raw)
+        supported = {"vllm", "sglang"} if speculation.kind == "dspark" else {"vllm"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{speculation.kind} speculation requires {sorted(supported)} without host_offload")
         if any(
             rank.get(key) is not None
             for key in (
@@ -1718,13 +1718,19 @@ def _materialize_engine_role(
         ):
             raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
         rank["aic_nextn"] = speculation.num_speculative_tokens
-        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        if speculation.kind == "dspark":
+            rank["aic_dspark"] = True
+        rank["aic_nextn_accept_rates"] = (
+            ",".join(str(rate) for rate in speculation.acceptance_rates)
+            if speculation.acceptance_rates is not None
+            else _accept_rates_for_expected(speculation.num_speculative_tokens, speculation.accepted_tokens, role=role)
+        )
         rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
         nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
-        if nextn > 5:
+        if nextn > 5 and not rank.get("aic_dspark", False):
             raise ValueError(f"engine provider {role} aic_nextn must be in 1..=5")
         rank["aic_nextn"] = nextn
 
@@ -1819,11 +1825,11 @@ def _materialize_engine_role(
             if speculation is not None:
                 cost_config = speculation.cost_config()
                 if timing_config.get("nextn") not in (None, 0):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                    raise ValueError(f"{speculation.kind} speculation conflicts with timing_model.config.nextn")
                 if timing_config.get("speculation") not in (None, cost_config):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
+                    raise ValueError(f"{speculation.kind} speculation conflicts with timing_model.config.speculation")
                 if timing_config.get("forward_model", "op_level") != "op_level":
-                    raise ValueError("ngram speculation requires op_level timing")
+                    raise ValueError(f"{speculation.kind} speculation requires op_level timing")
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
             if speculation is None and configured_nextn is not None and configured_nextn != nextn:
@@ -1891,7 +1897,16 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if rank.get("g3_offload") is not None:
         raise ValueError("state_cache supports G1 only; g3_offload is not supported")
     # Only prefill and decode roles transfer KV.
-    transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
+    transfer = (
+        (
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_draft_bytes_per_token",
+            "kv_transfer_draft_window",
+            "kv_transfer_bandwidth",
+        )
+        if role == "aggregated"
+        else ()
+    )
     conflicts = [
         name
         for name in ("gpu_memory_utilization", "mem_fraction_static", "free_gpu_memory_fraction", *transfer)

@@ -14,9 +14,21 @@ pub fn normalize_conditional_accept_rates(
     nextn: usize,
     rates: Option<&str>,
 ) -> anyhow::Result<Vec<f64>> {
+    normalize_speculative_accept_rates(nextn, rates, false)
+}
+
+pub(crate) fn normalize_speculative_accept_rates(
+    nextn: usize,
+    rates: Option<&str>,
+    dspark: bool,
+) -> anyhow::Result<Vec<f64>> {
     anyhow::ensure!(
-        (1..=5).contains(&nextn),
+        (1..=5).contains(&nextn) || (dspark && nextn > 0 && nextn < u32::MAX as usize),
         "aic_nextn must be in 1..=5, got {nextn}"
+    );
+    anyhow::ensure!(
+        !dspark || rates.is_some_and(|value| !value.trim().is_empty()),
+        "dspark requires explicit acceptance rates"
     );
     let mut parsed = match rates.map(str::trim).filter(|rates| !rates.is_empty()) {
         Some(rates) => rates
@@ -37,6 +49,10 @@ pub fn normalize_conditional_accept_rates(
         );
     }
 
+    anyhow::ensure!(
+        !dspark || parsed.len() == nextn,
+        "dspark requires exactly one acceptance rate per draft token"
+    );
     parsed.resize(nextn, 0.0);
     Ok(parsed)
 }
@@ -136,5 +152,21 @@ mod tests {
         for rates in ["nan", "inf", "-0.1", "1.1", "not-a-rate"] {
             assert!(normalize_conditional_accept_rates(1, Some(rates)).is_err());
         }
+    }
+
+    #[test]
+    fn dspark_uses_explicit_full_width_without_extending_mtp() {
+        for k in [3, 5, 6, 7] {
+            let rates = vec!["1"; k].join(",");
+            let normalized = normalize_speculative_accept_rates(k, Some(&rates), true).unwrap();
+            assert_eq!(
+                SpeculativeDecodeSampler::new(normalized, 42).sample_accepted_tokens(),
+                k + 1
+            );
+            assert!(normalize_speculative_accept_rates(k, Some(""), true).is_err());
+            assert!(normalize_speculative_accept_rates(k, None, true).is_err());
+        }
+        assert!(normalize_conditional_accept_rates(6, Some("1,1,1,1,1,1")).is_err());
+        assert!(normalize_speculative_accept_rates(6, Some("1,1,1,1,1"), true).is_err());
     }
 }

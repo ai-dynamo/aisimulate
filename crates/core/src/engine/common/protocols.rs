@@ -201,12 +201,18 @@ pub(crate) struct MockEngineArgs {
     pub perf_model: Arc<PerfModel>,
     #[builder(default = "None")]
     pub aic_nextn: Option<usize>,
+    #[builder(default = "false")]
+    pub aic_dspark: bool,
     #[builder(default = "None")]
     pub aic_nextn_accept_rates: Option<String>,
     #[builder(default = "42")]
     pub aic_mtp_seed: u64,
     #[builder(default = "None")]
     pub kv_transfer_bytes_per_token: Option<usize>,
+    #[builder(default = "0")]
+    pub kv_transfer_draft_bytes_per_token: usize,
+    #[builder(default = "None")]
+    pub kv_transfer_draft_window: Option<usize>,
     #[builder(default = "None")]
     pub kv_cache_bytes_per_token: Option<usize>,
     #[builder(default)]

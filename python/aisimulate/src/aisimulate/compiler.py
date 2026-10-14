@@ -8,6 +8,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate_core.sdk.speculation.dspark import draft_transfer_geometry
+
 from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
@@ -42,7 +45,9 @@ def prediction_to_replay_spec(
     """Compile one concrete public prediction config."""
 
     if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
-        raise ValueError("ngram speculation requires the offline engine stack without adapters")
+        raise ValueError(
+            f"{config.engine.speculation.kind} speculation requires the offline engine stack without adapters"
+        )
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -688,8 +693,6 @@ def _worker_engine_args(
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
-        from aisimulate_core.sdk import ForwardPassPerfModelConfig
-
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
         timing = worker.timing
@@ -762,6 +765,32 @@ def _worker_engine_args(
         )
     if transfer_bytes_per_token is not None:
         payload["kv_transfer_bytes_per_token"] = transfer_bytes_per_token
+        if (
+            role == "prefill"
+            and engine.speculation is not None
+            and engine.speculation.kind == "dspark"
+            and engine.kv_transfer.bytes_per_token == "auto"
+        ):
+            resolved = RustForwardPassPerfModel.normalize_config(
+                ForwardPassPerfModelConfig(
+                    model=engine.model,
+                    system=worker.hardware or engine.hardware,
+                    backend=engine.backend,
+                    worker_type=role,
+                    tp=parallel.tensor,
+                    speculation=engine.speculation.cost_config(),
+                    estimation_mode="op_level",
+                    kvcache_quant_mode=worker.timing.kvcache_quant_mode or engine.kvcache_quant_mode,
+                )
+            )
+            payload.update(
+                draft_transfer_geometry(
+                    engine.model,
+                    resolved["speculation"],
+                    resolved.get("kvcache_quant_mode") or "bfloat16",
+                    parallel.tensor,
+                )
+            )
     if host_offload is not None:
         payload["native_host_offload"] = host_offload.model_dump(mode="json")
     if cache.g3_offload is not None:

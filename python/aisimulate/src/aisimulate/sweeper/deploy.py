@@ -9,9 +9,12 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
+from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+from aisimulate_core.sdk.speculation.dspark import draft_transfer_geometry
+
 from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
-from ..config.engine import NgramSpeculationConfig, resolve_block_size
+from ..config.engine import SPECULATION_ADAPTER, resolve_block_size
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
@@ -51,7 +54,7 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
     if sample.get(f"{role}_fpm_parquet_path") is not None:
         config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     if sample.get("speculation") is not None:
-        config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
+        config["speculation"] = SPECULATION_ADAPTER.validate_python(sample["speculation"]).cost_config()
     if sample.get("systems_paths") is not None:
         config["systems_paths"] = sample["systems_paths"]
     return {"provider": "aic", "config": config}
@@ -143,6 +146,9 @@ def _engine_args_payload(
         ):
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
+        resolved_speculation = forward_pass_estimator.config.get("speculation")
+        if resolved_speculation and resolved_speculation["kind"] == "dspark":
+            payload["speculation"].update(deepcopy(resolved_speculation["params"]))
         payload["timing_model"] = {
             "type": "external",
             "provider": "aic",
@@ -191,6 +197,27 @@ def _engine_args_payload(
             )
             if transfer_geometry == "auto"
             else int(transfer_geometry)
+        )
+    if role == "prefill" and transfer_geometry == "auto" and (sample.get("speculation") or {}).get("kind") == "dspark":
+        resolved = RustForwardPassPerfModel.normalize_config(
+            ForwardPassPerfModelConfig(
+                model=str(sample["model_name"]),
+                system=_role_hardware_sku(sample, role),
+                backend=backend,
+                worker_type=role,
+                tp=tp,
+                estimation_mode="op_level",
+                speculation=SPECULATION_ADAPTER.validate_python(sample["speculation"]).cost_config(),
+                kvcache_quant_mode=sample.get("kvcache_quant_mode"),
+            )
+        )
+        payload.update(
+            draft_transfer_geometry(
+                str(sample["model_name"]),
+                resolved["speculation"],
+                resolved.get("kvcache_quant_mode") or "bfloat16",
+                tp,
+            )
         )
     if host_offload is not None:
         payload["native_host_offload"] = dict(host_offload)

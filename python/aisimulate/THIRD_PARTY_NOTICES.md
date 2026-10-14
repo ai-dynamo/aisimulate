@@ -1266,3 +1266,27 @@ https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a06
 
 The AISimulate files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
+
+## vLLM DSpark context preparation
+
+`python/aisimulate/src/aisimulate_core/sdk/speculation/dspark.py` contains a
+modified cost-model adaptation of the context projection and KV preparation
+contract in `vllm/models/deepseek_v4/nvidia/dspark.py` and
+`vllm/v1/worker/gpu/spec_decode/dflash/speculator.py` at immutable commit
+`c227aaa3f8edd02dae4583e27246430eebabfb25` of vLLM.
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0.
+Source: https://github.com/vllm-project/vllm/tree/c227aaa3f8edd02dae4583e27246430eebabfb25
+License: https://github.com/vllm-project/vllm/blob/c227aaa3f8edd02dae4583e27246430eebabfb25/LICENSE
+
+The adaptation estimates operation costs and does not vendor serving kernels.
+The same revision's padded context preparation informs the round width.
+
+The P/D collection client
+`benchmarks/evidence/dspark-fixed-20261014/collect_pd.py` adapts (modified) the
+Mooncake HTTP handshake from
+`examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py` at
+vLLM commit `98dff2a81d747d1dba01a47f939f48c3526d4206` (v0.29.0).
+Copyright contributors to the vLLM project. Apache-2.0.
+Source: https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py
+License: https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE

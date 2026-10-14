@@ -140,6 +140,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn draft_state_is_transferred_once_even_with_target_prefix_hit() {
+        let timing = HandoffTransferTiming {
+            mode: TransferTimingMode::DestinationMissing,
+            full_prompt_tokens: 4096,
+            kv_bytes_per_token: Some(1000),
+            bandwidth_gb_s: Some(1.0),
+            state_bytes: 128 * 512 * 3,
+        };
+        assert_eq!(timing.delay_ms(0), Some(0.196608));
+        assert!((timing.delay_ms(100).unwrap() - 0.296608).abs() < 1e-12);
+    }
+
+    #[test]
     fn handoff_id_round_trips_caller_owned_value() {
         let value = Uuid::from_u128(17);
         let handoff_id = HandoffId::new(value);

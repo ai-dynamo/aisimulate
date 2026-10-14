@@ -158,7 +158,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
     if config.engine.speculation is not None and (args.stack != "engine" or args.online or adapter_raw):
-        raise ValueError("ngram speculation requires offline --stack engine without adapters")
+        raise ValueError(
+            f"{config.engine.speculation.kind} speculation requires offline --stack engine without adapters"
+        )
     plan = _resource_plan(args, config, factory)
     require_plan(plan)
     from .supervision import checkpoint, mark_execution_ready, mark_shutdown

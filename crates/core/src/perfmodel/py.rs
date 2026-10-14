@@ -1625,6 +1625,20 @@ pub(crate) fn validate_forward_pass_profile(
 }
 
 /// Compile the selected canonical native estimator through the shared builder.
+pub(crate) fn resolve_dspark_draft_config(
+    model: &str,
+    draft: Option<&str>,
+    revision: Option<&str>,
+) -> Result<serde_json::Map<String, serde_json::Value>, AicError> {
+    let json = Python::with_gil(|py| -> PyResult<String> {
+        py.import("aisimulate_core.sdk.speculation.dspark")?
+            .call_method1("resolve_draft_config", (model, draft, revision))?
+            .extract()
+    })
+    .map_err(|e| AicError::InvalidEngineConfig(format!("DSpark draft configuration: {e}")))?;
+    serde_json::from_str(&json).map_err(|e| AicError::InvalidEngineConfig(e.to_string()))
+}
+
 pub(crate) fn compile_forward_pass_model_to_engine(
     config: &crate::ForwardPassPerfModelConfig,
     systems_path: &str,

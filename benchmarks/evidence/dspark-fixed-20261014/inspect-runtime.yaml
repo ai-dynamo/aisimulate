@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aisim-dspark-inspect-20261014
+  namespace: spec-decoding-eval
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: inspect
+          image: vllm/vllm-openai:v0.29.0@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1
+          command: [python3, -c]
+          args:
+            - |
+              import importlib.metadata, json, pathlib
+              print('VERSION', importlib.metadata.version('vllm'), flush=True)
+              dist = importlib.metadata.distribution('vllm')
+              for relative in ['vllm/config/speculative.py', 'vllm/distributed/kv_transfer/kv_connector/v1/mooncake_connector.py']:
+                  path = pathlib.Path(dist.locate_file(relative))
+                  print('SOURCE', relative, flush=True)
+                  if path.exists():
+                      lines = path.read_text().splitlines()
+                      for i, line in enumerate(lines):
+                          if any(word in line.lower() for word in ['adaptive_verification', 'dspark', 'draft_model', 'hybrid']):
+                              print(i + 1, '\n'.join(lines[max(0,i-1):i+4]), flush=True)
+              for name in ['DeepSeek-V4-Flash-0731', 'DeepSeek-V4-Pro-0813']:
+                  root = pathlib.Path('/models/hub') / ('models--deepseek-ai--' + name)
+                  for config in root.glob('snapshots/*/config.json'):
+                      print('CONFIG_PATH', str(config), flush=True)
+                      print('CONFIG', json.dumps(json.loads(config.read_text()), sort_keys=True), flush=True)
+          resources:
+            requests: {cpu: '2', memory: 8Gi}
+            limits: {cpu: '2', memory: 8Gi}
+          volumeMounts:
+            - {name: models, mountPath: /models, readOnly: true}
+      volumes:
+        - name: models
+          persistentVolumeClaim: {claimName: shared-model-cache, readOnly: true}

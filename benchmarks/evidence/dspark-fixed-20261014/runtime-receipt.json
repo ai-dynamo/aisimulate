@@ -1,0 +1,41 @@
+{
+  "runtime": "vllm 0.29.0",
+  "image": "vllm/vllm-openai:v0.29.0@sha256:c2914767605584b6d8f45686b82de173ecc99e781897aa3d0a66dacd72c51ae1",
+  "runtime_tag_commit": "98dff2a81d747d1dba01a47f939f48c3526d4206",
+  "inspection_job": "aisim-dspark-inspect-20261014",
+  "inspection_log_sha256": "24bb8fd3d9b196da39bb9275268121e0d14f14160e4599de818150bc82ae46a0",
+  "flash_checkpoint_revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+  "configuration_summaries": [
+    {
+      "canonical_config_sha256": "5329c1dbb4300f380167baed8114e28c04c18338ca11469030f5e26232f8361a",
+      "hidden_size": 4096,
+      "num_hidden_layers": 43,
+      "head_dim": 512,
+      "sliding_window": 128,
+      "dspark_block_size": 5,
+      "dspark_target_layer_ids": [
+        40,
+        41,
+        42
+      ]
+    }
+  ],
+  "pro_checkpoint_found": false,
+  "gpu_measurements_collected": 0,
+  "collection_acceptance_contract": {
+    "source": "https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/config/speculative.py",
+    "source_sha256": "cf8fcd342b6e863bac18415705a0ec2864c12b9def8e23ee84ea3ab4ede19847",
+    "synthetic_acceptance_length_includes_bonus": true,
+    "mean_committed_tokens": 3.77,
+    "mean_accepted_drafts": 2.77,
+    "minimum_variance_rates": [
+      1,
+      1,
+      0.77,
+      0,
+      0,
+      0
+    ],
+    "scope": "vLLM 0.29.0 collection image only; not evidence for the AgentX vLLM revision"
+  }
+}

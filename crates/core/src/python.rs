@@ -170,8 +170,8 @@ fn validate_public_agentic_engine(
             "agentic replay supports only vLLM and SGLang backends"
         );
         ensure!(
-            role.rank.aic_nextn.is_none(),
-            "agentic replay requires speculative decoding disabled"
+            role.rank.aic_nextn.is_none() || role.rank.aic_dspark,
+            "agentic replay requires speculative decoding disabled except fixed-length dspark"
         );
     }
     // HBM-only deployments retain their existing worker/DP support. Once any
@@ -396,23 +396,14 @@ impl AicTimingConfig {
         let Some(speculation) = &self.speculation else {
             return Ok(self.nextn);
         };
-        ensure!(
-            self.nextn == 0,
-            "ngram speculation cannot be combined with nextn"
-        );
-        ensure!(
-            self.backend == "vllm",
-            "ngram speculation requires backend=vllm"
-        );
-        ensure!(
-            self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
-            "ngram speculation requires op_level timing"
-        );
+        let mut config = self.estimator_request(
+            self.worker_type
+                .unwrap_or(ForwardPassWorkerType::Aggregated),
+        )?;
+        // Validation is shared with the public performance-model constructor.
+        config.speculation = Some(speculation.clone());
+        config.validate()?;
         let depth = speculation.num_speculative_tokens();
-        ensure!(
-            (1..=5).contains(&depth),
-            "ngram num_speculative_tokens must be in 1..=5"
-        );
         Ok(depth)
     }
 
@@ -529,6 +520,7 @@ impl AicTimingModel {
             .provenance()
             .context("canonical estimator omitted construction provenance")?;
         config.backend_version = provenance.config.backend_version.clone();
+        config.speculation = provenance.config.speculation.clone();
         config.systems_path = provenance
             .selected_systems_root
             .as_ref()
@@ -1020,6 +1012,12 @@ fn aic_capacity_kwargs<'py>(
         "cuda_graph_reserved_bytes",
         config.cuda_graph_reserved_bytes,
     )?;
+    if let Some(speculation) = &config.speculation {
+        let encoded = serde_json::to_string(speculation)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let value = PyModule::import(py, "json")?.call_method1("loads", (encoded,))?;
+        kwargs.set_item("speculation", value)?;
+    }
     // Capacity intentionally omits NextN until AIC's Eagle memory model no
     // longer returns negative KV capacity. Timing compilation still uses it.
     kwargs.set_item("systems_path", config.systems_path.as_deref())?;
@@ -1108,6 +1106,10 @@ fn materialize_aic_capacity(
     );
     let engine_nextn = role.rank.aic_nextn.unwrap_or(0);
     let timing_depth = config.speculative_depth()?;
+    ensure!(
+        role.rank.aic_dspark == config.speculation.as_ref().is_some_and(|s| s.is_dspark()),
+        "engine DSpark identity must match the timing configuration"
+    );
     ensure!(
         timing_depth as usize == engine_nextn,
         "AIC speculative depth={timing_depth} does not match engine aic_nextn={engine_nextn}"

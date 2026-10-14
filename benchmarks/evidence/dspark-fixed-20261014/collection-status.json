@@ -1,0 +1,28 @@
+{
+  "context": "nv-prd-dgxc.teleport.sh-dynamo-nscale-dev-cluster",
+  "namespace": "spec-decoding-eval",
+  "job": "aisim-dspark-pd-20261014-kai",
+  "job_created": "2026-10-14T21:33:40Z",
+  "outcome": "unscheduled_resource_shortage",
+  "gpu_measurements": 0,
+  "events": [
+    {
+      "reason": "Unschedulable",
+      "last_timestamp": "2026-10-14T21:38:42Z",
+      "message": "no nodes with enough resources were found: 14 node(s) didn't have enough resources: CPU cores. \n17 node(s) didn't have enough resources: memory. \n24 node(s) didn't have enough resources: GPUs. \n5 node(s) had untolerated taint(s)."
+    },
+    {
+      "reason": "NotTriggerScaleUp",
+      "last_timestamp": "2026-10-14T21:44:03Z",
+      "message": "pod didn't trigger scale-up: 1 max node group size reached"
+    },
+    {
+      "reason": "Unschedulable",
+      "last_timestamp": "2026-10-14T21:43:41Z",
+      "message": "no nodes with enough resources were found: 14 node(s) didn't have enough resources: CPU cores. \n18 node(s) didn't have enough resources: memory. \n24 node(s) didn't have enough resources: GPUs. \n5 node(s) had untolerated taint(s)."
+    }
+  ],
+  "cleanup": "inspection and collection Jobs and script ConfigMap deleted; task PVC retained",
+  "retained_pvc": "aisim-dspark-results-20261014",
+  "next_action": "rerun collect-pd.yaml when an unreserved 8-B200 node is available"
+}

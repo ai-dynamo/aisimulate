@@ -902,14 +902,14 @@ def test_standalone_repeated_nested_composites_keep_native_costs_and_weights(rea
 def test_query_overrides_fail_before_mutating_either_phase(phase):
     class OverrideScheme(_FakeDraftScheme):
         def build_draft_context_ops(self, model):
-            return [DraftOpSpec(self.ctx_op, 1, {"s": 128} if phase == "context" else None)]
+            return [DraftOpSpec(self.ctx_op, 1, {"prefix": 128} if phase == "context" else None)]
 
         def build_draft_generation_ops(self, model):
-            return [DraftOpSpec(self.gen_op, 1, {"s": 128} if phase == "generation" else None)]
+            return [DraftOpSpec(self.gen_op, 1, {"prefix": 128} if phase == "generation" else None)]
 
     model = _fake_model(spec_scheme=OverrideScheme())
     original_context, original_generation = list(model.context_ops), list(model.generation_ops)
-    with pytest.raises(ValueError, match="query_overrides are unsupported"):
+    with pytest.raises(ValueError, match="Only draft attention sequence-length"):
         materialize_spec_scheme(model)
     assert model.context_ops == original_context
     assert model.generation_ops == original_generation

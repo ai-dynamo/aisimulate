@@ -14,7 +14,7 @@ use crate::engine::common::protocols::{
     PrefillCost, WorkerType,
 };
 use crate::engine::common::speculative::{
-    SpeculativeDecodeSampler, normalize_conditional_accept_rates,
+    SpeculativeDecodeSampler, normalize_speculative_accept_rates,
 };
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
@@ -810,9 +810,12 @@ impl VllmCore {
                 .is_some_and(|host| host.scope == G2Scope::ClusterShared);
         let emit_token_ids = args.emit_kv_token_ids;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
-            let rates =
-                normalize_conditional_accept_rates(nextn, args.aic_nextn_accept_rates.as_deref())
-                    .expect("normalized MTP acceptance rates");
+            let rates = normalize_speculative_accept_rates(
+                nextn,
+                args.aic_nextn_accept_rates.as_deref(),
+                args.aic_dspark,
+            )
+            .expect("normalized MTP acceptance rates");
             SpeculativeDecodeSampler::new(rates, args.aic_mtp_seed.wrapping_add(seed_offset))
         });
         let native_host_offload = args
@@ -1462,6 +1465,8 @@ impl VllmCore {
                     .state_cache
                     .map_or(0, |state| state.bytes_per_request),
                 self.args.kv_transfer_timing_mode,
+                self.args.kv_transfer_draft_bytes_per_token,
+                self.args.kv_transfer_draft_window,
             )
         });
         let request = self
@@ -3938,10 +3943,50 @@ mod state_cache_tests {
     }
 
     #[test]
+    fn dspark_rollback_cancellation_and_exhaustion_release_reservations() {
+        for depth in [3, 5, 6, 7] {
+            let mut config = args(32, true, Some(depth));
+            config.aic_dspark = true;
+            config.aic_nextn_accept_rates = Some(
+                std::iter::once("1")
+                    .chain(std::iter::repeat_n("0", depth - 1))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            );
+            let mut core = VllmCore::new(config.clone());
+            let id = submit(&mut core, 91_310, 6, 32);
+            for _ in 0..3 {
+                let pass = step(&mut core);
+                assert_eq!(pass.output_signals.len(), 2);
+                assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+                let request = &core.state.requests[&id];
+                assert_eq!(request.num_computed_tokens, request.sequence.len() - 1);
+            }
+            core.drop_request_at(id, None, None);
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
+
+            config.num_gpu_blocks = 3;
+            let mut exhausted = VllmCore::new(config);
+            submit(&mut exhausted, 91_311, 8, 32);
+            let pass = step(&mut exhausted);
+            assert!(pass.output_signals.iter().any(|signal| signal.rejected));
+            assert!(exhausted.state.requests.is_empty());
+            assert_eq!(exhausted.kv_manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
     fn state_rollover_pressure_preempts_and_requests_eventually_complete() {
-        for nextn in [None, Some(1)] {
+        for nextn in [None, Some(1), Some(6), Some(7)] {
             let mut config = args(8, true, nextn);
-            config.aic_nextn_accept_rates = nextn.map(|_| "1".into());
+            config.aic_dspark = nextn.is_some_and(|depth| depth > 5);
+            config.aic_nextn_accept_rates = nextn.map(|depth| {
+                std::iter::once("1")
+                    .chain(std::iter::repeat_n("0", depth - 1))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            });
             let mut core = VllmCore::new(config);
             submit(&mut core, 92_000, 8, 4);
             submit(&mut core, 92_001, 8, 4);

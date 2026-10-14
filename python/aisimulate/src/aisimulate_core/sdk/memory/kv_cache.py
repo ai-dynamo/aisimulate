@@ -53,6 +53,7 @@ from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config,
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate_core.sdk.speculation.base import from_forward_pass_config
 from aisimulate_core.sdk.utils import (
     _download_hf_config,
     _load_local_config,
@@ -294,6 +295,7 @@ class KVCacheEstimator:
         enable_eplb: bool = False,
         wideep_num_slots: int | None = None,
         nextn: int = 0,
+        speculation: dict | None = None,
         systems_path: str | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
@@ -344,6 +346,7 @@ class KVCacheEstimator:
             wideep_num_slots=wideep_num_slots,
             cp_size=cp_size,
             dcp_size=dcp_size,
+            speculation=from_forward_pass_config(speculation),
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -359,6 +362,7 @@ class KVCacheEstimator:
         )
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)
+        draft_scheme = model.spec_scheme if speculation and speculation["kind"] == "dspark" else None
         backend_obj = get_backend(backend)
 
         # num_tokens = max_num_tokens -> activations track BuildConfig.max_num_tokens
@@ -395,6 +399,8 @@ class KVCacheEstimator:
             resident_weights = weight_memory()
             if resident_weights is not None:
                 weights_bytes = float(resident_weights)
+                if draft_scheme is not None:
+                    weights_bytes += draft_scheme.draft_weights_bytes(model)
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
@@ -420,7 +426,24 @@ class KVCacheEstimator:
             # Resolved lazily: some callers never invert (stubs without the
             # capacity method).
             capacity = getattr(model, "get_kvcache_rank_batch_capacity", None) or model.get_kvcache_batch_capacity
-            return int(capacity(float(kv_budget_bytes), max_batch_size))
+            upper = int(capacity(float(kv_budget_bytes), max_batch_size))
+            if draft_scheme is None:
+                return upper
+            # Invert the combined footprint once at construction. Reserve all
+            # active sequences and the temporary draft positions conservatively.
+            lower = 0
+            while lower < upper:
+                mid = (lower + upper + 1) // 2
+                length = (mid + max_batch_size - 1) // max_batch_size
+                footprint = max_batch_size * (
+                    rank_bytes_per_sequence(length)
+                    + draft_scheme.draft_kv_bytes_per_sequence(model, length + draft_scheme.num_draft_tokens)
+                )
+                if footprint <= kv_budget_bytes:
+                    lower = mid
+                else:
+                    upper = mid - 1
+            return lower
 
         return cls(
             {
@@ -434,7 +457,8 @@ class KVCacheEstimator:
                 "pre_model_load_overhead_bytes": (
                     runtime_overhead_bytes + comm_overhead_bytes if backend == "sglang" else 0.0
                 ),
-                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(rank_bytes_per_sequence(1))
+                + (draft_scheme.draft_kv_bytes_per_sequence(model, 1) if draft_scheme else 0),
                 "kvcache_quant_mode": (
                     model_config.kvcache_quant_mode.name if model_config.kvcache_quant_mode is not None else None
                 ),
@@ -1065,6 +1089,7 @@ def estimate_kv_cache(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
     cuda_graph_reserved_bytes: int = 0,
@@ -1160,6 +1185,8 @@ def estimate_kv_cache(
     if request_occupancy_tokens is not None and fpm_profile is None:
         raise ValueError("request_occupancy_tokens requires an FPM profile")
     if fpm_profile is not None:
+        if speculation is not None:
+            raise ValueError("FPM profile resources do not support speculation")
         if nextn:
             raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
         profile = load_fpm_profile(fpm_profile)
@@ -1290,6 +1317,7 @@ def estimate_kv_cache(
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
+            speculation=speculation,
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
@@ -1303,6 +1331,7 @@ def estimate_kv_cache(
             ) from exc
         if (
             not allow_naive_fallback
+            or speculation is not None
             or enable_eplb
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
@@ -1377,6 +1406,7 @@ def estimate_num_gpu_blocks(
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
     nextn: int = 0,
+    speculation: dict | None = None,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
     cuda_graph_reserved_bytes: int = 0,
@@ -1447,6 +1477,7 @@ def estimate_num_gpu_blocks(
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
         nextn=nextn if fpm_profile is not None else int(nextn),
+        speculation=speculation,
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,
         cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,

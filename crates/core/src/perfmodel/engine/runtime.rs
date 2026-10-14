@@ -3242,6 +3242,7 @@ mod tests {
                         op: Box::new(op),
                         numerator: 1,
                         denominator: 4,
+                        max_sequence_length: None,
                     })
                 })
                 .collect();
@@ -3394,6 +3395,7 @@ mod tests {
             op: Box::new(composite.clone()),
             numerator: 1,
             denominator: 4,
+            max_sequence_length: None,
         });
         let spec = EngineSpec::new(config, vec![composite], vec![generation; 3]);
         let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), &systems_root()).unwrap();
@@ -4732,6 +4734,7 @@ mod tests {
                 op: Box::new(spec.generation_ops[0].clone()),
                 numerator: 1,
                 denominator: 4,
+                max_sequence_length: None,
             }));
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
