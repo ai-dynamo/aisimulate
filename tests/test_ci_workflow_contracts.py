@@ -3389,6 +3389,11 @@ def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra=""
             "    /// Receiving-engine hints.\n    pub kv_hints: std::option::Option<HashMap<String, Vec<u32>>>,\n",
             {"Request": ["kv_hint", "session_id"], "Placement": ["kv_hints"]},
         ),
+        (
+            '    /// Closes a `}` block; see "}" too.\n    pub session_id: Option<String>,\n',
+            "",
+            {"Request": ["session_id"]},
+        ),
     ],
 )
 def test_simulation_dynamo_optional_literal_fields(tmp_path, monkeypatch, request_extra, placement_extra, inserted):
@@ -3449,6 +3454,13 @@ _SESSION = "    pub session_id: Option<String>,\n"
             r"no longer has: \['legacy'\]",
         ),
         (_SESSION, "", _REQUEST_LITERAL, True, "kv_router/mod.rs differs from reviewed source"),
+        (
+            _SESSION + '    #[cfg(target_os = "windows")]\n    pub hint: Option<u8>,\n',
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"conditional \(`cfg`\) fields",
+        ),
     ],
 )
 def test_simulation_dynamo_optional_literal_fields_fail_closed(

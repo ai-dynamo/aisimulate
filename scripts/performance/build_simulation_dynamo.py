@@ -88,8 +88,17 @@ OPTIONAL_FIELD_LITERALS = (
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
 
 
+_RUST_NON_CODE = re.compile(r"//[^\n]*|/\*.*?\*/|r(#*)\".*?\"\1|b?\"(?:\\.|[^\"\\])*\"|b?'(?:\\.|[^'\\\n])'", re.DOTALL)
+
+
+def _mask(text: str) -> str:
+    """Blank Rust comments and string/char literals, keeping offsets and newlines."""
+    return _RUST_NON_CODE.sub(lambda match: re.sub(r"[^\n]", " ", match[0]), text)
+
+
 def _braced(text: str, start: int) -> tuple[int, int]:
-    """Return the span inside the first brace at or after ``start``."""
+    """Return the span inside the first brace at or after ``start``, outside comments and literals."""
+    text = _mask(text)
     open_at = text.index("{", start)
     depth = 0
     for index in range(open_at, len(text)):
@@ -100,8 +109,11 @@ def _braced(text: str, start: int) -> tuple[int, int]:
 
 
 def _top_level_items(body: str, angle: bool) -> list[str]:
-    """Split a brace body at top-level commas, ignoring comments and attributes."""
-    body = re.sub(r"/\*.*?\*/|//[^\n]*", "", body, flags=re.DOTALL)
+    """Split a brace body at top-level commas, ignoring comments, literals and attributes."""
+    body = _mask(body)
+    # A `cfg` attribute can remove a field from the build; refuse rather than guess.
+    if re.search(r"#\s*\[[^\]]*\bcfg\s*\(", body):
+        raise ValueError(f"conditional (`cfg`) fields are not supported: {body.strip()!r}")
     body = re.sub(r"#\[(?:[^\[\]]|\[[^\[\]]*\])*\]", "", body)
     nesting = {"(": 1, "[": 1, "{": 1, ")": -1, "]": -1, "}": -1}
     if angle:  # Struct field types nest generics; literal expressions may compare.
