@@ -114,8 +114,13 @@ speculation/DSpark, no ubatching/DBO or context parallelism, no KV or encoder co
 The last requirement matters: the preview defaults to CPU UVA offload. All requests
 are text-only; no vision inputs or decoder replay are injected.
 
-This first V4.1 dataset contract supports eager execution only. Pass
-`--fpm-enforce-eager`; the frozen plan and rendered arguments record it, the
+This first V4.1 dataset contract supports eager execution only. Compiled and
+CUDA-graph timings need separate calibration and validation. The collector
+automatically selects eager execution for V4.1 with runtime prefill policy and
+graph mode omitted or `NONE`, without capture sizes. The explicit collector flag
+`--fpm-enforce-eager` also emits worker `--enforce-eager`, disabling both CUDA
+graphs and `torch.compile`. Graph mode `NONE` alone does not disable compilation.
+The frozen plan and rendered arguments record eager execution, the
 producer checks the actual model configuration, and the native reader requires
 the producer's `execution_mode=eager` evidence. Graph data cannot be published
 under this contract. Supporting graph execution later requires a distinct query

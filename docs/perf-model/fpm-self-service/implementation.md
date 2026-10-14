@@ -501,8 +501,15 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 ### Serving roles and CUDA graph settings
 
-DeepSeek V4.1 currently requires eager execution for FPM collection. The collector
-and runtime probe recognize `DeepseekV41ForCausalLM` from the resolved model config
+DeepSeek V4.1 requires eager execution because its current FPM dataset was
+calibrated and validated only with eager forwards. Compiled or CUDA-graph timings
+need separate calibration and validation. In vLLM, `--enforce-eager` disables both
+CUDA graphs and `torch.compile`; `cudagraph_mode=NONE` only disables CUDA graphs
+and may leave compilation enabled. See the
+[CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
+
+The collector and runtime probe recognize `DeepseekV41ForCausalLM` from the
+resolved model config
 and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
 is needed. Use the default `runtime` prefill policy, with graph mode omitted or
 `NONE` and no capture sizes. Explicit graph requests fail with a diagnostic;

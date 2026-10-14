@@ -801,7 +801,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
-        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
+        help="Disable both CUDA graphs and torch.compile via worker --enforce-eager; included in the frozen plan.",
     )
     group.add_argument(
         "--fpm-benchmark-points-file",
