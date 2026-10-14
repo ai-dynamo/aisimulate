@@ -206,9 +206,6 @@ def test_disaggregated_probe_failure_keeps_other_role_resumable(tmp_path, monkey
         {"max_cudagraph_capture_size": 2048},
         {"cudagraph_mode": "NONE", "cudagraph_capture_sizes": [4]},
         {"cudagraph_mode": "UNKNOWN"},
-        {"compilation_mode": "UNKNOWN"},
-        {"compilation_mode": "NONE", "cudagraph_mode": "PIECEWISE"},
-        {"compilation_mode": "VLLM_COMPILE", "enforce_eager": True},
     ],
 )
 def test_invalid_role_graph_settings_fail_before_execution_without_blocking_other_role(tmp_path, monkeypatch, changes):
@@ -1193,21 +1190,3 @@ def test_pending_probe_launch_validates_other_facts_before_runtime_resolution(tm
     launch["topology"]["tp"] = 0
     with pytest.raises(ValueError, match="topology.tp"):
         normalize_probe_launch(launch, allow_pending_version=True)
-
-
-@pytest.mark.parametrize("mode,number", [("NONE", 0), ("VLLM_COMPILE", 3)])
-def test_runtime_probe_preserves_compilation_mode(tmp_path, mode, number):
-    from collector.fpm_forward import runtime_probe
-
-    launch, manifest, _ = _inputs(tmp_path)
-    launch["worker_type"] = "aggregated"
-    launch["collection"].update(compilation_mode=mode, cudagraph_mode="NONE")
-    result = runtime_probe.probe_runtime({"selected": launch}, instrumentation=manifest, output_dir=tmp_path / "probe")
-    assert result["status"] == "preview"
-    selected = result["configurations"]["selected"]
-    assert selected["launch"]["collection"]["compilation_mode"] == mode
-    for phase in selected["phases"].values():
-        request = json.loads(Path(phase["generator_request"]).read_text())
-        args = request["params"]["agg"]["extra_cli_args"]
-        assert json.loads(args[args.index("--compilation-config") + 1]) == {"mode": number, "cudagraph_mode": "NONE"}
-        assert "--enforce-eager" not in args

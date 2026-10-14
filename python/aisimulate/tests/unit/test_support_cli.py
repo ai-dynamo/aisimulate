@@ -1367,8 +1367,7 @@ def test_scripted_init_requires_context_evidence(tmp_path, capsys):
     assert "--context-length is required" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("legacy_alias", [False, True])
-def test_onboard_explicit_eager_round_trip_and_collector_flag(tmp_path, capsys, monkeypatch, legacy_alias):
+def test_onboard_explicit_eager_round_trip_and_collector_flag(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     path = tmp_path / "request.yaml"
     args = _init_args(
@@ -1381,29 +1380,22 @@ def test_onboard_explicit_eager_round_trip_and_collector_flag(tmp_path, capsys, 
         gpu="b200_sxm",
         framework_version="0.27.0",
     )
-    flags = ["--enforce-eager"] if legacy_alias else ["--compilation-mode", "NONE"]
-    assert cli.main([*args, *flags]) == 0
+    assert cli.main([*args, "--enforce-eager"]) == 0
     request = SupportRequest.from_yaml(path)
-    assert request.collection.is_eager is True
-    assert request.collection.enforce_eager is legacy_alias
+    assert request.collection.enforce_eager is True
     output = tmp_path / "collection"
     assert cli.main(["onboard", "plan", "-c", str(path), "--output-dir", str(output)]) == 0
     assert cli.main(["onboard", "collect-fpm", "-c", str(output / "request.yaml"), "--output-dir", str(output)]) == 0
-    output_text = capsys.readouterr().out
-    assert ("--fpm-enforce-eager" if legacy_alias else "--fpm-compilation-mode NONE") in output_text
-    assert SupportRequest.from_yaml(output / "request.yaml").collection.is_eager is True
+    assert "--fpm-enforce-eager" in capsys.readouterr().out
+    assert SupportRequest.from_yaml(output / "request.yaml").collection.enforce_eager is True
     _, resolved = _resolve_execution(fpm_cli_args(request, output_dir=output, plan_only=True))
-    assert resolved[0].options.is_eager is True
-    assert resolved[0].options.compilation_config == {"mode": 0, "cudagraph_mode": "NONE"}
+    assert resolved[0].options.enforce_eager is True
     assert resolved[0].cells
 
 
 def test_none_graph_policy_does_not_silently_select_eager():
     legacy = CollectionSpec(prefill_cudagraph_policy="runtime", cudagraph_mode="NONE")
     assert legacy.enforce_eager is False
-    assert legacy.compilation_mode is None
-    assert legacy.is_eager is False
-    assert "compilation_mode" not in legacy.model_dump()
     assert "enforce_eager" not in legacy.model_dump()
     assert CollectionSpec.model_validate(legacy.model_dump()).model_dump() == legacy.model_dump()
 
@@ -1416,31 +1408,3 @@ def test_onboard_eager_does_not_accept_graph_capture(tmp_path, mode):
         cli.main([*args, "--enforce-eager", "--cudagraph-capture-sizes", "1", "2"])
     assert error.value.code == 2
     assert not path.exists()
-
-
-@pytest.mark.parametrize("mode", ["NONE", "STOCK_TORCH_COMPILE", "DYNAMO_TRACE_ONCE", "VLLM_COMPILE"])
-def test_compilation_mode_survives_onboarding_without_selecting_graphs(tmp_path, mode):
-    path = tmp_path / "request.yaml"
-    assert cli.main(_init_args(path, compilation_mode=mode)) == 0
-    request = SupportRequest.from_yaml(path)
-    assert request.collection.compilation_mode == mode
-    assert request.collection.cudagraph_mode is None
-    assert request.collection.is_eager is False
-    command = fpm_cli_args(request, output_dir=tmp_path / "collection", plan_only=True)
-    assert command[command.index("--fpm-compilation-mode") + 1] == mode
-    assert "--fpm-enforce-eager" not in command
-    assert "--fpm-cudagraph-mode" not in command
-
-
-@pytest.mark.parametrize(
-    "settings",
-    [
-        {"compilation_mode": "UNKNOWN"},
-        {"compilation_mode": "VLLM_COMPILE", "enforce_eager": True},
-        {"compilation_mode": "NONE", "cudagraph_mode": "PIECEWISE"},
-        {"compilation_mode": "STOCK_TORCH_COMPILE", "cudagraph_mode": "FULL_AND_PIECEWISE"},
-    ],
-)
-def test_onboarding_rejects_conflicting_compilation_settings(settings):
-    with pytest.raises(ValueError):
-        CollectionSpec(prefill_cudagraph_policy="runtime", **settings)

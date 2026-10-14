@@ -335,9 +335,7 @@ def _validate_record(
             raise ValueError("reviewed CUDA graph settings require an explicit serving role")
         if "cudagraph_capture_sizes" in graph_settings:
             graph_settings.setdefault("max_cudagraph_capture_size", max(graph_settings["cudagraph_capture_sizes"]))
-    if collection.get("compilation_mode") is not None:
-        graph_settings["mode"] = collection["compilation_mode"]
-    runtime_memory.validate_requested_graph(record, config, graph_settings)
+        runtime_memory.validate_requested_graph(record, config, graph_settings)
     requested_backend = launch["precision"].get("attention_backend", "auto")
     if requested_backend not in (None, "auto") and record.get("attention_backend") != requested_backend:
         raise ValueError("runtime observation lacks the selected attention backend evidence")

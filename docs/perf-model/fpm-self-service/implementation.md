@@ -503,29 +503,14 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 Use `--worker-type prefill`, `decode` or `aggregated` to bind new collection and memory evidence to its serving role. `prefill` and `decode` requests collect only their own phase and use separate output roots. Their configured graph modes, capture limits and usable KV capacities need not agree with each other. Within each role, observed settings and rank-local cache evidence must match that role's accepted launch; an unexpected runtime change still fails validation. Aggregated requests exercise both phases with one shared serving configuration and combine compatible memory observations conservatively. A batch selecting PIECEWISE during prefill and FULL during decode is not itself a configuration mismatch.
 
-The following optional settings describe vLLM's configuration for the selected role. CUDA graph overrides require an explicit `--worker-type`. These settings are included in saved request and collection identities, and remain editable during the review/accept/save step. Enter `clear` when editing a generic graph field to remove that override:
+The following optional settings describe vLLM's configuration for the selected role. They require an explicit `--worker-type`, are included in saved request and collection identities, and remain editable during the review/accept/save step. Enter `clear` when editing a generic graph field to remove that override:
 
 | Option | Meaning |
 | --- | --- |
-| `--compilation-mode` | Saved as `collection.compilation_mode` and emitted as `--fpm-compilation-mode`. Values: `NONE`, `STOCK_TORCH_COMPILE`, `DYNAMO_TRACE_ONCE`, `VLLM_COMPILE`. Omit to inherit the pinned backend default. `NONE` disables `torch.compile` only; it does not select a CUDA graph mode. |
-| `--enforce-eager` | Compatibility alias for `compilation_mode: NONE` plus `cudagraph_mode: NONE`. Existing `collection.enforce_eager: true` requests remain supported. Rejects conflicting compilation/graph modes and capture settings; use runtime prefill policy. |
+| `--enforce-eager` | Explicit eager execution, saved as `collection.enforce_eager` and emitted as `--fpm-enforce-eager`. Required by the DeepSeek V4.1 collector. Defaults to false; `NONE` alone does not enable eager execution. Requires runtime prefill policy with no capture sizes and no graph mode other than `NONE`. |
 | `--cudagraph-mode` | Configured vLLM mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY` or `FULL_AND_PIECEWISE`. Runtime/backend support still needs verification. |
 | `--cudagraph-capture-sizes 1 2 4 8 16` | Increasing, distinct positive capture sizes; use `--prefill-cudagraph-policy runtime` to avoid a competing legacy override. |
 | `--max-cudagraph-capture-size 2048` | Maximum capture size for this serving configuration. In aggregated mode it is passed to both phase launches. When a capture list is also supplied, it must equal the largest listed size. Mode `NONE` rejects capture settings. |
-
-Compilation and CUDA graphs are separate controls. Omitting both inherits backend defaults; vLLM 0.27.0 normally enables its compilation pipeline, while plain PyTorch is eager unless compilation is requested. `cudagraph_mode: NONE` alone disables graph replay and can retain compiled execution. Piecewise CUDA graphs require vLLM compilation; incompatible explicit combinations are rejected.
-
-DeepSeek V4.1 collection is currently qualified only with both disabled. Use
-`--worker-type aggregated --prefill-cudagraph-policy runtime --compilation-mode NONE --cudagraph-mode NONE`:
-
-```yaml
-collection:
-  prefill_cudagraph_policy: runtime
-  compilation_mode: NONE
-  cudagraph_mode: NONE
-```
-
-The collector checks the resolved pair, and the runtime producer verifies the actual engine modes. The legacy eager alias expresses the same pair. This qualification restriction does not establish that compiled V4.1 execution is unsupported. Requests and plans record explicit modes; runtime and timing evidence must match them. Omitted compilation fields preserve historical request identities.
 
 The ordinary `--max-num-tokens`, `--max-batch-size`, `--context-length` and `--gpu-memory-utilization` settings belong to the selected role. Choosing a smaller smoke workload does not reduce these accepted engine settings. The older prefill capture flags remain available: on explicit aggregated requests the same capture override applies to both launches; role-less historical requests retain their original behavior. Do not combine generic capture size/list options with the legacy explicit capture policy.
 

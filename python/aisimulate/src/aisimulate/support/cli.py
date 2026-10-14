@@ -37,7 +37,6 @@ from .fpm import run_fpm
 from .plan import create_plan, request_id
 from .schema import (
     AGENTX_REFERENCE_CONTEXT,
-    COMPILATION_MODES,
     CUDAGRAPH_MODES,
     CollectionSpec,
     FPMDeployment,
@@ -170,15 +169,10 @@ def add_support_parser(subparsers: Any) -> None:
         help="Fraction of total GPU memory for collection and simulation, in (0, 1] (initial policy: 0.90).",
     )
     init.add_argument(
-        "--compilation-mode",
-        choices=COMPILATION_MODES,
-        help="vLLM compilation mode; omitted inherits the backend default. NONE disables torch.compile only.",
-    )
-    init.add_argument(
         "--enforce-eager",
         action="store_true",
         default=None,
-        help="Compatibility alias for --compilation-mode NONE --cudagraph-mode NONE.",
+        help="Request collector eager execution (required for DeepSeek V4.1); NONE alone does not enable it.",
     )
     init.add_argument(
         "--cudagraph-mode", choices=CUDAGRAPH_MODES, help="vLLM graph policy for this explicit worker role."
@@ -397,7 +391,6 @@ _CORRECTION_PROMPTS = {
     "prefill_cudagraph_policy": ("Prefill CUDA graph policy (runtime/explicit)", str),
     "gpu_memory_utilization": ("Fraction of total GPU memory (0 < value <= 1)", float),
     "worker_type": ("Serving role (aggregated/prefill/decode)", str),
-    "compilation_mode": ("vLLM compilation mode (omit to inherit backend default)", str),
     "enforce_eager": ("Enforce eager execution (true/false)", lambda value: json.loads(value.lower())),
     "cudagraph_mode": ("vLLM CUDA graph mode", str),
     "cudagraph_capture_sizes": (
@@ -700,7 +693,6 @@ def _review_config_profile(
             "prefill_cudagraph_policy",
             "gpu_memory_utilization",
             "worker_type",
-            "compilation_mode",
             "enforce_eager",
             "cudagraph_mode",
             "cudagraph_capture_sizes",
@@ -721,14 +713,8 @@ def _review_config_profile(
                 while (answer := input("enforce_eager (true/false): ").strip().lower()) not in {"true", "false"}:
                     print("Enter true or false.")
                 value = answer == "true"
-            elif name in {"worker_type", "compilation_mode", "cudagraph_mode"}:
-                choices = (
-                    ("aggregated", "prefill", "decode")
-                    if name == "worker_type"
-                    else (*COMPILATION_MODES, "clear")
-                    if name == "compilation_mode"
-                    else (*CUDAGRAPH_MODES, "clear")
-                )
+            elif name in {"worker_type", "cudagraph_mode"}:
+                choices = ("aggregated", "prefill", "decode") if name == "worker_type" else (*CUDAGRAPH_MODES, "clear")
                 while (value := input(f"{name} ({'/'.join(choices)}): ").strip()) not in choices:
                     print("Enter one of: " + ", ".join(choices))
                 if value == "clear":

@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-COMPILATION_MODES = ("NONE", "STOCK_TORCH_COMPILE", "DYNAMO_TRACE_ONCE", "VLLM_COMPILE")
-
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
 FPM_MEASUREMENT_REPEATS = 1
@@ -385,7 +383,6 @@ class FPMCollectionOptions:
     max_prefill_cudagraph_size: int | None = None
     prefill_cudagraph_policy: str = "explicit"
     worker_type: str | None = None
-    compilation_mode: str | None = None
     cudagraph_mode: str | None = None
     cudagraph_capture_sizes: tuple[int, ...] | None = None
     max_cudagraph_capture_size: int | None = None
@@ -405,20 +402,6 @@ class FPMCollectionOptions:
 
     def __post_init__(self) -> None:
         collection_phases(self.worker_type)
-        if self.compilation_mode is not None and self.compilation_mode not in COMPILATION_MODES:
-            raise ValueError("unsupported --fpm-compilation-mode")
-        if self.enforce_eager and (
-            self.compilation_mode not in (None, "NONE")
-            or self.cudagraph_mode not in (None, "NONE")
-            or self.cudagraph_capture_sizes is not None
-            or self.max_cudagraph_capture_size is not None
-        ):
-            raise ValueError("--fpm-enforce-eager conflicts with compilation or CUDA graph settings")
-        if self.compilation_mode not in (None, "VLLM_COMPILE") and self.cudagraph_mode in {
-            "PIECEWISE",
-            "FULL_AND_PIECEWISE",
-        }:
-            raise ValueError("piecewise CUDA graphs require --fpm-compilation-mode VLLM_COMPILE")
         graph_fields = (self.cudagraph_mode, self.cudagraph_capture_sizes, self.max_cudagraph_capture_size)
         if any(value is not None for value in graph_fields) and self.worker_type is None:
             raise ValueError("CUDA graph settings require an explicit --fpm-worker-type")
@@ -548,24 +531,10 @@ class FPMCollectionOptions:
         return collection_phases(self.worker_type)
 
     @property
-    def effective_compilation_mode(self) -> str | None:
-        return "NONE" if self.enforce_eager else self.compilation_mode
-
-    @property
-    def effective_cudagraph_mode(self) -> str | None:
-        return "NONE" if self.enforce_eager else self.cudagraph_mode
-
-    @property
-    def is_eager(self) -> bool:
-        return self.effective_compilation_mode == self.effective_cudagraph_mode == "NONE"
-
-    @property
     def compilation_config(self) -> dict[str, object]:
         result = {}
-        if self.effective_compilation_mode is not None:
-            result["mode"] = COMPILATION_MODES.index(self.effective_compilation_mode)
-        if self.effective_cudagraph_mode is not None:
-            result["cudagraph_mode"] = self.effective_cudagraph_mode
+        if self.cudagraph_mode is not None:
+            result["cudagraph_mode"] = self.cudagraph_mode
         if self.cudagraph_capture_sizes is not None:
             result["cudagraph_capture_sizes"] = list(self.cudagraph_capture_sizes)
         if self.max_cudagraph_capture_size is not None:
@@ -692,7 +661,6 @@ class FPMCollectionOptions:
             max_prefill_cudagraph_size=getattr(args, "fpm_max_prefill_cudagraph_size", None),
             prefill_cudagraph_policy=getattr(args, "fpm_prefill_cudagraph_policy", None) or "explicit",
             worker_type=getattr(args, "fpm_worker_type", None),
-            compilation_mode=getattr(args, "fpm_compilation_mode", None),
             cudagraph_mode=getattr(args, "fpm_cudagraph_mode", None),
             cudagraph_capture_sizes=(
                 tuple(args.fpm_cudagraph_capture_sizes)
@@ -744,8 +712,6 @@ class FPMCollectionOptions:
         # runtime limits are absent.
         if self.worker_type is not None:
             result["worker_type"] = self.worker_type
-        if self.compilation_mode is not None:
-            result["compilation_mode"] = self.compilation_mode
         if self.cudagraph_mode is not None:
             result["cudagraph_mode"] = self.cudagraph_mode
         if self.cudagraph_capture_sizes is not None:
@@ -785,12 +751,6 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         help="Collect one serving role, or both phases of an aggregated engine.",
     )
     group.add_argument(
-        "--fpm-compilation-mode",
-        choices=COMPILATION_MODES,
-        default=None,
-        help="vLLM compilation mode; omit to inherit the backend default. NONE disables torch.compile only.",
-    )
-    group.add_argument(
         "--fpm-cudagraph-mode",
         choices=("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"),
         default=None,
@@ -825,7 +785,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
-        help="Compatibility alias for compilation_mode=NONE and cudagraph_mode=NONE.",
+        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
     )
     group.add_argument(
         "--fpm-benchmark-points-file",
@@ -1125,7 +1085,6 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_runtime_launch",
         "fpm_runtime_configuration",
         "fpm_worker_type",
-        "fpm_compilation_mode",
         "fpm_cudagraph_mode",
         "fpm_cudagraph_capture_sizes",
         "fpm_max_cudagraph_capture_size",

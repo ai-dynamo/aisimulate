@@ -12,7 +12,7 @@ import shutil
 from dataclasses import replace
 
 import pytest
-from collector.fpm_forward import entry, execution_evidence, planner, runner
+from collector.fpm_forward import entry, planner, runner
 
 from aisimulate import main as cli
 from aisimulate.support import fpm
@@ -581,14 +581,3 @@ def test_malformed_native_regime_remains_json_reportable(quality_case, regime):
     assert not report["ready_for_full_collection"]
     assert _decode(report)["rank_diagnostics"][0]["regime_counts"]["invalid"] == 1
     assert json.loads(json.dumps(report, sort_keys=True))["status"] == "blocked"
-
-
-@pytest.mark.parametrize("mode", [None, "VLLM_COMPILE", "NONE"])
-def test_worker_evidence_checks_requested_compilation_mode(quality_case, mode):
-    case = quality_case
-    payload = json.loads(next(case["campaign"].rglob("fpm-execution-worker-*.json")).read_text())
-    plan = replace(case["plan"], options=replace(case["plan"].options, compilation_mode=mode))
-    cell = next(cell for cell in plan.cells if cell.cell_id == payload["collector_provenance"]["cell_id"])
-    missing, failures = [], []
-    execution_evidence._inspect_config(payload, cell, plan, None, missing, failures)
-    assert ("runtime compilation mode differs from the frozen plan" in failures) is (mode == "NONE")
