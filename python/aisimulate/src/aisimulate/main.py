@@ -31,7 +31,13 @@ from .config_adapter import (
     SimulationConfigAdapter,
     resolve_config_adapters,
 )
-from .detail import build_prediction_details, energy_diagnostics, prediction_summary
+from .detail import (
+    SERVING_LATENCY_METRICS,
+    SERVING_THROUGHPUT_METRICS,
+    build_prediction_details,
+    energy_diagnostics,
+    prediction_summary,
+)
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -207,6 +213,18 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             raise _CliExecutionError(f"runner prediction_provenance.{role} requires nonempty strings for {required}")
     summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
+    if summary.get("completed_requests") == 0:
+        summary.update(
+            prediction_status="invalid",
+            stop_reason="no_completed_requests",
+            diagnostic=(
+                "No requests completed; serving latency and throughput are unavailable. "
+                "Check KV capacity against request lengths, context limits, and traffic stop limits."
+            ),
+        )
+        for key in summary:
+            if key in SERVING_LATENCY_METRICS or key in SERVING_THROUGHPUT_METRICS:
+                summary[key] = None
     if "summary" in native:
         native = {**native, "summary": summary}
     else:
@@ -260,6 +278,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     sys.stdout.write("\n")
     if args.format == "table":
         sys.stdout.write(f"Saved full report to: {report_path}\n")
+    if summary.get("prediction_status") == "invalid":
+        sys.stderr.write(f"ERROR: {summary['diagnostic']} Saved full report to: {report_path}\n")
+        return 1
     return 0
 
 

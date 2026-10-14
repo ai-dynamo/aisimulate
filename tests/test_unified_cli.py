@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 import aisimulate.main as cli
-from aisimulate.output import prepare_output_directory
+from aisimulate.output import format_prediction_stdout, prepare_output_directory
 from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, resolve_output_adapters
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
@@ -1946,6 +1946,42 @@ def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, cap
     assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err
 
 
+def test_recommend_emits_explicit_hybrid_pin_with_native_capacity(tmp_path):
+    shape = {"replicas": 1, "tensor": 2, "pipeline": 1, "attention_data": 4, "moe_tensor": 1, "moe_expert": 8}
+    config = {
+        "engine": {
+            "mode": "aggregated",
+            "model": "zai-org/GLM-5.2-FP8",
+            "hardware": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.24.0",
+            "context_length": 8192,
+            "workers": {
+                "aggregated": {
+                    "parallelism": {"preset": [shape]},
+                    "scheduler": {"max_batched_tokens": 8192, "max_sequences": 512},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 6},
+        },
+        "evaluation": {"sla": {"ttft_ms": 2000, "itl_ms": 50}},
+        "optimization": {"target": "min_gpus", "constraints": {"max_candidate_gpus": 8}},
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 42},
+    }
+    path = tmp_path / "recommend.yaml"
+    path.write_text(yaml.safe_dump(config))
+    output = tmp_path / "out"
+    assert cli.main(["recommend", "-c", str(path), "--output-dir", str(output)]) == 0
+    report = json.loads((output / "recommendation.json").read_text())
+    assert report["counts"]["feasible"] == 1
+    saved = yaml.safe_load((output / "recommendations" / "0001.yaml").read_text())
+    assert saved["engine"]["workers"]["aggregated"]["parallelism"] == shape
+
+
 @pytest.mark.parametrize("output_format", ["table", "json"])
 @pytest.mark.parametrize("roles", [("aggregated",), ("prefill", "decode")])
 @pytest.mark.parametrize(
@@ -2125,3 +2161,72 @@ def test_predict_rejects_malformed_runner_provenance_before_output(tmp_path, mon
     assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 1
     assert "runner prediction_provenance" in capsys.readouterr().err
     assert not (output / "prediction.json").exists()
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("completed", [0, 1])
+def test_predict_marks_zero_completion_invalid(tmp_path, monkeypatch, capsys, output_format, completed):
+    class CompletionRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            values = {
+                "completed_requests": completed,
+                "mean_ttft_ms": 0.0,
+                "output_throughput_tok_s": 0.0,
+                "processed_tokens_per_s": 12.0,
+                "processed_output_tokens_per_s": 4.0,
+                "throughput_sample_count": 7,
+            }
+            report.metrics.update(values)
+            report.metadata["native_report"]["summary"].update(values)
+            return report
+
+    runner = CompletionRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    code = cli.main(["predict", "-c", str(config_path), "--output-dir", str(output), "--format", output_format])
+    assert code == (1 if completed == 0 else 0)
+    saved = json.loads((output / "prediction.json").read_text())["summary"]
+    stdout, stderr = capsys.readouterr()
+    if completed == 0:
+        assert saved["prediction_status"] == "invalid"
+        assert saved["stop_reason"] == "no_completed_requests"
+        assert saved["mean_ttft_ms"] is None
+        assert saved["output_throughput_tok_s"] is None
+        assert saved["processed_tokens_per_s"] is None
+        assert saved["processed_output_tokens_per_s"] is None
+        assert saved["throughput_sample_count"] == 7
+        assert "KV capacity" in stderr
+        if output_format == "json":
+            assert json.loads(stdout)["stop_reason"] == "no_completed_requests"
+        else:
+            assert "INVALID prediction" in stdout
+    else:
+        assert "prediction_status" not in saved
+        assert saved["mean_ttft_ms"] == 0.0
+    assert runner.closed
+
+
+def test_invalid_analytical_epd_table_includes_banner():
+    summary = {
+        "metric_semantics": "analytical_epd_overlay",
+        "prediction_status": "invalid",
+        "stop_reason": "no_completed_requests",
+        "diagnostic": "No requests completed.",
+    }
+    output = format_prediction_stdout(summary, "table")
+    assert output.startswith("INVALID prediction (no_completed_requests): No requests completed.\n")
+    assert "AISimulate analytical EPD" in output
