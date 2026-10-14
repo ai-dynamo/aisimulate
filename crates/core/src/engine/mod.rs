@@ -59,6 +59,8 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(feature = "python")]
+pub(crate) use scheduler::afd::timing::AfdTimingModel;
 #[cfg(all(test, feature = "python"))]
 pub(crate) use timing::tests::assert_phase_bits;
 pub use timing::{
