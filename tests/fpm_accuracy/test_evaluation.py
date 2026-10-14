@@ -780,19 +780,27 @@ def test_learned_split_is_per_workload_kind():
 
 
 def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
-    from aisimulate_core.sdk import fpm_learned
+    import sys
 
     from scripts.fpm_accuracy.models.learned_predictor import HYPERPARAMETERS, LearnedFpm5Predictor
 
-    pytest.importorskip("sklearn")
     calls = []
 
     def train(iterations, worker_type, **kwargs):
         calls.append(kwargs)
         raise ValueError("too few rows")
 
-    monkeypatch.setattr(fpm_learned, "train", train)
+    # Stand-ins for the evaluated wheel and scikit-learn, which this job does not install.
+    fpm_learned = SimpleNamespace(FEATURE_PRESETS={"fpm5": ("num_prefill_requests",)}, train=train)
+    sdk = SimpleNamespace(fpm_learned=fpm_learned)
+    monkeypatch.setitem(sys.modules, "aisimulate_core", SimpleNamespace(sdk=sdk))
+    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk", sdk)
+    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk.fpm_learned", fpm_learned)
+    monkeypatch.setitem(
+        sys.modules, "aisimulate_core.sdk.rust_engine_step", SimpleNamespace(RustForwardPassPerfModel=None)
+    )
+    monkeypatch.setitem(sys.modules, "sklearn", SimpleNamespace())
     predictor = LearnedFpm5Predictor.fit(SimpleNamespace(worker_role="decode"), [])
-    assert calls == [{"features": fpm_learned.FEATURE_PRESETS["fpm5"], **HYPERPARAMETERS}]
+    assert calls == [{"features": ("num_prefill_requests",), **HYPERPARAMETERS}]
     assert HYPERPARAMETERS == {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
     assert predictor.diagnostics()["hyperparameters"] == HYPERPARAMETERS
