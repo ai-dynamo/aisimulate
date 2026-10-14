@@ -1516,8 +1516,13 @@ impl WorkloadDriver {
         let mut node_to_play = Vec::new();
         let mut agentic_plays = Vec::new();
         for (cohort, snapshot) in plays.iter().enumerate() {
+            debug_assert!(Arc::ptr_eq(&context, &snapshot.context));
+            // Evidence lists the play's requests in source node order; the
+            // request IDs are checked below as each pair is compiled.
             let source_nodes = &graph.plays[snapshot.source_play_index].nodes;
-            debug_assert_eq!(source_nodes.len(), snapshot.evidence.requests.len());
+            if source_nodes.len() != snapshot.evidence.requests.len() {
+                bail!("snapshot evidence does not match its source play");
+            }
             let retained = move || {
                 source_nodes
                     .iter()
@@ -1543,6 +1548,9 @@ impl WorkloadDriver {
             for (&source_index, request) in retained() {
                 let index = sessions.len();
                 let source = &graph.nodes[source_index];
+                if request.source_request_id != source.request_id {
+                    bail!("snapshot evidence does not match its source play");
+                }
                 let not_before_ms = request.remaining_delay_ms / speedup;
                 if !not_before_ms.is_finite() {
                     bail!("snapshot speedup overflows replay timing");

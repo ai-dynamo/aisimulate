@@ -245,6 +245,11 @@ impl AgenticReplayContext {
     /// The caller passes the slot of a prepared play, whose range check bounds
     /// `(slot + 1) * token_stride` by 2^32; every rank is below the stride.
     pub(super) fn token_ids(&self, slot: u64, index: usize) -> Vec<u32> {
+        debug_assert!(
+            slot.checked_add(1)
+                .and_then(|next| next.checked_mul(self.token_stride))
+                .is_some_and(|end| end <= 1 << 32)
+        );
         let base = (slot * self.token_stride) as u32;
         self.graph.nodes[index]
             .hash_ids

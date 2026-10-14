@@ -651,6 +651,9 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
             }
         }
     }
+    // To re-pin, run this test and copy the `left:` list from the failure. A
+    // mismatch the change did not intend must first be diffed semantically
+    // against the previous report, per-request and lifecycle output.
     let expected = [
         "g2 snapshot agg: 5 5e02e9f17a77658f",
         "g2 snapshot disagg: 5 a6573f2379f39c15",
