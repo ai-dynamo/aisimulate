@@ -441,7 +441,7 @@ def test_unrecognized_quantized_moe_error_remains_blocking():
             "GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
             STATUS_SDK_UNREPRESENTABLE,
         ),
-        ("GLM-5.3-Flash currently supports vLLM and SGLang", STATUS_FRAMEWORK_INCOMPATIBLE),
+        ("GLM-5.3-Flash currently supports vLLM and SGLang", STATUS_SDK_UNREPRESENTABLE),
     ],
 )
 @pytest.mark.parametrize("wrapped", [False, True])

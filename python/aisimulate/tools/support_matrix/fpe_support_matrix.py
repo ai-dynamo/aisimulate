@@ -504,7 +504,7 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
     # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
-    topology_rejections = (
+    sdk_rejections = (
         (
             ValueError,
             r"Cross-node EP requires pure expert parallelism \(moe_tp_size=1\); "
@@ -534,19 +534,14 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             NotImplementedError,
             r"GLM-5\.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
         ),
+        (NotImplementedError, r"GLM-5\.3-Flash currently supports vLLM and SGLang"),
     )
     if stage == "build" and any(
         isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
         for item in chain
-        for error_type, pattern in topology_rejections
+        for error_type, pattern in sdk_rejections
     ):
         return STATUS_SDK_UNREPRESENTABLE
-    if stage == "build" and any(
-        isinstance(item, NotImplementedError)
-        and str(item).strip() == "GLM-5.3-Flash currently supports vLLM and SGLang"
-        for item in chain
-    ):
-        return STATUS_FRAMEWORK_INCOMPATIBLE
     names = " ".join(type(item).__name__ for item in chain).lower()
     messages = " ".join(str(item) for item in chain).lower()
     evidence = f"{names} {messages}"
