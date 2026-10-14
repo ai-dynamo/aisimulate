@@ -276,12 +276,39 @@ def get_generation_test_cases(attn_type: str):
     return cases
 
 
+def _strided_throwaway_copy(query):
+    """A scratch tensor with the query's shape AND strides — never a contiguous clone.
+
+    vLLM's own rope kernel derives ONE head stride from the query and applies it to the
+    key as well (csrc/libtorch_stable/pos_encoding_kernels.cu:57,68,164-165 @0.30.0,
+    unchanged @0.31.0). The q_pe that attention.py:534 ropes alone is a last-dim slice of
+    q, so its head stride is qk_head_dim (256 for GLM-5.2, 192 for DeepSeek-V3.2) while a
+    contiguous clone's is 64: the kernel then addresses the clone at
+    token*heads*64 + head*256, i.e. up to 192*(heads-1) elements PAST its end, and ropes
+    in place — a CUDA illegal memory access when the overrun leaves the allocation,
+    silent corruption of the neighbouring tensor otherwise. That was the GLM-5.2 fp8-KV
+    dsa_context (isl <= index_topk) illegal-address / hang family on b200, b300, gb200
+    and gb300 (2026-10-14). FlashInfer's rope takes per-tensor strides (csrc/rope.cu
+    q_stride_h / k_stride_h @0.6.18) and is safe with either layout; matching the
+    query's strides is correct for both kernels.
+    """
+    shape = tuple(query.shape)
+    stride = tuple(query.stride())
+    if any(s == 0 for s in shape):
+        return query.clone()
+    storage_numel = 1 + sum((s - 1) * st for s, st in zip(shape, stride, strict=True))
+    key = query.new_empty(storage_numel).as_strided(shape, stride)
+    key.copy_(query)
+    return key
+
+
 def _rope_tolerating_missing_key(forward):
     """Wrap a rotary module's forward so `forward(positions, query)` (key=None) works.
 
     vLLM 0.30's DeepseekV32 attention ropes q_pe alone in its dense-MHA FP8 branch, but
     both DeepseekScalingRotaryEmbedding implementations require a key (FlashInfer op:
-    key.view; native: assert). Rope the query against a throwaway copy and drop it.
+    key.view; native: assert). Rope the query against a throwaway copy that shares the
+    query's strides (see _strided_throwaway_copy) and drop it.
     """
     import functools
 
@@ -298,13 +325,54 @@ def _rope_tolerating_missing_key(forward):
         # (positions, query, key) — no `offsets` — so a positional None for offsets raised
         # "takes from 3 to 4 positional arguments but 5 were given" (508 GLM-5 cases, same runs).
         if key is None:
-            out = forward(positions, query, query.clone(), *args, **kwargs)
+            out = forward(positions, query, _strided_throwaway_copy(query), *args, **kwargs)
             q = out[0] if isinstance(out, tuple) else out
             return q, None
         return forward(positions, query, key, *args, **kwargs)
 
     wrapped._aisim_rope_shim = True
     return wrapped
+
+
+def _rope_module_rejects_missing_key(module) -> bool:
+    """True only for rotary classes whose forward cannot take key=None.
+
+    Serving calls ``self.rotary_emb(positions, q_pe)`` with no key
+    (models/deepseek_v32/attention.py:534 @0.30.0). vLLM's base RotaryEmbedding and every
+    subclass that reaches ops.rotary_embedding accept that (the kernel gets a null key
+    pointer and never touches key memory; _custom_ops.rotary_embedding key: Tensor | None),
+    so GLM-5.x (rope_type "default" -> RotaryEmbedding) must run exactly serving's call —
+    wrapping it fed vLLM's kernel a contiguous key whose head stride differs from the
+    query's (see _strided_throwaway_copy). Only DeepseekScalingRotaryEmbedding's own
+    forward_cuda rejects None (deepseek_scaling_rope.py:203-221 @0.30.0: FlashInfer op
+    key.view / forward_native assert key is not None); its DeepseekV4 subclass overrides
+    forward_cuda onto ops.rotary_embedding and accepts None again.
+    """
+    mro = type(module).__mro__
+    if not any(c.__name__ == "DeepseekScalingRotaryEmbedding" for c in mro):
+        return False
+    owner = next((c for c in mro if "forward_cuda" in vars(c)), None)
+    return owner is not None and owner.__name__ == "DeepseekScalingRotaryEmbedding"
+
+
+def _install_rope_missing_key_shims(attn_module) -> tuple[list[str], list[str]]:
+    """Shim only the rotary submodules that reject key=None.
+
+    Returns the class names that were wrapped and the rotary class names left on
+    serving's own path.
+    """
+    patched: list[str] = []
+    left: list[str] = []
+    modules = attn_module.named_modules() if hasattr(attn_module, "named_modules") else ()
+    for _name, module in modules:
+        if not (type(module).__name__.endswith("RotaryEmbedding") and hasattr(module, "forward")):
+            continue
+        if _rope_module_rejects_missing_key(module):
+            module.forward = _rope_tolerating_missing_key(module.forward)
+            patched.append(type(module).__name__)
+        else:
+            left.append(type(module).__name__)
+    return patched, left
 
 
 # SM100/103: trtllm-gen sparse-MLA decode has no kernel below tileSizeQ 8 (see the
@@ -1237,25 +1305,27 @@ def run_mla_module(
     if attn_type == "dsa" and use_fp8_kv_cache:
         # vLLM 0.30 DeepseekV32 attention: the short-prefill dense-MHA branch with an FP8 query
         # calls `self.rotary_emb(positions, q_pe)[0]` (models/deepseek_v32/attention.py:534) —
-        # key=None. NEITHER rope implementation accepts that: the FlashInfer custom op does
-        # `key.view(...)` ("'NoneType' object has no attribute 'view'", 3.9k b200 + ~3k b300 +
-        # ~3k gb200 cases) and forward_native asserts `key is not None`
+        # key=None. Serving takes that branch on the SM100 family with an FP8 KV cache
+        # (_fp8_query = fp8 KV and FlashInferMLASparseImpl.supports_quant_query_input,
+        # attention.py:239 / flashinfer_mla_sparse.py:481; _use_sparse_mha for prompts <=
+        # index_topk). The yarn rope of DeepSeek-V3.2 (DeepseekScalingRotaryEmbedding) rejects
+        # key=None — FlashInfer op `key.view(...)` ("'NoneType' object has no attribute 'view'",
+        # 3.9k b200 + ~3k b300 + ~3k gb200 cases) / forward_native `assert key is not None`
         # (deepseek_scaling_rope.py:123; the ed9109ec attempt to run native moved every case
-        # onto that assert: gb200 pipeline 72343556). The call's intent is "rope q_pe only";
-        # give the module's rotary that contract: when key is None, rope the query against a
-        # throwaway copy and return (query, None). One tiny extra elementwise op on a
-        # prefill-only branch; kernels and labels unchanged. Whether serving ever takes this
-        # branch with FP8 KV is NOT established (identity probes run isl 4096 > topk; the
-        # dense-MHA skip fires for prompts <= topk) — FIXME(re-verify): probe DeepSeek-V3.2
-        # fp8 KV at isl 512-2048 on sm100 vllm 0.30 and drop this shim if vLLM fixes :534.
-        _patched = 0
-        for _name, _m in (attn_module.named_modules() if hasattr(attn_module, "named_modules") else ()):
-            if _m.__class__.__name__.endswith("RotaryEmbedding") and hasattr(_m, "forward"):
-                _patched += 1
-                _m.forward = _rope_tolerating_missing_key(_m.forward)
+        # onto that assert: gb200 pipeline 72343556) — so for THAT class the call's intent,
+        # "rope q_pe only", is given to the module: rope the query against a throwaway copy
+        # and return (query, None). GLM-5.x's default rope (RotaryEmbedding) accepts key=None
+        # natively and is left on serving's exact call: wrapping it too handed vLLM's own rope
+        # kernel a contiguous key with the wrong head stride -> out-of-bounds in-place writes,
+        # the GLM-5.2 fp8-KV illegal-address / stall family (2026-10-14, see
+        # _strided_throwaway_copy). Kernels and labels unchanged either way. Drop the shim once
+        # vLLM's :534 call or DeepseekScalingRotaryEmbedding accepts key=None.
+        _patched, _left = _install_rope_missing_key_shims(attn_module)
         if _patched:
-            print(f"[vllm-mla-module] dsa fp8: {_patched} rotary module(s) accept key=None "
-                  "(vLLM 0.30 attention.py:534 ropes q_pe alone; both rope impls reject None)")
+            print(
+                f"[vllm-mla-module] dsa fp8: rope shim on {sorted(set(_patched))} (reject key=None; "
+                f"vLLM 0.30 attention.py:534 ropes q_pe alone); on serving's own call: {sorted(set(_left))}"
+            )
 
     # 1b. Process weights (FP8 quantization + create W_UK_T / W_UV for MLA)
     _process_module_weights(attn_module, vllm_config, device)
