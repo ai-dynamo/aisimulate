@@ -809,3 +809,27 @@ def test_invented_observer_verdict_does_not_authorize_invalid_physical_evidence(
     result = validate_observations(path, launch)["tp2"]
     assert result["status"] == "incomplete"
     assert "overlap" in " ".join(result["diagnostics"])
+
+
+@pytest.mark.parametrize("mode,number", [("NONE", 0), ("VLLM_COMPILE", 3)])
+def test_observations_verify_compilation_independently_of_graph_mode(tmp_path, mode, number):
+    path, launches = observation_fixture(tmp_path)
+    launch = launches["tp2"]
+    launch["worker_type"] = "aggregated"
+    launch["collection"].update(compilation_mode=mode, cudagraph_mode="NONE")
+    _replace_launch(path, launches)
+    _mutate(
+        path,
+        lambda record: record["resolved_config"]["compilation_config"].update(
+            mode=number,
+            cudagraph_mode="NONE",
+            cudagraph_capture_sizes=[],
+            max_cudagraph_capture_size=0,
+        ),
+    )
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "complete", result["diagnostics"]
+    _mutate(path, lambda record: record["resolved_config"]["compilation_config"].update(mode=3 if number == 0 else 0))
+    result = validate_observations(path, launches)["tp2"]
+    assert result["status"] == "incomplete"
+    assert "initialized mode differs" in str(result["diagnostics"])

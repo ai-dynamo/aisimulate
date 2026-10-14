@@ -16,6 +16,7 @@ from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, Str
 from aisimulate.fpm_profile import FpmModelProfile
 
 AGENTX_REFERENCE_CONTEXT = 256000
+COMPILATION_MODES = ("NONE", "STOCK_TORCH_COMPILE", "DYNAMO_TRACE_ONCE", "VLLM_COMPILE")
 CUDAGRAPH_MODES = ("NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE")
 
 
@@ -139,6 +140,7 @@ class CollectionSpec(StrictModel):
     max_prefill_cudagraph_size: PositiveStrictInt | None = None
     gpu_memory_utilization: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
     enforce_eager: bool = Field(default=False, strict=True)
+    compilation_mode: Literal["NONE", "STOCK_TORCH_COMPILE", "DYNAMO_TRACE_ONCE", "VLLM_COMPILE"] | None = None
     cudagraph_mode: Literal["NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"] | None = None
     cudagraph_capture_sizes: list[PositiveStrictInt] | None = None
     max_cudagraph_capture_size: PositiveStrictInt | None = None
@@ -152,7 +154,7 @@ class CollectionSpec(StrictModel):
             values.pop("prefill_cudagraph_policy", None)
         if not self.enforce_eager:
             values.pop("enforce_eager", None)
-        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+        for name in ("compilation_mode", "cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
             if getattr(self, name) is None:
                 values.pop(name, None)
         return values
@@ -161,6 +163,13 @@ class CollectionSpec(StrictModel):
     def _capture_policy(self) -> CollectionSpec:
         if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
             raise ValueError("runtime prefill_cudagraph_policy rejects max_prefill_cudagraph_size; use explicit")
+        if self.enforce_eager and self.compilation_mode not in (None, "NONE"):
+            raise ValueError("enforce_eager conflicts with compilation_mode; use NONE or omit it")
+        if self.compilation_mode not in (None, "VLLM_COMPILE") and self.cudagraph_mode in {
+            "PIECEWISE",
+            "FULL_AND_PIECEWISE",
+        }:
+            raise ValueError("piecewise CUDA graphs require compilation_mode=VLLM_COMPILE")
         if self.enforce_eager and (
             self.cudagraph_mode not in (None, "NONE")
             or self.cudagraph_capture_sizes is not None
@@ -186,6 +195,18 @@ class CollectionSpec(StrictModel):
         ):
             raise ValueError("generic CUDA graph capture settings require prefill_cudagraph_policy=runtime")
         return self
+
+    @property
+    def effective_compilation_mode(self) -> str | None:
+        return "NONE" if self.enforce_eager else self.compilation_mode
+
+    @property
+    def effective_cudagraph_mode(self) -> str | None:
+        return "NONE" if self.enforce_eager else self.cudagraph_mode
+
+    @property
+    def is_eager(self) -> bool:
+        return self.effective_compilation_mode == self.effective_cudagraph_mode == "NONE"
 
     @property
     def memory_fraction(self) -> float:
@@ -430,7 +451,7 @@ class SupportRequest(StrictModel):
                 else "collector default (2048); review against the target runtime CUDA graph configuration",
             },
         }
-        for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+        for name in ("compilation_mode", "cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
             value = getattr(self.collection, name)
             if value is not None:
                 settings[name] = value
@@ -450,7 +471,7 @@ class SupportRequest(StrictModel):
                 )
         if self.collection.enforce_eager:
             settings["enforce_eager"] = True
-            settings["sources"]["enforce_eager"] = "explicit eager execution; CUDA graph timing is disabled"
+            settings["sources"]["enforce_eager"] = "compatibility alias: compilation_mode=NONE and cudagraph_mode=NONE"
         if self.collection.gpu_memory_utilization is not None:
             settings["gpu_memory_utilization"] = self.collection.gpu_memory_utilization
             settings["sources"]["gpu_memory_utilization"] = (

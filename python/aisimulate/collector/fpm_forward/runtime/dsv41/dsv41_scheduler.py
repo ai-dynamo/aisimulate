@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import dynamo.vllm.instrumented_scheduler as native
+from vllm.config.compilation import CompilationMode, CUDAGraphMode
 from vllm.sampling_params import SamplingParams
 from vllm.tokenizers import get_tokenizer
 from vllm.v1.core.sched.output import NewRequestData, SchedulerOutput
@@ -65,8 +66,14 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("V4.1 canary overlay requires native benchmark mode")
-        if config.model_config.enforce_eager is not True:
-            raise ValueError("V4.1 real-KV collection requires enforce_eager=true; graph timing is not qualified")
+        if (
+            config.compilation_config.mode != CompilationMode.NONE
+            or config.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+        ):
+            raise ValueError(
+                "V4.1 real-KV collection requires compilation mode NONE and CUDA graph mode NONE; "
+                "compiled/graph timing is not qualified"
+            )
         parallel = config.parallel_config
         if (parallel.tensor_parallel_size, parallel.pipeline_parallel_size, parallel.data_parallel_size) != (4, 1, 1):
             raise ValueError("V4.1 canary requires pure TP4 / PP1 / DP1")

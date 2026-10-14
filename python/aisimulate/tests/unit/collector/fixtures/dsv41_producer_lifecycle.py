@@ -117,6 +117,7 @@ module(
     EAGER_WARMUP_REASON="eager_warmup",
     _BenchPhase=SimpleNamespace(DECODE_SWEEP="decode", DONE="done"),
 )
+module("vllm.config.compilation", CompilationMode=SimpleNamespace(NONE=0), CUDAGraphMode=SimpleNamespace(NONE="NONE"))
 module("vllm.sampling_params", SamplingParams=lambda **kw: SimpleNamespace(**kw))
 module("vllm.tokenizers", get_tokenizer=None)
 module("vllm.v1.core.sched.output", CachedRequestData=None, NewRequestData=NewData, SchedulerOutput=Output)
@@ -219,11 +220,12 @@ class RealKVTests(unittest.TestCase):
             Path(directory, "config.json").write_text("{}")
             config = SimpleNamespace(
                 model_config=SimpleNamespace(
-                    enforce_eager=True,
+                    enforce_eager=False,
                     model=directory,
                     architecture="DeepseekV41ForCausalLM",
                     hf_config=SimpleNamespace(model_type="deepseek_v41"),
                 ),
+                compilation_config=SimpleNamespace(mode=0, cudagraph_mode="NONE"),
                 parallel_config=SimpleNamespace(
                     tensor_parallel_size=4,
                     pipeline_parallel_size=1,
@@ -242,6 +244,14 @@ class RealKVTests(unittest.TestCase):
             obj._bench_explicit_points = [point("prefill")]
             obj._bench_config = SimpleNamespace(warmup_iterations=0)
             identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+            for compilation, graph in ((3, "NONE"), (0, "FULL")):
+                config.compilation_config = SimpleNamespace(mode=compilation, cudagraph_mode=graph)
+                with (
+                    patch.object(Base, "_bench_init", create=True),
+                    self.assertRaisesRegex(ValueError, "compilation mode NONE"),
+                ):
+                    obj._bench_init(config)
+            config.compilation_config = SimpleNamespace(mode=0, cudagraph_mode="NONE")
             with (
                 patch.object(Base, "_bench_init", create=True),
                 patch("aisimulate_core.sdk.fpm_identity.execution_identity", return_value=identity) as identify,

@@ -126,6 +126,8 @@ def _cell_report(plan, cell, campaign: Path, entry: Any) -> dict[str, Any]:
             # memory import verifies initial settings and those downgrades;
             # the graph size fields must still match here when reported.
             expected.pop("cudagraph_mode", None)
+            # Compilation mode is checked against normalized worker evidence.
+            expected.pop("mode", None)
             for worker in result["execution"]["observed_workers"]:
                 graph = worker.get("graph_config")
                 if isinstance(graph, dict) and any(
@@ -201,6 +203,7 @@ def _matches_request(request: SupportRequest, plan) -> bool:
         and plan.options.max_prefill_cudagraph_size == request.collection.max_prefill_cudagraph_size
         and plan.options.worker_type == request.worker_type
         and plan.options.enforce_eager == request.collection.enforce_eager
+        and plan.options.compilation_mode == request.collection.compilation_mode
         and plan.options.cudagraph_mode == request.collection.cudagraph_mode
         and plan.options.cudagraph_capture_sizes
         == (

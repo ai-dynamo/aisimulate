@@ -115,8 +115,10 @@ The last requirement matters: the preview defaults to CPU UVA offload. All reque
 are text-only; no vision inputs or decoder replay are injected.
 
 This first V4.1 dataset contract supports eager execution only. Pass
-`--fpm-enforce-eager`; the frozen plan and rendered arguments record it, the
-producer checks the actual model configuration, and the native reader requires
+`--fpm-compilation-mode NONE --fpm-cudagraph-mode NONE` with runtime prefill
+policy and an explicit worker role (legacy alias: `--fpm-enforce-eager`);
+the frozen plan and rendered arguments record the choice, the
+producer checks the resolved compilation and CUDA graph modes, and the native reader requires
 the producer's `execution_mode=eager` evidence. Graph data cannot be published
 under this contract. Supporting graph execution later requires a distinct query
 identity, as well as separate calibration and validation. The earlier graph

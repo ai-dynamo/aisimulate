@@ -329,6 +329,9 @@ def _inspect_config(payload, cell, plan, flags, missing, failures):
             )
         except ValueError as error:
             failures.append(str(error))
+    expected_mode = plan.options.effective_compilation_mode
+    if expected_mode is not None and any(graph["mode"] != expected_mode for graph in graphs):
+        failures.append("runtime compilation mode differs from the frozen plan")
     if len(graphs) == 2 and graphs[0] != graphs[1]:
         failures.append("worker graph_config contradicts its resolved_config.compilation_config")
 

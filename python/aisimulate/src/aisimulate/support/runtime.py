@@ -241,7 +241,12 @@ def checkpoint_launch(
                 "max_prefill_cudagraph_size": collection.max_prefill_cudagraph_size,
                 **{
                     field: getattr(collection, field)
-                    for field in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size")
+                    for field in (
+                        "compilation_mode",
+                        "cudagraph_mode",
+                        "cudagraph_capture_sizes",
+                        "max_cudagraph_capture_size",
+                    )
                     if getattr(collection, field) is not None
                 },
             },
@@ -382,7 +387,7 @@ def _request_launch(request: SupportRequest, launch: dict[str, Any]) -> dict[str
         max_prefill_cudagraph_size=request.collection.max_prefill_cudagraph_size
         or (2048 if request.collection.prefill_cudagraph_policy == "explicit" else None),
     )
-    for field in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
+    for field in ("compilation_mode", "cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
         value = getattr(request.collection, field)
         if value is None:
             result["collection"].pop(field, None)

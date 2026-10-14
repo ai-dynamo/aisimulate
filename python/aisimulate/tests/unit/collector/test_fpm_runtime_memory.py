@@ -963,3 +963,13 @@ def test_custom_label_round_trips_independently_of_observed_memory_runtime():
     assert plan.to_dict()["runtime_memory_policy"]["selected_vllm_version"] == "0.27.0"
     unknown = _plan(profile)
     assert not runner._observe_runtime_memory(unknown, unknown.cells[0])
+
+
+@pytest.mark.parametrize("expected", [3, "VLLM_COMPILE", 0, "NONE"])
+def test_finalization_checks_requested_compilation_mode(tmp_path, monkeypatch, expected):
+    cell = _evidence(tmp_path, monkeypatch)
+    if expected in (3, "VLLM_COMPILE"):
+        assert _resolve(cell, tmp_path, expected_compilation_config={"mode": expected})
+    else:
+        with pytest.raises(ValueError, match="initialized mode differs"):
+            _resolve(cell, tmp_path, expected_compilation_config={"mode": expected})

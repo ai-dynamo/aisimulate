@@ -297,6 +297,7 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
         max_num_seqs=collection["max_num_seqs"],
         prefill_cudagraph_policy=collection["prefill_cudagraph_policy"],
         worker_type=launch.get("worker_type"),
+        compilation_mode=collection.get("compilation_mode"),
         cudagraph_mode=collection.get("cudagraph_mode"),
         cudagraph_capture_sizes=(
             tuple(collection["cudagraph_capture_sizes"])
@@ -393,6 +394,7 @@ def validate_collection_probe_launch(
         "slurm_cpus_per_task",
         "slurm_cpu_bind",
         "worker_type",
+        "compilation_mode",
         "cudagraph_mode",
         "cudagraph_capture_sizes",
         "max_cudagraph_capture_size",
@@ -938,9 +940,7 @@ def probe_runtime(
             }
             collection = plan.launch["collection"]
             advisory = (
-                prefill_graph_advisory(
-                    collection["prefill_cudagraph_policy"], enforce_eager=collection["enforce_eager"]
-                )
+                prefill_graph_advisory(collection["prefill_cudagraph_policy"], enforce_eager=plan.options.is_eager)
                 if plan.launch.get("worker_type") is None
                 else None
             )

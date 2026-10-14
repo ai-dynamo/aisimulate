@@ -93,6 +93,8 @@ def fpm_cli_args(
         command.extend(("--fpm-runtime-backend-version", request.identity.runtime_framework_version))
     if request.worker_type is not None:
         command.extend(("--fpm-worker-type", request.worker_type))
+    if request.collection.compilation_mode is not None:
+        command.extend(("--fpm-compilation-mode", request.collection.compilation_mode))
     if request.collection.enforce_eager:
         command.append("--fpm-enforce-eager")
     if request.collection.cudagraph_mode is not None:
@@ -294,9 +296,7 @@ def run_fpm(
         deployment=deployment,
     )
     advisory = (
-        prefill_graph_advisory(
-            request.collection.prefill_cudagraph_policy, enforce_eager="--fpm-enforce-eager" in command
-        )
+        prefill_graph_advisory(request.collection.prefill_cudagraph_policy, enforce_eager=request.collection.is_eager)
         if request.worker_type is None
         else None
     )

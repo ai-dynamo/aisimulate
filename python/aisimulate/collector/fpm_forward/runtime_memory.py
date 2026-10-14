@@ -16,6 +16,7 @@ from typing import Any
 
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
+from .config import COMPILATION_MODES
 from .model_capability import ResolvedModelConfig
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
@@ -288,7 +289,7 @@ def _validate_graph(
     if not isinstance(config, dict) or not fields.issubset(config) or type(eager) is not bool:
         raise ValueError("runtime memory evidence lacks complete graph configuration")
     result = copy.deepcopy(config)
-    modes = ("NONE", "STOCK_TORCH_COMPILE", "DYNAMO_TRACE_ONCE", "VLLM_COMPILE")
+    modes = COMPILATION_MODES
     mode = result["mode"]
     if type(mode) is int and 0 <= mode < len(modes):
         mode = modes[mode]
@@ -357,6 +358,8 @@ def validate_requested_graph(payload: dict[str, Any], config: dict[str, Any], ex
         tokens=config["scheduler_config"]["max_num_batched_tokens"],
     )
     for name, value in expected.items():
+        if name == "mode" and type(value) is int and 0 <= value < len(COMPILATION_MODES):
+            value = COMPILATION_MODES[value]
         if initial.get(name) != value:
             raise ValueError(f"initialized {name} differs from the reviewed serving role")
 
