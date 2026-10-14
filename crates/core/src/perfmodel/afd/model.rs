@@ -1232,6 +1232,191 @@ mod tests {
         );
     }
 
+    /// All measured fixture kernels consume 100 W. Rank counts, unequal
+    /// slices and empty ranks change total joules/GPU-ms, never E/L = 100 W.
+    #[cfg(feature = "python")]
+    #[test]
+    fn plan_evidence_reports_per_gpu_power_for_unequal_and_empty_rank_slices() {
+        use super::super::plan::{AfdExecutionPlan, AfdLayerTemplate, AfdPhasePlan};
+        use crate::common::enums::{GemmQuantMode, MoeQuantMode};
+        use crate::engine::{AfdTimingModel, TimingModel};
+        use crate::operators::{GemmOp, MoeOp, Op};
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("gemm_perf.parquet"),
+            &[
+                Col::Str("gemm_dtype", vec!["bfloat16"; 2]),
+                Col::I64("m", vec![1, 256]),
+                Col::I64("n", vec![256; 2]),
+                Col::I64("k", vec![256; 2]),
+                Col::F64("latency", vec![1000.; 2]),
+                Col::F64("power", vec![100.; 2]),
+            ],
+        );
+        write_parquet(
+            &data.join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["bfloat16"; 4]),
+                Col::I64("num_tokens", vec![1, 256, 1, 256]),
+                Col::I64("hidden_size", vec![256; 4]),
+                Col::I64("inter_size", vec![128; 4]),
+                Col::I64("topk", vec![2; 4]),
+                Col::I64("num_experts", vec![32; 4]),
+                Col::I64("moe_tp_size", vec![1; 4]),
+                Col::I64("moe_ep_size", vec![8, 8, 16, 16]),
+                Col::Str("distribution", vec!["uniform"; 4]),
+                Col::F64("latency", vec![1000.; 4]),
+                Col::F64("power", vec![100.; 4]),
+            ],
+        );
+        let nccl = tmp.path().join("data/comm/nccl/test");
+        std::fs::create_dir_all(&nccl).unwrap();
+        write_parquet(
+            &nccl.join("nccl_perf.parquet"),
+            &[
+                Col::Str("nccl_dtype", vec!["half"; 12]),
+                Col::Str(
+                    "op_name",
+                    [vec!["all_gather"; 6], vec!["reduce_scatter"; 6]].concat(),
+                ),
+                Col::I64("num_gpus", vec![2, 2, 4, 4, 8, 8, 2, 2, 4, 4, 8, 8]),
+                Col::I64(
+                    "message_size",
+                    vec![
+                        1, 1000000000, 1, 1000000000, 1, 1000000000, 1, 1000000000, 1, 1000000000,
+                        1, 1000000000,
+                    ],
+                ),
+                Col::F64("latency", vec![1.; 12]),
+                Col::F64("power", vec![100.; 12]),
+            ],
+        );
+        let db = Arc::new(PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0").unwrap());
+        for (tp, a_nodes, f_nodes, tokens) in [(1, 1, 1, 7), (2, 2, 1, 7), (4, 1, 2, 2)] {
+            let mut config = pure_config();
+            config.backend = BackendKind::Vllm;
+            config.backend_version = Some("1.0".into());
+            Arc::make_mut(&mut config.topology).a_pool.system = "testsys".into();
+            Arc::make_mut(&mut config.topology).f_pool.system = "testsys".into();
+            Arc::make_mut(&mut config.topology).a_pool.a_tp_size = tp;
+            Arc::make_mut(&mut config.topology).a_pool.n_a_nodes = a_nodes;
+            Arc::make_mut(&mut config.topology).f_pool.n_f_nodes = f_nodes;
+            Arc::make_mut(&mut config.topology).f_pool.f_moe_ep_size = f_nodes * 8;
+            config.num_layers = 1;
+            config.num_experts = 32;
+            config.topk = 2;
+            config.hidden_size = 256;
+            Arc::make_mut(&mut config.topology).num_microbatches = 1;
+            Arc::make_mut(&mut config.topology)
+                .a_pool
+                .batch_size_per_a_replica = tokens;
+            config.model_shape = Some(AfdModelShape {
+                num_shared_experts: 1,
+                num_moe_layers: 1,
+            });
+            let mut engines = Vec::new();
+            for role in [AfdPoolRole::A, AfdPoolRole::F] {
+                let is_a = role == AfdPoolRole::A;
+                let mut spec: EngineSpec = serde_json::from_str(
+                    &std::fs::read_to_string(
+                        golden_dir().join("afd_specs/moe_pure_h200_a_sglang.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                spec.engine.system_name = "testsys".into();
+                spec.engine.backend = BackendKind::Vllm;
+                spec.engine.backend_version = Some("1.0".into());
+                spec.engine.parallel.tp_size = if is_a { tp } else { f_nodes * 8 };
+                spec.engine.parallel.moe_tp_size = Some(if is_a { tp } else { 1 });
+                spec.engine.parallel.moe_ep_size = Some(if is_a { 1 } else { f_nodes * 8 });
+                spec.engine
+                    .extra
+                    .insert("afd_pool_role".into(), if is_a { "a" } else { "f" }.into());
+                spec.context_ops = if is_a {
+                    ["attention", "shared", "embedding", "logits"]
+                        .into_iter()
+                        .map(|name| Op::Gemm(GemmOp::new(name, 256, 256, GemmQuantMode::Bfloat16)))
+                        .collect()
+                } else {
+                    vec![Op::Moe(MoeOp::new(
+                        "routed",
+                        256,
+                        128,
+                        2,
+                        32,
+                        1,
+                        f_nodes * 8,
+                        MoeQuantMode::Bfloat16,
+                        "uniform",
+                    ))]
+                };
+                spec.generation_ops = spec.context_ops.clone();
+                let phase = AfdPhasePlan {
+                    templates: vec![AfdLayerTemplate {
+                        attention_kind: "global".into(),
+                        routed: true,
+                        ops: vec![0],
+                        rank_ops: if is_a { vec![1] } else { vec![] },
+                        work_scale: 1.,
+                    }],
+                    prefix: if is_a { vec![2] } else { vec![] },
+                    suffix: if is_a { vec![3] } else { vec![] },
+                };
+                spec.afd_plan = Some(AfdExecutionPlan {
+                    role,
+                    model: config.model.clone(),
+                    hidden_size: 256,
+                    num_experts: 32,
+                    topk: 2,
+                    shared_inter_size: 128,
+                    layers: vec![0],
+                    context: phase.clone(),
+                    generation: phase,
+                });
+                engines.push(Arc::new(Engine::build(spec, db.clone()).unwrap()));
+            }
+            for frozen in [false, true] {
+                let model = AfdForwardPassPerfModel::from_engines(
+                    config.clone(),
+                    engines[0].clone(),
+                    engines[1].clone(),
+                )
+                .unwrap();
+                let timing = AfdTimingModel::new(model, 1, 2, frozen);
+                timing
+                    .predict_decode_ms((tokens * a_nodes * 8 / tp) as usize, 0, 2, 0)
+                    .unwrap();
+                timing
+                    .predict_prefill_ms((tokens * a_nodes * 8 / tp) as usize, 7, 3)
+                    .unwrap();
+                let summary = timing.evidence_summary().unwrap();
+                for evidence in [summary.prefill, summary.decode] {
+                    for name in ["attention", "shared", "embedding", "logits", "routed"] {
+                        let op = evidence
+                            .operations
+                            .iter()
+                            .find(|op| op.name == name)
+                            .unwrap();
+                        assert_close(name, op.energy_wms.unwrap() / op.latency_ms, 100.);
+                    }
+                    // Transfers/combine have no power rows. Covered kernels still
+                    // average 100 W; uncovered comm remains in the denominator.
+                    assert!(evidence.covered_latency_ms / evidence.latency_ms > 0.9);
+                    assert_close(
+                        "covered power",
+                        evidence.energy_wms.unwrap() / evidence.covered_latency_ms,
+                        100.,
+                    );
+                }
+            }
+        }
+    }
+
     /// Synthetic source layout: one dense layer, then 47 routed layers with a
     /// shared branch, A TP2 and two F nodes. Reuse identical compute graphs at equal token
     /// shapes so only the seven injected operations gain the hand-derived

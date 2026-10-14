@@ -126,6 +126,8 @@ pub(crate) fn build_fpm_snapshot(
 pub(crate) use sglang::SglangCore;
 pub(crate) use vllm::VllmCore;
 
+pub(crate) mod afd;
+
 /// Rank-local scheduler and native-G1 occupancy metrics.
 #[derive(Clone, Default, Debug, PartialEq)]
 pub struct MockerMetrics {
@@ -301,11 +303,17 @@ impl EngineCore {
     }
 
     pub(crate) fn prefill_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.prefill_in_pass())
+        match self {
+            Self::Sglang(core) => core.prefill_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
     pub(crate) fn model_work_in_pass(&self) -> bool {
-        matches!(self, Self::Sglang(core) if core.model_work_in_pass())
+        match self {
+            Self::Sglang(core) => core.model_work_in_pass(),
+            Self::Vllm(_) => false,
+        }
     }
 
     /// Device time of the forward the last pass launched, when the SGLang host
@@ -318,8 +326,9 @@ impl EngineCore {
     }
 
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
-        if let Self::Sglang(core) = self {
-            core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
+        match self {
+            Self::Sglang(core) => core.finish_group_pass(any_rank_prefilled, any_rank_ran_model),
+            Self::Vllm(_) => {}
         }
     }
 
@@ -328,8 +337,9 @@ impl EngineCore {
         registry: crate::engine::g3_offload::SharedG3Tier,
         node: usize,
     ) {
-        if let Self::Vllm(core) = self {
-            core.set_g3_offload(registry, node);
+        match self {
+            Self::Vllm(core) => core.set_g3_offload(registry, node),
+            Self::Sglang(_) => {}
         }
     }
 
@@ -346,8 +356,9 @@ impl EngineCore {
     }
 
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
-        if let Self::Vllm(core) = self {
-            core.set_host_offload_observer(observer);
+        match self {
+            Self::Vllm(core) => core.set_host_offload_observer(observer),
+            Self::Sglang(_) => {}
         }
     }
 
@@ -396,8 +407,9 @@ impl EngineCore {
     }
 
     pub(crate) fn complete_engine_boundary(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.complete_engine_boundary(now_ms);
+        match self {
+            Self::Vllm(core) => core.complete_engine_boundary(now_ms),
+            Self::Sglang(_) => {}
         }
     }
 

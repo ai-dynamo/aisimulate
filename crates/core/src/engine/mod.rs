@@ -56,6 +56,8 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(feature = "python")]
+pub(crate) use scheduler::afd::timing::AfdTimingModel;
 pub use timing::{
     MixedPassMs, PrefillTotals, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
