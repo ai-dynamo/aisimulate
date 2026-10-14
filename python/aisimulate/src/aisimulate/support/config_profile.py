@@ -487,6 +487,9 @@ def load_model_config(path: str | Path) -> ModelConfig:
         if raw is document:
             document = merged
         raw = merged
+    # A mixed/recurrent layout may use zero or absent ordinary head dimensions.
+    # Diagnose the unsupported resource model before validating GQA/MHA scalars.
+    _validate_layout(raw, _architecture(raw), inkling=_architecture(document) == _INKLING_ARCHITECTURE)
     geometry = {key: _aliased_int(raw, key) for key in _INT_ALIASES}
     for key in _EXTRA_DIMENSIONS:
         if raw.get(key) is not None:

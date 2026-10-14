@@ -66,6 +66,21 @@ def _runtime(**updates):
     return {"kv_cache_dtype": "bfloat16", "fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", **updates}
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_mixed_attention_diagnosis_precedes_ordinary_head_dimensions(tmp_path, nested):
+    raw = {
+        "architectures": ["Glm5NextForConditionalGeneration"],
+        "num_hidden_layers": 2,
+        "layer_types": ["linear_attention", "deepseek_sparse_attention"],
+        "head_dim": 0,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"text_config": raw} if nested else raw))
+    with pytest.raises(ValueError, match="unsupported mixed or recurrent attention layout") as error:
+        load_model_config(path)
+    assert "head_dim" not in str(error.value)
+
+
 def test_config_hash_and_identity_are_content_facts_not_checkpoint_revision(tmp_path):
     config = _config(tmp_path, _name_or_path="source/repository", auto_map={"AutoConfig": "do_not_execute.Config"})
     assert config.sha256 == hashlib.sha256((tmp_path / "config.json").read_bytes()).hexdigest()

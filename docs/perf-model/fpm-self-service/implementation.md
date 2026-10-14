@@ -630,6 +630,13 @@ The saved request embeds the complete profile and its provenance. The original m
 
 ### Review grouped cache resources
 
+Mixed or recurrent attention declarations such as GLM Flash's linear-attention
+and sparse-attention combination are rejected before ordinary head dimensions
+are checked. The standard collector's MLA/GQA templates cannot represent these
+layouts, even when the config includes MLA rank fields or the architecture is
+registered. Use a qualified model-specific runtime adapter and verified cache
+profile; a generic planning success does not establish support.
+
 Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
 
 After selecting precision and topology, investigate the pinned cache/backend implementation and available allocation metadata for block sizes after page unification; ask only for values that remain unresolved. The model config's omission does not imply that the user must supply them. Supply `cache_block_sizes` using the generated group names listed by intake. For example, a mixed full/sliding model might require this JSON answer, or the equivalent mapping in a `--resource-overrides` file:

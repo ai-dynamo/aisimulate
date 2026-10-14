@@ -1043,6 +1043,27 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture):
+    config = _unknown_fp8_moe_config()
+    config.update(architectures=[architecture], layer_types=["linear_attention", "deepseek_sparse_attention"] * 2)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="generic MLA/GQA FPM templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
     config_dir = tmp_path / "private-model-config"
     config_dir.mkdir()
