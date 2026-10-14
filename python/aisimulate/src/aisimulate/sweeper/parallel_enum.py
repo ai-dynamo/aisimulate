@@ -129,6 +129,8 @@ def enumerate_worker_shapes(
     Dense models scan plain TP and are unaffected. Backend EP-only filters still apply.
     """
     g = gpus_per_worker
+    if isinstance(g, bool) or not isinstance(g, int) or g <= 0:
+        return []
     if not is_moe:
         # dense: plain TP, no attention-dp, no experts.
         return [ParallelShape(tp=g, dp=1, moe_tp=1, moe_ep=1)]

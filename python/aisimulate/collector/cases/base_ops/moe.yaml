@@ -137,6 +137,11 @@ common_case_values:
       - nvidia/GLM-5-NVFP4
       - nvidia/GLM-5.1-NVFP4
       - nvidia/GLM-5.2-NVFP4
+      # GLM-5.3-Flash NVFP4 (Glm5Next, SGLang 0.5.20, model-pinned): serving
+      # launches --quantization modelopt_fp4 with moe_runner_backend auto,
+      # which resolves to flashinfer_trtllm on SM100/103
+      # (arg_groups/overrides.py:866-879 @v0.5.20).
+      - nvidia/GLM-5.3-Flash-NVFP4
       - nvidia/Kimi-K2.5-NVFP4
       - nvidia/Kimi-K2.6-NVFP4
       - nvidia/Kimi-K2.7-Code-NVFP4

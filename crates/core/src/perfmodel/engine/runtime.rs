@@ -351,6 +351,10 @@ impl Engine {
             .and_then(|s| s.nextn)
             .unwrap_or(0);
         Self::validate_fpm_spec(&spec)?;
+        super::readiness::validate_glm53_sources(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
         Ok(Engine {
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,

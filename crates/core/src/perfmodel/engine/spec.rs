@@ -816,6 +816,7 @@ mod tests {
                 shared_quant_mode: GemmQuantMode::Bfloat16,
                 moe_quant_mode: MoeQuantMode::Nvfp4,
                 children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
             }),
             OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
                 name: "embedding".into(),
@@ -830,6 +831,7 @@ mod tests {
                 output_dtype: "bfloat16".into(),
                 collective: "none".into(),
                 children: vec![],
+                measured: vec![],
             }),
         ];
 
@@ -1428,6 +1430,44 @@ mod tests {
             })
         ));
     }
+    /// GLM `measured` compositions are positional: they round-trip under the
+    /// current schema and a schema-27 stamp is rejected before decoding.
+    #[test]
+    fn glm53_measured_round_trip_and_stale_v27_rejection() {
+        let measured = vec![OpSpec::Gemm(gemm())];
+        let ops: Vec<OpSpec> = all_op_variants()
+            .into_iter()
+            .filter_map(|op| match op {
+                OpSpec::Glm53Attention(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Attention(o))
+                }
+                OpSpec::Glm53Ffn(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Ffn(o))
+                }
+                OpSpec::Glm53Primitive(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Primitive(o))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 3);
+        let spec = EngineSpec::new(sample_engine_config(), ops, vec![]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        bytes[..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 27,
+                expected: ENGINE_SPEC_SCHEMA_VERSION
+            })
+        ));
+    }
+
     #[test]
     fn merged_schema_preserves_fpm_selectors() {
         let mut fpm_config = sample_engine_config();
@@ -1440,7 +1480,7 @@ mod tests {
 
         let bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        for previous_version in [20u32, 21, 22, 23, 24, 25, 26] {
+        for previous_version in [20u32, 21, 22, 23, 24, 25, 26, 27] {
             let mut stale = bytes.clone();
             stale[..4].copy_from_slice(&previous_version.to_le_bytes());
             for input in [stale.as_slice(), &stale[..4]] {

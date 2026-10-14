@@ -33,11 +33,14 @@ SOFTWARE.
 
 Execution grouping and analytical adaptations reference vLLM
 `db9527a46873454610df6dbedf79a36d6bf1a7f6` (v0.31.0),
-`vllm/models/glm5next/common/{model,attention,kda}.py` and
-`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`, and SGLang
+`vllm/models/glm5next/common/{model,attention,kda}.py`,
+`vllm/models/glm5next/{nvidia,common}/sparse_indexer.py`,
+`vllm/model_executor/layers/logits_processor.py`, and
+`vllm/platforms/interface.py`, and SGLang
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`,
 `python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
-`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
-`python/sglang/srt/layers/communicator_mhc.py`. These projects use Apache-2.0;
+`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`,
+`python/sglang/srt/layers/communicator_mhc.py`, and
+`python/sglang/srt/layers/logits_processor.py`. These projects use Apache-2.0;
 see the canonical root THIRD_PARTY_NOTICES.md and packaged identical notice.
 The source implementations are not copied into the model.
