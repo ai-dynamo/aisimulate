@@ -4,11 +4,15 @@
  */
 (() => {
   "use strict";
-  const METHODS = ["warmup", "nowarmup", "regression"];
-  const labels = { warmup: "FPM (KV warmup on)", nowarmup: "FPM (KV warmup off)", regression: "Regression" };
-  const displayMethods = ["regression", "warmup", "nowarmup"];
+  // Evaluations before the learned method publish the first three methods only.
+  const LEGACY_METHODS = ["warmup", "nowarmup", "regression"];
+  const METHODS = [...LEGACY_METHODS, "learned"];
+  const labels = { warmup: "FPM (KV warmup on)", nowarmup: "FPM (KV warmup off)", regression: "Regression", learned: "Learned (fpm5)" };
+  // "Best" compares methods scored on every observation; learned scores alternate observations only.
+  const bestMethods = ["regression", "warmup", "nowarmup"];
+  const displayMethods = [...bestMethods, "learned"];
   const comparison = document.querySelector('[data-table-view]').dataset.tableView === 'predictors';
-  const columns = comparison ? 8 : 6;
+  const columns = comparison ? 9 : 6;
   const body = document.getElementById("overview-body");
   const branchSelect = document.getElementById("branch");
   const collapsed = new Set();
@@ -46,7 +50,7 @@
 
   function best(row) {
     let winner = null;
-    for (const method of displayMethods) {
+    for (const method of bestMethods) {
       const metric = row.results[method]?.metrics.all;
       if (metric?.predicted_count > 0 && Number.isFinite(metric.mape_pct)
           && (!winner || metric.mape_pct < winner.mape)) {
@@ -189,7 +193,7 @@
       if (!/^branches\/[0-9a-f]{16}\/summary\.json$/.test(entry.summary_path)) throw new Error("Invalid overview data path");
       const data = await load(entry.summary_path);
       if (current !== request) return;
-      if (![1, 2].includes(data.schema_version) || data.snapshot?.branch !== branch || JSON.stringify(data.methods) !== JSON.stringify(METHODS) || !Array.isArray(data.rows)) throw new Error("Invalid overview data");
+      if (![1, 2].includes(data.schema_version) || data.snapshot?.branch !== branch || ![LEGACY_METHODS, METHODS].some((methods) => JSON.stringify(data.methods) === JSON.stringify(methods)) || !Array.isArray(data.rows)) throw new Error("Invalid overview data");
       const rows = data.rows.filter((row) => row.measurement_count > 0);
       summary = { ...data, rows };
       const snapshot = data.snapshot;

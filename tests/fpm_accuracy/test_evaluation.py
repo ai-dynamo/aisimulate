@@ -717,7 +717,7 @@ def test_notification_evidence_keeps_point_failures_without_changing_public_resu
     actual = evaluate_case(case, factory=factory, comparison=evidence)
     assert actual == expected
     points = evidence[case.configuration_id + "/" + case.configuration.snapshot_id]["methods"]
-    assert set(points) == {"warmup", "nowarmup", "regression"}
+    assert set(points) == {"warmup", "nowarmup", "regression", "learned"}
     for method, packed in points.items():
         samples = decode_points(packed)
         metric = actual["results"][method]["metrics"]["all"]
@@ -727,3 +727,53 @@ def test_notification_evidence_keeps_point_failures_without_changing_public_resu
         if values:
             assert sum(values) / len(values) == pytest.approx(metric["mape_pct"])
     assert "_points" not in json.dumps(actual)
+
+
+def test_learned_trains_on_alternate_observations_and_scores_the_rest(case, monkeypatch):
+    from scripts.fpm_accuracy.models import learned_predictor
+
+    fitted, predicted = [], []
+
+    class Learned(ForwardPassTimePredictor):
+        id = "learned"
+
+        @classmethod
+        def fit(cls, context, iterations):
+            fitted.extend(iteration.iteration_id for iteration in iterations)
+            return cls()
+
+        def predict(self, features):
+            predicted.append(features.iteration_id)
+            return Prediction(12)
+
+        def tune(self, observations):
+            raise AssertionError("the learned model is not tuned online")
+
+        def diagnostics(self):
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("scripts.fpm_accuracy.evaluate.LearnedFpm5Predictor", Learned)
+    result = evaluate_case(case, factory=lambda method, context: Predictor(method, context, []))
+    ids = [observation.iteration.iteration_id for observation in case.observations]
+    # One workload kind: the 1st, 3rd, ... train; the others are scored.
+    assert fitted == ids[0::2]
+    assert predicted == ids[1::2]
+    metric = result["results"]["learned"]["metrics"]["all"]
+    assert metric["measured_count"] == 12
+    assert metric["predicted_count"] == 6
+    assert metric["unavailable_count"] == 6
+    assert result["results"]["learned"]["artifact"] is None
+    assert learned_predictor.training_observation_ids(case.observations) == frozenset(
+        observation.observation_id for observation in case.observations[0::2]
+    )
+
+
+def test_learned_split_is_per_workload_kind():
+    from scripts.fpm_accuracy.models.learned_predictor import training_observation_ids
+
+    kinds = ["decode"] * 5 + ["prefill"] * 3
+    observations = [SimpleNamespace(observation_id=f"o{i}", workload_kind=kind) for i, kind in enumerate(kinds)]
+    assert training_observation_ids(observations) == {"o0", "o2", "o4", "o5", "o7"}

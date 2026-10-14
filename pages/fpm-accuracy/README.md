@@ -18,11 +18,11 @@ Details and 3D Visualization are separate tabs with independent controls.
   retain coverage. The Overall MAPE card averages configuration winners once
   each, independently of model grouping or collapsed rows.
 - Predictors: the same branch and table layout, with Regression, FPM (KV warmup
-  on), and FPM (KV warmup off) columns. Three cards average each predictor's
+  on), FPM (KV warmup off), and Learned (fpm5) columns. Cards average each predictor's
   available configuration MAPEs equally; model table rows retain weighting by
   successful prediction count. A reference section explains mechanisms and the
-  canonical Python construction, prediction, and regression tuning APIs. Three
-  left-aligned reference cards show each mechanism, input source, and explicit
+  canonical Python construction, prediction, and regression tuning APIs.
+  Left-aligned reference cards show each mechanism, input source, and explicit
   mode, with expandable Python examples including the selected library root.
   The cards stack on smaller screens and share both dashboard themes. KV
   warmup selects the collected library, not a prediction-time switch.
@@ -30,6 +30,7 @@ Details and 3D Visualization are separate tabs with independent controls.
   configuration counts. No available MAPE displays as a dash. Best selection
   compares unrounded values; exact ties prefer Regression, warmup on, then
   warmup off. Winning a low MAPE does not imply complete prediction coverage.
+  Learned (fpm5) is not a Best candidate because it scores a different subset.
 - Trends: main-only, rolling 90-day history starting at
   `8dad9634735b6875e22a90927216e542e73ba237`. Each code/population pair
   retains its newest qualified evaluation. Dataset or FPM input changes break
@@ -117,8 +118,8 @@ Details and 3D Visualization are separate tabs with independent controls.
   preference across the accuracy pages. Filters use compact responsive columns with smaller labels and controls;
   evaluation times use UTC minutes. Trend plots have a bounded size and center
   the point when only one evaluation is available.
-- Predictor columns: online Regression, FPM (KV warmup on), then
-  FPM (KV warmup off) (KV-off input).
+- Predictor columns: online Regression, FPM (KV warmup on), FPM (KV warmup off)
+  (KV-off input), then Learned (fpm5).
 - MAPE over successful predictions, with predicted/measured counts, coverage,
   prediction errors, and regression tuning errors. Cold-start misses count
   against coverage. Missing FPM inputs never remove measurements from coverage.
@@ -155,6 +156,16 @@ Revisions without worker-scoped regression or configurable signed lazy controls
 show Regression as unsupported. Their measurements remain in its coverage
 denominator; FPM evaluation continues. An older regression policy is not
 substituted for the Gym contract.
+Learned (fpm5) is the offline gradient-boosted model of
+`aisimulate_core.sdk.fpm_learned` with the `fpm5` preset (the five FPM v1 counts
+and sums, no variances or per-request lists). It is fitted once per case: within
+each workload kind, observations alternate in stream order between training
+(the 1st, 3rd, ...) and scoring (the others). Training observations count as
+unavailable, so coverage is about half by design. The split measures
+interpolation within the measured range; it is not a time-ordered holdout and
+does not test extrapolation to later traffic. A kind with fewer than 20 training
+rows has no store and its scored observations are unavailable. Summaries
+published before this method list only the first three methods and remain valid.
 
 ## Daily data flow
 
