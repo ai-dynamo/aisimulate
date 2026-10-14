@@ -290,7 +290,10 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     "detail,expected",
     [
         ("MoE data missing for test shape", "missing performance data: MoE data missing for test shape"),
-        ("perf file is an unresolved git-lfs pointer; run git lfs pull", "RuntimeError: perf database error:"),
+        (
+            "perf file is an unresolved git-lfs pointer; run git lfs pull",
+            "RuntimeError: perf database error: perf file is an unresolved git-lfs pointer; run git lfs pull",
+        ),
     ],
 )
 def test_predict_reports_missing_data_after_execution(tmp_path, monkeypatch, capsys, detail, expected):
