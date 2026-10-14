@@ -1044,9 +1044,15 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
-def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture):
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture, mixed):
     config = _unknown_fp8_moe_config()
-    config.update(architectures=[architecture], layer_types=["linear_attention", "deepseek_sparse_attention"] * 2)
+    config.update(
+        architectures=[architecture],
+        layer_types=(
+            ["linear_attention", "deepseek_sparse_attention"] * 2 if mixed else ["deepseek_sparse_attention"] * 4
+        ),
+    )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     with pytest.raises(ValueError, match="generic MLA/GQA FPM templates cannot represent"):

@@ -55,11 +55,12 @@ def _attention_template(
         # utilization from DSA at the same (batch, suffix, prefix) coordinate.
         return "dsa_module", "moe_msa"
     layer_types = config.get("layer_types")
+    allowed_layers = {"full_attention", "sliding_attention"}
+    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
+        allowed_layers.add("deepseek_sparse_attention")
     if layer_types is not None and (
         not isinstance(layer_types, list)
-        or any(
-            layer not in ("full_attention", "sliding_attention", "deepseek_sparse_attention") for layer in layer_types
-        )
+        or any(not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types)
     ):
         raise ValueError(
             f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "

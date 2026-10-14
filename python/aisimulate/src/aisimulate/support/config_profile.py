@@ -487,16 +487,6 @@ def load_model_config(path: str | Path) -> ModelConfig:
         if raw is document:
             document = merged
         raw = merged
-    # A mixed/recurrent layout may use zero or absent ordinary head dimensions.
-    # Diagnose the unsupported resource model before validating GQA/MHA scalars.
-    _validate_layout(raw, _architecture(raw), inkling=_architecture(document) == _INKLING_ARCHITECTURE)
-    geometry = {key: _aliased_int(raw, key) for key in _INT_ALIASES}
-    for key in _EXTRA_DIMENSIONS:
-        if raw.get(key) is not None:
-            _integer(raw[key], key)
-    for key in _AUXILIARY_DIMENSIONS:
-        if raw.get(key) is not None:
-            _integer(raw[key], key, minimum=0)
     decoder_architecture = _architecture(raw)
     architecture = decoder_architecture
     if raw is not document:
@@ -510,8 +500,19 @@ def load_model_config(path: str | Path) -> ModelConfig:
             if decoder_architecture
             else "text_config does not identify a decoder architecture; decoder resource bounds require explicit input"
         )
+    inkling = architecture == _INKLING_ARCHITECTURE
+    # A mixed/recurrent layout may use zero or absent ordinary head dimensions.
+    # Diagnose the unsupported resource model before validating GQA/MHA scalars.
+    _validate_layout(raw, decoder_architecture, inkling=inkling)
+    geometry = {key: _aliased_int(raw, key) for key in _INT_ALIASES}
+    for key in _EXTRA_DIMENSIONS:
+        if raw.get(key) is not None:
+            _integer(raw[key], key)
+    for key in _AUXILIARY_DIMENSIONS:
+        if raw.get(key) is not None:
+            _integer(raw[key], key, minimum=0)
     experts = geometry["num_experts"]
-    _validate_architecture(raw, decoder_architecture, experts, inkling=architecture == _INKLING_ARCHITECTURE)
+    _validate_architecture(raw, decoder_architecture, experts, inkling=inkling)
     _validate_quantization(raw)
     dtype = _dtype(raw)
     heads, kv_heads = geometry["num_attention_heads"], geometry["num_key_value_heads"]
