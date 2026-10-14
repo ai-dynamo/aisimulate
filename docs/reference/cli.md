@@ -206,8 +206,8 @@ importing an installed plugin or inside an adapter occur after the known outputs
 
 The CLI also rejects `--overwrite` before removing any artifacts if it would delete the active
 configuration file or a configured trace input, including paths that reach the same file through a
-symlink. Use a separate output directory when predicting a configuration saved under the previous
-run's `recommendations/` directory.
+symlink or traverse a directory symlink that cleanup would remove. Use a separate output directory
+when predicting a configuration saved under the previous run's `recommendations/` directory.
 
 <a id="standard-output"></a>
 

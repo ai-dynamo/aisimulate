@@ -793,6 +793,7 @@ def test_overwrite_preserves_inputs_that_are_not_known_output_files(tmp_path):
         input_paths=[tmp_path / "config.yaml", tmp_path / "trace.jsonl"],
     )
     assert _output_bytes(tmp_path) == {"config.yaml": b"input config", "trace.jsonl": b"input trace"}
+    assert not stale.is_symlink()
 
 
 def test_overwrite_protects_relative_trace_directory_before_removing_other_outputs(tmp_path, monkeypatch):
@@ -839,39 +840,170 @@ def test_public_cli_rejects_reusing_recommendation_directory_without_deleting_co
     assert _output_bytes(output) == before
 
 
-def test_public_cli_preserves_a_trace_directory_entry_pointing_outside_the_directory(tmp_path):
+@pytest.mark.parametrize(
+    "command,access,cleanup_name",
+    [
+        ("predict", "direct", "prediction.json"),
+        ("recommend", "direct", "recommendations/0001.yaml"),
+        ("predict", "chain", "prediction.json"),
+        ("recommend", "chain", "recommendations/0001.yaml"),
+        ("predict", "relative", "prediction.json"),
+        ("recommend", "relative", "recommendations/0001.yaml"),
+        ("predict", "output_alias", "prediction.json"),
+        ("predict", "parent", "prediction.json"),
+    ],
+)
+def test_public_cli_preserves_config_reached_through_cleanup_symlink(tmp_path, command, access, cleanup_name):
     import subprocess
 
-    fixture = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces/weka/a.json"
+    source = _small_cli_config(tmp_path, command)
+    original_config = source.read_bytes()
+    output = tmp_path / "output"
+    (output / "recommendations").mkdir(parents=True)
+    (output / "fpm-coverage.json").write_text("previous coverage")
+    (output / "recommendation.json").write_text("previous recommendation")
+    (output / "recommendations/0002.yaml").write_text("previous candidate")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    config = inputs / "config.yaml"
+    config.write_bytes(original_config)
+    cleanup = output / cleanup_name
+    if access == "parent":
+        (inputs / "nested").mkdir()
+        cleanup.symlink_to(inputs / "nested", target_is_directory=True)
+        config_path = cleanup / ".." / "config.yaml"
+    else:
+        cleanup.symlink_to(inputs, target_is_directory=True)
+        config_path = cleanup / "config.yaml"
+    if access == "chain":
+        alias = tmp_path / "input-alias"
+        alias.symlink_to(cleanup.relative_to(tmp_path), target_is_directory=True)
+        config_path = alias / "config.yaml"
+    elif access == "output_alias":
+        alias = tmp_path / "output-alias"
+        alias.symlink_to(output, target_is_directory=True)
+        config_path = alias / cleanup_name / "config.yaml"
+    elif access == "relative":
+        config_path = config_path.relative_to(tmp_path)
+    before = _output_bytes(output)
+    target = cleanup.readlink()
+    command_line = [sys.executable, "-m", "aisimulate", command, "--config", str(config_path)]
+    control = subprocess.run(
+        [*command_line, "--output-dir", str(tmp_path / "control")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert control.returncode == 0, control.stderr
+
+    result = subprocess.run(
+        [*command_line, "--output-dir", str(output), "--overwrite"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 2, result.stderr
+    assert "would remove input file" in result.stderr
+    assert cleanup.is_symlink()
+    assert cleanup.readlink() == target
+    assert config.read_bytes() == original_config
+    assert (tmp_path / config_path).read_bytes() == original_config
+    assert _output_bytes(output) == before
+
+
+def test_overwrite_preserves_external_input_hardlink(tmp_path):
+    from aisimulate.output import prepare_output_directory
+
+    source = tmp_path / "config.yaml"
+    source.write_text("input config")
+    output = tmp_path / "output"
+    output.mkdir()
+    target = output / "prediction.json"
+    target.hardlink_to(source)
+    prepare_output_directory(output, overwrite=True, input_paths=iter([source]))
+    assert not target.exists()
+    assert source.read_text() == "input config"
+
+
+def test_overwrite_protects_input_iterator_symlink_target(tmp_path):
+    from aisimulate.output import prepare_output_directory
+
+    source = tmp_path / "config.yaml"
+    source.write_text("input config")
+    output = tmp_path / "output"
+    output.mkdir()
+    target = output / "prediction.json"
+    target.symlink_to(source)
+    with pytest.raises(ValueError, match="would remove input file"):
+        prepare_output_directory(output, overwrite=True, input_paths=iter([source]))
+    assert target.is_symlink()
+    assert source.read_text() == "input config"
+
+
+def test_overwrite_preserves_trace_directory_symlink_entry(tmp_path):
+    from aisimulate.output import prepare_output_directory
+
+    source = tmp_path / "source.jsonl"
+    source.write_text("external input trace")
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    entry = traces / "requests.jsonl"
+    entry.symlink_to(source)
+    (traces / "notes.txt").write_text("unrelated notes")
+    before = _output_bytes(traces)
+    with pytest.raises(ValueError, match="would remove input file"):
+        prepare_output_directory(traces, overwrite=True, input_paths=[traces])
+    assert entry.is_symlink()
+    assert entry.readlink() == source
+    assert source.read_text() == "external input trace"
+    assert _output_bytes(traces) == before
+
+
+@pytest.mark.parametrize("trace_format,input_kind", [("weka", "directory"), ("mooncake", "file_alias")])
+def test_public_cli_preserves_trace_inputs_inside_output_directory(tmp_path, trace_format, input_kind):
+    import subprocess
+
+    fixtures = Path(__file__).parent / "e2e/configs/unified_cli/fixtures/traces"
+    fixture = fixtures / ("weka/a.json" if trace_format == "weka" else "mooncake.jsonl")
     source = tmp_path / "source.jsonl"
     source.write_bytes(fixture.read_bytes())
     traces = tmp_path / "traces"
     traces.mkdir()
     entry = traces / "requests.jsonl"
-    entry.write_bytes(source.read_bytes())
+    if input_kind == "file_alias":
+        entry.symlink_to(source)
+    else:
+        entry.write_bytes(source.read_bytes())
     config = _small_cli_config(tmp_path, "predict")
     raw = yaml.safe_load(config.read_text())
     raw["traffic"] = {
-        "source": {"type": "trace", "format": "weka", "paths": [str(traces)]},
-        "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        "source": {
+            "type": "trace",
+            "format": trace_format,
+            "paths": [str(traces if input_kind == "directory" else entry)],
+        },
+        "load": {"type": "trace_timestamps"},
     }
+    if trace_format == "weka":
+        # Weka's directory consumer deliberately rejects symlinks.
+        raw["traffic"]["load"]["agentic_lanes"] = 1
     config.write_text(yaml.safe_dump(raw))
     command = [sys.executable, "-m", "aisimulate", "predict", "--config", str(config)]
-    # The same corpus is a valid directory input when results go elsewhere.
+    # Consume the exact same input, including its symlink, with separate results.
     control = subprocess.run(
         [*command, "--output-dir", str(tmp_path / "control")], capture_output=True, text=True, timeout=30
     )
     assert control.returncode == 0, control.stderr
 
-    entry.unlink()
-    entry.symlink_to(source)
     before = _output_bytes(traces)
     result = subprocess.run(
         [*command, "--output-dir", str(traces), "--overwrite"], capture_output=True, text=True, timeout=15
     )
     assert result.returncode == 2, result.stderr
     assert "would remove input file" in result.stderr
-    assert entry.is_symlink()
+    assert entry.is_symlink() == (input_kind == "file_alias")
     assert _output_bytes(traces) == before
     assert source.read_bytes() == fixture.read_bytes()
 
