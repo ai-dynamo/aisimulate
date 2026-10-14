@@ -501,13 +501,20 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 ### Serving roles and CUDA graph settings
 
+DeepSeek V4.1 currently requires eager execution for FPM collection. The collector
+and runtime probe recognize `DeepseekV41ForCausalLM` from the resolved model config
+and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
+is needed. Use the default `runtime` prefill policy, with graph mode omitted or
+`NONE` and no capture sizes. Explicit graph requests fail with a diagnostic;
+they are not silently overridden. This model-specific rule does not make `NONE`
+select eager execution for other models.
+
 Use `--worker-type prefill`, `decode` or `aggregated` to bind new collection and memory evidence to its serving role. `prefill` and `decode` requests collect only their own phase and use separate output roots. Their configured graph modes, capture limits and usable KV capacities need not agree with each other. Within each role, observed settings and rank-local cache evidence must match that role's accepted launch; an unexpected runtime change still fails validation. Aggregated requests exercise both phases with one shared serving configuration and combine compatible memory observations conservatively. A batch selecting PIECEWISE during prefill and FULL during decode is not itself a configuration mismatch.
 
 The following optional settings describe vLLM's configuration for the selected role. They require an explicit `--worker-type`, are included in saved request and collection identities, and remain editable during the review/accept/save step. Enter `clear` when editing a generic graph field to remove that override:
 
 | Option | Meaning |
 | --- | --- |
-| `--enforce-eager` | Explicit eager execution, saved as `collection.enforce_eager` and emitted as `--fpm-enforce-eager`. Required by the DeepSeek V4.1 collector. Defaults to false; `NONE` alone does not enable eager execution. Requires runtime prefill policy with no capture sizes and no graph mode other than `NONE`. |
 | `--cudagraph-mode` | Configured vLLM mode: `NONE`, `PIECEWISE`, `FULL`, `FULL_DECODE_ONLY` or `FULL_AND_PIECEWISE`. Runtime/backend support still needs verification. |
 | `--cudagraph-capture-sizes 1 2 4 8 16` | Increasing, distinct positive capture sizes; use `--prefill-cudagraph-policy runtime` to avoid a competing legacy override. |
 | `--max-cudagraph-capture-size 2048` | Maximum capture size for this serving configuration. In aggregated mode it is passed to both phase launches. When a capture list is also supplied, it must equal the largest listed size. Mode `NONE` rejects capture settings. |

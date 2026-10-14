@@ -138,7 +138,6 @@ class CollectionSpec(StrictModel):
     prefill_cudagraph_policy: Literal["runtime", "explicit"] = "explicit"
     max_prefill_cudagraph_size: PositiveStrictInt | None = None
     gpu_memory_utilization: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
-    enforce_eager: bool = Field(default=False, strict=True)
     cudagraph_mode: Literal["NONE", "PIECEWISE", "FULL", "FULL_DECODE_ONLY", "FULL_AND_PIECEWISE"] | None = None
     cudagraph_capture_sizes: list[PositiveStrictInt] | None = None
     max_cudagraph_capture_size: PositiveStrictInt | None = None
@@ -150,8 +149,6 @@ class CollectionSpec(StrictModel):
         # explicitly reviewed policy is always serialized, including explicit.
         if "prefill_cudagraph_policy" not in self.model_fields_set:
             values.pop("prefill_cudagraph_policy", None)
-        if not self.enforce_eager:
-            values.pop("enforce_eager", None)
         for name in ("cudagraph_mode", "cudagraph_capture_sizes", "max_cudagraph_capture_size"):
             if getattr(self, name) is None:
                 values.pop(name, None)
@@ -161,14 +158,6 @@ class CollectionSpec(StrictModel):
     def _capture_policy(self) -> CollectionSpec:
         if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
             raise ValueError("runtime prefill_cudagraph_policy rejects max_prefill_cudagraph_size; use explicit")
-        if self.enforce_eager and (
-            self.cudagraph_mode not in (None, "NONE")
-            or self.cudagraph_capture_sizes is not None
-            or self.max_cudagraph_capture_size is not None
-            or self.max_prefill_cudagraph_size is not None
-            or self.prefill_cudagraph_policy != "runtime"
-        ):
-            raise ValueError("enforce_eager requires runtime prefill policy and no CUDA graph captures or graph mode")
         sizes = self.cudagraph_capture_sizes
         if sizes is not None:
             if not sizes or sizes != sorted(set(sizes)):
@@ -448,9 +437,6 @@ class SupportRequest(StrictModel):
                 settings["sources"]["max_prefill_cudagraph_size"] = (
                     "deferred to the pinned runtime; onboarding does not prescribe CUDA graph sizes"
                 )
-        if self.collection.enforce_eager:
-            settings["enforce_eager"] = True
-            settings["sources"]["enforce_eager"] = "explicit eager execution; CUDA graph timing is disabled"
         if self.collection.gpu_memory_utilization is not None:
             settings["gpu_memory_utilization"] = self.collection.gpu_memory_utilization
             settings["sources"]["gpu_memory_utilization"] = (

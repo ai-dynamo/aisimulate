@@ -93,8 +93,6 @@ def fpm_cli_args(
         command.extend(("--fpm-runtime-backend-version", request.identity.runtime_framework_version))
     if request.worker_type is not None:
         command.extend(("--fpm-worker-type", request.worker_type))
-    if request.collection.enforce_eager:
-        command.append("--fpm-enforce-eager")
     if request.collection.cudagraph_mode is not None:
         command.extend(("--fpm-cudagraph-mode", request.collection.cudagraph_mode))
     if request.collection.cudagraph_capture_sizes is not None:

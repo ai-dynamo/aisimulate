@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -399,6 +399,22 @@ class FPMCollectionOptions:
     # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
     slurm_cpus_per_task: int | None = None
     slurm_cpu_bind: str | None = None
+
+    def resolve_model_execution(self, architecture: str | None) -> FPMCollectionOptions:
+        if architecture != "DeepseekV41ForCausalLM" or self.enforce_eager:
+            return self
+        if (
+            self.cudagraph_mode not in (None, "NONE")
+            or self.cudagraph_capture_sizes is not None
+            or self.max_cudagraph_capture_size is not None
+            or self.max_prefill_cudagraph_size is not None
+            or self.prefill_cudagraph_policy != "runtime"
+        ):
+            raise ValueError(
+                "DeepSeek V4.1 requires eager execution; use runtime prefill policy "
+                "without CUDA graph captures (cudagraph_mode=NONE)"
+            )
+        return replace(self, enforce_eager=True)
 
     def __post_init__(self) -> None:
         collection_phases(self.worker_type)
