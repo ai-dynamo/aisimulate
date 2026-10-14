@@ -38,6 +38,13 @@ builder cannot express the requested identity; it does not authorize probing a
 simpler topology. Missing data, incompatible configurations, build failures,
 and query failures remain distinct.
 
+GLM-5.3-Flash build-time rejections of unsupported parallelism or non-native
+checkpoint precision are `SDK_UNREPRESENTABLE`; its explicit backend rejection
+is `FRAMEWORK_INCOMPATIBLE`. These rows retain their diagnostics and phases,
+with no latency or `PASS` status. Only the recognized `NotImplementedError`
+diagnostics receive these categories. Unexpected build errors and query-time
+failures still block nightly qualification.
+
 The site's branch selector identifies the tested main or release snapshot.
 Check its source and qualification evidence instead of treating the page's
 publication time as a new test run. Generation, nightly qualification, and

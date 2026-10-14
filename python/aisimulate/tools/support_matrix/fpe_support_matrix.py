@@ -502,7 +502,7 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
-    # hybrid_moe, gemma4, deepseek_v41. Match type and complete diagnostic only while building;
+    # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
     topology_rejections = (
         (
@@ -526,6 +526,14 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             ValueError,
             r"DeepSeek-V4\.1 EP must divide experts; TP must divide index heads and output groups",
         ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
+        ),
     )
     if stage == "build" and any(
         isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
@@ -533,6 +541,12 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
         for error_type, pattern in topology_rejections
     ):
         return STATUS_SDK_UNREPRESENTABLE
+    if stage == "build" and any(
+        isinstance(item, NotImplementedError)
+        and str(item).strip() == "GLM-5.3-Flash currently supports vLLM and SGLang"
+        for item in chain
+    ):
+        return STATUS_FRAMEWORK_INCOMPATIBLE
     names = " ".join(type(item).__name__ for item in chain).lower()
     messages = " ".join(str(item) for item in chain).lower()
     evidence = f"{names} {messages}"
