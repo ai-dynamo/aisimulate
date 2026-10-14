@@ -6,6 +6,8 @@
 
 //! Attention/FFN disaggregation from source-ordered pool plans.
 
+mod batch;
+pub mod model;
 pub mod plan;
 pub mod validation;
 
@@ -16,6 +18,7 @@ pub enum AfdPoolRole {
     A,
     F,
 }
+pub mod pipeline;
 
 use crate::common::error::AicError;
 
