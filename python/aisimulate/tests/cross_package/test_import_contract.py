@@ -89,6 +89,7 @@ CORE_SDK_LEAF_MODULES = [
     "memory.kimi_k3",
     "memory.kv_cache",
     "memory.state",
+    "models.afd",
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",

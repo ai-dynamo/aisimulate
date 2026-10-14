@@ -176,6 +176,8 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    afd_routing_location: str | None = dataclass_field(default=None, kw_only=True)
+    afd_pool_role: str | None = dataclass_field(default=None, kw_only=True)
     fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int = 1
     pp: int = 1
@@ -238,6 +240,10 @@ class ForwardPassPerfModelConfig:
         payload = asdict(self)
         if self.encoder_parallel is None:
             payload.pop("encoder_parallel")
+        if self.afd_routing_location is None:
+            payload.pop("afd_routing_location")
+        if self.afd_pool_role is None:
+            payload.pop("afd_pool_role")
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
         if self.estimation_mode not in {"fpm_regression", "fpm_learned"} or self.systems_paths:
             payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
@@ -1452,7 +1458,7 @@ def evaluate_generation_ops_with_rust(
     """Evaluate an index-addressed sublist of the compiled generation op list
     at the decode-step shape (see ``evaluate_context_ops_with_rust``). The
     base decode walk carries no prefix; ``prefix`` exists for orchestrations
-    that thread it (AFD's ``_sum_latency``)."""
+    that thread it."""
     handle = _cached_engine_handle(model, database)
     result = handle.evaluate_generation_ops(
         list(indices),

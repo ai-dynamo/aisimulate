@@ -11,6 +11,7 @@ quantization-mode resolution that runs once per ``get_model()`` invocation.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import re
 import warnings
@@ -664,6 +665,9 @@ def _derive_num_shared_experts(info: dict) -> int:
     multiple of the routed-expert intermediate size, else 0.
     """
     raw_config = _moe_source_config(info)
+    if info.get("architecture") == "Gemma4ForConditionalGeneration" and info.get("num_experts") and info.get("topk"):
+        # Gemma's always-active shared MLP is a distinct full-width branch.
+        return 1
     for key in ("n_shared_experts", "num_shared_experts"):
         count = raw_config.get(key)
         # Explicit ``null`` (e.g. MiMo-V2-Flash) means "no shared experts".
@@ -1226,6 +1230,7 @@ def resolve_nvfp4_for_system(
     model_path: str | None = None,
     *,
     backend_name: str | None = None,
+    system_spec: dict | None = None,
 ) -> None:
     """Remap native nvfp4 to weight-only nvfp4_wo on non-Blackwell systems.
 
@@ -1240,10 +1245,17 @@ def resolve_nvfp4_for_system(
     (whether a runtime can load the checkpoint at a given version) is a
     separate question handled by the support matrix.
     """
-    from aisimulate_core.sdk.perf_database import is_blackwell_system
+    from aisimulate_core._native import resolve_execution_quantization
+    from aisimulate_core.sdk.perf_database import load_system_spec
 
-    if is_blackwell_system(system_name):
-        return  # native FP4 TC — nvfp4 stays as-is
+    if system_spec is None:
+        if not system_name:
+            raise ValueError("execution precision requires a GPU system")
+        system_spec = load_system_spec(system_name)
+    for field in ("gemm", "moe"):
+        marker = f"_{field}_quant_mode_is_explicit"
+        if getattr(model_config, marker, None) is None:
+            setattr(model_config, marker, getattr(model_config, f"{field}_quant_mode") is not None)
 
     gemm_q = model_config.gemm_quant_mode
     moe_q = model_config.moe_quant_mode
@@ -1259,10 +1271,13 @@ def resolve_nvfp4_for_system(
         if moe_q is None:
             moe_q = resolve_vllm_moe_execution_mode(inferred.get("moe_quant_mode"), backend_name, architecture)
 
-    if gemm_q == common.GEMMQuantMode.nvfp4:
-        model_config.gemm_quant_mode = common.GEMMQuantMode.nvfp4_wo
-    if moe_q == common.MoEQuantMode.nvfp4:
-        model_config.moe_quant_mode = common.MoEQuantMode.nvfp4_wo
+    resolved_gemm, resolved_moe = resolve_execution_quantization(
+        json.dumps(system_spec), gemm_q.name if gemm_q is not None else None, moe_q.name if moe_q is not None else None
+    )
+    if resolved_gemm is not None:
+        model_config.gemm_quant_mode = common.GEMMQuantMode[resolved_gemm]
+    if resolved_moe is not None:
+        model_config.moe_quant_mode = common.MoEQuantMode[resolved_moe]
 
 
 def resolve_sglang_mla_compute(

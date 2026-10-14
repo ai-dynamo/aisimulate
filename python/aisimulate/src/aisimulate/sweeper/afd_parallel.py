@@ -19,10 +19,33 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
+from aisimulate_core._native import validate_afd_model_shape
+
 from .parallel_enum import ReplicaParallelConfig
 
 AFD_SCHEMA_VERSION = 1
 _LEGACY_SOURCE = "aisimulate.sdk.task_v2.build_afd_parallel_lists"
+
+
+def validate_afd_model(model: str) -> dict[str, Any]:
+    """Validate cached source metadata before preparing performance databases."""
+    from aisimulate_core.sdk.models.afd import layer_layout
+    from aisimulate_core.sdk.models.helpers import _get_model_info
+
+    info = _get_model_info(model)
+    required = ("layers", "num_experts", "topk", "num_shared_experts", "num_moe_layers")
+    missing = [name for name in required if name not in info]
+    if missing:
+        raise ValueError(f"AFD source metadata for {model!r} is missing {missing}")
+    validate_afd_model_shape(
+        info["layers"],
+        info.get("num_experts") or 0,
+        info.get("topk") or 0,
+        info["num_shared_experts"],
+        info["num_moe_layers"],
+    )
+    layer_layout(info)
+    return info
 
 
 class AFDPhase(str, Enum):
