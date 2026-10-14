@@ -81,6 +81,7 @@ fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result
     {
         return Err(AicError::InvalidEngineConfig(format!(
             "GPU {} (SM{sm}) does not support FP8 tensor-core compute required by quant mode '{}'. \
+             AISimulate does not model FP8 weight-only (Marlin) execution on pre-SM89 GPUs. \
              Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
              with matching backend performance data.",
             db.system, quant.name,
