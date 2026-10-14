@@ -630,12 +630,16 @@ The saved request embeds the complete profile and its provenance. The original m
 
 ### Review grouped cache resources
 
-Mixed or recurrent attention declarations such as GLM Flash's linear-attention
-and sparse-attention combination are rejected before ordinary head dimensions
-are checked. The standard collector's MLA/GQA templates cannot represent these
-layouts, even when the config includes MLA rank fields or the architecture is
-registered. Use a qualified model-specific runtime adapter and verified cache
-profile; a generic planning success does not establish support.
+GLM mixed-attention support in the generic `onboard` workflow is work in
+progress (WIP), planned for an upcoming update. The remaining work is to connect
+existing model-specific collection and replay/cache capabilities through profile
+generation, collection, import and validation.
+
+Until that integration is complete, generic onboarding rejects GLM Flash's
+linear-attention and sparse-attention combination before checking ordinary head
+dimensions. Generic MLA/GQA templates do not capture its full cache/state layout,
+even when the config includes MLA rank fields or the architecture is registered.
+Use a qualified model-specific collection path and verified cache profile.
 Sparse-attention layer declarations are accepted only for the collector's
 supported DSA architectures; the layer name alone does not establish support.
 Unknown architectures can still use generic MLA/GQA planning when their
