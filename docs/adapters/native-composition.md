@@ -97,9 +97,14 @@ its own KV event stream. A requested deterministic selector uses
 ### KV events
 
 Engine `Request.session_id` and the `StoredBlocks.session_id` payload inside
-`KvEventData::Stored` are optional metadata. Replay forwards an authored session
-ID through aggregated execution and both prefill/decode request legs. Native G1
-stores identify the request making blocks visible; they do not imply exclusive
+`KvEventData::Stored` are optional metadata. Replay uses
+`DirectRequest.replay_context.session_id` as its single session identity and
+forwards it into the native engine request for aggregated execution and both
+prefill/decode request legs. A session-only replay context may omit `authored_id`;
+this does not manufacture a source request ID in reports. Legacy trace loaders
+normalize authored session IDs into this context, including single-turn traces
+with session reporting disabled. Whitespace is trimmed and blank IDs are absent.
+Native G1 stores identify the request making blocks visible; they do not imply exclusive
 ownership. Requests without an authored session stay unattributed, including
 legacy traces that use synthetic row IDs for reporting. G2 residency events and
 removals remain unattributed. Missing IDs deserialize as `None` and are omitted

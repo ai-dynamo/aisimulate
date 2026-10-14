@@ -744,7 +744,6 @@ fn lower_requests(
                     prompt_token_source,
                     agentic: None,
                 }),
-                session_id: None,
             })
         })
         .collect::<ReplayResult<Vec<_>>>()?;

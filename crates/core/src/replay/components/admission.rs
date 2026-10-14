@@ -59,7 +59,6 @@ pub(crate) struct ReplayReadyArrival<Metadata> {
     pub(crate) replay_hashes: Option<ReplayRequestHashes>,
     pub(crate) session_id: Option<String>,
     pub(crate) turn_index: Option<usize>,
-    pub(crate) synthetic_session_id: bool,
 }
 
 impl<Metadata> ReplayReadyArrival<Metadata> {
@@ -73,7 +72,6 @@ impl<Metadata> ReplayReadyArrival<Metadata> {
             dispatched_at_ms: self.dispatched_at_ms,
             session_id: self.session_id,
             turn_index: self.turn_index,
-            synthetic_session_id: self.synthetic_session_id,
         }
     }
 }
@@ -236,10 +234,8 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                     let (session_id, turn_index) = request
                         .replay_context
                         .as_ref()
-                        .map(|context| {
-                            (request.session_id().map(str::to_owned), context.turn_index)
-                        })
-                        .unwrap_or_else(|| (request.session_id().map(str::to_owned), None));
+                        .map(|context| (context.session_id.clone(), context.turn_index))
+                        .unwrap_or_default();
                     ready.push(map(ReplayReadyArrival {
                         request: ReplayRequestPayload::materialized(request),
                         arrival_time_ms,
@@ -251,7 +247,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes: None,
                         session_id,
                         turn_index,
-                        synthetic_session_id: false,
                     }));
                 }
                 Ok(ready)
@@ -279,7 +274,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                         replay_hashes,
                         session_id,
                         turn_index,
-                        synthetic_session_id: ready.synthetic_session_id,
                     })
                 })
                 .collect()),
@@ -331,7 +325,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                             replay_hashes,
                             session_id,
                             turn_index,
-                            synthetic_session_id: ready.synthetic_session_id,
                         })
                     })
                     .collect())
@@ -353,11 +346,11 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 break;
             };
             request.arrival_timestamp_ms = Some(now_ms);
-            let session_id = request.session_id().map(str::to_owned);
-            let turn_index = request
+            let (session_id, turn_index) = request
                 .replay_context
                 .as_ref()
-                .and_then(|context| context.turn_index);
+                .map(|context| (context.session_id.clone(), context.turn_index))
+                .unwrap_or_default();
             ready.push(map(ReplayReadyArrival {
                 request: ReplayRequestPayload::materialized(request),
                 arrival_time_ms: now_ms,
@@ -369,7 +362,6 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
                 replay_hashes: None,
                 session_id,
                 turn_index,
-                synthetic_session_id: false,
             }));
             simulated_in_flight += 1;
         }

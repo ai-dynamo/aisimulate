@@ -5,7 +5,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use aisimulate_core::engine::{Backend, EngineConfig, KvEvent, KvEventData, TimingModelConfig};
-use aisimulate_core::replay::loadgen::{MooncakeRow, ReplayRequestPayload, Trace};
+use aisimulate_core::replay::loadgen::{
+    MooncakeRow, ReplayRequestPayload, Trace, load_agentic_mooncake,
+};
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, CURRENT_REPLAY_SPEC_VERSION, EngineEventBatch, NoReplayMetadata,
     Placement, PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ReplayComposition,
@@ -261,8 +263,14 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
                 );
             }
 
-            // Legacy multi-turn traces have no ReplayRequestContext. Attribution
-            // must survive ingress anyway, without using synthetic row IDs.
+            // Legacy multi-turn sessions are normalized into ReplayRequestContext
+            // at ingress, without using synthetic row IDs or inventing authored IDs.
+            assert!(
+                report
+                    .per_request
+                    .iter()
+                    .all(|record| record.request_id.is_none())
+            );
             let stores = events.borrow();
             let sessions: std::collections::BTreeSet<_> = stores
                 .iter()
@@ -290,6 +298,64 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
                 ],
                 "{case}"
             );
+        }
+    }
+}
+
+#[test]
+fn session_only_replay_context_reaches_placement_reporting_and_stores() {
+    for (input, expected) in [
+        (Some("session-only"), Some("session-only")),
+        (Some("  trimmed  "), Some("trimmed")),
+        (Some("  "), None),
+        (None, None),
+    ] {
+        for disagg in [false, true] {
+            for max_in_flight in [None, Some(1)] {
+                let request = serde_json::from_value(serde_json::json!({
+                    "tokens": [1, 2, 3, 4, 5, 6, 7, 8],
+                    "max_output_tokens": 2,
+                    "uuid": Uuid::from_u128(1),
+                    "dp_rank": 0,
+                    "arrival_timestamp_ms": 0.0,
+                    "replay_context": {"session_id": input}
+                }))
+                .unwrap();
+                let seen = SeenSessions::default();
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let report = Replayer::with_composition(
+                    spec(disagg, max_in_flight),
+                    ReplayEngineFactory::new(),
+                    SessionRecordingComposition {
+                        seen: Rc::clone(&seen),
+                        events: Rc::clone(&events),
+                    },
+                )
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::Requests(vec![request].into()))
+                .run()
+                .unwrap();
+                assert_eq!(report.request_counts.completed_requests, 1);
+                assert_eq!(report.per_request[0].session_id.as_deref(), expected);
+                assert_eq!(report.per_request[0].request_id, None);
+                let seen = seen.borrow();
+                assert_eq!(seen.len(), if disagg { 2 } else { 1 });
+                assert!(seen.iter().all(|(_, id)| id.as_deref() == expected));
+                let events = events.borrow();
+                let stores: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match &event.data {
+                        KvEventData::Stored(stored) => Some(stored),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(!stores.is_empty());
+                assert!(
+                    stores
+                        .iter()
+                        .all(|stored| stored.session_id.as_deref() == expected)
+                );
+            }
         }
     }
 }
@@ -410,6 +476,77 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                 timings, plain_timings,
                 "session must not change virtual timing: {backend:?} disagg={disagg}"
             );
+        }
+    }
+}
+
+#[test]
+fn session_identity_survives_disabled_reporting_without_fabricating_anonymous_ids() {
+    use std::io::Write;
+    for agentic in [false, true] {
+        for authored_session in [Some("authored-session"), None] {
+            for disagg in [false, true] {
+                let driver = if agentic {
+                    let mut file = tempfile::NamedTempFile::new().unwrap();
+                    writeln!(
+                        file,
+                        "{}",
+                        serde_json::json!({
+                            "request_id": "root", "session_id": authored_session,
+                            "timestamp": 0.0, "input_length": 8,
+                            "output_length": 2, "hash_ids": [1, 2]
+                        })
+                    )
+                    .unwrap();
+                    load_agentic_mooncake(file.path(), 4)
+                        .unwrap()
+                        .into_trace_driver_with_block_size(4)
+                        .unwrap()
+                } else {
+                    Trace::from_mooncake_rows(vec![row(authored_session, Some(0.0), vec![1, 2])], 4)
+                        .unwrap()
+                        .into_trace_driver_with_block_size(4)
+                        .unwrap()
+                }
+                .without_session_metadata();
+                let seen = SeenSessions::default();
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let report = Replayer::with_composition(
+                    spec(disagg, None),
+                    ReplayEngineFactory::new(),
+                    SessionRecordingComposition {
+                        seen: Rc::clone(&seen),
+                        events: Rc::clone(&events),
+                    },
+                )
+                .unwrap()
+                .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+                .run()
+                .unwrap();
+                assert_eq!(report.request_counts.completed_requests, 1);
+                assert_eq!(seen.borrow().len(), if disagg { 2 } else { 1 });
+                assert!(
+                    seen.borrow()
+                        .iter()
+                        .all(|(_, id)| id.as_deref() == authored_session),
+                    "agentic={agentic}, authored={authored_session:?}"
+                );
+                let events = events.borrow();
+                let stores: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match &event.data {
+                        KvEventData::Stored(stored) => Some(stored),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(!stores.is_empty());
+                assert!(
+                    stores
+                        .iter()
+                        .all(|stored| stored.session_id.as_deref() == authored_session),
+                    "agentic={agentic}, authored={authored_session:?}"
+                );
+            }
         }
     }
 }

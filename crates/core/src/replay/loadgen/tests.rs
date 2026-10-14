@@ -1501,3 +1501,15 @@ fn synthetic_exact_cached_prefix_rejects_unaligned_and_overlong_values() {
         assert!(error.to_string().contains(expected), "{error}");
     }
 }
+
+#[test]
+fn legacy_anonymous_session_marker_is_part_of_graph_digest() {
+    let file = write_trace(&[serde_json::json!({
+        "request_id": "root", "timestamp": 0.0,
+        "input_length": 4, "output_length": 1, "hash_ids": [1]
+    })]);
+    let trace = load_agentic_mooncake(file.path(), 4).unwrap();
+    let digest = trace.graph_digest().to_owned();
+    let trace = trace.speed_up_timing(1.0).unwrap();
+    assert_eq!(trace.graph_digest(), digest);
+}

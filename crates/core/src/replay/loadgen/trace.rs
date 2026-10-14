@@ -110,6 +110,11 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             )
         })?);
     }
+    let anonymous_requests: std::collections::HashSet<_> = raw_rows
+        .iter()
+        .filter(|row| row.session_id.is_none())
+        .map(|row| row.request_id.clone())
+        .collect();
     let recorded_starts = raw_rows
         .iter()
         .filter_map(|raw| raw.timestamp.map(|start| (raw.request_id.clone(), start)))
@@ -190,10 +195,12 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
     // Dependent requests execute relative to completion, but snapshots need
     // their original starts. Legacy rows do not record completion timestamps.
     for node in &mut graph.nodes {
+        node.synthetic_session_id = anonymous_requests.contains(&node.request_id);
         node.recorded_interval_ms = recorded_starts
             .get(&node.request_id)
             .map(|&start| (start, None));
     }
+    graph.graph_digest = canonical_agentic_graph_digest(graph.block_size, &mut graph.nodes)?;
     Ok(graph)
 }
 
@@ -398,7 +405,6 @@ impl TurnTrace {
             strict_priority: self.strict_priority,
             policy_class: self.policy_class.clone(),
             replay_context: None,
-            session_id: None,
         })
     }
 
@@ -1465,6 +1471,7 @@ impl AgenticTraceBuilder {
             play_id: raw.play_id,
             source_play_ordinal: raw.source_play_ordinal,
             session_id: raw.session_id,
+            synthetic_session_id: false,
             model: raw.model,
             input_length,
             max_output_tokens: output_length,

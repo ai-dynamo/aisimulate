@@ -1361,8 +1361,13 @@ impl TraceCollector {
             return;
         }
         if let Some(stats) = self.requests.get_mut(&uuid) {
-            stats.authored_id = Some(context.authored_id.clone());
-            stats.session_id = context.session_id.clone().or(stats.session_id.take());
+            if !context.authored_id.is_empty() {
+                stats.authored_id = Some(context.authored_id.clone());
+            }
+            stats.session_id = context
+                .session_id()
+                .map(str::to_owned)
+                .or(stats.session_id.take());
             stats.turn_index = context.turn_index.or(stats.turn_index);
             stats.metadata = context.metadata.clone();
             stats.agentic = context.agentic.clone();

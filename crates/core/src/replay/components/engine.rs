@@ -1195,11 +1195,9 @@ fn native_request(request: DirectRequest) -> Result<Request> {
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
-        session_id: request.session_id.or_else(|| {
-            request
-                .replay_context
-                .and_then(|context| context.session_id)
-        }),
+        session_id: request
+            .replay_context
+            .and_then(|context| context.session_id().map(str::to_owned)),
     })
 }
 
