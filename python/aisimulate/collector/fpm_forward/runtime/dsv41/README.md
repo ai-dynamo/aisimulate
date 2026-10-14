@@ -114,8 +114,11 @@ speculation/DSpark, no ubatching/DBO or context parallelism, no KV or encoder co
 The last requirement matters: the preview defaults to CPU UVA offload. All requests
 are text-only; no vision inputs or decoder replay are injected.
 
-This first V4.1 dataset contract supports eager execution only. Compiled and
-CUDA-graph timings need separate calibration and validation. The collector
+The [original GB200 TP4 startup report](https://github.com/ai-dynamo/aisimulate/blob/2718db360b3d832062d63e28c2a3fae58a21874c/python/aisimulate/collector/fpm_forward/runtime/dsv41/README.md#L3-L8)
+records successful model loading followed by allocation-timeout termination
+during graph compilation. That change introduced this eager-only contract;
+the recorded failure is a startup timeout, not a diagnosed compiler crash.
+Compiled and CUDA-graph timings need separate calibration and validation. The collector
 automatically selects eager execution for V4.1 with runtime prefill policy and
 graph mode omitted or `NONE`, without capture sizes. The explicit collector flag
 `--fpm-enforce-eager` also emits worker `--enforce-eager`, disabling both CUDA
