@@ -61,6 +61,19 @@ earlier parsing accepted numeric scalars for string fields, while canonical
 normalization now rejects them. Quote numeric, Boolean, or null-like values
 when they represent text. An actual `backend_version: null` still means unset.
 
+The canonical configuration carries the following AFD identity fields. Ordinary
+agg configurations omit them; AFD derives pool identities through the same
+`best_available` construction interface.
+
+| Field | Default | Behavior |
+|---|---|---|
+| `afd_routing_location` | absent | AFD passes `a` to both pools. An explicit `f` fails before estimator/data preparation. |
+| `afd_pool_role` | absent | `a` emits attention, shared and dense computation; `f` emits routed computation. Used for selective pool compilation and retained in canonical/cache identity. |
+
+Selective pool compilation requires SGLang, PP1/CP1/DCP1 and op-level estimation.
+Every AFD pool carries its role and a typed source layer plan. Public YAML is
+described in [the analytical engine configuration](../replay/engine/analytical.md).
+
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
@@ -567,10 +580,14 @@ These additional public YAML fields are concrete controls:
 | --- | --- |
 | `engine.gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `comm_quant_mode` | Explicit precision overrides; omitted values follow model/profile normalization. |
 | `engine.kvcache_quant_mode` | KV storage precision: `bfloat16`, `fp8`, or `int8`. Omission follows model/profile normalization and can select FP8 for quantized checkpoints. |
-| `engine.attention_backend`, `moe_backend`, `moe_kernel_source` | Runtime graph/backend and exact collected source selectors, subject to canonical validation. |
+| `engine.attention_backend` | Attention kernel selector, including AFD per-pool construction; subject to canonical model/backend validation. |
+| `engine.moe_kernel_source` | Exact collected fused-MoE compute source, including AFD per-pool construction; unsupported with a large-EP MoE graph. |
+| `engine.moe_backend` | Runtime graph/backend selector, subject to canonical validation; nondefault overrides remain unsupported for AFD. |
 | `engine.enable_eplb`, `wideep_num_slots` | Expert load balancing and redundant expert slots; require compatible MoE execution. |
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
+| `engine.enable_shared_layer` | Optional shared-data reuse override; explicit `false` disables reuse. Preserved by both AFD pools and their memory preflight. |
+| `engine.strict_provenance` | Fail-closed performance-data provenance validation; defaults to `false` in the canonical model. Preserved by both AFD pools and memory preflight. |
 
 These controls require default timing on language roles. AFD and encoder-pool
 configurations of either mode reject the unsupported controls. Use `--stack engine`
@@ -621,6 +638,14 @@ at compile time and do not report the resolved precision through this path.
 
 FP8 uses one byte per KV element; BF16 uses two. At the same byte budget, linear
 FP8 KV holds twice as many tokens. This does not imply twice the throughput.
+
+AFD preserves supported controls, including explicit `attention_backend` and
+`moe_kernel_source`, through prediction, recommendation, saved replay specifications,
+canonical pool construction and memory preflight. Attention uses A; routed MoE
+uses F. Omission preserves pool defaults;
+explicit selectors retain the canonical eligibility, data-source and SOL rules
+above without changing communication. EPLB, redundant slots and nondefault
+`moe_backend` overrides remain unsupported for AFD.
 
 ## Migrating saved configuration
 

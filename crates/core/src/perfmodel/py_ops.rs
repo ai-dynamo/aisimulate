@@ -832,13 +832,15 @@ impl PyP2P {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, h, pp_size, *, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, h, pp_size, *, seq_split=1, span_gpus=None, force_scale_out=false))]
     fn new(
         name: String,
         scale_factor: f64,
         h: u32,
         pp_size: u32,
         seq_split: u32,
+        span_gpus: Option<u32>,
+        force_scale_out: bool,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = Op::P2P(P2POp {
             name,
@@ -846,6 +848,8 @@ impl PyP2P {
             pp_size,
             hidden_size: h,
             seq_split,
+            span_gpus,
+            force_scale_out,
         });
         Ok((PyP2P, PyOperation { inner }))
     }
@@ -858,6 +862,8 @@ impl PyP2P {
         let args = (o.name.clone(), o.scale_factor, o.hidden_size, o.pp_size).into_pyobject(py)?;
         let kwargs = PyDict::new(py);
         kwargs.set_item("seq_split", o.seq_split)?;
+        kwargs.set_item("span_gpus", o.span_gpus)?;
+        kwargs.set_item("force_scale_out", o.force_scale_out)?;
         Ok((args, kwargs))
     }
 
