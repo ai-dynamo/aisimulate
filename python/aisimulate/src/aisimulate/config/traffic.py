@@ -160,6 +160,15 @@ class AgenticProfileOptions(StrictModel):
 
 
 class TrafficPredictionLoad(StrictModel):
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
+
     type: Literal[
         "concurrency",
         "poisson",
@@ -191,6 +200,15 @@ class TrafficPredictionLoad(StrictModel):
 
 
 class TrafficRecommendationLoad(StrictModel):
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
+
     type: Literal[
         "concurrency",
         "poisson",
@@ -252,12 +270,21 @@ def _validate_load_fields(load) -> None:
     }
     if load.agentic_warmup:
         used.add("agentic_warmup")
+    if load.agentic_warmup_policy != "repeated_prefixes":
+        used.add("agentic_warmup_policy")
     allowed = {
         "concurrency": {"concurrency"},
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot", "agentic_warmup", "agentic_profile"},
+        "trace_timestamps": {
+            "speedup",
+            "agentic_lanes",
+            "agentic_snapshot",
+            "agentic_warmup",
+            "agentic_warmup_policy",
+            "agentic_profile",
+        },
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -288,6 +315,10 @@ class _TrafficConfigBase(StrictModel):
                 raise ValueError("agentic_profile cannot be combined with max_virtual_time_seconds")
         if load.agentic_warmup and load.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
+        if load.agentic_warmup_policy == "live_trajectory_v1" and (
+            not load.agentic_warmup or load.agentic_profile is None
+        ):
+            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
         if load.agentic_snapshot is not None and load.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (

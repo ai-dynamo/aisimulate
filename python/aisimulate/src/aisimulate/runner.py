@@ -83,6 +83,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "agentic_lanes",
         "agentic_snapshot",
         "agentic_warmup",
+        "agentic_warmup_policy",
         "agentic_profile",
     }
 )
@@ -398,6 +399,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_lanes=True,
             supports_agentic_snapshots=True,
             supports_agentic_warmup=True,
+            supports_agentic_live_warmup=True,
             supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),

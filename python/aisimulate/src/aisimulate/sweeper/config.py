@@ -281,6 +281,7 @@ class Workload(BaseModel):
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_warmup_policy: Literal["repeated_prefixes", "live_trajectory_v1"] = "repeated_prefixes"
     agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
@@ -338,6 +339,13 @@ class Workload(BaseModel):
     @property
     def is_trace_based(self) -> bool:
         return self.trace_path is not None
+
+    @model_serializer(mode="wrap")
+    def _omit_default_warmup_policy(self, handler):
+        result = handler(self)
+        if self.agentic_warmup_policy == "repeated_prefixes":
+            result.pop("agentic_warmup_policy", None)
+        return result
 
     @property
     def is_synthetic(self) -> bool:
@@ -402,6 +410,10 @@ class Workload(BaseModel):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
         if self.agentic_warmup and self.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
+        if self.agentic_warmup_policy == "live_trajectory_v1" and (
+            not self.agentic_warmup or self.agentic_profile is None
+        ):
+            raise ValueError("live_trajectory_v1 requires agentic_warmup and agentic_profile")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if (

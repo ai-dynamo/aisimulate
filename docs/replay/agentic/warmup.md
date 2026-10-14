@@ -8,8 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 The warmup run fills
 the same native engine cache that will serve the measured suffix. Its input is
 a prepared snapshot, its original prompt identity context, and the selected
-engine configuration. Its output is retained KV state, an unchanged logical
-snapshot frontier, and separate preparation evidence.
+engine configuration. Its output is retained KV state and separate preparation
+evidence. The default `repeated_prefixes` policy preserves the snapshot frontier;
+the opt-in `live_trajectory_v1` policy advances it. The next sections describe
+the backward-compatible default; see [live trajectory policy](#live-trajectory-policy)
+for the alternative.
 
 ## Request inputs and outputs
 
@@ -167,6 +170,54 @@ request-instance identities; primer and profile prefix views share their play's
 mapping. Identity capacity exhaustion fails instead of reusing an old range.
 These APIs reuse the existing dependency executor and runtime feedback contract.
 
+## Live trajectory policy
+
+Set `traffic.load.agentic_warmup_policy: live_trajectory_v1` together with
+`agentic_warmup: true` and `agentic_profile`. Finite warmup without a continuous
+profile is not supported by this policy, because shared-cursor lane recycling
+belongs to profile orchestration. The CLI currently requires offline
+`--stack engine`; it rejects unsupported execution before output-directory
+cleanup. SDK integrations need the explicit `supports_agentic_live_warmup`
+capability and the new native JSON field; passing only the warmup boolean is
+not equivalent. Existing configuration serialization and seed sampling remain
+unchanged when the policy is omitted.
+
+The policy follows the accelerated request-count warmup contract in
+[AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py):
+
+1. Prime each continuing conversation's last historical full input. Primer
+   leads are globally aligned and capped by the configured global idle cap.
+   Independent streams on the same lane may prime concurrently. No live
+   request starts until every primer succeeds and settles.
+2. Advance the existing dependency graph, including dispatch-triggered spawns,
+   completion-triggered joins, rootless children and lane recycling. Compress
+   authored idle delays to zero and request one output token. Admit exactly ten
+   additional requests per lane, excluding primers; preserve deferred requests
+   and cache identities when a lane reaches its quota.
+3. Wait for all submitted server work to settle. Prepare the surviving frontier
+   using each tree's source clock; the earliest eligible offset becomes formal
+   time zero. An empty lane draws a fresh turn-zero tree from the shared corpus
+   cursor. Restore original output lengths and dependency delays. A failed
+   measurement reset commits neither this new frontier nor the cursor update.
+
+The formal request and trajectory cohorts exclude all preparation-only plays.
+Partially warmed active trees retain their cache/request identity but start
+their formal trajectory observation at the barrier. Formal lifecycle ordinals
+restart there; complete warmup request provenance stays in `agentic_phases`.
+Failure drains issued work, keeps the phase ledger, and produces no formal
+cohort. The finite warmup quota permits zero-time one-token iterations; the
+unbounded continuous-profile livelock guard remains enabled afterward.
+
+This is native functional qualification, not a claim of byte-exact HTTP prompt
+or hardware-performance parity. The reference's sampler must be aligned with
+[imported initial selections](../workloads.md#agentic-snapshot); identical
+seeds alone are insufficient. AISimulate still uses its normalized dependency
+graph and logical prefix identities, not the reference tokenizer/chat-template
+payloads. Request scheduling ties use stable native graph order, not wall-clock
+callback timing or random UUID ordering. CPU fixtures cover branching,
+recycling, barriers, failure and formal-cohort exclusion; hardware/HTTP accuracy
+requires an explicitly matched experiment.
+
 The native report's `agentic_snapshots` collection records source/graph identity,
 seed, lane/play/cache identity, sampled cut, recorded request intervals, retained
 frontier and remaining dependency timers, and primer descriptions. Default Python
@@ -191,9 +242,9 @@ The [retained source audit](../../../benchmarks/evidence/accuracy/replay-evidenc
 records the original comparison and review boundary.
 
 AISimulate uses its native dependency graph, a versioned BLAKE3-based snapshot
-sample, and disjoint per-play token identities. Warmup repeats saved primer
-inputs and preserves the frontier; the reference executor's warmup advances
-its live trajectory. Matching preparation request counts does not establish
+sample (or imported cuts), and disjoint per-play token identities. The default
+warmup repeats saved primer inputs; `live_trajectory_v1` advances the graph as
+described above. Matching preparation request counts does not establish
 full AgentX parity. Qualification must cover exact inputs, one output token,
 ten requests per lane, barrier ordering, failure handling, timer preservation,
 cache reuse with caching enabled/disabled, and deterministic cold/warm runs.

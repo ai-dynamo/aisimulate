@@ -837,6 +837,8 @@ def _traffic(
                 workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
             if load.agentic_warmup:
                 workload["agentic_warmup"] = True
+            if load.agentic_warmup_policy != "repeated_prefixes":
+                workload["agentic_warmup_policy"] = load.agentic_warmup_policy
             if load.agentic_profile is not None:
                 workload["agentic_profile"] = load.agentic_profile.model_dump(mode="json")
         if stop is not None and stop.max_virtual_time_seconds is not None:

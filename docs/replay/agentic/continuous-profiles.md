@@ -87,10 +87,11 @@ is zero.
 The report keeps the admission cutoff separately. A configured one-hour run can
 have a request observation interval shorter or longer than one hour.
 
-The warmup policy is to repeat saved primer inputs and keep
-the original snapshot frontier. The referenced AgentX executor advances its live
-trajectory during warmup. Initial snapshot sampling also retains AISimulate's
-existing deterministic algorithm. These differences remain explicit; this is
+The default warmup policy repeats saved primer inputs and keeps the original
+snapshot frontier. The opt-in [live trajectory policy](warmup.md#live-trajectory-policy)
+advances the dependency graph during warmup and preserves its surviving frontier.
+Initial sampling retains AISimulate's existing deterministic algorithm unless
+reference cuts and the shared sequential cursor are explicitly imported. This is
 functional qualification of profile control, not complete AgentX parity or
 hardware performance accuracy. Long profiles retain lifecycle evidence and can
 use more host memory than a finite corpus replay. Resource admission still checks

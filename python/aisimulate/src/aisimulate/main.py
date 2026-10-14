@@ -157,6 +157,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
+        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
     if config.engine.speculation is not None and (args.stack != "engine" or args.online or adapter_raw):
         raise ValueError("ngram speculation requires offline --stack engine without adapters")
     plan = _resource_plan(args, config, factory)
@@ -280,6 +282,12 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
+    if (
+        config.traffic is not None
+        and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+        and args.stack != "engine"
+    ):
+        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,

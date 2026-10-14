@@ -328,6 +328,10 @@ impl AgenticReplayContext {
         self.initial_corpus_cursor
     }
 
+    pub(super) fn recorded_start_ms(&self, index: usize) -> f64 {
+        self.recorded_intervals[index].0
+    }
+
     /// Prepare a deterministic corpus-cycle instance. `None` samples an initial
     /// cut; `Some(cut_ms)` uses an absolute recorded timestamp, so `Some(0.0)`
     /// starts a play only when its recorded clock begins at zero. Use
