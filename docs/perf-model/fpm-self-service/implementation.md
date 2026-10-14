@@ -638,6 +638,7 @@ registered. Use a qualified model-specific runtime adapter and verified cache
 profile; a generic planning success does not establish support.
 Sparse-attention layer declarations are accepted only for the collector's
 supported DSA architectures; the layer name alone does not establish support.
+An explicit `layer_types` list must have one entry per declared model layer.
 
 Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
 

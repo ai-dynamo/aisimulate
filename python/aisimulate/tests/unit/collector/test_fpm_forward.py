@@ -1070,6 +1070,27 @@ def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architect
         )
 
 
+@pytest.mark.parametrize("layer_count", [0, 1, 5])
+def test_incomplete_layer_types_cannot_select_a_generic_template(tmp_path, layer_count):
+    config = _unknown_fp8_moe_config()
+    config["layer_types"] = ["full_attention"] * layer_count
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="layer_types must have one entry per num_hidden_layers"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture="NewMoeDsaForCausalLM",
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
     config_dir = tmp_path / "private-model-config"
     config_dir.mkdir()
