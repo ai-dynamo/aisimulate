@@ -91,6 +91,19 @@ fn validate_afd_attention_tp(a_tp_size: u32) -> PyResult<()> {
     crate::perfmodel::afd::validate_afd_attention_tp(a_tp_size).map_err(aic_to_py)
 }
 
+/// Configuration resolution only: no model compilation or performance data access.
+#[pyfunction]
+fn resolve_afd_decode_identity(estimator_config_json: &str, workload_json: &str) -> PyResult<bool> {
+    let config: crate::EstimatorConfig = serde_json::from_str(estimator_config_json)
+        .map_err(|error| PyValueError::new_err(format!("invalid estimator_config: {error}")))?;
+    config.validate().map_err(aic_to_py)?;
+    let workload = serde_json::from_str(workload_json)
+        .map_err(|error| PyValueError::new_err(format!("invalid AFD decode workload: {error}")))?;
+    config
+        .resolve_afd_decode_identity(workload)
+        .map_err(aic_to_py)
+}
+
 #[pyfunction]
 #[pyo3(signature = (a_tp_size, n_a_nodes, n_f_nodes, gpus_per_node, f_moe_ep_size=None, num_experts=None, *, f_gpus_per_node=None))]
 fn resolve_afd_parallelism(
@@ -2684,6 +2697,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add_function(wrap_pyfunction!(validate_afd_routing_location, m)?)?;
     m.add_function(wrap_pyfunction!(validate_afd_attention_tp, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_afd_decode_identity, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_afd_parallelism, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_execution_quantization, m)?)?;
     m.add_function(wrap_pyfunction!(validate_afd_model_shape, m)?)?;

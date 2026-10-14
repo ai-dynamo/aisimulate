@@ -116,6 +116,125 @@ pub enum Backend {
     Trtllm,
 }
 
+/// AFD A-pool (attention) topology identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfdAPoolConfig {
+    /// Perf-DB system of the A pool (heterogeneous AFD pairs it with a
+    /// different F-pool system; homogeneous runs repeat the top-level system).
+    pub system: String,
+    /// A-worker tensor parallelism; must divide the node width.
+    #[serde(alias = "tp_a")]
+    pub a_tp_size: u32,
+    /// Number of A (attention) nodes.
+    pub n_a_nodes: u32,
+    /// In-flight batch per A-worker.
+    #[serde(alias = "a_batch_size")]
+    pub batch_size_per_a_replica: u32,
+}
+
+/// AFD F-pool (FFN/MoE) topology identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfdFPoolConfig {
+    /// Perf-DB system of the F pool.
+    pub system: String,
+    /// Expert parallelism of the FFN/MoE pool; must divide
+    /// `n_f_nodes * gpus_per_node`.
+    pub f_moe_ep_size: u32,
+    /// Number of F (FFN/MoE) nodes.
+    pub n_f_nodes: u32,
+}
+
+/// Total physical GPUs using each pool's own node width; shared by Replay accounting.
+pub(crate) fn afd_total_gpus(
+    a_pool: &AfdAPoolConfig,
+    f_pool: &AfdFPoolConfig,
+    gpus_per_node: u32,
+    f_gpus_per_node: u32,
+) -> usize {
+    a_pool.n_a_nodes as usize * gpus_per_node as usize
+        + f_pool.n_f_nodes as usize * f_gpus_per_node as usize
+}
+
+/// AFD scheduling-core configuration. Mirrors the Python
+/// `AFDTopology` scheduling knobs; perf-backend stays on [`EngineConfig::backend`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AfdEngineConfig {
+    #[serde(default)]
+    pub routing_location: crate::AfdRoutingLocation,
+    pub a_pool: AfdAPoolConfig,
+    pub f_pool: AfdFPoolConfig,
+    /// A-pool node width, validated against its selected system spec.
+    pub gpus_per_node: u32,
+    /// F-pool width. Old saved topologies inherit the A width.
+    #[serde(default)]
+    pub f_gpus_per_node: Option<u32>,
+    /// In-flight pipeline microbatches.
+    pub num_microbatches: u32,
+    #[serde(default)]
+    pub pipeline_layout: crate::perfmodel::afd::model::AfdPipelineLayout,
+    /// Applied exactly once, at pipeline evaluation, on the transfer terms;
+    /// the measurement side stays 1.0.
+    pub comm_overhead_factor: f64,
+}
+
+impl AfdEngineConfig {
+    pub fn effective_f_gpus_per_node(&self) -> u32 {
+        self.f_gpus_per_node.unwrap_or(self.gpus_per_node)
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.a_pool.a_tp_size >= 1
+                && self.a_pool.n_a_nodes >= 1
+                && self.a_pool.batch_size_per_a_replica >= 1,
+            "afd a_pool a_tp_size / n_a_nodes / batch_size_per_a_replica must be positive integers"
+        );
+        ensure!(
+            self.f_pool.n_f_nodes >= 1 && self.f_pool.f_moe_ep_size >= 1,
+            "afd f_pool n_f_nodes / f_moe_ep_size must be positive integers"
+        );
+        ensure!(
+            self.gpus_per_node >= 1 && self.gpus_per_node % self.a_pool.a_tp_size == 0,
+            "afd gpus_per_node must be a positive multiple of a_tp_size"
+        );
+        ensure!(
+            self.num_microbatches >= 1,
+            "afd num_microbatches must be a positive integer"
+        );
+        ensure!(
+            self.num_microbatches <= self.a_pool.batch_size_per_a_replica,
+            "afd num_microbatches ({}) cannot exceed batch_size_per_a_replica ({}): a microbatch would hold \
+             no sequences, and the pipeline would charge {} microbatch-layers per step for {} \
+             in-flight sequences per worker",
+            self.num_microbatches,
+            self.a_pool.batch_size_per_a_replica,
+            self.num_microbatches,
+            self.a_pool.batch_size_per_a_replica
+        );
+        ensure!(
+            self.comm_overhead_factor.is_finite() && self.comm_overhead_factor > 0.0,
+            "afd comm_overhead_factor must be a positive finite number"
+        );
+        ensure!(
+            self.effective_f_gpus_per_node() > 0,
+            "afd f_gpus_per_node must be positive"
+        );
+        crate::perfmodel::afd::resolve_afd_parallelism(
+            self.a_pool.a_tp_size,
+            self.a_pool.n_a_nodes,
+            self.f_pool.n_f_nodes,
+            self.gpus_per_node,
+            Some(self.f_pool.f_moe_ep_size),
+            None,
+            self.f_gpus_per_node,
+        )?;
+        Ok(())
+    }
+}
+
 impl Backend {
     /// Backend-native KV block size used when a caller does not provide one.
     pub const fn default_block_size(self) -> usize {

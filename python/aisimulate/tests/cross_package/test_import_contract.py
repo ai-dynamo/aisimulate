@@ -28,6 +28,7 @@ pytestmark = pytest.mark.unit
         "validate_afd_attention_tp",
         "resolve_afd_parallelism",
         "validate_afd_model_shape",
+        "resolve_afd_decode_identity",
         "resolve_execution_quantization",
     ],
 )

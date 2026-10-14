@@ -35,6 +35,8 @@ pub(crate) use common::hashing::{
 };
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
+pub(crate) use config::afd_total_gpus;
+pub use config::{AfdAPoolConfig, AfdEngineConfig, AfdFPoolConfig};
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Scope, G3OffloadConfig, G3Scope,
     KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy,

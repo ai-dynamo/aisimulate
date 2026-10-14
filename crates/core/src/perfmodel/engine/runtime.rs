@@ -1013,6 +1013,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Actual compiled operator precision, including mixed-precision exceptions.
+    pub(crate) fn execution_quantization(&self) -> serde_json::Value {
+        let mut modes = std::collections::BTreeMap::<&str, std::collections::BTreeSet<&str>>::new();
+        for op in self.context_ops.iter().chain(&self.generation_ops) {
+            match op {
+                crate::operators::Op::Gemm(g) => {
+                    modes.entry("gemm").or_default().insert(g.quant_mode.name());
+                }
+                crate::operators::Op::Moe(m) => {
+                    modes.entry("moe").or_default().insert(m.quant_mode.name());
+                }
+                _ => {}
+            }
+        }
+        serde_json::to_value(modes).expect("string map")
+    }
+
     pub(crate) fn validate_forward_pass_readiness(
         &self,
         worker_type: crate::ForwardPassWorkerType,
