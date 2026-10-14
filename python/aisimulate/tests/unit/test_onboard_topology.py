@@ -604,9 +604,9 @@ def _saved_configurations(root):
     return entries, requests
 
 
-def _consume_configurations(root, *, preview_errors=None):
+def _consume_configurations(root):
     entries, requests = _saved_configurations(root)
-    for index, (entry, request) in enumerate(zip(entries, requests, strict=True)):
+    for entry, request in zip(entries, requests, strict=True):
         plan_root = Path(entry["collection_dir"])
         assert plan_root == Path(entry["request"]).parent / "collection"
         assert cli.main(shlex.split(entry["plan_command"])[1:]) == 0
@@ -626,14 +626,8 @@ def _consume_configurations(root, *, preview_errors=None):
         ):
             assert command[command.index(flag) + 1] == expected
         preview = _real_cli(["onboard", "collect-fpm", "--config", entry["request"], "--output-dir", str(plan_root)])
-        expected_error = (preview_errors or {}).get(index)
-        if expected_error is not None:
-            assert preview.returncode == 2, preview.stderr
-            assert expected_error in preview.stderr
-            assert not preview.stdout
-        else:
-            assert preview.returncode == 0, preview.stderr
-            assert shlex.split(preview.stdout) == command
+        assert preview.returncode == 0, preview.stderr
+        assert shlex.split(preview.stdout) == command
         prediction = CorePredictionConfig.from_yaml(plan_root / "predict/pilot.yaml")
         recommendation = CoreRecommendationConfig.from_yaml(plan_root / "recommend/pilot.yaml")
         for config in (prediction, recommendation):
@@ -731,9 +725,7 @@ def test_parallel_configuration_file_preserves_rank_bounds_and_precision(tmp_pat
     source.unlink()
     resources.unlink()
     choices.unlink()
-    requests = _consume_configurations(
-        root, preview_errors={2: "requires the checkpoint-native KV dtype 'bfloat16'; got ['fp8']"}
-    )
+    requests = _consume_configurations(root)
     assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
     assert [
         json.loads(request.profile_deployment().resources.provenance)["fields"]["weights_bytes"]["value"]

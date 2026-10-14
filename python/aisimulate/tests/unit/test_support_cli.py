@@ -1370,7 +1370,7 @@ def test_scripted_init_requires_context_evidence(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
-def test_minimax_collection_preview_checks_native_precision(tmp_path, capsys, monkeypatch, kv_dtype):
+def test_minimax_collection_preview_preserves_selected_precision(tmp_path, capsys, monkeypatch, kv_dtype):
     from collector.fpm_forward import entry
 
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
@@ -1403,16 +1403,10 @@ def test_minimax_collection_preview_checks_native_precision(tmp_path, capsys, mo
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
     command = ["onboard", "collect-fpm", "-c", str(root / "request.yaml"), "--output-dir", str(root)]
     capsys.readouterr()
-    if kv_dtype == "bfloat16":
-        with pytest.raises(SystemExit) as error:
-            cli.main(command)
-        assert error.value.code == 2
-        output = capsys.readouterr()
-        assert "checkpoint-native KV dtype 'fp8'" in output.err
-        assert "--plan-only" not in output.out
-    else:
-        assert cli.main(command) == 0
-        assert "--plan-only" in capsys.readouterr().out
+    assert cli.main(command) == 0
+    output = capsys.readouterr().out
+    assert "--plan-only" in output
+    assert f"--fpm-kv-cache-dtypes {kv_dtype}" in output
     assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
     assert not (root / "fpm-checkpoint").exists()
     assert not (root / "fpm-artifacts").exists()

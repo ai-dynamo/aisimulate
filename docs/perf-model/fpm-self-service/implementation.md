@@ -133,7 +133,7 @@ Present a concise **options table with one row per joint combination**, includin
 | Collector compatibility | Compatible with the current profile collector's identity checks, blocked, or unresolved, independently of runtime support. |
 | Resource effects and limits | Expected changes to weights, attention cache, fixed state, workspaces/padding and memory fit; retain unknown bounds. Accuracy remains unmeasured without matched evidence. |
 
-The current profile collector requires KV dtype to equal its checkpoint-inferred native dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Those checks restrict collection even when the pinned runtime supports another combination. Mark any blocked alternative with its precise limitation; user selection or a schema-valid profile does not override serving dispatch. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
+The profile collector preserves the selected KV dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Checkpoint-inferred KV defaults do not restrict explicit selections. The pinned runtime must support the selected combination, and observed precision must match the plan. Mark any blocked alternative with its precise limitation; a schema-valid profile does not prove runtime support. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
 
 Treat runtime defaults as one proposal and let the user choose the precision combination(s) to cover, preserving prior explicit choices. Record the choice, rationale, sources and unresolved conditions in profile provenance. A blocked selection stays blocked until the required capability is available; do not substitute a default silently. For multiple selected combinations, use a separate fresh output root per precision combination and the existing `--parallel-configs` topology list within each. Duplicate resolved topologies within the same serving role are rejected even if their precision overrides differ. This is agent orchestration over the existing CLI, not a new precision-matrix command or schema. Recompute resources and review each exact precision/topology profile in stage 3 before accepting it.
 
@@ -833,16 +833,18 @@ Retain the immutable image/build identity and actual runtime observations when r
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
-New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
+Profile-based collection retains checkpoint weight quantization and the selected KV precision without consulting op-level timing tables. An explicit BF16 KV selection uses BF16 attention/cache identity even when FP8 weights caused the default inference to choose FP8 KV. This does not prove runtime support: initialization, observed cache precision and readiness checks must agree with the plan before measurements are accepted. Model-specific native-cache requirements still apply, including DeepSeek V4.1's FP8 KV path.
+
+Use a fresh onboarding output directory and dataset when changing collection precision. Do not relabel historical timings or reuse their memory bounds without validation. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
 
 Successful formal collection and resume verify that the published data uses the selected backend identity label. Actual runtime provenance remains separate; generated configs are not retargeted to the observed package version when an explicit label was supplied. Changed collection identity requires a new request and plan. Diagnostic smoke runs do not publish or verify formal data.
 
 ### Check timing readiness before full collection
 
 For a request containing an FPM profile, `onboard collect-fpm` preview runs the
-collector's CPU planning checks before printing the command. A checkpoint-native
-KV mismatch fails here, before workers launch. Planning may resolve checkpoint
-metadata from local files, the packaged cache or Hugging Face. It does not verify
+collector's CPU planning checks before printing the command. A mismatch between
+the requested KV precision and the profile fails here, before workers launch.
+Planning may resolve checkpoint metadata from local files, the packaged cache or Hugging Face. It does not verify
 GPU execution or make a historical profile invalid for prediction.
 The checkpoint config must remain resolvable through the saved model identity;
 an embedded resource profile does not replace that runtime metadata.
