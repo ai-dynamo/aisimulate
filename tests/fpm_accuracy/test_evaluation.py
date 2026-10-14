@@ -777,3 +777,22 @@ def test_learned_split_is_per_workload_kind():
     kinds = ["decode"] * 5 + ["prefill"] * 3
     observations = [SimpleNamespace(observation_id=f"o{i}", workload_kind=kind) for i, kind in enumerate(kinds)]
     assert training_observation_ids(observations) == {"o0", "o2", "o4", "o5", "o7"}
+
+
+def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
+    from aisimulate_core.sdk import fpm_learned
+
+    from scripts.fpm_accuracy.models.learned_predictor import HYPERPARAMETERS, LearnedFpm5Predictor
+
+    pytest.importorskip("sklearn")
+    calls = []
+
+    def train(iterations, worker_type, **kwargs):
+        calls.append(kwargs)
+        raise ValueError("too few rows")
+
+    monkeypatch.setattr(fpm_learned, "train", train)
+    predictor = LearnedFpm5Predictor.fit(SimpleNamespace(worker_role="decode"), [])
+    assert calls == [{"features": fpm_learned.FEATURE_PRESETS["fpm5"], **HYPERPARAMETERS}]
+    assert HYPERPARAMETERS == {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
+    assert predictor.diagnostics()["hyperparameters"] == HYPERPARAMETERS
