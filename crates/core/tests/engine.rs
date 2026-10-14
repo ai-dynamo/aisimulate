@@ -1094,12 +1094,18 @@ fn aggregated_mixed_pass_prices_only_ongoing_decoders_and_completes_together(
     );
 }
 
-#[test]
-fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
+#[rstest::rstest]
+fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling(
+    #[values(false, true)] speculative: bool,
+) {
     let timing = Arc::new(RecordingTiming::default());
     let mut replay = recording_timing_spec(Backend::Vllm);
     let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
     config.rank.max_num_batched_tokens = 4;
+    if speculative {
+        config.rank.aic_nextn = Some(1);
+        config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
+    }
     replay.engine = serde_json::to_value(config).unwrap();
     replay.requests = vec![request("chunked", 0.0, 10, 2)];
     let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
@@ -1662,9 +1668,11 @@ fn runner_must_resolve_external_timing_before_execution() {
     assert_eq!(report.throughput.duration_ms, 6.0);
 }
 
-#[test]
-fn native_vllm_disaggregated_replay_completes_deterministically() {
-    let spec = disaggregated_spec(
+#[rstest::rstest]
+fn native_vllm_disaggregated_replay_completes_deterministically(
+    #[values(false, true)] speculative: bool,
+) {
+    let mut spec = disaggregated_spec(
         Backend::Vllm,
         TimingModelConfig::Fixed {
             prefill_ms: 3.0,
@@ -1675,6 +1683,15 @@ fn native_vllm_disaggregated_replay_completes_deterministically() {
             decode_ms: 2.0,
         },
     );
+    if speculative {
+        let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine).unwrap();
+        for role in [&mut config.prefill, &mut config.decode] {
+            let rank = &mut role.as_mut().unwrap().rank;
+            rank.aic_nextn = Some(1);
+            rank.aic_nextn_accept_rates = Some("1.0".to_string());
+        }
+        spec.engine = serde_json::to_value(config).unwrap();
+    }
     let first = run_canonical_engine_replay(spec.clone());
     let second = run_canonical_engine_replay(spec);
     assert_deterministic(&first, &second);
@@ -1683,6 +1700,10 @@ fn native_vllm_disaggregated_replay_completes_deterministically() {
     assert_eq!(first.request_counts.total_output_tokens, 2);
     assert_eq!(first.per_request[0].output_length, 2);
     let request = &first.per_request[0];
+    // P/D publishes decode outputs: 3 ms prefill + 1 ms handoff, then
+    // two 2 ms decode rounds. The aggregate-only shortcut must not apply.
+    assert_eq!(request.first_token_ms, Some(6.0));
+    assert_eq!(request.terminal_time_ms, 8.0);
     assert_eq!(request.prefill_worker_idx, Some(0));
     assert_eq!(request.decode_worker_idx, Some(0));
     assert!(request.prefill_admit_ms.is_some());

@@ -2893,6 +2893,25 @@ impl VllmCore {
         }
     }
 
+    fn is_first_token_from_prefill(
+        &self,
+        uuid: &Uuid,
+        request: &VllmRequestState,
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+    ) -> bool {
+        // The final prefill forward already includes the output head. First
+        // tokens sampled from it do not require a second full forward pass.
+        self.args.worker_type == WorkerType::Aggregated
+            && policy::first_token_uses_prefill_forward(
+                self.args.scheduling_policy(),
+                self.speculative_sampler.is_some(),
+            )
+            && request.sequence.generated_tokens() == 0
+            && scheduled
+                .get(uuid)
+                .is_some_and(|work| work.prompt_tokens > 0)
+    }
+
     fn emit_ready_tokens(
         &mut self,
         mut collector: Option<&mut TraceCollector>,
@@ -2924,18 +2943,7 @@ impl VllmCore {
                 continue;
             }
             ready.push(uuid);
-            // The final prefill forward already includes the output head. First
-            // tokens sampled from it do not require a second full forward pass.
-            let first_token_from_prefill = self.args.worker_type == WorkerType::Aggregated
-                && policy::first_token_uses_prefill_forward(
-                    self.args.scheduling_policy(),
-                    self.speculative_sampler.is_some(),
-                )
-                && request.sequence.generated_tokens() == 0
-                && scheduled
-                    .get(&uuid)
-                    .is_some_and(|work| work.prompt_tokens > 0);
-            if !first_token_from_prefill {
+            if !self.is_first_token_from_prefill(&uuid, request, scheduled) {
                 decode_count += 1;
                 total_length += request.sequence.len();
             }
@@ -3183,14 +3191,7 @@ impl VllmCore {
         let (decode_count, total_length) = ready
             .iter()
             .filter_map(|uuid| self.state.requests.get(uuid).map(|request| (uuid, request)))
-            .filter(|(uuid, request)| {
-                !(worker_type == WorkerType::Aggregated
-                    && policy::first_token_uses_prefill_forward(scheduling_policy, true)
-                    && request.sequence.generated_tokens() == 0
-                    && scheduled
-                        .get(uuid)
-                        .is_some_and(|work| work.prompt_tokens > 0))
-            })
+            .filter(|(uuid, request)| !self.is_first_token_from_prefill(uuid, request, scheduled))
             .fold((0, 0), |(count, total), (_, request)| {
                 (count + 1, total + request.sequence.len())
             });
