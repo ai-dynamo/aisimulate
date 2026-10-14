@@ -644,6 +644,11 @@ Sparse-attention layer declarations are accepted only for the collector's
 supported DSA architectures; the layer name alone does not establish support.
 Unknown architectures can still use generic MLA/GQA planning when their
 declared layer layout is supported.
+The direct `collector --fpm` path also rejects Qwen3.5-family Gated DeltaNet
+hybrids, including Qwen3.6/3.8 checkpoints with that layout, in native and
+op-level modes. Registered model cases do not make the dense-attention FPM
+template represent recurrent state. Generic onboarding intake already rejects
+these layouts; complete mixed-attention onboarding remains WIP.
 An explicit `layer_types` list must have one entry per declared model layer.
 The declared `num_hidden_layers` must be a positive integer; fractional counts
 are rejected rather than rounded or truncated.

@@ -70,7 +70,7 @@ def _attention_template(
     ):
         raise ValueError(
             f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "
-            "generic MLA/GQA FPM templates cannot represent this runtime. "
+            "FPM attention templates cannot represent linear-attention/recurrent state. "
             "Use a qualified model-specific collection adapter and verified cache profile."
         )
     if "dsa" in lowered or model_family == "DEEPSEEKV32":

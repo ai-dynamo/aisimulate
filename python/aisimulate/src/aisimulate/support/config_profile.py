@@ -406,10 +406,7 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
             raise ValueError("Inkling convolution cache requires bfloat16 runtime storage")
 
 
-def _validate_architecture(
-    raw: Mapping[str, Any], architecture: str | None, experts: int | None, *, inkling: bool = False
-) -> None:
-    _validate_layout(raw, architecture, inkling=inkling)
+def _validate_architecture(raw: Mapping[str, Any], architecture: str | None, experts: int | None) -> None:
     experts_per_token = raw.get("num_experts_per_tok")
     if experts and experts_per_token is not None and experts_per_token > experts:
         raise ValueError("num_experts_per_tok cannot exceed the routed expert count")
@@ -512,7 +509,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
         if raw.get(key) is not None:
             _integer(raw[key], key, minimum=0)
     experts = geometry["num_experts"]
-    _validate_architecture(raw, decoder_architecture, experts, inkling=inkling)
+    _validate_architecture(raw, decoder_architecture, experts)
     _validate_quantization(raw)
     dtype = _dtype(raw)
     heads, kv_heads = geometry["num_attention_heads"], geometry["num_key_value_heads"]
@@ -1109,9 +1106,8 @@ def derive_profile(
     architecture = config.decoder_architecture
     if "architecture" not in config.suggestions:
         architecture = values.get("architecture")
-    _validate_architecture(
-        config.raw, architecture, values.get("num_experts"), inkling=values.get("architecture") == _INKLING_ARCHITECTURE
-    )
+    _validate_layout(config.raw, architecture, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
+    _validate_architecture(config.raw, architecture, values.get("num_experts"))
     geometry = _geometry(config, architecture, request)
     if request:
         if "num_experts" in values:
@@ -1288,12 +1284,12 @@ def profile_from_observations(
     missing = set(_MODEL_FIELDS) - metadata.keys()
     if missing:
         raise ValueError("model metadata remains unresolved: " + ", ".join(sorted(missing)))
-    _validate_architecture(
+    _validate_layout(
         config.raw,
         config.decoder_architecture or metadata["architecture"],
-        metadata["num_experts"],
         inkling=metadata["architecture"] == _INKLING_ARCHITECTURE,
     )
+    _validate_architecture(config.raw, config.decoder_architecture or metadata["architecture"], metadata["num_experts"])
     _geometry(config, config.decoder_architecture or metadata["architecture"], request)
     for key in ("cache_layout", "cache_groups", "kv_bytes_per_token", "max_num_tokens", "max_batch_size"):
         if key in supplied and supplied[key] != resources.get(key):

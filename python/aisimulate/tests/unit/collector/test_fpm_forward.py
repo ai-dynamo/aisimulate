@@ -1055,7 +1055,7 @@ def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architect
     )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match="generic MLA/GQA FPM templates cannot represent"):
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
         resolve_model_capability(
             backend="vllm",
             model_path=str(path),
@@ -1067,6 +1067,37 @@ def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architect
             requested_kv_cache_dtypes=("auto",),
             database_version="0.27.0",
             checkpoint_native_dtypes=True,
+        )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+@pytest.mark.parametrize("native", [False, True])
+def test_qwen_gdn_hybrid_cannot_select_exact_dense_attention(tmp_path, architecture, native):
+    config = {
+        "architectures": [architecture],
+        "text_config": {
+            "num_hidden_layers": 4,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=True,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=native,
         )
 
 
