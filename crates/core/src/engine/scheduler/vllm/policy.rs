@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 //! Engine-specific policy for the shared vLLM/TRT-LLM scheduler core.
 //!
@@ -8,7 +11,7 @@
 //! admission/reservation, and preemption. Prefix accounting and no-evict
 //! headroom are implementation details of those hooks, not separate schedulers.
 
-use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy};
+use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy, WorkerType};
 use crate::engine::kv_manager::{AllocationRequirement, DestinationReservationMode, G1Manager};
 #[cfg(test)]
 use crate::engine::kv_manager::{apply_mtp_prefix_recompute, apply_prefix_recompute};
@@ -435,6 +438,51 @@ fn available_blocks<'a, S: PolicySequence + 'a>(
 
 pub(super) fn allows_preemption(policy: SchedulingPolicy) -> bool {
     policy == SchedulingPolicy::Vllm
+}
+
+/// vLLM verifies draft tokens in the same token budget as known tokens. Fresh
+/// and recomputing requests have no drafts until their first output is sampled.
+pub(super) fn scheduled_draft_tokens(
+    policy: SchedulingPolicy,
+    worker_type: WorkerType,
+    drafts_ready: bool,
+    nextn: Option<usize>,
+    sequence_len: usize,
+    max_model_len: Option<usize>,
+) -> usize {
+    if policy == SchedulingPolicy::Vllm && worker_type != WorkerType::Prefill && drafts_ready {
+        // Native scheduling keeps one position for the sampled base token.
+        // Reaching the model limit can therefore narrow a verification round
+        // before it spends the shared batch-token budget.
+        let context_room = max_model_len
+            .map(|limit| limit.saturating_sub(sequence_len).saturating_sub(1))
+            .unwrap_or(usize::MAX);
+        nextn.unwrap_or(0).min(context_room)
+    } else {
+        0
+    }
+}
+
+/// Keep TRT-LLM's existing SD approximation separate from native vLLM's
+/// verification width, including a truncated round at the token-budget edge.
+pub(super) fn speculative_burst_limit(
+    policy: SchedulingPolicy,
+    worker_type: WorkerType,
+    nextn: usize,
+    scheduled_drafts: usize,
+) -> usize {
+    match (policy, worker_type) {
+        (_, WorkerType::Prefill) => 1,
+        (SchedulingPolicy::Vllm, _) => scheduled_drafts + 1,
+        (SchedulingPolicy::TrtllmGuaranteedNoEvict, _) => nextn + 1,
+    }
+}
+
+pub(super) fn first_token_uses_prefill_forward(
+    policy: SchedulingPolicy,
+    speculative: bool,
+) -> bool {
+    !speculative || policy == SchedulingPolicy::Vllm
 }
 
 /// TRT-LLM enqueue normalization: a no-evict request's `prompt + output` can

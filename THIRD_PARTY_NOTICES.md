@@ -253,6 +253,23 @@ under Apache-2.0. These repository-root-relative files adapt behavioral contract
 no upstream method bodies are copied. The Rust implementation and fixtures are
 modified for simulation and do not reproduce native filesystem timing.
 
+The speculative scheduling/progress corrections in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
+`crates/core/src/engine/common/speculative.rs` are independently written,
+modified Rust simulation adaptations of behavioral contracts at vLLM commit
+`b3563fc65ae0f5359802593d78e7ea097e1fed31`:
+
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/async_scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+scheduled draft positions, first-output and preemption state in virtual time;
+it does not reproduce asynchronous worker execution. That revision has no
+root NOTICE file. The repository LICENSE contains the Apache-2.0 license text.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 
