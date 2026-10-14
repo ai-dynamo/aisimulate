@@ -44,6 +44,11 @@ def test_sglang_graph_options_match_runtime(version, mode, target):
     modern = version in {"0.5.20", "0.5.21", "current"}
     bs_flag = "--cuda-graph-bs-decode" if modern else "--cuda-graph-bs"
     max_flag = "--cuda-graph-max-bs-decode" if modern else "--cuda-graph-max-bs"
+    incompatible_flags = (
+        {"--cuda-graph-bs", "--cuda-graph-max-bs"}
+        if modern
+        else {"--cuda-graph-bs-decode", "--cuda-graph-max-bs-decode"}
+    )
     for role, sizing in request.topology.roles.items():
         tokens = (
             next(
@@ -60,14 +65,13 @@ def test_sglang_graph_options_match_runtime(version, mode, target):
         # Request batch sizes must not become prefill token capture sizes.
         assert "--cuda-graph-bs-prefill" not in tokens
         assert "--cuda-graph-max-bs-prefill" not in tokens
-        if modern:
-            assert "--cuda-graph-bs" not in tokens
-            assert "--cuda-graph-max-bs" not in tokens
+        assert incompatible_flags.isdisjoint(tokens)
 
     if target == "slurm":
         for worker in json.loads(artifacts["deployment.json"])["workers"]:
             assert bs_flag in worker["argv"]
             assert max_flag in worker["argv"]
+            assert incompatible_flags.isdisjoint(worker["argv"])
     else:
         services = yaml.safe_load(artifacts["k8s_deploy.yaml"])["spec"]["services"]
         for name, service in services.items():
@@ -75,13 +79,19 @@ def test_sglang_graph_options_match_runtime(version, mode, target):
                 script = service["extraPodSpec"]["mainContainer"]["args"][0]
                 assert bs_flag + " " in script
                 assert max_flag + " " in script
+                assert incompatible_flags.isdisjoint(shlex.split(script))
         sflow = artifacts["sflow.yaml"]
-        # Graph capture maximum is independent of the serving request limit.
-        assert max_flag + " 16" in sflow
+        document = yaml.safe_load(sflow)
+        tasks = {task["name"]: task for task in document["workflow"]["tasks"]}
         for role, sizing in request.topology.roles.items():
             prefix = {"agg": "AGG", "prefill": "CTX", "decode": "GEN"}[role]
-            assert bs_flag + " ${{ variables." + prefix + "_CUDA_GRAPH_BS }}" in sflow
-            variables = yaml.safe_load(sflow)["variables"]
+            script = "\n".join(tasks[f"{role}_server"]["script"])
+            tokens = shlex.split(script)
+            # Every role retains its graph maximum, independent of request limits.
+            assert tokens[tokens.index(max_flag) + 1] == "16"
+            assert incompatible_flags.isdisjoint(tokens)
+            assert bs_flag + " ${{ variables." + prefix + "_CUDA_GRAPH_BS }}" in script
+            variables = document["variables"]
             graph = variables[f"{prefix}_CUDA_GRAPH_BS"]
             assert str(graph["value"]) == " ".join(str(i) for i in range(1, sizing.max_batch_size + 1))
     for name, content in artifacts.items():
