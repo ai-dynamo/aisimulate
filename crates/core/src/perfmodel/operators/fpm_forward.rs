@@ -1200,6 +1200,46 @@ mod tests {
     }
 
     #[test]
+    fn glm53flash_prefill_queries_are_not_refused_for_unaligned_prefixes() {
+        // Align-4 is a collection rule (inputs are built on the 4-token grid);
+        // predictions for arbitrary prefixes and totals are never refused.
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
+            let rows: Vec<_> = [(3, 4096), (3, 4097), (3, 4100), (1, 4097)]
+                .into_iter()
+                .map(|(q, p)| RowSpec {
+                    model_path: model,
+                    workload_kind: "prefill",
+                    batch_size: 1,
+                    total_prefill_tokens: q,
+                    total_kv_read_tokens: p,
+                    latency_ms: 1.0,
+                    ..RowSpec::default()
+                })
+                .collect();
+            let tmp = tempfile::tempdir().unwrap();
+            write_pair(tmp.path(), &rows);
+            let db = db_with_pair(tmp.path());
+            let mut prefill = op(FpmPhase::Prefill);
+            prefill.model_path = model.into();
+            // Exact table hits on and off the 4-token grid.
+            for prefix in [4096, 4097, 4100] {
+                assert_eq!(
+                    prefill.query(&db, &ctx(1, 3, prefix)).unwrap().latency_ms,
+                    1.0
+                );
+                assert_eq!(
+                    prefill
+                        .query_totals(&db, &[1.0, 3.0, prefix as f64])
+                        .unwrap()
+                        .latency_ms,
+                    1.0
+                );
+            }
+        }
+    }
+
+    #[test]
     fn direct_query_evidence_preserves_support_and_nested_weights() {
         use crate::perf_database::fpm_forward::tests::RowSpec;
         let mut rows = Vec::new();

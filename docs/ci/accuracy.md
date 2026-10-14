@@ -91,6 +91,13 @@ and publishes successful branch results independently; failed refreshes retain
 the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
 and release staging gates. See [FPM details](../../pages/fpm-accuracy/README.md).
 
+Manual dispatch accepts optional `hf_revision`, a full 40-character dataset commit.
+Use it to evaluate a migrated dataset branch with compatible preview consumers
+before promoting either change to main. Scheduled runs continue to resolve HF main.
+The workflow verifies the requested revision through HF and records the resolved
+commit in every artifact. Publish compatible consumers before moving HF main to a
+new manifest contract; historical evaluation artifacts are never rewritten.
+
 
 ## FPE support qualification
 

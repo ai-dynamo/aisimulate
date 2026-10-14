@@ -1,0 +1,422 @@
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""GLM-5.3-Flash text-only, pure TP graph.
+
+Architecture adapted from Z.AI MIT configuration eb9eb208eb0d988989d07a6a12d0fdeb5f52574a.
+Execution grouping follows the pinned vLLM/SGLang files listed in
+model_configs/GLM53FLASH_PROVENANCE.md and THIRD_PARTY_NOTICES.md.
+"""
+
+from __future__ import annotations
+
+import json
+
+import aisimulate_core._native as core
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common
+from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS, Glm53FlashConfig
+from aisimulate_core.sdk.models.base import BaseModel, register_model
+
+
+def _native(kind: str, **values):
+    return core.op_from_spec_json(json.dumps({kind: values}))
+
+
+def _checkpoint_format(quant) -> str:
+    """Match only the two pinned checkpoint quantization layouts."""
+    if not isinstance(quant, dict):
+        quant = {}
+    method = quant.get("quant_method")
+    # zai-org/GLM-5.3-Flash@eb9eb208: dynamic E4M3 with 128x128 weight blocks.
+    if method == "fp8" and quant.get("fmt") == "e4m3" and quant.get("weight_block_size") == [128, 128]:
+        return "fp8"
+    # nvidia/GLM-5.3-Flash-NVFP4@09b04e5e: ModelOpt NVFP4.
+    if method == "modelopt" and quant.get("quant_algo") == "NVFP4":
+        return "nvfp4"
+    raise NotImplementedError(
+        "GLM-5.3-Flash supports only the pinned FP8-block and ModelOpt NVFP4 checkpoint precisions; "
+        f"unsupported quantization_config (quant_method={method!r}, quant_algo={quant.get('quant_algo')!r})"
+    )
+
+
+def _specs(operations) -> list[dict]:
+    return [json.loads(op._spec_json()) for op in operations]
+
+
+# SILICON/HYBRID generic composition. Every GLM boundary keeps its analytical
+# SOL formula (so op-level SOL and the FPM roofline are unchanged); outside SOL
+# mode it is priced as the sum of these generic ops against the generic tables
+# (gemm/moe/kda/mhc_module/custom_allreduce/nccl). Only the NoPE sparse-MLA +
+# IndexPool attention has a GLM table (glm53_attention_module_perf.parquet).
+#
+# KDA kda_perf kernel_source per (backend, phase): (short conv, delta rule),
+# as collected by collect_kda.py. Both backends run ONE merged q|k|v conv
+# (causal_conv1d_fn, not Kimi's three-call _qkv3). vLLM 0.31.0
+# glm5next/common/kda.py: FlashKDA prefill on SM10x, fused_recurrent_kda
+# decode. SGLang 0.5.20 kda_backend.py: chunk_kda prefill; decode skips the
+# packed T=1 kernel because GLM sets lower_bound (-5), so it runs
+# fused_sigmoid_gating_delta_rule_update. One row = one layer on one TP rank.
+# These are the prefill pairs. A vLLM context step of one new token over
+# existing state runs the decode pair (causal_conv1d_update,
+# fused_recurrent_kda); Rust selects it per step from the phase-context rows
+# at seq_len 1 (Glm53AttentionOp::kda_measured_for).
+KDA_KERNELS = {
+    ("vllm", "context"): ("causal_conv1d_fn", "flashkda_fwd"),
+    ("vllm", "generation"): ("causal_conv1d_update", "fused_recurrent_kda"),
+    ("sglang", "context"): ("causal_conv1d_fn", "chunk_kda"),
+    ("sglang", "generation"): ("causal_conv1d_update", "fused_sigmoid_gating_delta_rule_update"),
+}
+# mHC boundaries read mhc_module_perf directly in Rust (Glm53Mhc): pre/post/
+# fused_post_pre rows cover a layer's two sites (RMSNorm inside pre and
+# fused_post_pre); expand/contract rows are one call. No generic children.
+
+
+@register_model("GLM53FLASH")
+class Glm53FlashModel(BaseModel):
+    """34 KDA + 11 NoPE sparse MLA layers; MTP and vision are outside this graph."""
+
+    @classmethod
+    def create(cls, info: dict, model_config, backend_name: str) -> BaseModel:
+        return cls(info, model_config, backend_name)
+
+    @property
+    def activation_hidden_size(self) -> int:
+        return self._hidden_size
+
+    def __init__(self, info: dict, model_config, backend_name: str):
+        super().__init__(
+            info["model_path"],
+            info["model_family"],
+            info["architecture"],
+            info["layers"],
+            info["n"],
+            info["n_kv"],
+            info["d"],
+            info["hidden_size"],
+            info["inter_size"],
+            info["vocab"],
+            info["context"],
+            model_config,
+            info["extra_params"],
+        )
+        d = self.extra_params
+        if not isinstance(d, Glm53FlashConfig):
+            raise TypeError("GLM-5.3-Flash requires its shared text descriptor")
+        if backend_name not in {"vllm", "sglang"}:
+            raise NotImplementedError("GLM-5.3-Flash currently supports vLLM and SGLang")
+        tp = model_config.tp_size
+        mtp, ep = model_config.resolve_moe_parallelism()
+        if (
+            tp not in {1, 2, 4}
+            or mtp != tp
+            or ep != 1
+            or model_config.pp_size != 1
+            or model_config.cp_size != 1
+            or model_config.attention_dp_size != 1
+        ):
+            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1")
+        # TP1 is accepted for both checkpoints, but only NVFP4 TP1 fits one
+        # GB300 (native runtime admitted it with Mamba block size 8576).
+        # FP8 TP1 runs out of memory while creating weights; the payload
+        # inventory below (about 298-299 GiB) already exceeds GB300's
+        # 277.5 GiB, so memory checks report OOM rather than this
+        # constructor rejecting it.
+        if self._nextn or model_config.decoder_replay or self._num_layers != len(d.layer_types):
+            raise NotImplementedError(
+                "GLM-5.3-Flash text baseline requires all 45 layers, nextn=0 and no decoder replay"
+            )
+        if model_config.moe_backend in {"megamoe", "wideep"}:
+            raise NotImplementedError("GLM-5.3-Flash baseline uses tensor-parallel local experts")
+        self.raw_config = info["raw_config"]
+        self.text_config = self.raw_config["text_config"]
+        self.execution_profile = "full"
+        self.input_modality = "text"
+        self.model_revision = MODEL_REVISIONS.get(info["model_path"], "")
+        self.checkpoint_format = _checkpoint_format(self.raw_config.get("quantization_config"))
+        expected = self.checkpoint_format if self.checkpoint_format == "nvfp4" else "fp8_block"
+        if model_config.gemm_quant_mode.name != expected or model_config.moe_quant_mode.name != expected:
+            raise NotImplementedError("GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition")
+        if model_config.kvcache_quant_mode.name != "fp8":
+            raise NotImplementedError("GLM-5.3-Flash formal baseline requires FP8 sparse KV and FP32 KDA state")
+        h = d.hidden_size
+        self._cache_specs = []
+        identity = dict(backend=backend_name, checkpoint_format=self.checkpoint_format)
+        bf16 = common.GEMMQuantMode.bfloat16
+
+        def mhc(name, role):
+            return _native(
+                "Glm53Mhc",
+                name=name,
+                role=role,
+                tp_size=tp,
+                is_context=context,
+                hidden_size=h,
+                hc_mult=d.hc_mult,
+                sinkhorn_iters=d.hc_sinkhorn_iters,
+                **identity,
+            )
+
+        def kda_measured(layer, context):
+            phase = "context" if context else "generation"
+            heads = d.linear_num_heads // tp
+            hd = d.linear_head_dim
+            p = heads * hd
+            conv, core_kernel = KDA_KERNELS[(backend_name, phase)]
+            label = f"{phase}_kda_{layer}"
+            if backend_name == "vllm":
+                # Fused q/k/v + beta + low-rank f_a/g_a projection.
+                projections = [ops.GEMM(f"{label}_in_proj", 1, 3 * p + heads + 2 * hd, h, bf16)]
+            else:
+                # SGLang keeps separate q/k/v/b/f_a/g_a linears (no fuse).
+                projections = [
+                    ops.GEMM(f"{label}_{part}_proj", 1, width, h, bf16)
+                    for part, width in (("q", p), ("k", p), ("v", p), ("b", heads), ("f_a", hd), ("g_a", hd))
+                ]
+
+            def kernel(suffix, source):
+                return ops.KDAKernel(f"{label}_{suffix}", 1, source, phase, h, heads, hd, heads, hd, d.conv_kernel)
+
+            return [
+                *projections,
+                ops.GEMM(f"{label}_f_b_proj", 1, p, hd, bf16),
+                ops.GEMM(f"{label}_g_b_proj", 1, p, hd, bf16),
+                kernel("conv1d", conv),
+                kernel("delta_rule", core_kernel),
+                # Bounded-gate output RMSNorm on the attention output.
+                ops.ElementWise(f"{label}_onorm", 1, 2 * p, p, 0.8),
+                ops.GEMM(f"{label}_o_proj", 1, h, p, bf16),
+            ]
+
+        def attention(layer, context):
+            kda = d.layer_types[layer] == "linear_attention"
+            spec = dict(
+                name=f"attention_{layer}",
+                is_context=context,
+                layer_kind="kda" if kda else "sparse_mla",
+                hidden_size=h,
+                tp_size=tp,
+                num_heads=(d.linear_num_heads if kda else d.num_attention_heads) // tp,
+                head_dim=d.linear_head_dim if kda else d.qk_nope_head_dim,
+                q_lora_rank=d.q_lora_rank,
+                kv_lora_rank=d.kv_lora_rank,
+                value_head_dim=d.v_head_dim,
+                index_n_heads=d.index_n_heads,
+                index_head_dim=d.index_head_dim,
+                index_topk=d.index_topk,
+                index_pool=d.index_kpool,
+                conv_kernel=d.conv_kernel,
+                gate_lower_bound=d.gate_lower_bound,
+                projection_quant_mode="bfloat16"
+                if kda or backend_name == "vllm" or self.checkpoint_format == "nvfp4"
+                else "fp8_block",
+                kv_cache_dtype="fp8",
+                **identity,
+            )
+            if context:
+                self._cache_specs.append(json.dumps(spec))
+            # Sparse MLA is the one GLM-table op; KDA is generic GEMM + KDA kernels.
+            measured = _specs(kda_measured(layer, context)) if kda else []
+            return _native("Glm53Attention", measured=measured, **spec)
+
+        def primitive(name, role, context, children, measured):
+            return _native(
+                "Glm53Primitive",
+                name=name,
+                role=role,
+                tp_size=tp,
+                is_context=context,
+                hidden_size=h,
+                vocab_size=self._vocab_size,
+                token_selection="last_per_request" if role == "logits" else "all_scheduled",
+                output_dtype="float32" if role == "logits" and backend_name == "sglang" else "bfloat16",
+                collective={"allreduce": "all_reduce", "logits": "all_gather"}.get(role, "none"),
+                children=[json.loads(op._spec_json()) for op in children],
+                measured=_specs(measured),
+                **identity,
+            )
+
+        def allreduce(name, context):
+            # SOL keeps the NCCL ring child; measured TP all-reduce is the
+            # framework custom all-reduce, as for every other TP model.
+            return primitive(
+                name,
+                "allreduce",
+                context,
+                [ops.NCCL(name, 1, "all_reduce", h, tp, common.CommQuantMode.half)],
+                [ops.CustomAllReduce(f"{name}_custom", 1, h, tp)],
+            )
+
+        def mlp(layer, phase):
+            dense = d.mlp_layer_types[layer] == "dense"
+            width = (d.intermediate_size if dense else d.moe_intermediate_size * d.n_shared_experts) // tp
+            # The NVFP4 checkpoint excludes shared experts. The FP8 checkpoint
+            # quantizes them; attention exceptions are handled independently.
+            q = (
+                model_config.gemm_quant_mode
+                if dense or self.checkpoint_format == "fp8"
+                else common.GEMMQuantMode.bfloat16
+            )
+            label = "dense" if dense else "shared"
+            result = [
+                ops.GEMM(f"{phase}_{label}_gate_up_{layer}", 1, 2 * width, h, q),
+                ops.ElementWise(f"{phase}_{label}_swiglu_clamp10_{layer}", 1, 2 * width, width, 0.8),
+                ops.GEMM(f"{phase}_{label}_down_{layer}", 1, h, width, q),
+            ]
+            measured = list(result)
+            if not dense:
+                # Generic path: BF16 router GEMM row (known approximation: the
+                # serving gate has BF16 weights and FP32 output, which no
+                # generic gemm_perf dtype captures; negligible here) and the
+                # routed-expert MoE row. Pure TP dispatch/combine are the
+                # explicit attention/FFN all-reduces, so no MoEDispatch.
+                moe = ops.MoE(
+                    f"{phase}_moe_{layer}",
+                    1,
+                    h,
+                    d.moe_intermediate_size,
+                    d.num_experts_per_tok,
+                    d.n_routed_experts,
+                    tp,
+                    1,
+                    model_config.moe_quant_mode,
+                    "power_law_1.01"
+                    if model_config.workload_distribution == "power_law"
+                    else model_config.workload_distribution,
+                    1,
+                )
+                measured += [ops.GEMM(f"{phase}_router_{layer}", 1, d.n_routed_experts, h, bf16), moe]
+                result += [
+                    _native(
+                        "Glm53Router",
+                        name=f"router_{layer}",
+                        hidden_size=h,
+                        num_experts=d.n_routed_experts,
+                        topk=d.num_experts_per_tok,
+                        **identity,
+                    ),
+                    # The same instance as the measured child: SOL and
+                    # SILICON must price one routed-expert geometry.
+                    moe,
+                ]
+            module = _native(
+                "Glm53Ffn",
+                name=f"ffn_{layer}",
+                is_context=phase == "context",
+                is_dense=dense,
+                hidden_size=h,
+                intermediate_size=d.intermediate_size if dense else d.moe_intermediate_size,
+                num_experts=d.n_routed_experts,
+                topk=d.num_experts_per_tok,
+                tp_size=tp,
+                n_shared_experts=d.n_shared_experts,
+                swiglu_limit=d.swiglu_limit,
+                scoring_func=d.scoring_func,
+                routed_scaling_factor=d.routed_scaling_factor,
+                n_group=d.n_group,
+                topk_group=d.topk_group,
+                norm_topk_prob=d.norm_topk_prob,
+                gemm_quant_mode=model_config.gemm_quant_mode.name,
+                shared_quant_mode=(
+                    model_config.gemm_quant_mode if self.checkpoint_format == "fp8" else common.GEMMQuantMode.bfloat16
+                ).name,
+                moe_quant_mode=model_config.moe_quant_mode.name,
+                children=[json.loads(op._spec_json()) for op in result],
+                measured=_specs(measured),
+                **identity,
+            )
+            return [module, allreduce(f"ffn_allreduce_{layer}", phase == "context")]
+
+        for context in (True, False):
+            phase = "context" if context else "generation"
+            target = self.context_ops if context else self.generation_ops
+            embedding = [ops.Embedding("embedding_local", 1, self._vocab_size // tp, h, 0.3)]
+            target += [
+                primitive("embedding", "embedding", context, embedding, embedding),
+                allreduce("embedding_allreduce", context),
+                mhc("mhc_expand", "expand"),
+            ]
+            # Prefix caching adds framework state-checkpoint work: SGLang
+            # extra_buffer copies KDA conv/SSM state at 256-token boundaries in
+            # decode and on every chunk of 64+ new tokens in prefill; vLLM align
+            # mode does precopies at Mamba block crossings, which are hidden
+            # behind host prep under synchronous scheduling. It is intentionally
+            # not modeled: on GB300 measurements, modeling it changed Ops error
+            # only slightly and in opposite directions by backend/phase.
+            for layer in range(len(d.layer_types)):
+                if backend_name == "vllm":
+                    target.append(
+                        mhc("mhc_pre_attn_0", "pre") if layer == 0 else mhc(f"mhc_fused_attn_{layer}", "fused_post_pre")
+                    )
+                else:
+                    target.append(mhc(f"mhc_pre_attn_{layer}", "pre"))
+                target += [attention(layer, context), allreduce(f"attention_allreduce_{layer}", context)]
+                if backend_name == "vllm":
+                    target.append(mhc(f"mhc_fused_ffn_{layer}", "fused_post_pre"))
+                else:
+                    target += [mhc(f"mhc_post_attn_{layer}", "post"), mhc(f"mhc_pre_ffn_{layer}", "pre")]
+                target += mlp(layer, phase)
+                if backend_name == "sglang" or layer == len(d.layer_types) - 1:
+                    target.append(mhc(f"mhc_post_ffn_{layer}", "post"))
+            # Both native logits processors select the last scheduled token
+            # per request before the BF16 LM head and BF16 vocab all-gather.
+            # SGLang then casts the gathered output to FP32; vLLM returns BF16.
+            # Pinned sources and revisions: THIRD_PARTY_NOTICES.md.
+            logits = [
+                ops.GEMM("logits_local", 1, self._vocab_size // tp, h, common.GEMMQuantMode.bfloat16),
+                ops.NCCL("logits_vocab_gather", 1, "all_gather", self._vocab_size, tp, common.CommQuantMode.half),
+            ]
+            if backend_name == "sglang":
+                logits.append(
+                    _native(
+                        "Elementwise",
+                        name="logits_fp32_cast",
+                        scale_factor=1.0,
+                        bytes_per_token=6.0 * self._vocab_size,
+                        scale_num_tokens=1,
+                        seq_split=1,
+                    )
+                )
+            final_norm = [ops.ElementWise("final_norm_local", 1, h, h, 0.8)]
+            target += [
+                mhc("mhc_contract", "contract"),
+                primitive("final_norm", "final_norm", context, final_norm, final_norm),
+                primitive("logits", "logits", context, logits, logits),
+            ]
+        self._resident_weight_bytes = float(sum(op.get_weights() for op in self.context_ops))
+        # Generic GEMM/MoE FP8 weight inventory omits block scales; NVFP4's
+        # mapping already includes its one FP8 scale per16 packed weights.
+        if self.checkpoint_format == "fp8":
+            dense_elements = d.mlp_layer_types.count("dense") * 3 * h * d.intermediate_size // tp
+            moe_elements = (
+                d.mlp_layer_types.count("sparse")
+                * 3
+                * h
+                * d.moe_intermediate_size
+                * (d.n_routed_experts + d.n_shared_experts)
+                // tp
+            )
+            self._resident_weight_bytes += (dense_elements + moe_elements) * 4 / (128 * 128)
+        # Final RMSNorm is represented by a memory-only ElementWise op.
+        self._resident_weight_bytes += h * 2 + d.mlp_layer_types.count("sparse") * d.n_routed_experts * 4
+
+    def get_resident_weights_bytes(self) -> float:
+        return self._resident_weight_bytes
+
+    def get_additional_activation_bytes(self, num_tokens: int) -> float:
+        d = self.extra_params
+        # Reusable expanded BF16 residual buffers and FP32 mHC coefficients.
+        # Native paged-cache/graph/kernel workspace still needs GPU admission.
+        return float(num_tokens * (4 * d.hc_mult * d.hidden_size + 8 * (d.hc_mult + 2) * d.hc_mult))
+
+    def get_kvcache_bytes_per_sequence(self, seq_len: int) -> float:
+        return sum(core.glm53_cache_bytes(spec, seq_len) for spec in self._cache_specs)
+
+    def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
+        return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        # Reserve one fixed recurrent/tail state for every active scheduler
+        # slot before budgeting the global token pool's conservative slope.
+        fixed = self.get_kvcache_bytes_per_sequence(0)
+        slope = (self.get_kvcache_bytes_per_sequence(4) - fixed) / 4
+        return max(0, int((kv_budget_bytes - max_batch_size * fixed) // slope))

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -47,6 +48,8 @@ pub struct ValidatedAgenticGraph {
     pub(super) graph_digest: String,
     pub(super) nodes: Vec<AgenticNode>,
     pub(super) plays: Vec<AgenticPlay>,
+    /// Source hash for each graph-local hash ID in `AgenticNode::hash_ids`.
+    pub(super) hash_values: Arc<[u64]>,
 }
 
 pub type AgenticTrace = ValidatedAgenticGraph;
@@ -239,7 +242,9 @@ pub struct AgenticNode {
     pub(super) max_output_tokens: usize,
     pub(super) output_token_ids: Option<Vec<u32>>,
     pub(super) replay_key: Option<String>,
-    pub(super) hash_ids: Vec<u64>,
+    // Graph-local IDs, numbered first-seen over the graph's nodes. The graph's
+    // `hash_values` maps each back to its source hash.
+    pub(super) hash_ids: Vec<u32>,
     pub(super) not_before_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recorded_api_time_ms: Option<f64>,
@@ -285,6 +290,11 @@ impl ValidatedAgenticGraph {
 
     pub fn nodes(&self) -> &[AgenticNode] {
         &self.nodes
+    }
+
+    /// Source hash for a graph-local hash ID from `AgenticNode::hash_ids`.
+    pub fn hash_value(&self, hash_id: u32) -> u64 {
+        self.hash_values[hash_id as usize]
     }
 
     pub fn identity(&self) -> AgenticGraphIdentity {
@@ -334,7 +344,9 @@ impl AgenticNode {
         self.max_output_tokens
     }
 
-    pub fn hash_ids(&self) -> &[u64] {
+    /// Graph-local hash IDs; `ValidatedAgenticGraph::hash_value` gives each
+    /// one's source hash.
+    pub fn hash_ids(&self) -> &[u32] {
         &self.hash_ids
     }
 

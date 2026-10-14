@@ -188,9 +188,9 @@ impl AgenticPreparation {
                     "warmup"
                 };
                 let node = &snapshot.context.graph.nodes[source_index];
-                super::trace::validate_synthesizable_prompt(
+                super::trace::validate_synthesizable_prompt_len(
                     node.input_length,
-                    &snapshot.token_ids(source_index)?,
+                    node.hash_ids.len(),
                     snapshot.context.graph.block_size,
                 )?;
                 let mut identity = snapshot.identity_at(source_index);
@@ -306,9 +306,7 @@ impl AgenticPreparation {
             let (request, replay_hashes) = deferred_request_with_hashes(
                 metadata,
                 source.input_length,
-                lane.snapshot
-                    .token_ids(source_index)
-                    .expect("validated preparation token identities"),
+                lane.snapshot.token_ids(source_index),
                 lane.snapshot.context.graph.block_size,
                 self.include_replay_hashes.then_some(self.engine_block_size),
             );

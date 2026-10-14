@@ -21,7 +21,7 @@ use crate::replay::{
         AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
         LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
-        load_agentic_mooncake, load_weka_agentic_graph_with_options,
+        load_agentic_mooncake, load_weka_agentic_graph_cached,
     },
 };
 use crate::{
@@ -69,6 +69,9 @@ struct RuntimeTraffic {
     trace_block_size: Option<usize>,
     #[serde(default)]
     weka_nested_timestamp_basis: Option<WekaNestedTimestampBasis>,
+    /// Keep the loaded Weka graph for later runs in this process (sweeps).
+    #[serde(default)]
+    trace_graph_cache: bool,
     #[serde(default)]
     arrival_speedup_ratio: Option<f64>,
     #[serde(default)]
@@ -1216,6 +1219,61 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
         })
 }
 
+// Read the descriptor after canonical construction has pinned auto/fallback selection.
+// This does not construct another model or enable operation-level diagnostics.
+fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
+    match timing {
+        TimingModelConfig::External { provider, config } => {
+            let estimator = config
+                .get("estimation_mode")
+                .and_then(|value| value.as_str());
+            let is_fpm = matches!(estimator, Some("fpm_interpolation" | "fpm_regression"));
+            let profile = config.get("fpm_profile").filter(|_| is_fpm);
+            let data_version = if estimator == Some("op_level") {
+                config
+                    .get("backend_version")
+                    .and_then(|value| value.as_str())
+            } else {
+                profile
+                    .and_then(|value| value.get("model_revision"))
+                    .and_then(|value| value.as_str())
+            };
+            let data_identity = profile.map(|profile| {
+                serde_json::json!({
+                    "model": profile.get("model"),
+                    "model_revision": profile.get("model_revision"),
+                })
+            });
+            serde_json::json!({
+                "estimator": estimator,
+                "timing_source": provider,
+                "data_version": data_version,
+                "data_identity": data_identity,
+                "data_version_unavailable_reason": data_version.is_none().then_some(
+                    "selected estimator does not expose a data version"
+                ),
+            })
+        }
+        TimingModelConfig::Fixed { .. } | TimingModelConfig::Polynomial => {
+            let estimator = if matches!(timing, TimingModelConfig::Fixed { .. }) {
+                "fixed"
+            } else {
+                "polynomial"
+            };
+            serde_json::json!({
+                "estimator": estimator,
+                "timing_source": if estimator == "polynomial" { "built_in" } else { "configured" },
+                "data_version": null,
+                "data_version_unavailable_reason": if estimator == "polynomial" {
+                    "built-in timing does not use performance data"
+                } else {
+                    "configured timing does not use performance data"
+                },
+            })
+        }
+    }
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1443,7 +1501,7 @@ fn build_agentic_driver(
             .agentic_lanes
             .context("agentic_snapshot requires positive agentic_lanes")?;
         // Sample recorded time before applying speedup to remaining timers.
-        let prepared = graph.prepare_snapshots(lanes, *options)?;
+        let prepared = graph.into_prepared_snapshots(lanes, *options)?;
         let mut driver = if traffic.agentic_warmup {
             WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
         } else {
@@ -1563,12 +1621,13 @@ fn build_runtime_input(
                 "Weka agentic trace does not support concurrency load"
             );
             let requested_basis = traffic.weka_nested_timestamp_basis.unwrap_or_default();
-            let (trace, resolved_basis) = load_weka_agentic_graph_with_options(
+            let (trace, resolved_basis, _cache_hit) = load_weka_agentic_graph_cached(
                 &paths[0],
                 traffic.trace_block_size,
                 WekaImportOptions {
                     nested_timestamp_basis: requested_basis,
                 },
+                traffic.trace_graph_cache,
             )?;
             return Ok(BuiltRuntimeInput {
                 input: ReplayRuntimeInput::Workload(build_agentic_driver(
@@ -2248,6 +2307,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     };
     let mut power_sources = Vec::with_capacity(expected_power_sources);
     let mut coverage_sources = Vec::new();
+    let mut prediction_provenance = serde_json::Map::new();
 
     let replay_result = (|| -> Result<_> {
         match spec.topology.clone() {
@@ -2266,6 +2326,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
             }
+            prediction_provenance.insert("aggregated".into(), timing_provenance(&role.rank.timing_model));
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
             engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
@@ -2375,6 +2436,8 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             if let Some(timing) = decode_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &decode.rank));
             }
+            prediction_provenance.insert("prefill".into(), timing_provenance(&prefill.rank.timing_model));
+            prediction_provenance.insert("decode".into(), timing_provenance(&decode.rank.timing_model));
             engine_config.prefill = Some(prefill);
             engine_config.decode = Some(decode);
             if let Some(traffic) = traffic.as_mut()
@@ -2462,6 +2525,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     )?));
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    report_json["prediction_provenance"] = prediction_provenance.into();
     if let Some(coverage) = replay_fpm_coverage(&coverage_sources, Some(&report))? {
         report_json["fpm_query_coverage"] = coverage;
     }
@@ -2519,24 +2583,73 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         );
     }
     if record_per_request || !report.per_request.is_empty() {
-        let object = report_json
+        // Holds the key's place in the map; the records are written there during
+        // serialization, one `Value` at a time.
+        report_json
             .as_object_mut()
-            .context("AISimulate replay report did not serialize as an object")?;
-        object.insert(
-            "per_request".to_string(),
-            serde_json::to_value(&report.per_request)
-                .context("serializing AISimulate per-request report records")?,
-        );
+            .context("AISimulate replay report did not serialize as an object")?
+            .insert("per_request".to_string(), serde_json::Value::Null);
     }
-    let output = if let Some(artifacts) = artifacts {
-        serde_json::json!({
+    let report_json = ReportWithRecords {
+        report: &report_json,
+        records: &report.per_request,
+    };
+    if let Some(artifacts) = artifacts {
+        let output = serde_json::json!({
             "report": report_json,
             "artifacts": artifacts,
-        })
-    } else {
-        report_json
-    };
-    serde_json::to_string(&output).context("serializing AISimulate replay output")
+        });
+        return serde_json::to_string(&output).context("serializing AISimulate replay output");
+    }
+    serde_json::to_string(&report_json).context("serializing AISimulate replay output")
+}
+
+/// The report object with its `per_request` placeholder serialized as the
+/// records, each converted to `Value` on its own. The output equals inserting
+/// `serde_json::to_value(records)` and serializing the whole `Value`, without a
+/// `Value` tree for every record at once.
+struct ReportWithRecords<'a> {
+    report: &'a serde_json::Value,
+    records: &'a [crate::replay::PerRequestRecord],
+}
+
+impl serde::Serialize for ReportWithRecords<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let serde_json::Value::Object(object) = self.report else {
+            return self.report.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(object.len()))?;
+        for (key, value) in object {
+            if key == "per_request" {
+                map.serialize_entry(key, &RecordValues(self.records))?;
+            } else {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
+}
+
+struct RecordValues<'a>(&'a [crate::replay::PerRequestRecord]);
+
+impl serde::Serialize for RecordValues<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error, SerializeSeq};
+
+        let mut records = serializer.serialize_seq(Some(self.0.len()))?;
+        for record in self.0 {
+            records.serialize_element(&serde_json::to_value(record).map_err(S::Error::custom)?)?;
+        }
+        records.end()
+    }
 }
 
 fn replay_python_error(error: anyhow::Error) -> PyErr {
@@ -4845,6 +4958,24 @@ mod tests {
         assert_eq!(record["session_id"], "session-a");
         assert_eq!(record["turn_index"], 2);
         assert_eq!(record["metadata"]["caller_tag"], "binding");
+
+        // Streamed records serialize exactly like the whole report `Value`.
+        let replayed = Replayer::new(spec.clone(), ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        let mut summary = serde_json::to_value(&replayed).unwrap();
+        summary["per_request"] = serde_json::Value::Null;
+        let mut whole = summary.clone();
+        whole["per_request"] = serde_json::to_value(&replayed.per_request).unwrap();
+        let streamed = ReportWithRecords {
+            report: &summary,
+            records: &replayed.per_request,
+        };
+        assert_eq!(
+            serde_json::to_string(&streamed).unwrap(),
+            serde_json::to_string(&whole).unwrap()
+        );
 
         let captured: serde_json::Value =
             serde_json::from_str(&execute_json(&payload, true).unwrap()).unwrap();

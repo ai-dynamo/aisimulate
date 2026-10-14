@@ -633,6 +633,11 @@ fn invalid_snapshot_inputs_and_exhausted_identity_ranges_fail_before_execution()
         let cohort = PreparedAgenticSnapshots::from_plays(vec![play.clone()]).unwrap();
         assert!(WorkloadDriver::new_agentic_snapshots(cohort, 64, true, speedup).is_err());
     }
+    let mut misaligned = play.clone();
+    misaligned.evidence.requests.reverse();
+    let cohort = PreparedAgenticSnapshots::from_plays(vec![misaligned]).unwrap();
+    let error = WorkloadDriver::new_agentic_snapshots(cohort, 64, true, 1.0).unwrap_err();
+    assert!(error.to_string().contains("does not match its source play"));
 }
 
 #[test]

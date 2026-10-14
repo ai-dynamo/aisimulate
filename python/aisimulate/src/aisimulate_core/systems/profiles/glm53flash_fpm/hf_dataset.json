@@ -1,0 +1,439 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "08771888388a1ce9cd8d421b2e42f353fd5e2abb",
+  "profiles": {
+    "gb300-vllm-fp8-tp2": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "3629e61bd81c30ebb89878aed0270ba4092206ce0d7003a47eafdec0d4aee3d0",
+        "model_path": "zai-org/GLM-5.3-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "fp8_block",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp2/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "sha256": "c590d709a0ddc7d0b432f4fc607a6f97a902756d955555ed8e45921e02a9804c"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "sha256": "a1675b0d14bafd51013e48ce9fd772aa4f181fd51793a143e041f589c7d1724b"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp2/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-vllm-fp8-tp4": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "3629e61bd81c30ebb89878aed0270ba4092206ce0d7003a47eafdec0d4aee3d0",
+        "model_path": "zai-org/GLM-5.3-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "fp8_block",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "sha256": "887b74ff40469e8c39e3839d52203a9b0e65a0810a0425b11987a848f7df6260"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "sha256": "c80cebfda2df88b04d44aa104552ab9fe10ac2e3daf4d439cd2721800549ee79"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/vllm/0.31.0/pure-tp4/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-vllm-nvfp4-tp1": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "nvfp4",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "e54aa2aa8f86ce6416fba48da83ba5b551bffcb58070618a9e9ad820bb963886",
+        "model_path": "nvidia/GLM-5.3-Flash-NVFP4",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "nvfp4",
+        "moe_tp": 1,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 1,
+        "weight_quantization": "nvfp4"
+      },
+      "files": [
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp1/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "sha256": "a3d3ad924935474380f8b9cabf25cb51b8b3d3abdaa71de567be837b2ecf5577"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp1/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "sha256": "09bfd22b447730a649428c2dad67befd5bf3ca60b7c2f4f79937ec27066dfb5d"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp1/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-vllm-nvfp4-tp2": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "nvfp4",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "e54aa2aa8f86ce6416fba48da83ba5b551bffcb58070618a9e9ad820bb963886",
+        "model_path": "nvidia/GLM-5.3-Flash-NVFP4",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "nvfp4",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "nvfp4"
+      },
+      "files": [
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp2/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "sha256": "960b3aa187de794fba07e0ee8d4b9583b324a64b5ca5eab435247b7d44958c1f"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "sha256": "d044e7e612b26390738b2e1ced8b41abfad2a909e2704ef5138edbeac791d581"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp2/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-vllm-nvfp4-tp4": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "nvfp4",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "e54aa2aa8f86ce6416fba48da83ba5b551bffcb58070618a9e9ad820bb963886",
+        "model_path": "nvidia/GLM-5.3-Flash-NVFP4",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "nvfp4",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "nvfp4"
+      },
+      "files": [
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.parquet",
+          "sha256": "0a7d62334768aa61b99fc0b9ad96220eebb1961b0e8c702a642a834f12933f80"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/vllm/0.31.0/fpm_forward_perf.metadata.json",
+          "sha256": "9bc9c30797da668663f0b4d3e2ffd2fe1855801252c6cba388f79dbcf3ae09a6"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/vllm/0.31.0/pure-tp4/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-sglang-fp8-tp2": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "3629e61bd81c30ebb89878aed0270ba4092206ce0d7003a47eafdec0d4aee3d0",
+        "model_path": "zai-org/GLM-5.3-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "fp8_block",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp2/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.parquet",
+          "sha256": "b36960c57b070b6172a985fa2f57468a812ef22993e28079f500b1b113407896"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.metadata.json",
+          "sha256": "381bb42953558ca82b0a68675b26c847b212bda30bcb6a1b00a490d9583ec628"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp2/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-sglang-fp8-tp4": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "3629e61bd81c30ebb89878aed0270ba4092206ce0d7003a47eafdec0d4aee3d0",
+        "model_path": "zai-org/GLM-5.3-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "fp8_block",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "files": [
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.parquet",
+          "sha256": "0c1f9df5375f81955c4c911487ece18b840b4c17da9b8b50d1874efb58348ad9"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.metadata.json",
+          "sha256": "649f6629cf03943e24ca74160c976ff7fa36ea485fb79fba433a759fb9587dbc"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/gb300/sglang/0.5.20/pure-tp4/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-sglang-nvfp4-tp2": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "nvfp4",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "e54aa2aa8f86ce6416fba48da83ba5b551bffcb58070618a9e9ad820bb963886",
+        "model_path": "nvidia/GLM-5.3-Flash-NVFP4",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "nvfp4",
+        "moe_tp": 2,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 2,
+        "weight_quantization": "nvfp4"
+      },
+      "files": [
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp2/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.parquet",
+          "sha256": "0c988389787955fb355c1ecda753287316a56b55269947a368f76556b56b7aab"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.metadata.json",
+          "sha256": "ceb1f02d966bd716c8cf3d6d25fe8d31423dd486cb31997e46ca76999b2137c9"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp2/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    },
+    "gb300-sglang-nvfp4-tp4": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "nvfp4",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "e54aa2aa8f86ce6416fba48da83ba5b551bffcb58070618a9e9ad820bb963886",
+        "model_path": "nvidia/GLM-5.3-Flash-NVFP4",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "nvfp4",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb300",
+        "tp": 4,
+        "weight_quantization": "nvfp4"
+      },
+      "files": [
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.parquet",
+          "sha256": "ae2169da361180d64ccf436519885e02cbfd8d0dead7ce8aeb9a9b03185e45b6"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/gb300/sglang/0.5.20/fpm_forward_perf.metadata.json",
+          "sha256": "f93d6b017cfd23a63d0a087630a2e2e9b93e8b37a078747430f8160978fa4234"
+        },
+        {
+          "path": "data/nvidia--GLM-5.3-Flash-NVFP4/gb300/sglang/0.5.20/pure-tp4/fpm/provenance/systems.gb300.yaml",
+          "target": "gb300.yaml",
+          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
+        }
+      ]
+    }
+  }
+}
