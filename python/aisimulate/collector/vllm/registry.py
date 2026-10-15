@@ -159,13 +159,6 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE,
     ),
     OpEntry(
-        op="dsv4_hca_attn_module",
-        module="collector.vllm.collect_dsv4_attn",
-        get_func="get_dsv4_hca_attn_test_cases",
-        run_func="run_dsv4_sparse_kernel_worker",
-        perf_filename=PerfFile.DSV4_HCA_ATTN_MODULE,
-    ),
-    OpEntry(
         op="mhc_module",
         module="collector.vllm.collect_mhc_module",
         get_func="get_mhc_module_test_cases",

@@ -151,7 +151,7 @@ _GATE_TARGETS = (
     (r"^(gdn|kda)_gen", ("linear_attention",), "decode"),
     (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_ctx", ("attention", "dsa_indexer"), "prefill"),
     (r"^(attn|mla|dsa|dsv4|msa|trt_attn|trt_dsa|trt_mla)\w*?_gen", ("attention", "dsa_indexer"), "decode"),
-    (r"^(attn|mla|dsa|dsv4|msa)", ("attention", "dsa_indexer"), None),   # hca_attn, paged_mqa_logits, ...
+    (r"^(attn|mla|dsa|dsv4|msa)", ("attention", "dsa_indexer"), None),   # paged_mqa_logits, ...
 )
 # roles that are never a target: they are the glue around every op
 _NEVER_TARGET = frozenset({"infra", "kvcache", "norm_rope", "activation", "moe_infra"})

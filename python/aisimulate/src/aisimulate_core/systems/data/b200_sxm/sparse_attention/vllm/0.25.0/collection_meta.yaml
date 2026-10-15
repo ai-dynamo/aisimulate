@@ -40,22 +40,6 @@ tables:
       collected_at: '2026-09-15'
       rows: 768
       status: complete
-  dsv4_hca_attn_module_perf:
-    rows: 3918
-    status: complete
-    collections:
-    - collector_ref: c79cc132552deb677becc37f8139b0cca2b08d75
-      collector_hash: sha256:ff1a5d288300da98a3c6f38c4894c17ad896f05384afcac3d966971f27130b83
-      case_plan_hash: sha256:ff311865487afeebfbf526849e84ff3749335201ae74873e572766a06f91c63e
-      collected_at: '2026-09-15'
-      rows: 1960
-      status: complete
-    - collector_ref: c79cc132552deb677becc37f8139b0cca2b08d75
-      collector_hash: sha256:ff1a5d288300da98a3c6f38c4894c17ad896f05384afcac3d966971f27130b83
-      case_plan_hash: sha256:e6845638359ae7fe7aa5ec93a5aa90bac79287cb3cb80368d0e4a7ac814ea456
-      collected_at: '2026-09-15'
-      rows: 1958
-      status: complete
   dsv4_hca_context_module_perf:
     rows: 5840
     status: complete

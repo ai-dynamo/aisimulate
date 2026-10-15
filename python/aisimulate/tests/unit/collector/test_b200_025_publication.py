@@ -38,7 +38,9 @@ def test_published_025_metadata_loads_and_is_discoverable():
                 assert event["rows"] == source["source_rows"]
                 assert "classified_failures" not in event
                 assert isinstance(source["classified_failures"], int) and source["classified_failures"] >= 0
-    assert total_rows == report["total_published_rows"] == 419538
+    # 419538 at publication; the retired dsv4_hca_attn_module table (3918 rows) was
+    # removed 2026-10-15 and is listed under "withheld" with the reason.
+    assert total_rows == report["total_published_rows"] == 415620
 
 
 @pytest.mark.parametrize("field", ["unexpected_runtime_field", "classified_failures"])

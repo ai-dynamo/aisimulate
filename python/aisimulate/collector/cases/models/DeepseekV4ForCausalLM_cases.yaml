@@ -393,8 +393,6 @@ model_case_values:
     sparse_chunk_prefill_size: 8192
     sparse_max_full_sequence_length: 1048576
     sparse_tp_sizes:
-      hca_attn:
-        - 1
       paged_mqa_logits:
         - 1
 
@@ -423,16 +421,18 @@ framework_specific_op_cases:
     # live SDK query path (sdk/operations/dsv4.py: the CP chunk walk loads
     # PerfDataFilename.dsv4_paged_mqa_logits_module) and every shipped platform
     # carries the table. The 2026-10-05 b200 shard run lost it because this
-    # file still called it experimental (job 469988017). hca_attn / csa_attn
-    # stay registry-only: their SDK sidecars were retired (csa_attn never
-    # shipped data).
+    # file still called it experimental (job 469988017). The hca_attn /
+    # csa_attn sidecars were removed from the collector and SDK on 2026-10-15:
+    # their SDK readers had been retired (csa_attn never shipped data) and the
+    # registry-only ops failed every sm100 shard plan generated from the
+    # registry since 2026-10-05.
     dsv4_paged_mqa_logits_module:
       cases: all
     mhc_module:
       cases: all
   vllm:
     # These four full-module paths are consumed by the production DSV4 model.
-    # hca_attn / csa_attn remain registry-only (SDK sidecars retired);
+    # hca_attn / csa_attn were removed 2026-10-15 (see the sglang note above);
     # paged_mqa_logits is consumed (see the sglang note above) and shipped for
     # vllm 0.24/0.25. mHC is scheduled again (2026-10-11): the SDK queries
     # mhc pre/post rows on every backend, collector/vllm/collect_mhc_module.py

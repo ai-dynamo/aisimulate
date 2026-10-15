@@ -2516,10 +2516,6 @@ _DSV4_SPARSE_PAST_KV_LIST = _as_int_list(
 _DSV4_SPARSE_CHUNK_PREFILL_SIZE = int(_DSV4_CONFIG["sparse_chunk_prefill_size"])
 _DSV4_SPARSE_MAX_FULL_S = int(_DSV4_CONFIG["sparse_max_full_sequence_length"])
 _DSV4_SPARSE_TP_SIZES = _required_mapping(_DSV4_CONFIG["sparse_tp_sizes"], field_name="dsv4.sparse_tp_sizes")
-_DSV4_SPARSE_TP_LIST_ATTN = _as_int_list(
-    _DSV4_SPARSE_TP_SIZES["hca_attn"],
-    field_name="dsv4.sparse_tp_sizes.hca_attn",
-)
 _DSV4_SPARSE_TP_LIST_INDEXER = _as_int_list(
     _DSV4_SPARSE_TP_SIZES["paged_mqa_logits"],
     field_name="dsv4.sparse_tp_sizes.paged_mqa_logits",
@@ -2736,8 +2732,8 @@ def get_dsv4_hca_generation_test_cases():
 
 def get_dsv4_topk_calib_test_cases():
     """One case per model (the topk DELTA calibration is just another member of
-    the sparse-op family — same ``[model_path, kernel]`` shape as paged_mqa /
-    csa_attn / hca_attn, dispatched through ``run_dsv4_sparse_kernel_worker``).
+    the sparse-op family — same ``[model_path, kernel]`` shape as
+    paged_mqa_logits, dispatched through ``run_dsv4_sparse_kernel_worker``).
 
     The grid matches the CSA module data 1:1: the worker reads the
     already-collected ``dsv4_csa_*_module_perf.txt`` and benches exactly those
@@ -2750,7 +2746,11 @@ def get_dsv4_topk_calib_test_cases():
     return [[model_path, "topk"] for model_path in _selected_dsv4_calib_models()]
 
 
-DSV4_SPARSE_KERNELS = ("paged_mqa_logits", "hca_attn")
+# The CSA indexer scoring GEMM is the only sparse sub-kernel collected standalone.
+# hca_attn / csa_attn (FMLA sidecars) were removed 2026-10-15: retired SDK
+# placeholders with no query path, and registry-only ops that failed every
+# shard plan generated from the registry.
+DSV4_SPARSE_KERNELS = ("paged_mqa_logits",)
 
 
 def _build_dsv4_sparse_test_cases(
@@ -2758,7 +2758,6 @@ def _build_dsv4_sparse_test_cases(
     bs_list=None,
     isl_list=None,
     past_kv_list=None,
-    tp_list_attn=None,
     tp_list_indexer=None,
 ):
     """Generate ``(bs, isl, past_kv, tp_size, kernel, model)`` tuples.
@@ -2770,14 +2769,12 @@ def _build_dsv4_sparse_test_cases(
     bs_list = list(bs_list) if bs_list is not None else list(_DSV4_SPARSE_BS_LIST)
     isl_list = list(isl_list) if isl_list is not None else list(_DSV4_SPARSE_ISL_LIST)
     past_kv_list = list(past_kv_list) if past_kv_list is not None else list(_DSV4_SPARSE_PAST_KV_LIST)
-    tp_list_attn = list(tp_list_attn) if tp_list_attn is not None else list(_DSV4_SPARSE_TP_LIST_ATTN)
     tp_list_indexer = list(tp_list_indexer) if tp_list_indexer is not None else list(_DSV4_SPARSE_TP_LIST_INDEXER)
 
     cases = []
     for model_path in _selected_dsv4_models():
         for kernel in kernels:
-            tp_list = tp_list_attn if kernel == "hca_attn" else tp_list_indexer
-            for tp_size in tp_list:
+            for tp_size in tp_list_indexer:
                 for bs in bs_list:
                     for isl in isl_list:
                         if bs * isl > _DSV4_SPARSE_CHUNK_PREFILL_SIZE:
@@ -2787,8 +2784,6 @@ def _build_dsv4_sparse_test_cases(
                                 continue
                             full_s = isl + past_kv
                             if kernel == "paged_mqa_logits" and full_s < 4:
-                                continue
-                            if kernel == "hca_attn" and full_s < 64:
                                 continue
                             cases.append(
                                 [
@@ -2810,19 +2805,6 @@ def get_dsv4_paged_mqa_logits_test_cases():
     return [[model_path, "paged_mqa_logits"] for model_path in _selected_dsv4_models()]
 
 
-def get_dsv4_hca_attn_test_cases():
-    """One case per model. The worker derives shapes from the HCA module CSV
-    (hca_attn is the HCA c128 FMLA sub-kernel), 1:1 with the hca-module rows."""
-    return [[model_path, "hca_attn"] for model_path in _selected_dsv4_models()]
-
-
-def get_dsv4_csa_attn_test_cases():
-    """One case per model. The worker derives shapes from the CSA module CSV
-    (csa_attn is the CSA sparse FMLA over the topk-selected c4 positions),
-    1:1 with the csa-module rows — same source as paged_mqa_logits/topk."""
-    return [[model_path, "csa_attn"] for model_path in _selected_dsv4_models()]
-
-
 # Backward-compatible names for older PR comments/tests while the registry and
 # persisted perf files use the upstream DeepSeek-V4 op names.
 _DSV4_FLASH_CONFIG = _DSV4_CONFIG
@@ -2837,7 +2819,6 @@ _DSV4_FLASH_SPARSE_ISL_LIST = _DSV4_SPARSE_ISL_LIST
 _DSV4_FLASH_SPARSE_PAST_KV_LIST = _DSV4_SPARSE_PAST_KV_LIST
 _DSV4_FLASH_SPARSE_CHUNK_PREFILL_SIZE = _DSV4_SPARSE_CHUNK_PREFILL_SIZE
 _DSV4_FLASH_SPARSE_MAX_FULL_S = _DSV4_SPARSE_MAX_FULL_S
-_DSV4_FLASH_SPARSE_TP_LIST_ATTN = _DSV4_SPARSE_TP_LIST_ATTN
 _DSV4_FLASH_SPARSE_TP_LIST_INDEXER = _DSV4_SPARSE_TP_LIST_INDEXER
 DSV4_FLASH_SPARSE_KERNELS = DSV4_SPARSE_KERNELS
 _dsv4_flash_config = _dsv4_config
@@ -2860,4 +2841,3 @@ get_dsv4_flash_hca_context_test_cases = get_dsv4_hca_context_test_cases
 get_dsv4_flash_csa_generation_test_cases = get_dsv4_csa_generation_test_cases
 get_dsv4_flash_hca_generation_test_cases = get_dsv4_hca_generation_test_cases
 get_dsv4_flash_paged_mqa_logits_test_cases = get_dsv4_paged_mqa_logits_test_cases
-get_dsv4_flash_hca_attn_test_cases = get_dsv4_hca_attn_test_cases

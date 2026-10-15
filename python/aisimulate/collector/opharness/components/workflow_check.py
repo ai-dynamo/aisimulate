@@ -418,9 +418,9 @@ _OP_GATE_FAMILIES = {
     "msa_context_module": [r"^msa\w*_ctx"],
     "msa_generation_module": [r"^msa\w*_gen"],
     "dsv4_csa_context_module": [r"^dsv4_csa_ctx"], "dsv4_csa_generation_module": [r"^dsv4_csa_gen"],
-    "dsv4_csa_attn_module": [r"^dsv4_csa_attn"], "dsv4_csa_topk_calib": None,  # calibration helper, not a serving op
+    "dsv4_csa_topk_calib": None,  # calibration helper, not a serving op
     "dsv4_hca_context_module": [r"^dsv4_hca_ctx"], "dsv4_hca_generation_module": [r"^dsv4_hca_gen"],
-    "dsv4_hca_attn_module": [r"^dsv4_hca_attn"], "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
+    "dsv4_paged_mqa_logits_module": [r"^dsv4_paged_mqa"],
     "glm5_dsa_attn_module": [r"^glm5_dsa"], "glm5_mqa_logits_module": [r"^glm5_mqa"], "glm5_topk_module": [r"^glm5_topk"],
     "mhc_module": None,  # collector measures the no-norm mhc_pre by producer/consumer contract (SDK bills attn_norm separately); serving fuses the norm -> explained deviation, kept under facts/pathdiff/explained
     "gdn": [r"^gdn_ctx", r"^gdn_gen"],

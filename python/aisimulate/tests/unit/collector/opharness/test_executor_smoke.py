@@ -38,8 +38,8 @@ def test_judge_run_statuses(es, tmp_path):
 def test_shard_ops_dedups_shards_of_one_op(es, tmp_path):
     p = tmp_path / "shards.yaml"
     p.write_text(yaml.safe_dump({"shards": [{"op": "gemm", "name": "bf16"}, {"op": "gemm", "name": "fp8"},
-                                            {"op": "dsv4_csa_attn_module", "name": "all"}]}))
-    assert es.shard_ops(p) == ["gemm", "dsv4_csa_attn_module"]
+                                            {"op": "moe", "name": "all"}]}))
+    assert es.shard_ops(p) == ["gemm", "moe"]
 
 
 def test_not_in_plan_message_is_recognised(es):
@@ -48,8 +48,9 @@ def test_not_in_plan_message_is_recognised(es):
 
 
 def test_plan_check_reproduces_the_pipeline_refusal_on_a_cpu(es):
-    """The three research-only dsv4 ops the upstream shard plan carried are refused by
-    --model-cases-full (case file: 'do not schedule them in the default model plan');
+    """An op another backend's registry owns (trtllm mamba2) is a valid --ops choice but
+    absent from the sglang --model-cases-full plan — the shape of the stale shard plans
+    that carried the since-removed dsv4 FMLA sidecar ops (2026-10-05 .. 2026-10-15);
     gemm is in the plan. No framework, no GPU."""
-    assert es.plan_check_one("sglang", "dsv4_csa_attn_module", python=sys.executable)["status"] == "not_in_plan"
+    assert es.plan_check_one("sglang", "mamba2", python=sys.executable)["status"] == "not_in_plan"
     assert es.plan_check_one("sglang", "gemm", python=sys.executable)["status"] == "in_plan"

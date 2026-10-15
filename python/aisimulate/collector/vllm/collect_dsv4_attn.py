@@ -42,7 +42,6 @@ from collector.case_generator import (
     _DSV4_SPARSE_ISL_LIST,
     _DSV4_SPARSE_MAX_FULL_S,
     _DSV4_SPARSE_PAST_KV_LIST,
-    _DSV4_SPARSE_TP_LIST_ATTN,
     _DSV4_SPARSE_TP_LIST_INDEXER,
     DSV4_ATTN_KINDS,
     DSV4_SPARSE_KERNELS,
@@ -83,15 +82,12 @@ __compat__ = "vllm>=0.30.0,<=0.30.0"
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
 ARCHITECTURE = "DeepseekV4ForCausalLM"
 ATTN_KIND_TO_COMPRESS_RATIO = {"csa": 4, "hca": 128}
-SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa", "hca_attn": "hca"}
-SPARSE_KERNEL_TO_OP_NAME = {
-    "paged_mqa_logits": "dsv4_paged_mqa_logits_module",
-    "hca_attn": "dsv4_hca_attn_module",
-}
-SPARSE_KERNEL_TO_PERF_FILE = {
-    "paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE,
-    "hca_attn": PerfFile.DSV4_HCA_ATTN_MODULE,
-}
+# paged_mqa_logits (the CSA indexer scoring GEMM) is the only standalone sparse
+# sub-kernel; the hca_attn FMLA sidecar was removed 2026-10-15 (retired SDK
+# placeholder, see case_generator.DSV4_SPARSE_KERNELS).
+SPARSE_KERNEL_TO_ATTN_KIND = {"paged_mqa_logits": "csa"}
+SPARSE_KERNEL_TO_OP_NAME = {"paged_mqa_logits": "dsv4_paged_mqa_logits_module"}
+SPARSE_KERNEL_TO_PERF_FILE = {"paged_mqa_logits": PerfFile.DSV4_PAGED_MQA_LOGITS_MODULE}
 MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 SUPPORTED_GEMM_TYPES = {"fp8_block"}
 DEFAULT_MAX_SEQ_LEN = 65536
@@ -709,46 +705,6 @@ def _bench_paged_mqa_logits_kernel(
     return result
 
 
-def _bench_mla_sparse_op(
-    *,
-    attn_module: DeepseekV4Attention,
-    vllm_config,
-    metadata,
-    positions: torch.Tensor,
-    num_tokens: int,
-    device: str,
-    warming_up: int,
-    test_ite: int,
-) -> dict:
-    sparse_attn = attn_module
-    q = torch.full(
-        (num_tokens, sparse_attn.padded_heads, sparse_attn.head_dim),
-        0.01,
-        dtype=torch.bfloat16,
-        device=device,
-    )
-    kv = torch.zeros((num_tokens, sparse_attn.head_dim), dtype=torch.bfloat16, device=device)
-    output = torch.empty_like(q)
-
-    with set_current_vllm_config(vllm_config), set_forward_context(metadata, vllm_config), torch.inference_mode():
-        sparse_attn.forward_mqa(q, kv, positions, output)
-        torch.cuda.synchronize()
-
-        def kernel_func():
-            sparse_attn.forward_mqa(q, kv, positions, output)
-
-        with benchmark_with_power(
-            device=torch.device(device),
-            kernel_func=kernel_func,
-            num_warmups=warming_up,
-            num_runs=test_ite,
-            repeat_n=1,
-            use_cuda_graph=True,
-        ) as result:
-            pass
-    return result
-
-
 def _bench_sparse_kernel_shape(
     *,
     model_path: str,
@@ -769,64 +725,21 @@ def _bench_sparse_kernel_shape(
         raise ValueError(f"invalid sparse sequence length: isl={isl}, past_kv={past_kv}")
 
     attn_kind = SPARSE_KERNEL_TO_ATTN_KIND[kernel]
-    is_context = isl > 1
-    query_len = isl
-    num_tokens = batch_size * query_len
+    num_tokens = batch_size * isl
 
-    if kernel == "paged_mqa_logits":
-        hf_config = SimpleNamespace(**_read_model_config(model_path))
-        architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-        native_num_heads = int(hf_config.num_attention_heads)
-        local_num_heads = native_num_heads // tp_size
-        backend_name = "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits"
-        result = _bench_paged_mqa_logits_kernel(
-            hf_config=hf_config,
-            num_query_rows=num_tokens,
-            past_kv=past_kv,
-            device=device,
-            warming_up=warming_up,
-            test_ite=test_ite,
-        )
-    else:
-        with (
-            _tp_simulation(tp_size),
-            _create_dsv4_attention_module(
-                model_path=model_path,
-                attn_kind=attn_kind,
-                batch_size=batch_size,
-                seq_len=full_seq_len,
-                tp_size=tp_size,
-                is_context=is_context,
-                device=device,
-                query_len=query_len,
-            ) as (attn_module, vllm_config),
-        ):
-            common = _make_common_metadata(
-                batch_size=batch_size,
-                seq_len=full_seq_len,
-                is_context=is_context,
-                query_len=query_len,
-                device=device,
-            )
-            metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
-            positions = common.positions
-            hf_config = vllm_config.model_config.hf_config
-            architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
-            native_num_heads = int(hf_config.num_attention_heads)
-            local_num_heads = int(attn_module.n_local_heads)
-            concrete_layer = vllm_config.compilation_config.static_forward_context[attn_module.prefix]
-            backend_name = concrete_layer.get_attn_backend().get_name()
-            result = _bench_mla_sparse_op(
-                attn_module=attn_module,
-                vllm_config=vllm_config,
-                metadata=metadata,
-                positions=positions,
-                num_tokens=num_tokens,
-                device=device,
-                warming_up=warming_up,
-                test_ite=test_ite,
-            )
-            del attn_module, vllm_config, metadata, common, positions
+    hf_config = SimpleNamespace(**_read_model_config(model_path))
+    architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
+    native_num_heads = int(hf_config.num_attention_heads)
+    local_num_heads = native_num_heads // tp_size
+    backend_name = "vllm.utils.deep_gemm.fp8_fp4_paged_mqa_logits"
+    result = _bench_paged_mqa_logits_kernel(
+        hf_config=hf_config,
+        num_query_rows=num_tokens,
+        past_kv=past_kv,
+        device=device,
+        warming_up=warming_up,
+        test_ite=test_ite,
+    )
 
     latency = float(result["latency_ms"])
 
@@ -835,7 +748,7 @@ def _bench_sparse_kernel_shape(
             {
                 "model": model_path,
                 "architecture": architecture,
-                "mla_dtype": "fp8_e4m3" if kernel == "paged_mqa_logits" else "bfloat16",
+                "mla_dtype": "fp8_e4m3",
                 "kv_cache_dtype": "fp8",
                 "gemm_type": "fp8_block",
                 # Sparse-op consumers key ``num_heads`` by the native model
@@ -948,7 +861,7 @@ def _build_vllm_dsv4_sparse_test_cases(kernel: str) -> list[list]:
     if not model_paths:
         return []
 
-    tp_list = _DSV4_SPARSE_TP_LIST_ATTN if kernel == "hca_attn" else _DSV4_SPARSE_TP_LIST_INDEXER
+    tp_list = _DSV4_SPARSE_TP_LIST_INDEXER
     if "--smoke" in sys.argv:
         smoke_shapes = [
             (1, 1, 8192),
@@ -1091,10 +1004,6 @@ def get_dsv4_hca_generation_test_cases():
 
 def get_dsv4_paged_mqa_logits_test_cases():
     return _build_vllm_dsv4_sparse_test_cases("paged_mqa_logits")
-
-
-def get_dsv4_hca_attn_test_cases():
-    return _build_vllm_dsv4_sparse_test_cases("hca_attn")
 
 
 def main() -> None:

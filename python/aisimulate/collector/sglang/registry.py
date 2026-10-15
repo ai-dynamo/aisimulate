@@ -233,28 +233,6 @@ REGISTRY: list[OpEntry] = [
         # hardware-validate through the sanctioned plan.
         unverified_sms=(120,),
     ),
-    # The standalone HCA/CSA FMLA sub-kernel collectors require the
-    # ``flash_mla`` package, which the pinned 0.5.14 image does not ship (the
-    # serving path uses the bundled sgl-kernel FlashMLA instead); no platform
-    # has ever produced rows for them. Keep them parked as unverified until a
-    # wired backend exists, instead of letting the getter silently enumerate
-    # zero cases.
-    OpEntry(
-        op="dsv4_hca_attn_module",
-        module="collector.sglang.deepseekv4_sparse_modules",
-        get_func="get_dsv4_hca_attn_test_cases",
-        run_func="run_dsv4_sparse_kernel_worker",
-        perf_filename=PerfFile.DSV4_HCA_ATTN_MODULE,
-        unverified=True,
-    ),
-    OpEntry(
-        op="dsv4_csa_attn_module",
-        module="collector.sglang.deepseekv4_sparse_modules",
-        get_func="get_dsv4_csa_attn_test_cases",
-        run_func="run_dsv4_sparse_kernel_worker",
-        perf_filename=PerfFile.DSV4_CSA_ATTN_MODULE,
-        unverified=True,
-    ),
     # CSA topk_512 DELTA calibration (flat vs top_last) — feeds the
     # degenerate->representative topK correction in perf_database.
     OpEntry(

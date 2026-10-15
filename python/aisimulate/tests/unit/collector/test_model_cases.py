@@ -1580,7 +1580,8 @@ def test_model_cases_path_can_infer_model_path():
     assert "dsv4_csa_context_module" in plan.selected_ops
     assert "dsv4_csa_topk_calib" in plan.selected_ops
     assert "mhc_module" in plan.selected_ops
-    # the SDK's only live sparse sidecar (CP chunk walk) is planned; the retired ones are not
+    # the SDK's only live sparse sidecar (CP chunk walk) is planned; the FMLA sidecars
+    # (hca_attn / csa_attn) were removed from the registry on 2026-10-15
     assert "dsv4_paged_mqa_logits_module" in plan.selected_ops
     assert {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}.isdisjoint(plan.selected_ops)
 
@@ -1636,7 +1637,7 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "dsv4_csa_generation_module",
         "dsv4_hca_generation_module",
     }
-    registry_only_ops = {"dsv4_hca_attn_module"}
+    removed_sidecar_ops = {"dsv4_hca_attn_module", "dsv4_csa_attn_module"}  # removed 2026-10-15
     plan = build_collection_case_plan(backend="vllm", model_path="sgl-project/DeepSeek-V4-Pro-FP8")
 
     assert plan.ops == [
@@ -1649,9 +1650,10 @@ def test_vllm_024_schedules_consumed_dsv4_modules_only():
         "mhc_module",  # SDK queries mhc pre/post on every backend; scheduled again 2026-10-11
         "moe",
     ]
+    registered_ops = {entry.op for entry in REGISTRY}
     assert consumed_dsv4_ops <= plan.selected_ops
-    assert registry_only_ops.isdisjoint(plan.selected_ops)
-    assert consumed_dsv4_ops | registry_only_ops <= {entry.op for entry in REGISTRY}
+    assert consumed_dsv4_ops <= registered_ops
+    assert removed_sidecar_ops.isdisjoint(registered_ops)
 
 
 def test_model_architecture_can_select_case_file():
@@ -2288,8 +2290,11 @@ def test_msa_head_axis_derives_from_declared_shards():
     GQA-style head grid (owner decision 2026-09-29; TP 16 is the ceiling)."""
     from collector.case_generator import get_mla_module_model_specs, get_msa_head_counts
 
-    (spec,) = [s for s in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
-               if s.model_path == "MiniMaxAI/MiniMax-M3"]
+    (spec,) = [
+        s
+        for s in get_mla_module_model_specs(attention_type="msa", apply_model_filter=False)
+        if s.model_path == "MiniMaxAI/MiniMax-M3"
+    ]
     assert spec.tensor_parallel_sizes == (1, 2, 4, 8, 16)
     for backend in ("vllm", "trtllm", "sglang"):
         heads = get_msa_head_counts(backend)

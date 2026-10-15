@@ -75,11 +75,12 @@ class PerfFile(str, Enum):
     DSV4_HCA_CONTEXT_MODULE = "dsv4_hca_context_module_perf.txt"
     DSV4_CSA_GENERATION_MODULE = "dsv4_csa_generation_module_perf.txt"
     DSV4_HCA_GENERATION_MODULE = "dsv4_hca_generation_module_perf.txt"
-    # DeepSeek-V4 sparse-kernel data — bench-collected (paged_mqa_logits +
-    # hca_attn + csa_attn), each 1:1 with its owning CSA/HCA module rows.
+    # DeepSeek-V4 sparse-kernel data — the CSA indexer scoring sub-kernel,
+    # bench-collected 1:1 with its owning CSA module rows. The hca_attn /
+    # csa_attn FMLA sidecars were removed end to end on 2026-10-15: their SDK
+    # readers had been retired (no query path; csa_attn never shipped data)
+    # and the registry-only ops failed every shard that named them.
     DSV4_PAGED_MQA_LOGITS_MODULE = "dsv4_paged_mqa_logits_module_perf.txt"
-    DSV4_HCA_ATTN_MODULE = "dsv4_hca_attn_module_perf.txt"
-    DSV4_CSA_ATTN_MODULE = "dsv4_csa_attn_module_perf.txt"
     # DeepSeek-V4 CSA topk_512 degenerate-vs-representative DELTA calibration.
     # SGLang 0.5.14 rows qualify flat/top_last by the executed v1/v2 variant.
     DSV4_CSA_TOPK_CALIB = "dsv4_csa_topk_calib_perf.txt"
