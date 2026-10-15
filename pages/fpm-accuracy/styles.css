@@ -15,6 +15,7 @@
 .predictor-regression { --predictor-color: #818cf8; }
 .predictor-warmup { --predictor-color: #2dd4bf; }
 .predictor-nowarmup { --predictor-color: #fb923c; }
+.predictor-learned { --predictor-color: #f472b6; }
 .predictor-card h3 { margin: 0; font-size: 14px; font-weight: 600; }
 .predictor-card > p { margin: 10px 0 16px; min-height: 4.8em; }
 .predictor-card dl { display: grid; grid-template-columns: auto 1fr; gap: 10px 12px; margin: 0 0 16px; font-size: 12px; line-height: 1.5; }

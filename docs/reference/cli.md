@@ -52,6 +52,23 @@ illustrate the output format. Captured detail examples are simulation results, n
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
 
+### Eager execution and CUDA graphs
+
+These flags control the vLLM worker used for FPM collection. `--enforce-eager`
+is a worker flag, not an `aisimulate predict` or `onboard init` option.
+
+| Setting | CUDA graphs | `torch.compile` |
+|---|---|---|
+| Worker `--enforce-eager` | Disabled; eager execution. | Disabled. |
+| Collector `--fpm-enforce-eager` | Disabled; emits worker `--enforce-eager`. | Disabled. |
+| Onboarding `--cudagraph-mode NONE` / worker `cudagraph_mode=NONE` | Disabled. | Unchanged; may remain enabled. |
+
+See [vLLM's compilation guide](https://docs.vllm.ai/en/stable/design/debug_vllm_compile/)
+for the worker flag semantics. DSV4.1 onboarding automatically selects the
+required eager setting from model metadata; users need no extra flag. The
+[FPM self-service guide](../perf-model/fpm-self-service/implementation.md#serving-roles-and-cuda-graph-settings)
+explains the current qualification limit and conflicting graph settings.
+
 <a id="override-semantics"></a>
 
 ### Override Semantics
@@ -216,6 +233,20 @@ rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.
 
+Normal prediction output includes timing provenance without `--detail`. The
+`prediction_provenance` summary maps each worker role to its effective `estimator`,
+`timing_source`, and `data_version`. Operation-level AIC timing reports the resolved
+performance-database backend version, including resolution of version aliases.
+FPM estimators report the resolved profile revision as `data_version` and preserve
+the profile model/revision in `data_identity`. Without a profile revision, they
+report a null version with a reason. Fixed/polynomial timing also has no data
+version; polynomial timing reports source `built_in`, which covers both the default
+and explicit polynomial selection. Its unavailable reason names built-in timing;
+fixed timing uses `configured` and a matching reason. Custom runners that omit provenance report an
+explicit `unavailable_reason`. Malformed runner provenance fails before report
+output with a diagnostic naming the invalid field. These are the executed estimator's values, not the
+requested `auto` mode. The same fields appear in saved `prediction.json`.
+
 <a id="prediction-details"></a>
 
 ### Prediction details
@@ -324,6 +355,14 @@ observations. For a new model, follow the
 <a id="troubleshooting"></a>
 
 ## Troubleshooting
+
+When no requests complete, `predict` saves its report but exits `1`. The table
+marks the prediction invalid; JSON includes `prediction_status: invalid`,
+`stop_reason: no_completed_requests`, and an actionable `diagnostic`. Serving
+latency and throughput values, including processing-rate aliases, are `null`
+(unavailable), not valid zero samples. The invalid banner also appears in analytical EPD tables.
+The stop reason identifies the observed outcome, not a proven scheduler cause.
+Check KV capacity against request lengths, context limits, and traffic stop limits.
 
 | Symptom | What to check | Example fix |
 |---|---|---|

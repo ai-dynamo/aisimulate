@@ -3294,6 +3294,190 @@ def test_simulation_perf_invocations(tmp_path, self_compare, fail_first, count):
         )
 
 
+_REQUEST_API = (
+    "pub struct RequestId(u64);\n\n"
+    "/// Runtime-neutral request.\n"
+    "#[derive(Debug, Clone)]\n"
+    "pub struct Request {\n"
+    "    /// Stable request identity.\n"
+    "    pub request_id: Uuid,\n"
+    "    pub tokens: Vec<u32>,\n"
+    "    pub max_output_tokens: usize,\n"
+    '    #[serde(default, skip_serializing_if = "Option::is_none")]\n'
+    "    pub output_token_ids: Option<Vec<u32>>,\n"
+    "{extra}}\n\n"
+    "pub enum Command {\n    Submit(Request),\n}\n"
+)
+_PLACEMENT_API = (
+    "pub struct PlacementCacheSample {\n    pub isl_blocks: u32,\n}\n\n"
+    "pub struct Placement {\n"
+    "    pub request_id: Uuid,\n"
+    "    pub scheduler_id: usize,\n"
+    "    pub reported_overlap_tokens: usize,\n"
+    "    pub cache_sample: Option<PlacementCacheSample>,\n"
+    "    /// Placement-policy replica.\n"
+    "    pub placement_replica_id: Option<usize>,\n"
+    "{extra}}\n\n"
+    "pub trait PlacementPolicy<Request> {}\n"
+)
+_REQUEST_LITERAL = (
+    "    pub(super) fn native_request(&self, request: DirectRequest) -> Request {\n"
+    "        let request_id = request.uuid.unwrap_or_else(Uuid::new_v4);\n"
+    "        Request {\n"
+    "            request_id,\n"
+    "            tokens: request.tokens,\n"
+    "            max_output_tokens: request.max_output_tokens,\n"
+    "            output_token_ids: request.output_token_ids,\n"
+    "        }\n"
+    "    }\n"
+)
+_PLACEMENT_LITERAL = (
+    "fn other() -> Placement {\n    todo!()\n}\n\n"
+    "    fn placement(&self, admission: WorkerAdmission) -> Placement {\n"
+    "        Placement {\n"
+    "            request_id: admission.uuid,\n"
+    "            scheduler_id: admission.worker_idx,\n"
+    "            placement_replica_id: None,\n"
+    "            reported_overlap_tokens: admission.overlap_blocks as usize\n"
+    "                * self.router.block_size as usize,\n"
+    "            cache_sample: Some(PlacementCacheSample {\n"
+    "                isl_blocks: admission.isl_blocks,\n"
+    "            }),\n"
+    "        }\n"
+    "    }\n"
+)
+_MARKER = "// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+
+
+def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra="", request_literal=_REQUEST_LITERAL):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    sources = {}
+    sites = []
+    for site, api, extra, literal in zip(
+        builder.OPTIONAL_FIELD_LITERALS,
+        (_REQUEST_API, _PLACEMENT_API),
+        (request_extra, placement_extra),
+        (request_literal, _PLACEMENT_LITERAL),
+        strict=True,
+    ):
+        (core / site.api).parent.mkdir(parents=True, exist_ok=True)
+        (core / site.api).write_text(api.replace("{extra}", extra))
+        path = dynamo / site.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(literal)
+        sources[site.path] = literal
+        sites.append(site._replace(sha256=hashlib.sha256(literal.encode()).hexdigest()))
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", tuple(sites))
+    return builder, core, dynamo, sources
+
+
+@pytest.mark.parametrize(
+    ("request_extra", "placement_extra", "inserted"),
+    [
+        ("", "", {}),
+        (
+            "    /// Optional session attribution.\n"
+            '    #[serde(default, skip_serializing_if = "Option::is_none")]\n'
+            "    pub session_id: Option<String>,\n",
+            "",
+            {"Request": ["session_id"]},
+        ),
+        (
+            "    pub kv_hint: Option<KvHintSource>,\n    pub session_id: Option<String>,\n",
+            "    /// Receiving-engine hints.\n    pub kv_hints: std::option::Option<HashMap<String, Vec<u32>>>,\n",
+            {"Request": ["kv_hint", "session_id"], "Placement": ["kv_hints"]},
+        ),
+        (
+            '    /// Closes a `}` block; see "}" too.\n    pub session_id: Option<String>,\n',
+            "",
+            {"Request": ["session_id"]},
+        ),
+    ],
+)
+def test_simulation_dynamo_optional_literal_fields(tmp_path, monkeypatch, request_extra, placement_extra, inserted):
+    builder, core, dynamo, sources = _literal_fixture(tmp_path, monkeypatch, request_extra, placement_extra)
+    records = builder.patch_optional_literal_fields(core, dynamo)
+    expected = {
+        "Request": _REQUEST_LITERAL.replace(
+            "            output_token_ids: request.output_token_ids,\n        }\n",
+            "            output_token_ids: request.output_token_ids,\n"
+            + "".join(
+                f"            {line}"
+                for line in [_MARKER] + [f"{name}: None,\n" for name in inserted.get("Request", [])]
+            )
+            + "        }\n",
+        )
+        if "Request" in inserted
+        else _REQUEST_LITERAL,
+        "Placement": _PLACEMENT_LITERAL.replace(
+            "            }),\n        }\n",
+            "            }),\n"
+            + "".join(
+                f"            {line}"
+                for line in [_MARKER] + [f"{name}: None,\n" for name in inserted.get("Placement", [])]
+            )
+            + "        }\n",
+        )
+        if "Placement" in inserted
+        else _PLACEMENT_LITERAL,
+    }
+    assert records == [
+        {
+            "path": site.path,
+            "struct": site.struct,
+            "before_sha256": hashlib.sha256(sources[site.path].encode()).hexdigest(),
+            "inserted_fields": inserted.get(site.struct, []),
+            "after_sha256": hashlib.sha256(expected[site.struct].encode()).hexdigest(),
+        }
+        for site in builder.OPTIONAL_FIELD_LITERALS
+    ]
+    for site in builder.OPTIONAL_FIELD_LITERALS:
+        assert (dynamo / site.path).read_text() == expected[site.struct]
+
+
+_SESSION = "    pub session_id: Option<String>,\n"
+
+
+# Each case would otherwise insert `session_id: None`; no file may be written.
+@pytest.mark.parametrize(
+    ("request_extra", "placement_extra", "request_literal", "bad_sha", "error"),
+    [
+        (_SESSION + "    pub priority: u8,\n", "", _REQUEST_LITERAL, False, r"must set .*\['priority'\]"),
+        (_SESSION, "    pub(crate) note: Option<u8>,\n", _REQUEST_LITERAL, False, r"must set .*\['note'\]"),
+        (
+            _SESSION,
+            "",
+            _REQUEST_LITERAL.replace("            request_id,\n", "            request_id,\n            legacy: 0,\n"),
+            False,
+            r"no longer has: \['legacy'\]",
+        ),
+        (_SESSION, "", _REQUEST_LITERAL, True, "kv_router/mod.rs differs from reviewed source"),
+        (
+            _SESSION + '    #[cfg(target_os = "windows")]\n    pub hint: Option<u8>,\n',
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"conditional \(`cfg`\) fields",
+        ),
+    ],
+)
+def test_simulation_dynamo_optional_literal_fields_fail_closed(
+    tmp_path, monkeypatch, request_extra, placement_extra, request_literal, bad_sha, error
+):
+    builder, core, dynamo, sources = _literal_fixture(
+        tmp_path, monkeypatch, request_extra, placement_extra, request_literal
+    )
+    if bad_sha:
+        request, placement = builder.OPTIONAL_FIELD_LITERALS
+        monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (request, placement._replace(sha256="0" * 64)))
+    with pytest.raises(ValueError, match=error):
+        builder.patch_optional_literal_fields(core, dynamo)
+    for path, text in sources.items():
+        assert (dynamo / path).read_text() == text
+
+
 @pytest.mark.parametrize("wrong_core", [False, True])
 def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
     from scripts.performance import build_simulation_dynamo as builder
@@ -3314,15 +3498,21 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     built = []
     patched = []
     compatibility = {"api_has_state_bytes": True, "token_only_state_bytes": 0}
+    literal_compatibility = [{"struct": "Request", "inserted_fields": ["session_id"]}]
 
     def patch_handoff_timing(actual_core, actual_dynamo):
         assert actual_core == core.parent and actual_dynamo == dynamo
-        patched.append((actual_core, actual_dynamo))
+        patched.append(("handoff", actual_core, actual_dynamo))
         return compatibility
+
+    def patch_optional_literal_fields(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("literals", actual_core, actual_dynamo))
+        return literal_compatibility
 
     def check_output(args, **kwargs):
         if args[:2] == ["cargo", "metadata"]:
-            assert patched == [(core.parent, dynamo)]
+            assert patched == [("handoff", core.parent, dynamo), ("literals", core.parent, dynamo)]
             assert "--locked" not in args
             assert kwargs["cwd"] == bindings
             assert lock.read_bytes() == old_lock
@@ -3359,6 +3549,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder.subprocess, "check_output", check_output)
     monkeypatch.setattr(builder.subprocess, "run", run)
     monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
+    monkeypatch.setattr(builder, "patch_optional_literal_fields", patch_optional_literal_fields)
     if wrong_core:
         with pytest.raises(ValueError, match="different AISimulate core"):
             builder.build(source, dynamo, output)
@@ -3371,6 +3562,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         provenance = json.loads((output / "dynamo-build.json").read_text())
         assert provenance["aisimulate_sha"] == "a" * 40
         assert provenance["handoff_compatibility"] == compatibility
+        assert provenance["literal_compatibility"] == literal_compatibility
         assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
 
 

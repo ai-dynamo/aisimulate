@@ -1009,6 +1009,10 @@ class SearchSpace(BaseModel):
                 raise ValueError(f"{label} parallel_configs shape must be a dict")
             if "tp" not in value:
                 raise ValueError(f"{label} parallel_configs shape needs a 'tp' field")
+            for field in ("tp", "pp", "attention_dp", "moe_tp", "moe_ep", "replicas"):
+                dimension = value.get(field, 1)
+                if isinstance(dimension, bool) or not isinstance(dimension, int) or dimension < 1:
+                    raise ValueError(f"{label} parallel_configs {field} must be a positive integer")
 
         if self.parallel_configs and len(self.deployment_mode) != 1:
             raise ValueError(

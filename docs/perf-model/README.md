@@ -32,6 +32,8 @@ A cold regression is not usable for offline prediction.
 - [FPM self-service](fpm-self-service/README.md): collect or import whole-forward measurements;
   preserve the existing [implementation guide](fpm-self-service/implementation.md)
   and [worked examples](fpm-self-service/examples.md) as the workflow reference.
+- [Learned forward-pass model](fpm_ml/learned-forward-pass-model.md): train a tree ensemble
+  offline from deployment FPM telemetry and load it in Rust ([design](fpm_ml/design.md)).
 - [Collector](collector/README.md): operation data, runtime pins, and publication.
 - [Extend the model](extending.md): model structure, native operations, and SOL integration.
 - [DeepSeek-V4.1](models/deepseek-v41.md): model-specific execution and physical memory contracts.

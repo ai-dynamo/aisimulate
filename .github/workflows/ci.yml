@@ -674,7 +674,7 @@ jobs:
             exit 1
           fi
           python -m pip install uv
-          python -m uv pip install --system "${wheels[0]}[dev]"
+          python -m uv pip install --system "${wheels[0]}[dev,learned]"
           echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'

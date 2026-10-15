@@ -150,7 +150,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert capabilities.supports_agentic_host_offload
-    assert not capabilities.supports_agentic_speculative_decoding
+    assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
 
 
@@ -158,15 +158,11 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 @pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize(
-    ("unsupported", "message"),
-    [
-        ({"aic_nextn": 1}, "speculative decoding disabled"),
-        ({"nextn": 1}, "speculative decoding disabled"),
-    ],
+    "speculation",
+    [{"aic_nextn": 1}, {"nextn": 1}],
 )
-def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nested_rank, role, unsupported, message):
-    runtime = RecordingRuntime()
-    args = _engine_args(role=role) | unsupported
+def test_agentic_hbm_capabilities_accept_speculation(trace_format, nested_rank, role, speculation):
+    args = _engine_args(role=role) | speculation
     if nested_rank:
         args = {"rank": args}
     spec = _spec(
@@ -182,9 +178,11 @@ def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nest
         workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
     )
 
-    with pytest.raises(ValueError, match=message):
-        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
-    assert runtime.execution_spec is None
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    capabilities.require_compatible(spec)
+    # Third-party runners can still explicitly decline the composition.
+    with pytest.raises(ValueError, match="speculative decoding disabled"):
+        replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
 
 
 def _agentic_g2_spec(*, scopes=("dp_rank_local",), nested_rank=False, trace_format="weka"):
@@ -464,9 +462,10 @@ def test_agentic_qualification_survives_default_python_report():
     assert "native_report" not in report.metadata
 
 
-def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size():
+@pytest.mark.parametrize("trace_graph_cache", [False, True])
+def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size(trace_graph_cache):
     runtime = RecordingRuntime()
-    runner = EngineReplayRunnerFactory(runtime=runtime).create(worker_id=0)
+    runner = EngineReplayRunnerFactory(runtime=runtime, trace_graph_cache=trace_graph_cache).create(worker_id=0)
     runner.run(
         _spec(
             workload={
@@ -486,6 +485,8 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert traffic["agentic_lanes"] == 2
     assert traffic["execution_model"] == "test-model"
     assert "trace_block_size" not in traffic
+    # Only sweeps ask native loading to keep the graph; predict's spec is unchanged.
+    assert traffic.get("trace_graph_cache") == (True if trace_graph_cache else None)
 
 
 @pytest.mark.parametrize("model_key", ["model", "model_path"])
@@ -2372,6 +2373,13 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tm
     report = EngineReplayRunnerFactory(runtime=NativeRuntime()).create(0).run(_spec(deployment=deployment))
 
     assert report.metrics["completed_requests"] == 1
+    assert report.metadata["prediction_provenance"]["aggregated"] == {
+        "estimator": "op_level",
+        "timing_source": "aic",
+        "data_version": expected,
+        "data_identity": None,
+        "data_version_unavailable_reason": None,
+    }
     assert set(consumed_versions["native"]) == {expected}
     assert set(consumed_versions["python"]) == (set() if layout == "nested" else {expected})
     assert args == original
@@ -2523,3 +2531,25 @@ def test_flat_active_controls_reject_fixed_timing():
                 )
             )
         )
+
+
+@pytest.mark.parametrize("retain_raw", [False, True])
+@pytest.mark.parametrize("polynomial", [False, True])
+def test_native_fixed_timing_provenance_without_diagnostics(retain_raw, polynomial):
+    spec = _spec()
+    if polynomial:
+        spec.backend_deployment.agg_engine_args["timing_model"] = {"type": "polynomial"}
+    report = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(spec, output_requirements=ReplayOutputRequirements(include_raw_report=retain_raw))
+    )
+    provenance = report.metadata["prediction_provenance"]["aggregated"]
+    assert provenance["estimator"] == ("polynomial" if polynomial else "fixed")
+    assert provenance["timing_source"] == ("built_in" if polynomial else "configured")
+    assert provenance["data_version"] is None
+    source_description = "built-in" if polynomial else "configured"
+    assert provenance["data_version_unavailable_reason"] == f"{source_description} timing does not use performance data"
+    assert ("native_report" in report.metadata) == retain_raw
+    if retain_raw:
+        assert report.metadata["native_report"]["prediction_provenance"]["aggregated"] == provenance

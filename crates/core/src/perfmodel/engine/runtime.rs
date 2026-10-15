@@ -351,6 +351,10 @@ impl Engine {
             .and_then(|s| s.nextn)
             .unwrap_or(0);
         Self::validate_fpm_spec(&spec)?;
+        super::readiness::validate_glm53_sources(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
         Ok(Engine {
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
@@ -4992,5 +4996,93 @@ mod tests {
             .unwrap();
         let reported: f64 = prefill.iter().chain(&decode).map(|row| row.1).sum();
         assert!((scalar - reported).abs() < 1e-12);
+    }
+
+    #[test]
+    fn glm53_mixed_step_queries_each_attention_phase_at_its_own_shape() {
+        use crate::operators::glm53flash::tests::attention;
+        let db = Arc::new(
+            PerfDatabase::load(&systems_root(), "gb300", "sglang", "0.5.14")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::default()),
+        );
+        let phase = |kind: &str, is_context: bool| {
+            let mut op = attention(kind);
+            op.is_context = is_context;
+            op
+        };
+        let ctx_attn = [phase("kda", true), phase("sparse_mla", true)];
+        let gen_attn = [phase("kda", false), phase("sparse_mla", false)];
+        let ctx_ops: Vec<Op> = ctx_attn.iter().cloned().map(Op::Glm53Attention).collect();
+        let gen_ops: Vec<Op> = gen_attn.iter().cloned().map(Op::Glm53Attention).collect();
+        assert!(ctx_ops.iter().all(|op| op.is_context_attention()));
+        assert!(gen_ops.iter().all(|op| op.is_generation_attention()));
+        assert!(!ctx_ops.iter().any(Op::is_generation_attention));
+        assert!(!gen_ops.iter().any(Op::is_context_attention));
+
+        let spec = &db.system_spec;
+        let sol = |ops: &[crate::operators::Glm53AttentionOp], batch: u32, s: u32, prefix: u32| {
+            ops.iter()
+                .map(|op| {
+                    op.sol(spec, f64::from(batch), f64::from(s), f64::from(prefix))
+                        .unwrap()
+                        .latency_ms
+                })
+                .sum::<f64>()
+        };
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs().max(1.0);
+
+        let mut config = fixture_engine_config(None);
+        config.database_mode = DatabaseMode::Sol;
+        let engine = Engine::build(
+            EngineSpec::new(config, ctx_ops.clone(), gen_ops.clone()),
+            db.clone(),
+        )
+        .unwrap();
+        let (isl, osl, prefix, generation) = (4096_u32, 256_u32, 1024_u32, 8_u32);
+        // One and two complete prefills, prefill-only and decode-only steps.
+        for (ctx, gen_tokens) in [
+            (4096_u32, generation),
+            (8192, generation),
+            (4096, 0),
+            (0, generation),
+        ] {
+            let parts = engine
+                .mixed_step_breakdown(ctx, gen_tokens, isl, osl, prefix, 1.0, 1.0)
+                .unwrap();
+            let context = if ctx > 0 {
+                sol(&ctx_attn, ctx.div_ceil(isl), isl - prefix, prefix)
+                    / f64::from(isl.div_ceil(ctx))
+            } else {
+                0.0
+            };
+            let decode = if gen_tokens > 0 {
+                sol(&gen_attn, gen_tokens, isl + osl / 2 + 1, 0)
+            } else {
+                0.0
+            };
+            assert_eq!(parts[1], 0.0, "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[2], context), "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[3], decode), "ctx={ctx} gen={gen_tokens}");
+            assert!(close(parts[0], context + decode));
+        }
+
+        // Observed-FPM rank dispatch shares the same phase classification.
+        let (new_tokens, kv) = (3072_u32, 8192_u32);
+        let got = crate::session::get_mix_step_ops(
+            &ctx_ops,
+            &gen_ops,
+            &db,
+            2 * new_tokens,
+            generation,
+            new_tokens,
+            prefix,
+            2 * prefix,
+            kv,
+            generation,
+        )
+        .unwrap();
+        let want = sol(&ctx_attn, 2, new_tokens, prefix) + sol(&gen_attn, generation, kv, 0);
+        assert!(close(got, want), "{got} != {want}");
     }
 }

@@ -272,6 +272,12 @@ not collect DCP or compose independent P/D workers.
 
 ### B1. Prepare the campaign
 
+For a new MiniMax-M2.7 campaign, keep the selected KV precision in the request
+and profile. FP8 weights do not require FP8 KV: an explicit BF16 KV selection
+plans BF16 attention and cache identity. Runtime initialization and readiness
+checks must verify the actual precision before collection. Use a fresh output
+directory when changing precision; do not relabel existing measurements.
+
 Keep the local `config.json` and any quantization sidecar from the immutable
 checkpoint. Derive supported precision/cache geometry and prepare a reviewed
 `resource-overrides.yaml` only for facts the config cannot establish; its

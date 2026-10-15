@@ -50,7 +50,18 @@ helpers, SM filters, and perf logging.
 # framework_manifest digest-pinned gate is the true version enforcement
 # upstream and only ever supplies exactly 0.5.14 or 0.5.17 in a sanctioned
 # run, so the leak is unreachable there.
-__compat__ = "sglang>=0.5.14,<=0.5.17,!=0.5.15,!=0.5.16"
+# SGLang 0.5.20 (GLM-5.3-Flash model pin; audited 2026-09-30 against tag
+# commit 94602c9c2b7c): serving changed WHICH kernels this module's raw
+# calls map to (bf16 CuTe DSL/split-K dispatch, JIT per-token fp8 quant,
+# Fp8ScaledMMOp, fp8_block Triton fallback for N%64/K%128, NVFP4 padding and
+# cute-dsl activation quant), so 0.5.20 runs delegate get_gemm_test_cases/
+# run_gemm to collect_gemm_0520.py (serving-built linear layers; full audit
+# there). That is a whole-implementation fork selected by the installed
+# version at the bottom of this module, not a per-call shim; it lives here
+# instead of a registry VersionRoute because tools/perf_database/
+# changed_ops.py fails closed on versioned registry entries. 0.5.18/0.5.19
+# are not audited and stay excluded (same != caveat as above).
+__compat__ = "sglang>=0.5.14,<=0.5.20,!=0.5.15,!=0.5.16,!=0.5.18,!=0.5.19"
 
 import os
 import random
@@ -59,7 +70,8 @@ import random
 # Set it before any SGLang imports so a task compiles only its requested M.
 os.environ.setdefault("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "0")
 
-import pkg_resources
+from importlib.metadata import version as _dist_version
+
 import torch
 import torch.nn.functional as F
 from collector.case_generator import get_gemm_case_specs
@@ -125,6 +137,23 @@ except ImportError:
     from sglang.srt.layers.quantization.fp8_kernel import sglang_per_token_group_quant_fp8
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sglang.srt.layers.quantization.fp8_utils import requant_weight_ue8m0
+
+
+def _sglang_release() -> tuple[int, ...]:
+    """Installed SGLang release as an int tuple (local/pre-release tags dropped).
+
+    Collection always runs with SGLang installed (collect.py resolves the
+    pinned runtime from the installed version first); without the
+    distribution metadata (offline import tests) the legacy path is kept.
+    """
+    from importlib.metadata import PackageNotFoundError
+
+    from packaging.version import Version
+
+    try:
+        return Version(_dist_version("sglang")).release
+    except PackageNotFoundError:
+        return (0,)
 
 
 def get_gemm_test_cases():
@@ -451,7 +480,7 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
                 {"gemm_dtype": gemm_type, "m": M, "n": N, "k": K, "latency": results["latency_ms"] / len(op_list)}
             ],
             framework="SGLang",
-            version=pkg_resources.get_distribution("sglang").version,
+            version=_dist_version("sglang"),
             device_name=torch.cuda.get_device_name(device),
             op_name="gemm",
             kernel_source=kernel_source,
@@ -462,3 +491,12 @@ def run_gemm(gemm_type, batch_size, N, K, *, perf_filename, device="cuda:0"):  #
     finally:
         op_list.clear()
         torch.cuda.empty_cache()
+
+
+# Whole-implementation version fork (see the __compat__ comment): SGLang
+# 0.5.20 collects through serving-built linear layers.
+if _sglang_release() >= (0, 5, 20):
+    from collector.sglang import collect_gemm_0520 as _fork_0520
+
+    get_gemm_test_cases = _fork_0520.get_gemm_test_cases
+    run_gemm = _fork_0520.run_gemm

@@ -16,14 +16,17 @@ use super::phase::{AgenticPhaseEvidence, AgenticPreparation, AgenticPreparationT
 use super::profile::{
     AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport, AgenticProfileState,
 };
-use super::trace::{synthesize_validated_trace_tokens, validate_synthesizable_prompt};
+use super::trace::{
+    synthesize_validated_trace_tokens, validate_synthesizable_prompt,
+    validate_synthesizable_prompt_len,
+};
 use super::types::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
     AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
     ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
 use super::{
-    AgenticPlay, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
+    AgenticPlaySnapshot, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
     SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
 };
 use crate::engine::belady::{SequenceHash, input_sequence_hashes};
@@ -191,6 +194,28 @@ struct AgenticPlayState {
     primary_failure: Option<AgenticFailureRecord>,
 }
 
+impl AgenticPlayState {
+    fn new(play_id: String, nodes: Vec<usize>, root_nodes: Vec<usize>) -> Self {
+        Self {
+            play_id,
+            nodes,
+            root_nodes,
+            lane_index: None,
+            pending_terminals: 0,
+            emitted_in_flight: 0,
+            completed_nodes: 0,
+            failed: false,
+            client_finished: false,
+            censored: false,
+            quiescent: false,
+            root_dispatch_ms: None,
+            max_terminal_ms: None,
+            quiescent_at_ms: None,
+            primary_failure: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AgenticFailureRecord {
     node_index: usize,
@@ -243,6 +268,13 @@ enum PromptTokens {
         input_length: usize,
         hash_ids: Vec<u32>,
     },
+    // Snapshot prompts and output plans are built at dispatch from the shared
+    // replay context, so requests that have not been sent hold no vectors.
+    Snapshot {
+        input_length: usize,
+        source_index: usize,
+        slot: u64,
+    },
     Materialized(Vec<u32>),
 }
 
@@ -257,7 +289,9 @@ impl PromptTokens {
 
     fn input_length(&self) -> usize {
         match self {
-            Self::Deferred { input_length, .. } => *input_length,
+            Self::Deferred { input_length, .. } | Self::Snapshot { input_length, .. } => {
+                *input_length
+            }
             Self::Materialized(tokens) => tokens.len(),
         }
     }
@@ -268,7 +302,7 @@ impl PromptTokens {
                 input_length,
                 hash_ids,
             } => (*input_length, std::mem::take(hash_ids)),
-            Self::Materialized(_) => {
+            Self::Snapshot { .. } | Self::Materialized(_) => {
                 unreachable!("full-prompt turns must retain their deferred representation")
             }
         }
@@ -276,7 +310,7 @@ impl PromptTokens {
 
     fn materialized(&self) -> &[u32] {
         match self {
-            Self::Deferred { .. } => {
+            Self::Deferred { .. } | Self::Snapshot { .. } => {
                 unreachable!("delta-cumulative prompts are materialized during driver setup")
             }
             Self::Materialized(tokens) => tokens,
@@ -1046,9 +1080,9 @@ impl WorkloadDriver {
         let next_ordinal = ordinal.checked_add(1).context("play ordinal overflow")?;
         let source = (cursor % u64::try_from(context.source_play_count())?) as usize;
         let snapshot = context.prepare_source_play_from_start(source, lane, ordinal)?;
-        let prepared = PreparedAgenticSnapshots::from_plays(vec![snapshot])?;
-        let mut appended = Self::new_agentic_snapshots(
-            prepared,
+        let mut appended = Self::snapshot_driver(
+            Arc::clone(context),
+            vec![snapshot],
             self.engine_block_size as usize,
             self.include_replay_hashes,
             self.agentic_speedup,
@@ -1445,101 +1479,202 @@ impl WorkloadDriver {
         include_replay_hashes: bool,
         speedup: f64,
     ) -> Result<Self> {
+        Self::snapshot_driver(
+            prepared.context,
+            prepared.plays,
+            engine_block_size,
+            include_replay_hashes,
+            speedup,
+        )
+    }
+
+    /// Compile the retained suffix of each play directly from the shared
+    /// context. Prompts and output plans stay in the context until dispatch,
+    /// and each play's evidence moves into the driver.
+    fn snapshot_driver(
+        context: Arc<AgenticReplayContext>,
+        plays: Vec<AgenticPlaySnapshot>,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+    ) -> Result<Self> {
         if !speedup.is_finite() || speedup <= 0.0 {
             bail!("snapshot speedup must be finite and greater than zero");
         }
-        let context = Arc::clone(&prepared.context);
-        let mut view = AgenticTrace {
-            block_size: context.graph.block_size,
-            source: context.graph.source.clone(),
-            graph_digest: context.graph.graph_digest.clone(),
-            nodes: Vec::new(),
-            plays: Vec::new(),
-        };
-        let mut source_nodes = Vec::new();
-        for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
+        if engine_block_size == 0 {
+            bail!("engine_block_size must be greater than 0");
+        }
+        let engine_block_size_u32 =
+            u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
+        let graph = &context.graph;
+        let mut sessions = Vec::new();
+        let mut identities = Vec::new();
+        let mut remaining_dependencies = Vec::new();
+        let mut authored_not_before_ms = Vec::new();
+        let mut dispatch_dependents = Vec::new();
+        let mut completion_dependents = Vec::new();
+        let mut node_to_play = Vec::new();
+        let mut agentic_plays = Vec::new();
+        for (cohort, snapshot) in plays.iter().enumerate() {
+            debug_assert!(Arc::ptr_eq(&context, &snapshot.context));
+            // Evidence lists the play's requests in source node order; the
+            // request IDs are checked below as each pair is compiled.
+            let source_nodes = &graph.plays[snapshot.source_play_index].nodes;
+            if source_nodes.len() != snapshot.evidence.requests.len() {
+                bail!("snapshot evidence does not match its source play");
+            }
+            let retained = move || {
+                source_nodes
+                    .iter()
+                    .zip(&snapshot.evidence.requests)
+                    .filter(|(_, request)| !request.historical)
+            };
+            // A retained request only waits on retained requests of its play;
+            // edges from history were already folded into its remaining delay.
+            let first = sessions.len();
+            let local_by_id: FxHashMap<&str, usize> = retained()
+                .enumerate()
+                .map(|(offset, (&source_index, _))| {
+                    (
+                        graph.nodes[source_index].request_id.as_str(),
+                        first + offset,
+                    )
+                })
+                .collect();
+            dispatch_dependents.resize(first + local_by_id.len(), Vec::new());
+            completion_dependents.resize(first + local_by_id.len(), Vec::new());
             let mut nodes = Vec::new();
             let mut root_nodes = Vec::new();
-            for request in &snapshot.evidence.requests {
-                if request.historical {
-                    continue;
+            for (&source_index, request) in retained() {
+                let index = sessions.len();
+                let source = &graph.nodes[source_index];
+                if request.source_request_id != source.request_id {
+                    bail!("snapshot evidence does not match its source play");
                 }
-                let source_index = snapshot.source_index(&request.source_request_id)?;
-                let mut node = context.graph.nodes[source_index].clone();
-                node.request_id = request.identity.request_id.clone();
-                node.play_id = snapshot.evidence.play_id.clone();
-                node.source_play_ordinal = Some(cohort_index);
-                node.session_id = request.identity.conversation_id.clone();
-                node.not_before_ms = request.remaining_delay_ms / speedup;
-                node.dependencies.retain(|edge| {
-                    request
-                        .pending_dependencies
-                        .contains(&snapshot.instance_request_id(&edge.request_id))
-                });
-                for edge in &mut node.dependencies {
-                    edge.request_id = snapshot.instance_request_id(&edge.request_id);
-                    edge.delay_ms /= speedup;
-                }
-                if !node.not_before_ms.is_finite()
-                    || node.dependencies.iter().any(|e| !e.delay_ms.is_finite())
-                {
+                let not_before_ms = request.remaining_delay_ms / speedup;
+                if !not_before_ms.is_finite() {
                     bail!("snapshot speedup overflows replay timing");
                 }
-                let index = view.nodes.len();
-                if node.dependencies.is_empty() {
+                let mut dependencies = 0;
+                for dependency in &source.dependencies {
+                    let Some(&from) = local_by_id.get(dependency.request_id.as_str()) else {
+                        continue;
+                    };
+                    let edge = AgenticDependentEdge {
+                        target_node: index,
+                        delay_ms: dependency.delay_ms / speedup,
+                    };
+                    if !edge.delay_ms.is_finite() {
+                        bail!("snapshot speedup overflows replay timing");
+                    }
+                    match dependency.trigger {
+                        AgenticDependencyTrigger::Dispatch => dispatch_dependents[from].push(edge),
+                        AgenticDependencyTrigger::Completion => {
+                            completion_dependents[from].push(edge)
+                        }
+                    }
+                    dependencies += 1;
+                }
+                if dependencies == 0 {
                     root_nodes.push(index);
                 }
+                validate_synthesizable_prompt_len(
+                    source.input_length,
+                    source.hash_ids.len(),
+                    graph.block_size,
+                )?;
+                sessions.push(SessionRuntime {
+                    session_id: request.identity.conversation_id.clone(),
+                    turns: vec![TurnRuntime {
+                        // Keep authored correlation separate from incarnation identity.
+                        request_id: Some(source.request_id.clone()),
+                        play_id: Some(snapshot.evidence.play_id.clone()),
+                        replay_key: source.replay_key.clone(),
+                        prompt_tokens: PromptTokens::Snapshot {
+                            input_length: source.input_length,
+                            source_index,
+                            slot: snapshot.slot,
+                        },
+                        max_output_tokens: source.max_output_tokens,
+                        output_token_ids: None,
+                        delay_after_previous_ms: 0.0,
+                        priority: source.priority,
+                        strict_priority: source.strict_priority,
+                        policy_class: source.policy_class.clone(),
+                        synthetic_session_id: false,
+                        deterministic_request_id: Some(snapshot.request_uuid(source_index)?),
+                    }],
+                    cumulative_tokens: Vec::new(),
+                    next_turn_index: 0,
+                    next_ready_at_ms: None,
+                    in_flight: None,
+                });
+                identities.push(request.identity.clone());
                 nodes.push(index);
-                view.nodes.push(node);
-                source_nodes.push((cohort_index, source_index));
+                remaining_dependencies.push(dependencies);
+                authored_not_before_ms.push(not_before_ms);
+                node_to_play.push(cohort);
             }
-            if nodes.is_empty() || root_nodes.is_empty() {
+            if root_nodes.is_empty() {
                 bail!("snapshot has no executable request frontier");
             }
-            view.plays.push(AgenticPlay {
-                play_id: snapshot.evidence.play_id.clone(),
-                source_play_ordinal: Some(cohort_index),
-                nodes,
-                root_nodes,
-            });
-        }
-        // The existing executor compiles the retained dependency structure. Its
-        // temporary numbering is replaced by the full prepared context below.
-        // No lane activation may renormalize the restored initial timers.
-        let mut driver = Self::new_agentic_trace_with_options(
-            view,
-            engine_block_size,
-            include_replay_hashes,
-            None,
-        )?;
-        let SchedulingPolicy::Agentic(state) = &mut driver.policy else {
-            unreachable!()
-        };
-        for (index, (cohort, source_index)) in source_nodes.into_iter().enumerate() {
-            let snapshot = &prepared.plays[cohort];
-            let source = &context.graph.nodes[source_index];
-            let turn = &mut driver.sessions[index].turns[0];
-            turn.prompt_tokens = PromptTokens::deferred(
-                source.input_length,
-                snapshot.token_ids(source_index)?,
-                context.graph.block_size,
-            )?;
-            turn.output_token_ids = Some(context.outputs[source_index].clone());
-            turn.deterministic_request_id = Some(snapshot.request_uuid(source_index)?);
-            // Keep authored correlation separate from incarnation identity.
-            turn.request_id = Some(source.request_id.clone());
-            state.identities[index] = snapshot.identity_at(source_index);
-        }
-        for play in &mut state.plays {
+            let mut play =
+                AgenticPlayState::new(snapshot.evidence.play_id.clone(), nodes, root_nodes);
             // Suffix duration is anchored at activation, even for a rootless
             // background frontier. No historical dispatch event is fabricated.
             play.root_dispatch_ms = Some(0.0);
+            agentic_plays.push(play);
         }
-        driver.agentic_speedup = speedup;
-        driver.agentic_graph_identity = Some(context.graph.identity());
-        driver.agentic_snapshots = Some(prepared.snapshots().to_vec());
-        driver.agentic_replay_context = Some(context);
-        Ok(driver)
+        let mut state = AgenticState {
+            identities,
+            node_states: vec![AgenticNodeState::Blocked; sessions.len()],
+            remaining_dependencies,
+            ready_after_ms: authored_not_before_ms.clone(),
+            authored_not_before_ms,
+            dispatch_dependents,
+            completion_dependents,
+            node_to_play,
+            plays: agentic_plays,
+            lanes: Vec::new(),
+            next_pending_play: 0,
+            lifecycle: Vec::new(),
+            next_lifecycle_ordinal: 0,
+            last_runtime_feedback_at_ms: None,
+        };
+        // No lane activation may renormalize the restored initial timers.
+        let mut ready_sessions = BinaryHeap::new();
+        for play in &state.plays {
+            for &root_node in &play.root_nodes {
+                AgenticState::schedule_node(
+                    root_node,
+                    state.ready_after_ms[root_node],
+                    &mut state.node_states,
+                    &mut sessions,
+                    &mut ready_sessions,
+                );
+            }
+        }
+        let trace_block_size = graph.block_size;
+        let agentic_graph_identity = context.graph_identity();
+        let agentic_snapshots = plays.into_iter().map(|play| play.evidence).collect();
+        Ok(Self {
+            policy: SchedulingPolicy::Agentic(Box::new(state)),
+            prompt_mode: PromptMode::Full,
+            emit_session_metadata: true,
+            trace_block_size,
+            engine_block_size: engine_block_size_u32,
+            include_replay_hashes,
+            agentic_graph_identity: Some(agentic_graph_identity),
+            agentic_replay_context: Some(context),
+            agentic_snapshots: Some(agentic_snapshots),
+            agentic_preparation: None,
+            agentic_profile: None,
+            agentic_speedup: speedup,
+            sessions,
+            in_flight: FxHashMap::default(),
+            agentic_settling: FxHashMap::default(),
+            ready_sessions,
+        })
     }
 
     pub fn is_agentic(&self) -> bool {
@@ -1677,7 +1812,9 @@ impl WorkloadDriver {
             u32::try_from(engine_block_size).context("engine_block_size does not fit in u32")?;
         let agentic_graph_identity = trace.identity();
         let trace_block_size = trace.block_size;
-        let mut hash_id_interner = FxHashMap::default();
+        // Prompts number hash IDs first-seen over these nodes. Builder graphs
+        // are already numbered that way, so this is the identity for them.
+        let mut prompt_hash_ids = vec![u32::MAX; trace.hash_values.len()];
         let mut next_hash_id = 0_u32;
         let mut index_by_id = FxHashMap::default();
         for (node_index, node) in trace.nodes.iter().enumerate() {
@@ -1741,21 +1878,19 @@ impl WorkloadDriver {
             remaining_dependencies.push(node.dependencies.len());
             authored_not_before_ms.push(node.not_before_ms);
 
-            let hash_ids = node
-                .hash_ids
-                .into_iter()
-                .map(|hash_id| {
-                    if let Some(&interned) = hash_id_interner.get(&hash_id) {
-                        return Ok(interned);
-                    }
-                    let interned = next_hash_id;
+            let mut hash_ids = node.hash_ids;
+            for hash_id in &mut hash_ids {
+                let prompt_hash_id = prompt_hash_ids
+                    .get_mut(*hash_id as usize)
+                    .context("agentic node references an unknown hash ID")?;
+                if *prompt_hash_id == u32::MAX {
+                    *prompt_hash_id = next_hash_id;
                     next_hash_id = next_hash_id
                         .checked_add(1)
                         .context("trace contains more unique hash IDs than u32 can represent")?;
-                    hash_id_interner.insert(hash_id, interned);
-                    Ok(interned)
-                })
-                .collect::<Result<Vec<_>>>()?;
+                }
+                *hash_id = *prompt_hash_id;
+            }
 
             let prompt_tokens =
                 PromptTokens::deferred(node.input_length, hash_ids, trace_block_size)?;
@@ -1805,23 +1940,7 @@ impl WorkloadDriver {
                 for &node_index in &play.nodes {
                     node_to_play[node_index] = play_index;
                 }
-                AgenticPlayState {
-                    play_id: play.play_id,
-                    nodes: play.nodes,
-                    root_nodes: play.root_nodes,
-                    lane_index: None,
-                    pending_terminals: 0,
-                    emitted_in_flight: 0,
-                    completed_nodes: 0,
-                    failed: false,
-                    client_finished: false,
-                    censored: false,
-                    quiescent: false,
-                    root_dispatch_ms: None,
-                    max_terminal_ms: None,
-                    quiescent_at_ms: None,
-                    primary_failure: None,
-                }
+                AgenticPlayState::new(play.play_id, play.nodes, play.root_nodes)
             })
             .collect::<Vec<_>>();
         debug_assert!(node_to_play.iter().all(|play| *play != usize::MAX));
@@ -2245,11 +2364,30 @@ impl WorkloadDriver {
             let arrival_timestamp_ms = self.policy.arrival_timestamp_ms(scheduled_ready_at_ms);
             let (request, replay_hashes) = match self.prompt_mode {
                 PromptMode::Full => {
-                    let (input_length, hash_ids) = turn.prompt_tokens.take_deferred();
+                    let (input_length, hash_ids, output_token_ids) =
+                        if let PromptTokens::Snapshot {
+                            input_length,
+                            source_index,
+                            slot,
+                        } = turn.prompt_tokens
+                        {
+                            let context = self
+                                .agentic_replay_context
+                                .as_deref()
+                                .expect("snapshot turns retain their replay context");
+                            (
+                                input_length,
+                                context.token_ids(slot, source_index),
+                                Some(context.outputs[source_index].clone()),
+                            )
+                        } else {
+                            let (input_length, hash_ids) = turn.prompt_tokens.take_deferred();
+                            (input_length, hash_ids, turn.output_token_ids.take())
+                        };
                     let request_metadata = DirectRequest {
                         tokens: Vec::new(),
                         max_output_tokens: turn.max_output_tokens,
-                        output_token_ids: turn.output_token_ids.take(),
+                        output_token_ids,
                         uuid: Some(request_uuid),
                         dp_rank: 0,
                         preferred_dp_rank: None,
@@ -2911,8 +3049,10 @@ impl WorkloadDriver {
 mod tests {
     use super::*;
     use crate::replay::loadgen::{
-        AgenticDependency, AgenticDependencyRelation, AgenticDependencyTrigger, AgenticNode,
-        AgenticPlay, AgenticSourceProvenance, AgenticTrace, SessionTrace, Trace, TurnTrace,
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticDependency,
+        AgenticDependencyRelation, AgenticDependencyTrigger, AgenticMooncakeHeader,
+        AgenticMooncakeRow, AgenticNode, AgenticPlay, AgenticSourceProvenance, AgenticTrace,
+        SessionTrace, Trace, TurnTrace,
     };
 
     fn agentic_node(
@@ -2956,6 +3096,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
         plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
+        // Fixture IDs stand for themselves; the driver renumbers them first-seen.
+        let hash_id_count = nodes
+            .iter()
+            .flat_map(|node| node.hash_ids.iter())
+            .map(|&hash_id| hash_id as u64 + 1)
+            .max()
+            .unwrap_or(0);
         AgenticTrace {
             block_size: 1,
             source: AgenticSourceProvenance {
@@ -2965,6 +3112,7 @@ mod tests {
             graph_digest: "fixture".into(),
             nodes,
             plays,
+            hash_values: (0..hash_id_count).collect(),
         }
     }
 
@@ -2980,6 +3128,50 @@ mod tests {
             delay_ms,
             relation,
         }
+    }
+
+    // Pins agentic prompt hash IDs: numbered first-seen over request_id order
+    // ("r1" < "r10" < "r2" < "r3"), independent of row order and raw values.
+    #[test]
+    fn agentic_prompt_hash_ids_are_numbered_first_seen_in_request_order() {
+        let header = serde_json::from_value::<AgenticMooncakeHeader>(serde_json::json!({
+            "schema": AGENTIC_MOONCAKE_SCHEMA, "version": AGENTIC_MOONCAKE_VERSION,
+            "block_size": 4, "hash_id_scope": "local",
+            "source": {"format": "test", "digest": "fixture"}
+        }))
+        .unwrap();
+        let row = |request_id: &str, hash_ids: &[u64]| {
+            serde_json::from_value::<AgenticMooncakeRow>(serde_json::json!({
+                "request_id": request_id, "play_id": request_id, "session_id": request_id,
+                "model": "model", "not_before_ms": 0.0, "input_length": 4 * hash_ids.len(),
+                "output_length": 1, "hash_ids": hash_ids
+            }))
+            .unwrap()
+        };
+        let large = 9_000_000_000_u64;
+        let rows = vec![
+            row("r2", &[large, 7, 42]),
+            row("r10", &[42, 5]),
+            row("r1", &[5, large]),
+            row("r3", &[7, 7, u64::MAX, 5]),
+        ];
+        let trace = AgenticTrace::from_agentic_mooncake_rows(header, rows).unwrap();
+
+        let driver = WorkloadDriver::new_agentic_trace_with_options(trace, 4, false, None).unwrap();
+        let prompts: Vec<_> = driver
+            .sessions
+            .iter()
+            .map(|session| match &session.turns[0].prompt_tokens {
+                PromptTokens::Deferred { hash_ids, .. } => hash_ids.clone(),
+                PromptTokens::Snapshot { .. } | PromptTokens::Materialized(_) => {
+                    panic!("agentic prompts stay deferred")
+                }
+            })
+            .collect();
+        assert_eq!(
+            prompts,
+            [vec![0, 1], vec![2, 0], vec![1, 3, 2], vec![3, 3, 4, 0]]
+        );
     }
 
     fn assert_deterministic_output_plan(

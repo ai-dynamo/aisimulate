@@ -178,7 +178,7 @@ fn replay_accept_length_counts_decode_work_before_output_truncation() {
             (Some("1,1"), vec![1], [0, 0], None),
             (Some("1,1"), vec![4], [1, 1], Some(3.0)),
             (Some("1,1"), vec![7], [2, 2], Some(3.0)),
-            (Some("1,1"), vec![8], [2, 3], Some(3.0)),
+            (Some("1,1"), vec![8], [3, 3], Some(3.0)),
             (Some("1,0"), vec![7], [3, 3], Some(2.0)),
             (Some("0,0"), vec![7], [6, 6], Some(1.0)),
         ] {
@@ -273,11 +273,20 @@ fn replay_accept_length_survives_rank_aggregation_and_prefill_handoffs() {
             assert_eq!(report.request_counts.total_output_tokens, 8);
             let samples = samples.lock().unwrap();
             let mut forwards = 0;
+            // This fixed 5 ms sample window contains both 2 ms decode rounds
+            // for each handoff. vLLM starts with one draft-free base token,
+            // then accepts three tokens, so its per-forward mean is (1+3)/2.
+            // SGLang's existing handoff behavior remains three per forward.
+            let expected_acceptance = if backend == Backend::Vllm && disaggregated {
+                2.0
+            } else {
+                3.0
+            };
             for sample in samples.iter() {
                 let traffic = &sample.traffic;
                 assert_eq!(
                     traffic.avg_accept_length,
-                    (traffic.accept_length_forward_count > 0).then_some(3.0),
+                    (traffic.accept_length_forward_count > 0).then_some(expected_acceptance),
                     "{backend:?}, dp={dp_size}, pd={disaggregated}"
                 );
                 forwards += traffic.accept_length_forward_count;

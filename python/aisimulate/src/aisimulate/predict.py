@@ -21,7 +21,7 @@ from aisimulate_core.sdk.utils import get_model_config_from_model_path
 from .compiler import prediction_to_replay_spec
 from .config.cli import CorePredictionConfig
 from .config_adapter import PredictionAdapterContext, SimulationConfigAdapter
-from .detail import prediction_summary
+from .detail import SERVING_LATENCY_METRICS, SERVING_THROUGHPUT_METRICS, prediction_summary
 from .power import normalize_power_summary
 from .resources import ResourceLimitError
 from .sweeper.provider import AdapterReplaySpec
@@ -203,7 +203,37 @@ def run_prediction(
         kv_precision[role] = {"dtype": mode, "source": source}
     if kv_precision:
         summary["kv_cache_precision"] = kv_precision
+    provenance = report.metadata.get("prediction_provenance")
+    if provenance is None or provenance == {}:
+        provenance = {"runner": {"unavailable_reason": "runner did not report effective timing provenance"}}
+    if not isinstance(provenance, dict):
+        raise PredictionExecutionError("runner prediction_provenance must be a mapping of worker roles")
+    for role, entry in provenance.items():
+        if not isinstance(role, str) or not role or not isinstance(entry, dict):
+            raise PredictionExecutionError("runner prediction_provenance requires named roles with mapping values")
+        if entry.get("unavailable_reason"):
+            required = ("unavailable_reason",)
+        else:
+            version_key = "data_version" if entry.get("data_version") is not None else "data_version_unavailable_reason"
+            required = ("estimator", "timing_source", version_key)
+        if any(not isinstance(entry.get(key), str) or not entry[key].strip() for key in required):
+            raise PredictionExecutionError(
+                f"runner prediction_provenance.{role} requires nonempty strings for {required}"
+            )
+    summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
+    if summary.get("completed_requests") == 0:
+        summary.update(
+            prediction_status="invalid",
+            stop_reason="no_completed_requests",
+            diagnostic=(
+                "No requests completed; serving latency and throughput are unavailable. "
+                "Check KV capacity against request lengths, context limits, and traffic stop limits."
+            ),
+        )
+        for key in summary:
+            if key in SERVING_LATENCY_METRICS or key in SERVING_THROUGHPUT_METRICS:
+                summary[key] = None
     if "summary" in native:
         native = {**native, "summary": summary}
     else:

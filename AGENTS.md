@@ -98,7 +98,11 @@ substantially derived from an external project, MUST:
   requires it.
 - Record the source URL and revision in the file header or an adjacent README.
   For formats that cannot carry comments, use an adjacent attribution or
-  license file that is included in distributions.
+  license file included in distributions, or the canonical
+  `THIRD_PARTY_NOTICES.md` when its packaged copy identifies each derived file,
+  source URL, immutable revision, license, owner, and modification status.
+  Do not duplicate those records in a separate README solely for attribution.
+  Preserve any additional file placement required by the upstream license.
 - Add an entry to the root `THIRD_PARTY_NOTICES.md` identifying the derived
   files, upstream source and immutable revision, copyright owner, applicable
   license, and whether the files were modified. The root notice is canonical;

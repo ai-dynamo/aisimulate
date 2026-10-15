@@ -9,9 +9,9 @@
     const date = new Date(timestamp);
     return Number.isNaN(date.getTime()) ? timestamp : date.toISOString().slice(0,16).replace('T',' ')+' UTC';
   };
-  const methods = ['regression', 'warmup', 'nowarmup'];
-  const labels = {regression:'Regression', warmup:'FPM (KV warmup on)', nowarmup:'FPM (KV warmup off)'};
-  const colors = ['#818cf8', '#2dd4bf', '#fb923c'];
+  const methods = ['regression', 'warmup', 'nowarmup', 'learned'];
+  const labels = {regression:'Regression', warmup:'FPM (KV warmup on)', nowarmup:'FPM (KV warmup off)', learned:'Learned (fpm5)'};
+  const colors = ['#818cf8', '#2dd4bf', '#fb923c', '#f472b6'];
   const phases = ['all', 'prefill', 'decode', 'mixed'];
   const params = new URLSearchParams(location.search);
   let entries = [], summaries = [], detail, selected, request = 0;

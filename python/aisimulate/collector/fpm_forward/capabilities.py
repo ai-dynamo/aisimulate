@@ -54,6 +54,25 @@ def _attention_template(
         # MiniMax-M3's MSA op has no standalone silicon table. AIC transfers
         # utilization from DSA at the same (batch, suffix, prefix) coordinate.
         return "dsa_module", "moe_msa"
+    layer_types = config.get("layer_types")
+    layers = config.get("num_hidden_layers")
+    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
+        raise ValueError("num_hidden_layers must be a positive integer")
+    if "layer_types" in config and (
+        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
+    ):
+        raise ValueError("layer_types must have one entry per num_hidden_layers")
+    allowed_layers = {"full_attention", "sliding_attention"}
+    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
+        allowed_layers.add("deepseek_sparse_attention")
+    if layer_types is not None and any(
+        not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types
+    ):
+        raise ValueError(
+            f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "
+            "FPM attention templates cannot represent linear-attention/recurrent state. "
+            "Use a qualified model-specific collection adapter and verified cache profile."
+        )
     if "dsa" in lowered or model_family == "DEEPSEEKV32":
         return "dsa_module", "moe_dsa"
     if any(config.get(key) is not None for key in ("kv_lora_rank", "q_lora_rank")) or model_family in {
@@ -297,14 +316,12 @@ def resolve_model_capability(
     context_op, generation_op = _attention_ops(source_name)
     requested_kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv_cache_dtypes))
     resolved_kv = tuple(dict.fromkeys(native_kv if value == "auto" else value for value in requested_kv))
+    # vLLM v0.27.0 config/cache.py:CacheDType has no literal "int8" option.
+    # Do not restrict valid KV alternatives to the checkpoint-inferred default.
+    if checkpoint_native_dtypes and backend == "vllm" and "int8" in resolved_kv:
+        raise ValueError("vLLM FPM collection does not support KV-cache dtype 'int8'; select bfloat16 or fp8")
     database = None
-    if checkpoint_native_dtypes:
-        if resolved_kv != (native_kv,):
-            raise ValueError(
-                "profile-based FPM collection currently requires the checkpoint-native KV dtype "
-                f"{native_kv!r}; got {list(resolved_kv)}"
-            )
-    else:
+    if not checkpoint_native_dtypes:
         database = get_database(system, backend, version)
         if database is None:
             raise ValueError(
@@ -346,15 +363,15 @@ def resolve_model_capability(
     fmha_resolution_by_kv: dict[str, str] = {}
     for kv_name in resolved_kv:
         if checkpoint_native_dtypes:
-            # Profile collection uses the checkpoint mode, without borrowing
-            # an op-table slice. This is a whole-forward identity, not a
-            # claim that every attention intermediate has this dtype: vLLM
-            # v0.25.1 (752a3a504485790a),
-            # vllm/v1/attention/backends/mla/flashmla_sparse.py:879-894
-            # selects its FP8-cache route while that route can use BF16
-            # prefill intermediates. Actual backend dispatch stays in vLLM.
-            fmha_by_kv[kv_name] = inferred_fmha
-            fmha_resolution_by_kv[kv_name] = "checkpoint_native"
+            # Weight quantization does not require quantized KV storage.
+            # Keep BF16 attention/cache identity for an explicit BF16 campaign;
+            # runtime evidence must still match before measurements are accepted.
+            fmha_by_kv[kv_name] = "bfloat16" if kv_name == "bfloat16" else inferred_fmha
+            fmha_resolution_by_kv[kv_name] = (
+                f"kv_dtype_dispatch_from_{inferred_fmha}"
+                if fmha_by_kv[kv_name] != inferred_fmha
+                else "checkpoint_native"
+            )
             continue
         assert database is not None
         joint_modes = context_fmha_supported_modes(database, context_op, common.KVCacheQuantMode[kv_name])

@@ -310,8 +310,10 @@ The planning peak is the 256 MiB process allowance plus the larger of these phas
 Ordinary finite lanes partition the corpus. Snapshot lanes cycle through source
 plays, so selected full-play allocations are conservatively multiplied by
 `ceil(lanes / plays)`, rather than multiplying the entire corpus by every lane.
-Snapshots also retain an immutable corpus graph/rank/output context: 12 bytes
-per normalized hash, four bytes per output token, and 2 KiB per request. Warmup
+Snapshots also retain an immutable corpus context: a graph whose hash IDs are
+play-local ranks, at four bytes per normalized hash, four bytes per output
+token, and 2 KiB per request. Prompts and output plans are built from it when
+each request is dispatched. Warmup
 adds 32 KiB of evidence allowance per selected request and per warmup request
 (ten per lane); its prompt buffers do not overlap profile buffers across the
 quiescent preparation barrier. Continuing agentic profiles still have unknown
