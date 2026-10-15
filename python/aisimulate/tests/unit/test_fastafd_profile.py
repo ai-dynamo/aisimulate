@@ -6,7 +6,6 @@ import json
 import pytest
 
 from aisimulate_core.sdk.fastafd_profile import (
-    FASTAFD_OFFICIAL_REPOSITORY,
     FASTAFD_PROFILE_SCHEMA,
     FastAFDMoEStageKey,
     FastAFDMoEStageProfile,
@@ -14,16 +13,17 @@ from aisimulate_core.sdk.fastafd_profile import (
 
 pytestmark = pytest.mark.unit
 
-_OFFICIAL_COMMIT = "3c7161949310b6d59d6b4cf9bf997a4935c8113b"
+_REPOSITORY = "https://github.com/example/FastAFD"
+_COMMIT = "0" * 40
 
 
 def _entry():
     return {
         "key": {
             "model_path": "deepseek-ai/DeepSeek-V4-Flash",
-            "system": "b200_sxm",
+            "system": "gb200",
             "stage": "afd",
-            "topology": "4A4F",
+            "topology": "16A8F",
             "logical_batch_per_source_rank": 48,
             "mtp_nextn": 0,
             "microbatches": 2,
@@ -36,16 +36,17 @@ def _entry():
         "latency_ms": 16.7,
         "measurement": {
             "scope": "complete_moe_stage",
-            "method": "nsight-systems-cupti",
-            "method_version": "2025.5.2",
+            "method": "cuda_event",
+            "method_version": "torch 2.10.0+cu130; cuda 13.0",
             "statistic": "p50",
-            "sample_count": 10,
-            "procedure": "docs/profile-procedure.md",
-            "procedure_sha256": "a" * 64,
-            "raw_artifact": "raw/trace.nsys-rep",
+            "sample_count": 40,
+            "cv_percent": 0.4,
+            "routing": "balanced",
+            "source_tree_sha256": "c" * 64,
+            "raw_artifact": "deepseek_v4_flash_fp4_mega_16a8f_s48_n0_mb2_balanced.json",
             "raw_sha256": "b" * 64,
         },
-        "validation": {"stable": True, "correctness": True, "evidence": "raw/validation.json"},
+        "validation": {"stable": True, "correctness": None},
     }
 
 
@@ -53,7 +54,12 @@ def _payload(entries=None):
     return {
         "schema": FASTAFD_PROFILE_SCHEMA,
         "lookup_policy": "exact-only",
-        "source": {"repository": FASTAFD_OFFICIAL_REPOSITORY, "commit": _OFFICIAL_COMMIT},
+        "source": {
+            "repository": _REPOSITORY,
+            "commit": _COMMIT,
+            "benchmark": "fastafd.moe-m2n-model-benchmark.v2",
+            "boundary": "split AFD MoE stage",
+        },
         "entries": [_entry()] if entries is None else entries,
     }
 
@@ -64,28 +70,32 @@ def _write(tmp_path, payload):
     return path
 
 
-def test_exact_lookup_preserves_official_source_and_method(tmp_path):
+def test_exact_lookup_preserves_source_and_method(tmp_path):
     profile = FastAFDMoEStageProfile.load(_write(tmp_path, _payload()))
     key = FastAFDMoEStageKey(**_entry()["key"])
     measurement = profile.require(key)
 
     assert measurement.latency_ms == pytest.approx(16.7)
-    assert profile.find(FastAFDMoEStageKey(**{**_entry()["key"], "topology": "2A6F"})) is None
+    assert profile.find(FastAFDMoEStageKey(**{**_entry()["key"], "topology": "32A8F"})) is None
     assert len(profile.profile_sha256) == 64
-    assert measurement.provenance()["repository"] == FASTAFD_OFFICIAL_REPOSITORY
-    assert measurement.provenance()["source_commit"] == _OFFICIAL_COMMIT
-    assert measurement.provenance()["method"] == "nsight-systems-cupti"
-    assert measurement.provenance()["raw_sha256"] == "b" * 64
+    provenance = measurement.provenance()
+    assert provenance["repository"] == _REPOSITORY
+    assert provenance["source_commit"] == _COMMIT
+    assert provenance["benchmark"] == "fastafd.moe-m2n-model-benchmark.v2"
+    assert provenance["method"] == "cuda_event"
+    assert provenance["source_tree_sha256"] == "c" * 64
+    assert provenance["correctness"] is None
 
 
 @pytest.mark.parametrize(
     ("field", "value", "match"),
     [
-        ("repository", "https://github.com/example/FastAFD", "official repository"),
+        ("repository", "", "non-empty string"),
         ("commit", "main", "invalid digest"),
+        ("boundary", "", "non-empty string"),
     ],
 )
-def test_rejects_nonofficial_or_mutable_source(tmp_path, field, value, match):
+def test_rejects_incomplete_source(tmp_path, field, value, match):
     payload = _payload()
     payload["source"][field] = value
     with pytest.raises(ValueError, match=match):
@@ -97,10 +107,10 @@ def test_rejects_nonofficial_or_mutable_source(tmp_path, field, value, match):
     [
         ("scope", "per_rank_gpu_span", "complete_moe_stage"),
         ("method", "", "non-empty string"),
-        ("method_version", "", "non-empty string"),
         ("statistic", "mean", "must be p50"),
         ("sample_count", 0, "integer >= 1"),
-        ("procedure_sha256", "bad", "invalid digest"),
+        ("cv_percent", -1.0, ">= 0.0"),
+        ("source_tree_sha256", "bad", "invalid digest"),
         ("raw_sha256", "bad", "invalid digest"),
     ],
 )
@@ -117,8 +127,7 @@ def test_rejects_failed_validation_and_duplicate_keys(tmp_path):
     with pytest.raises(ValueError, match="not a qualified measurement"):
         FastAFDMoEStageProfile.load(_write(tmp_path, payload))
 
-    payload["entries"][0]["validation"]["stable"] = True
-    payload["entries"][0]["validation"]["correctness"] = None
+    payload["entries"][0]["validation"] = {"stable": True, "correctness": False}
     with pytest.raises(ValueError, match="not a qualified measurement"):
         FastAFDMoEStageProfile.load(_write(tmp_path, payload))
 
@@ -126,7 +135,7 @@ def test_rejects_failed_validation_and_duplicate_keys(tmp_path):
         FastAFDMoEStageProfile.load(_write(tmp_path, _payload([_entry(), _entry()])))
 
 
-def test_rejects_old_format_and_duplicate_json_fields(tmp_path):
+def test_rejects_other_schemas_and_duplicate_json_fields(tmp_path):
     payload = _payload()
     payload["schema"] = "unsupported.schema"
     with pytest.raises(ValueError, match="unsupported FastAFD profile schema"):
