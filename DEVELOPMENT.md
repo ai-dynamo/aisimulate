@@ -213,9 +213,11 @@ To enable delivery:
    disabled. Publish the Slack workflow (republish after changing variables).
 2. Save its Web request URL (`https://hooks.slack.com/triggers/...`) under repository **Settings → Secrets and variables → Actions**
    as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
-3. Save `SLACK_REVIEW_PIC_IDS` as an Actions secret containing six comma-separated
-   Slack member IDs in this order: Simone Chen, Harry Lee, Jason Zhou, Yongming
-   Ding, Hongkuan Zhou, Yueqi Zhao. Keep real workspace IDs out of the repository.
+3. Create an Actions **variable** named `SLACK_REVIEW_ROTATION` under
+   **Settings → Secrets and variables → Actions → Variables**. It holds the
+   ordered roster, start date, and OOO coverage, as shown below. Changes to this
+   variable apply to the next run without a code change or PR. Keep the webhook
+   URL in its secret; configuration variables are not secret or log-masked.
 4. Merge the workflow into the default branch. In **Actions → Slack review
    digest → Run workflow**, leave `dry_run` enabled to preview; disable it
    to send a test message.
@@ -227,27 +229,50 @@ job can duplicate messages. GitHub schedules may be delayed, so the digest
 shows the actual reporting time. Activity after that time is outside the
 seven-day report.
 
-The PIC changes every Monday at 09:00 Pacific, starting October 19, 2026 with
-Simone Chen. Both reminders in a week use the same PIC. The first PIC also covers
-runs before the start date. The six-person sequence repeats every six weeks and
-uses local calendar dates across daylight-saving changes. The
-[Linear review project](https://linear.app/nvidia/project/aisim-review-pic-51559cd6cfe2)
-records the roster, responsibilities, and schedule. The digest computes the PIC;
-it does not update the Linear project lead.
+The PIC changes every Monday at 09:00 Pacific. `start_date` is the Monday of
+roster member 1's first week. The sequence repeats after everyone in `roster`
+has served one week. Both reminders in a week use the same PIC. The first member
+also covers runs before `start_date`. Local calendar dates preserve handoff time
+across daylight-saving changes.
 
-For OOO coverage, set the Actions **variable** `SLACK_REVIEW_PIC_OVERRIDES` to a
-JSON object mapping Monday dates to exact roster names. For example, this swaps
-Jason's November 2 shift with Yongming's November 9 shift:
+Use this format for `SLACK_REVIEW_ROTATION` (replace the example Slack IDs with
+real member IDs):
 
 ```json
-{"2026-11-02": "Yongming Ding", "2026-11-09": "Jason Zhou"}
+{
+  "start_date": "2026-10-19",
+  "roster": [
+    {"name": "Simone Chen", "slack_id": "U00000001"},
+    {"name": "Harry Lee", "slack_id": "U00000002"},
+    {"name": "Jason Zhou", "slack_id": "U00000003"},
+    {"name": "Yongming Ding", "slack_id": "U00000004"},
+    {"name": "Hongkuan Zhou", "slack_id": "U00000005"},
+    {"name": "Yueqi Zhao", "slack_id": "U00000006"}
+  ],
+  "overrides": {
+    "2026-11-02": "Yongming Ding",
+    "2026-11-09": "Jason Zhou"
+  }
+}
 ```
 
-Overrides affect both reminders for the named week without shifting later weeks.
-Confirm the coverage and update the Linear schedule when setting an override.
-An unset/empty variable uses the normal rotation. Invalid dates, unknown names,
-or an incomplete/duplicate ID roster fail before contacting Slack. Configure
-and republish the Slack User ID input before enabling the updated sender.
+For OOO coverage, edit only `overrides`: keys are the Monday dates of affected
+weeks, and values are exact names from `roster`. The example swaps Jason's
+November 2 shift with Yongming's November 9 shift. Overrides affect both
+reminders for those weeks without shifting later weeks. Omit `overrides` or use
+`{}` for the normal rotation. Names, roster size/order, and the start date are
+all editable in this variable. Changing the roster order or start date
+recalculates the current rotation, so use dated overrides for temporary swaps.
+Invalid dates, unknown coverage names, or duplicate/invalid roster entries fail
+before contacting Slack.
+
+The Actions variable is the source for Slack's PIC. The
+[Linear review project](https://linear.app/nvidia/project/external-pr-review-pic-aisim-51559cd6cfe2)
+records the responsibilities and a reference schedule; it is not read or updated
+by the digest. Update that reference table when changing coverage. The old
+`SLACK_REVIEW_PIC_IDS` secret and `SLACK_REVIEW_PIC_OVERRIDES` variable are no
+longer read and can be removed after rollout. Configure and republish the Slack
+User ID input before enabling the updated sender.
 
 Local preview (requires an authenticated GitHub CLI and Python 3.9+):
 The digest and its offline tests use standard-library Python modules and require
@@ -257,8 +282,8 @@ with `python3 -m pip install tzdata`. Both files retain a Python 3.9 lint target
 in `scripts/pyproject.toml`.
 
 ```bash
-# Fake member IDs are sufficient for a local preview; never send them to Slack.
-export SLACK_REVIEW_PIC_IDS=U00000001,U00000002,U00000003,U00000004,U00000005,U00000006
+# Read the editable configuration without printing it.
+export SLACK_REVIEW_ROTATION="$(gh variable get SLACK_REVIEW_ROTATION --repo ai-dynamo/aisimulate)"
 GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
 ```
 

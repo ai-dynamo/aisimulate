@@ -23,7 +23,20 @@ from scripts.notifications.slack_review_digest import (
 
 class DigestTests(unittest.TestCase):
     now = datetime(2026, 9, 30, 0, 7, tzinfo=timezone.utc)
-    pic_ids = "U00000001,U00000002,U00000003,U00000004,U00000005,U00000006"
+
+    def rotation(self, **changes):
+        config = {
+            "start_date": "2026-10-19",
+            "roster": [
+                {"name": name, "slack_id": f"U0000000{i}"}
+                for i, name in enumerate(
+                    ["Simone Chen", "Harry Lee", "Jason Zhou", "Yongming Ding", "Hongkuan Zhou", "Yueqi Zhao"],
+                    start=1,
+                )
+            ],
+        }
+        config.update(changes)
+        return json.dumps(config)
 
     def test_pic_rotation_same_on_monday_and_thursday_and_wraps(self):
         monday = datetime(2026, 10, 19, 9, 0, tzinfo=PACIFIC)
@@ -41,19 +54,19 @@ class DigestTests(unittest.TestCase):
                 with self.subTest(week=week, day=day):
                     now = monday + timedelta(weeks=week, days=day)
                     self.assertEqual(
-                        review_pic(now, self.pic_ids, ""),
-                        (name, self.pic_ids.split(",")[week % 6]),
+                        review_pic(now, self.rotation()),
+                        (name, f"U0000000{week % 6 + 1}"),
                     )
 
     def test_pic_handoff_at_local_nine_after_dst(self):
         before = datetime(2026, 11, 2, 16, 59, tzinfo=timezone.utc)
         after = datetime(2026, 11, 2, 17, 0, tzinfo=timezone.utc)
-        self.assertEqual(review_pic(before, self.pic_ids, "")[0], "Harry Lee")
-        self.assertEqual(review_pic(after, self.pic_ids, "")[0], "Jason Zhou")
-        self.assertEqual(review_pic(self.now, self.pic_ids, "")[0], "Simone Chen")
+        self.assertEqual(review_pic(before, self.rotation())[0], "Harry Lee")
+        self.assertEqual(review_pic(after, self.rotation())[0], "Jason Zhou")
+        self.assertEqual(review_pic(self.now, self.rotation())[0], "Simone Chen")
 
     def test_pic_ooo_swap_does_not_shift_later_weeks(self):
-        overrides = json.dumps({"2026-11-02": "Yongming Ding", "2026-11-09": "Jason Zhou"})
+        rotation = self.rotation(overrides={"2026-11-02": "Yongming Ding", "2026-11-09": "Jason Zhou"})
         for day, name, user_id in (
             (2, "Yongming Ding", "U00000004"),
             (5, "Yongming Ding", "U00000004"),
@@ -63,23 +76,54 @@ class DigestTests(unittest.TestCase):
         ):
             with self.subTest(day=day):
                 self.assertEqual(
-                    review_pic(datetime(2026, 11, day, 9, 0, tzinfo=PACIFIC), self.pic_ids, overrides),
+                    review_pic(datetime(2026, 11, day, 9, 0, tzinfo=PACIFIC), rotation),
                     (name, user_id),
                 )
 
+    def test_roster_order_size_and_start_are_configurable(self):
+        roster = [
+            {"name": "New Reviewer", "slack_id": "U00000009"},
+            {"name": "Another Reviewer", "slack_id": "U00000008"},
+        ]
+        rotation = self.rotation(start_date="2027-01-04", roster=roster)
+        for day, index in ((4, 0), (11, 1), (18, 0)):
+            self.assertEqual(
+                review_pic(datetime(2027, 1, day, 9, tzinfo=PACIFIC), rotation),
+                (roster[index]["name"], roster[index]["slack_id"]),
+            )
+        roster.reverse()
+        self.assertEqual(
+            review_pic(
+                datetime(2027, 1, 4, 9, tzinfo=PACIFIC),
+                self.rotation(start_date="2027-01-04", roster=roster),
+            )[0],
+            "Another Reviewer",
+        )
+
     def test_invalid_pic_configuration_fails_before_delivery(self):
-        for ids in ("", "U00000001", ",".join(["U00000001"] * 6), self.pic_ids + ",bad"):
-            with self.subTest(ids=ids), self.assertRaises(ValueError):
-                review_pic(self.now, ids, "")
-        for overrides in (
-            "[]",
-            "not json",
-            '{"2026-11-03": "Jason Zhou"}',
-            '{"2026-11-02": "Unknown"}',
-            '{"not-a-date": "Jason Zhou"}',
+        roster = json.loads(self.rotation())["roster"]
+        invalid = ["", "not json", "[]", "{}"]
+        for changes in (
+            {"start_date": "2026-10-20"},
+            {"start_date": "not-a-date"},
+            {"start_date": None},
+            {"roster": []},
+            {"roster": {}},
+            {"roster": [None]},
+            {"roster": [{"name": " "}]},
+            {"roster": [{"name": "Test", "slack_id": "bad"}]},
+            {"roster": roster + [roster[0]]},
+            {"roster": roster + [{"name": "Other", "slack_id": "U00000001"}]},
+            {"roster": roster + [{"name": "Simone Chen", "slack_id": "U00000009"}]},
+            {"overrides": []},
+            {"overrides": {"2026-11-03": "Jason Zhou"}},
+            {"overrides": {"2026-11-02": "Unknown"}},
+            {"overrides": {"2026-11-02": []}},
         ):
-            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
-                review_pic(self.now, self.pic_ids, overrides)
+            invalid.append(self.rotation(**changes))
+        for rotation in invalid:
+            with self.subTest(rotation=rotation), self.assertRaises(ValueError):
+                review_pic(self.now, rotation)
 
     @patch("scripts.notifications.slack_review_digest.send_message")
     @patch("scripts.notifications.slack_review_digest.pull_requests", return_value=[])
@@ -87,8 +131,7 @@ class DigestTests(unittest.TestCase):
         env = {
             "GH_TOKEN": "test",
             "SLACK_REVIEW_DIGEST_WEBHOOK_URL": "https://hooks.slack.com/triggers/test",
-            "SLACK_REVIEW_PIC_IDS": self.pic_ids,
-            "SLACK_REVIEW_PIC_OVERRIDES": "",
+            "SLACK_REVIEW_ROTATION": self.rotation(),
         }
         with (
             patch.dict("os.environ", env),
