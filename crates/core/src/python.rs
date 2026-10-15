@@ -169,10 +169,6 @@ fn validate_public_agentic_engine(
             matches!(role.rank.backend, Backend::Vllm | Backend::Sglang),
             "agentic replay supports only vLLM and SGLang backends"
         );
-        ensure!(
-            role.rank.aic_nextn.is_none(),
-            "agentic replay requires speculative decoding disabled"
-        );
     }
     // HBM-only deployments retain their existing worker/DP support. Once any
     // active role enables G2, qualify the entire deployment, not just that rank.
@@ -195,6 +191,10 @@ fn validate_public_agentic_engine(
             "agentic host offload requires static worker pools without a scaling policy"
         );
         for role in &roles {
+            ensure!(
+                role.rank.aic_nextn.is_none(),
+                "agentic host offload requires speculative decoding disabled"
+            );
             ensure!(
                 role.rank.backend == Backend::Vllm,
                 "agentic host offload requires backend=vllm on every role"
@@ -3100,6 +3100,90 @@ mod tests {
     }
 
     #[test]
+    fn public_agentic_hbm_speculation_completes_dependency_workloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sd-weka.jsonl");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "id": "play", "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+                "requests": [
+                    {"t": 0.0, "type": "s", "model": "model", "in": 4, "out": 8, "hash_ids": [1]},
+                    {"t": 1.0, "type": "s", "model": "model", "in": 8, "out": 8, "hash_ids": [1, 2]}
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for backend in ["vllm", "sglang"] {
+            for disagg in [false, true] {
+                let rank = serde_json::json!({
+                    "backend": backend, "block_size": 4, "num_gpu_blocks": 64,
+                    "aic_nextn": 3, "aic_nextn_accept_rates": "1,0.78,0",
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
+                });
+                let (topology, engine) = if disagg {
+                    (
+                        serde_json::json!({"kind": "disaggregated", "prefill": {"initial_workers": 1}, "decode": {"initial_workers": 1}}),
+                        serde_json::json!({"prefill": {"rank": rank}, "decode": {"rank": rank}}),
+                    )
+                } else {
+                    (
+                        serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
+                        serde_json::json!({"rank": rank}),
+                    )
+                };
+                let payload = serde_json::json!({
+                    "spec": {"version": 1, "topology": topology, "engine": engine, "requests": []},
+                    "traffic": {
+                        "source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                        "trace_path": path, "trace_block_size": 4, "execution_model": "model", "agentic_lanes": 1
+                    }
+                });
+                let run = || execute_json(&payload.to_string(), false).unwrap();
+                let report: serde_json::Value = serde_json::from_str(&run()).unwrap();
+                assert_eq!(report["completed_requests"], 2, "{backend}/{disagg}");
+                assert_eq!(report["total_output_tokens"], 16, "{backend}/{disagg}");
+                assert_eq!(report["agentic_qualification"], "functional_only");
+                assert!(report["agentic_lifecycle_digest"].is_string());
+                // The public path must actually schedule sampled SD progress,
+                // rather than merely accept and silently discard the settings.
+                let mut ordinary_payload = payload.clone();
+                let paths = if disagg {
+                    vec!["/spec/engine/prefill/rank", "/spec/engine/decode/rank"]
+                } else {
+                    vec!["/spec/engine/rank"]
+                };
+                for path in paths {
+                    let rank = ordinary_payload
+                        .pointer_mut(path)
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap();
+                    rank.remove("aic_nextn");
+                    rank.remove("aic_nextn_accept_rates");
+                }
+                let ordinary: serde_json::Value = serde_json::from_str(
+                    &execute_json(&ordinary_payload.to_string(), false).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    report["duration_ms"].as_f64().unwrap()
+                        < ordinary["duration_ms"].as_f64().unwrap()
+                );
+                let repeated: serde_json::Value = serde_json::from_str(&run()).unwrap();
+                for field in [
+                    "duration_ms",
+                    "agentic_lifecycle_digest",
+                    "total_output_tokens",
+                ] {
+                    assert_eq!(report[field], repeated[field], "{backend}/{disagg}/{field}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
         let directory = tempfile::tempdir().unwrap();
         let dynamo = serde_json::json!({
@@ -3154,13 +3238,9 @@ mod tests {
                     .collect::<String>(),
             )
             .unwrap();
-            for (options, message) in [
-                (serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang"),
-                (
-                    serde_json::json!({"aic_nextn": 1}),
-                    "speculative decoding disabled",
-                ),
-            ] {
+            for (options, message) in
+                [(serde_json::json!({"backend": "trtllm"}), "vLLM and SGLang")]
+            {
                 let mut rank = serde_json::json!({
                     "backend": "vllm", "block_size": 4, "num_gpu_blocks": 16,
                     "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}

@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use rstest::rstest;
 use uuid::Uuid;
@@ -449,9 +452,7 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
 
     let pass = core.execute_pass(&mut collector, 0.0);
 
-    assert!(core.state.requests.is_empty());
-    assert_eq!(core.kv_manager.num_active_blocks(), 0);
-    assert_eq!(pass.completed_requests, 2);
+    assert_eq!(pass.completed_requests, 1);
     assert_eq!(
         pass.output_signals
             .iter()
@@ -464,8 +465,12 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
             .iter()
             .filter(|signal| signal.uuid == normal_uuid && signal.token_id.is_some())
             .count(),
-        3
+        1
     );
+    let second = core.execute_pass(&mut collector, pass.end_ms);
+    assert_eq!(second.output_signals.len(), 2);
+    assert!(core.state.requests.is_empty());
+    assert_eq!(core.kv_manager.num_active_blocks(), 0);
 }
 
 #[rstest]
@@ -504,8 +509,9 @@ fn speculative_retraction_preserves_only_executed_work(
     let pass = if prefill_pass {
         first
     } else {
-        assert_eq!(first.output_signals.len(), 6);
-        core.execute_pass(&mut collector, first.end_ms)
+        assert_eq!(first.output_signals.len(), 2);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        core.execute_pass(&mut collector, second.end_ms)
     };
     assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
     assert!(
@@ -520,6 +526,194 @@ fn speculative_retraction_preserves_only_executed_work(
     );
     assert!(pass.committed_requests.contains(&survivor));
     assert_eq!(pass.committed_requests.contains(&retracted), prefill_pass);
+}
+
+mod speculative_scheduling {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct TimingProbe(Mutex<Vec<usize>>);
+
+    impl crate::engine::TimingModel for TimingProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<f64> {
+            self.0.lock().unwrap().push(batch);
+            Ok(11.0)
+        }
+    }
+
+    fn core(engine_type: EngineType) -> VllmCore {
+        VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(2)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(Some(3))
+                .aic_nextn_accept_rates(Some("1,1,1".into()))
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) -> Uuid {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        })
+    }
+
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, 1, 7.0)]
+    #[case::trtllm_unchanged(EngineType::Trtllm, 4, 18.0)]
+    fn first_prefill_has_no_drafts_and_no_extra_vllm_forward(
+        #[case] engine: EngineType,
+        #[case] output: usize,
+        #[case] expected_ms: f64,
+    ) {
+        let mut core = core(engine);
+        let timing = Arc::new(TimingProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), output);
+        assert_eq!(first.end_ms, expected_ms);
+        let calls = usize::from(engine == EngineType::Trtllm);
+        assert_eq!(timing.0.lock().unwrap().len(), calls);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(second.output_signals.len(), 4);
+        assert_eq!(second.end_ms - first.end_ms, 11.0);
+    }
+
+    #[rstest]
+    #[case(1)]
+    #[case(2)]
+    #[case(4)]
+    #[case(5)]
+    #[case(8)]
+    fn verify_tokens_share_budget_and_partial_rounds_make_progress(#[case] budget: usize) {
+        let mut core = core(EngineType::Vllm);
+        submit(&mut core, 1, 4, 9);
+        submit(&mut core, 2, 4, 9);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 2);
+        core.args.max_num_batched_tokens = Some(budget);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        // Two K3 decoders each need 4 verification positions. At all-accept,
+        // output must equal the scheduled width, never the configured burst.
+        assert_eq!(second.output_signals.len(), budget);
+        let mut emitted = first.output_signals.len() + second.output_signals.len();
+        let mut now = second.end_ms;
+        for _ in 0..32 {
+            if core.is_empty() {
+                break;
+            }
+            let pass = core.execute_pass(&mut collector, now);
+            assert!(!pass.output_signals.is_empty());
+            assert!(pass.output_signals.len() <= budget);
+            assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+            emitted += pass.output_signals.len();
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert_eq!(emitted, 18);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn context_limit_narrows_verification_before_spending_shared_budget() {
+        let mut core = core(EngineType::Vllm);
+        core.args.max_model_len = Some(8);
+        let at_limit = submit(&mut core, 1, 6, 12);
+        let follower = submit(&mut core, 2, 2, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 2);
+        core.args.max_num_batched_tokens = Some(4);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        // The first request has room for only its base token. The other three
+        // verification positions must remain available to the follower.
+        assert_eq!(second.output_signals.len(), 4);
+        assert_eq!(
+            second
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == at_limit)
+                .count(),
+            1
+        );
+        assert_eq!(
+            second
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == follower)
+                .count(),
+            3
+        );
+        assert!(
+            second
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == at_limit && signal.completed)
+        );
+    }
+
+    #[test]
+    fn mixed_prefill_uses_only_budget_left_after_sd_verification() {
+        let mut core = core(EngineType::Vllm);
+        let decode = submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        core.args.max_num_batched_tokens = Some(8);
+        let prefill = submit(&mut core, 2, 8, 8);
+        let pass = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(pass.output_signals.len(), 4);
+        assert!(
+            pass.output_signals
+                .iter()
+                .all(|signal| signal.uuid == decode)
+        );
+        assert_eq!(core.state.requests[&prefill].num_computed_tokens, 4);
+        let fpm = pass.fpm.unwrap();
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(fpm.num_decode_requests, 1);
+    }
+
+    #[test]
+    fn preemption_discards_drafts_until_recompute_has_produced_a_base_token() {
+        let mut core = core(EngineType::Vllm);
+        let request = submit(&mut core, 1, 4, 12);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.output_signals.len(), 1);
+        assert!(core.policy_preempt(first.end_ms).is_some());
+        assert_eq!(core.state.requests[&request].num_computed_tokens, 0);
+        let resumed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(resumed.output_signals.len(), 1);
+        let steady = core.execute_pass(&mut collector, resumed.end_ms);
+        assert_eq!(steady.output_signals.len(), 4);
+    }
 }
 
 mod source_holds {
@@ -1983,8 +2177,10 @@ mod core_behavior {
 
         let mut collector = crate::engine::trace::TraceCollector::default();
         let first = core.execute_pass(&mut collector, 0.0);
-        assert_eq!(first.output_signals.len(), 6);
-        let pass = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(first.output_signals.len(), 2);
+        let second = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(second.output_signals.len(), 6);
+        let pass = core.execute_pass(&mut collector, second.end_ms);
         let ordered = pass
             .output_signals
             .iter()
@@ -1992,17 +2188,11 @@ mod core_behavior {
             .collect::<Vec<_>>();
         assert_eq!(
             ordered,
-            vec![
-                (short, false),
-                (short, true),
-                (long, false),
-                (long, false),
-                (long, false),
-            ]
+            vec![(short, true), (long, false), (long, false), (long, false),]
         );
 
         let request = core.state.requests.get(&long).unwrap();
-        assert_eq!(request.sequence.generated_tokens(), 6);
+        assert_eq!(request.sequence.generated_tokens(), 7);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
         assert_eq!(
             pass.fpm.unwrap().num_decode_requests,
@@ -2036,13 +2226,17 @@ mod core_behavior {
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
         assert_eq!(pass.output_signals.len(), 1);
+        // Exercise an actual verification round, not just the draft-free
+        // prefill output. Rejected drafts must not retain their reservation.
+        let pass = core.execute_pass(&mut collector, pass.end_ms);
+        assert_eq!(pass.output_signals.len(), 1);
         assert_eq!(
             core.kv_manager.num_active_blocks(),
-            2,
+            3,
             "the block reserved only for rejected drafts must be released"
         );
         let request = core.state.requests.get(&uuid).unwrap();
-        assert_eq!(request.sequence.generated_tokens(), 1);
+        assert_eq!(request.sequence.generated_tokens(), 2);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
     }
 

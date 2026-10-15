@@ -150,7 +150,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert capabilities.supports_agentic_host_offload
-    assert not capabilities.supports_agentic_speculative_decoding
+    assert capabilities.supports_agentic_speculative_decoding
     assert capabilities.agentic_qualification == "functional_only"
 
 
@@ -158,15 +158,11 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 @pytest.mark.parametrize("nested_rank", [False, True])
 @pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize(
-    ("unsupported", "message"),
-    [
-        ({"aic_nextn": 1}, "speculative decoding disabled"),
-        ({"nextn": 1}, "speculative decoding disabled"),
-    ],
+    "speculation",
+    [{"aic_nextn": 1}, {"nextn": 1}],
 )
-def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nested_rank, role, unsupported, message):
-    runtime = RecordingRuntime()
-    args = _engine_args(role=role) | unsupported
+def test_agentic_hbm_capabilities_accept_speculation(trace_format, nested_rank, role, speculation):
+    args = _engine_args(role=role) | speculation
     if nested_rank:
         args = {"rank": args}
     spec = _spec(
@@ -182,9 +178,11 @@ def test_agentic_capabilities_reject_unqualified_decode_modes(trace_format, nest
         workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
     )
 
-    with pytest.raises(ValueError, match=message):
-        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
-    assert runtime.execution_spec is None
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    capabilities.require_compatible(spec)
+    # Third-party runners can still explicitly decline the composition.
+    with pytest.raises(ValueError, match="speculative decoding disabled"):
+        replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
 
 
 def _agentic_g2_spec(*, scopes=("dp_rank_local",), nested_rank=False, trace_format="weka"):

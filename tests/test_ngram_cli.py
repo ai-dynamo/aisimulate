@@ -122,10 +122,9 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
     ordinary = _run(baseline)
     assert accepted.metrics["completed_requests"] == rejected.metrics["completed_requests"] == 1
     assert accepted.metrics["mean_e2e_latency_ms"] < rejected.metrics["mean_e2e_latency_ms"]
-    # Ordinary aggregated prefill supplies the first token; speculative
-    # verification and disaggregated timing retain their existing forward count.
-    first_token_decode_ms = 1.0 if mode == "aggregated" else 0.0
-    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"] + first_token_decode_ms
+    # The prefill output is a base token in both AR and SD. Fixed round timing
+    # makes always-rejected drafts match the AR output cadence.
+    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"]
     assert accepted.metrics["mean_ttft_ms"] == rejected.metrics["mean_ttft_ms"]
 
 
@@ -243,7 +242,7 @@ def test_set_override_reaches_native_replay(tmp_path):
 
     report = json.loads((output / "prediction.json").read_text())
     summary = report.get("summary", report)
-    assert summary["mean_e2e_latency_ms"] == pytest.approx(4.0)
+    assert summary["mean_e2e_latency_ms"] == pytest.approx(3.0)
 
 
 def test_lower_level_sweeper_rejects_legacy_mtp_combination():
@@ -317,8 +316,8 @@ def test_native_progress_clamps_final_burst(output_tokens):
     raw = _prediction()
     raw["traffic"]["source"]["output_tokens"] = output_tokens
     report = _run(raw)
-    # The native scheduler performs prefill, then up to three tokens per decode round.
-    rounds = (output_tokens + 2) // 3
+    # Prefill emits one base token, then each round accepts up to three tokens.
+    rounds = (output_tokens - 1 + 2) // 3
     assert report.metrics["mean_e2e_latency_ms"] == pytest.approx(1 + rounds)
 
 
@@ -330,15 +329,14 @@ def test_ngram_rejection_still_pays_target_verification_cost():
     assert speculative.metrics["mean_e2e_latency_ms"] > ordinary.metrics["mean_e2e_latency_ms"]
 
 
-def test_agentic_execution_rejects_ngram_before_loading_trace():
+def test_agentic_hbm_execution_accepts_ngram_capability():
     raw = _prediction()
     raw["traffic"] = {
         "source": {"type": "trace", "paths": ["not-loaded.jsonl"], "format": "weka"},
         "load": {"type": "trace_timestamps"},
     }
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    with pytest.raises(ValueError, match="speculative decoding disabled"):
-        EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+    EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
 def test_online_prediction_rejects_ngram():
