@@ -236,6 +236,14 @@ jobs:
           uv export --project source/python/aisimulate --frozen --no-dev --no-emit-project \
             --format requirements-txt --output-file "${RUNNER_TEMP}/wheel/requirements.txt"
           python scripts/performance/build_simulation_dynamo.py source dynamo "${RUNNER_TEMP}/wheel"
+          # Exercise the complete patched callback with this revision's Python SDK.
+          python -m venv "${RUNNER_TEMP}/callback-venv"
+          "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --require-hashes \
+            -r "${RUNNER_TEMP}/wheel/requirements.txt"
+          "${RUNNER_TEMP}/callback-venv/bin/python" -m pip install --no-deps \
+            "${RUNNER_TEMP}"/wheel/aisimulate-*.whl
+          "${RUNNER_TEMP}/callback-venv/bin/python" \
+            scripts/performance/check_dynamo_callback.py source dynamo
           cp scripts/performance/simulation_dynamo_requirements.txt "${RUNNER_TEMP}/wheel/dynamo-requirements.txt"
           export BUILD_SECONDS=$(( $(date +%s) - started ))
           python scripts/performance/simulation_perf_artifact.py record "${RUNNER_TEMP}/wheel" \

@@ -34,17 +34,20 @@ SPECULATION_DEPTH_NEW = """    // Modified by AISimulate CI: preserve the Ngram-
             let spec = serde_json::to_value(spec).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid AIS speculation: {e}"))
             })?;
-            if spec["kind"].as_str() != Some("ngram") {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+            match spec["kind"].as_str() {
+                // The canonical constructor below validates disabled parameters
+                // and rejects a conflicting legacy nextn before normalization.
+                Some("none") => 0,
+                Some("ngram") => spec["params"]["num_speculative_tokens"]
+                    .as_u64()
+                    .filter(|depth| (1..=5).contains(depth))
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                        "ngram num_speculative_tokens must be an integer in 1..=5",
+                    ))? as u32,
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(
                     "Dynamo replay requires ngram speculation or legacy nextn",
-                ));
+                )),
             }
-            spec["params"]["num_speculative_tokens"]
-                .as_u64()
-                .filter(|depth| (1..=5).contains(depth))
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-                    "ngram num_speculative_tokens must be an integer in 1..=5",
-                ))? as u32
         }
     };
 """

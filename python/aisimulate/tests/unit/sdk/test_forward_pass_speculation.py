@@ -281,6 +281,48 @@ def test_invalid_speculation_never_uses_fallback(entrypoint, speculation, error)
         getattr(RustForwardPassPerfModel, entrypoint)(config)
 
 
+@pytest.mark.parametrize("entrypoint", ["normalize_config", "best_available"])
+@pytest.mark.parametrize("failure", ["download", "validation", "import", "runtime", "same_name"])
+def test_checkpoint_resolution_classifies_only_recognized_availability_errors(monkeypatch, entrypoint, failure):
+    from aisimulate_core.sdk import engine, utils
+
+    error_type = {
+        "download": utils.HuggingFaceDownloadError,
+        "validation": ValueError,
+        "import": ImportError,
+        "runtime": RuntimeError,
+        # A similarly named arbitrary exception is not the SDK's loader error.
+        "same_name": type("HuggingFaceDownloadError", (Exception,), {}),
+    }[failure]
+    attempted_paths = []
+    message = "checkpoint failure from the test loader"
+
+    def fail_loading(path):
+        attempted_paths.append(path)
+        raise error_type(message)
+
+    def unexpected_compile(*args, **kwargs):
+        pytest.fail("unresolved draft identity must fail before estimator candidates are built")
+
+    monkeypatch.setattr(utils, "_load_model_config_from_model_path", fail_loading)
+    monkeypatch.setattr(engine, "compile_engine", unexpected_compile)
+    path = "test-fixture/unavailable-draft"
+    config = _config(
+        estimation_mode="auto",
+        fallback_policy="allow",
+        speculation={"kind": "eagle3", "params": {"num_speculative_tokens": 3}, "draft_model_path": path},
+    )
+    expected = (
+        "unsupported model for Rust core estimator: speculation checkpoint unavailable:"
+        if failure == "download"
+        else "invalid engine config: speculation:"
+    )
+    with pytest.raises(ValueError, match=expected) as caught:
+        getattr(RustForwardPassPerfModel, entrypoint)(config)
+    assert message in str(caught.value)
+    assert attempted_paths == [path]
+
+
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
 def test_explicit_fpm_rejects_unimplemented_speculative_cost(mode):
     with pytest.raises(ValueError, match="speculat.*op_level|op_level.*speculat"):

@@ -1615,7 +1615,20 @@ pub(crate) fn resolve_speculation_identity(
         let encoded: String = json.call_method1("dumps", (fields,))?.extract()?;
         serde_json::from_str(&encoded).map_err(|error| PyValueError::new_err(error.to_string()))
     })
-    .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
+    .map_err(|error| {
+        let checkpoint_unavailable = Python::with_gil(|py| {
+            py.import("aisimulate_core.sdk.utils")
+                .and_then(|module| module.getattr("HuggingFaceDownloadError"))
+                .is_ok_and(|kind| error.is_instance(py, &kind))
+        });
+        if checkpoint_unavailable {
+            // Match native construction's checkpoint-availability category.
+            // Identity resolution still fails before estimator selection.
+            AicError::UnsupportedModel(format!("speculation checkpoint unavailable: {error}"))
+        } else {
+            AicError::InvalidEngineConfig(format!("speculation: {error}"))
+        }
+    })
 }
 
 /// Profile schema/identity facts supplied by Python without choosing an estimator.
