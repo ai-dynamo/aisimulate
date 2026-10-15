@@ -154,7 +154,7 @@ def test_unknown_architecture_requires_supported_layers_before_rendering(tmp_pat
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
 
-    with pytest.raises(ValueError, match="generic MLA/GQA FPM templates cannot represent"):
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
         _plan(profile, model_config_path=str(path), has_model_cases=False)
 
     # A renamed DSA checkpoint does not qualify an unknown architecture. Use an
