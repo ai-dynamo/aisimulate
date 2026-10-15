@@ -42,6 +42,7 @@ pub(super) fn get_new_batch_prefill(
     config: &SglangConfig,
     new_token_ratio: f64,
     running: &[SglangRequest],
+    cutoff_ms: Option<f64>,
 ) -> AdmitResult {
     let cache = kv_manager.cache();
     let reserved_decode_output: f64 = running
@@ -72,6 +73,14 @@ pub(super) fn get_new_batch_prefill(
     while can_run.len() < available_running_slots
         && let Some(mut req) = waiting.pop_front()
     {
+        // Overlap batch forming: a fresh request that reached the engine after SGLang
+        // formed this batch waits for the next pass. It is not rejected.
+        if req.materialized_tokens == 0
+            && cutoff_ms.is_some_and(|cutoff| req.queued_at_ms.is_some_and(|t| t > cutoff))
+        {
+            rejected.push_back(req);
+            break;
+        }
         // SGLang `Req.init_next_round_input(tree_cache)`: a waiting request matches its whole
         // prompt against the radix tree once, capped at `input_len - 1` so a request that must
         // produce a token always computes at least one. Chunked continuations are re-initialised

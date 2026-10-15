@@ -417,7 +417,9 @@ impl EngineCore {
             Self::Vllm(core) => {
                 core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
             }
-            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
         }
     }
 

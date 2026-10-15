@@ -31,6 +31,9 @@ pub(super) struct SglangRequest {
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
     pub(super) allocated_tokens: usize,
+    /// When the request entered the waiting queue: its arrival, or its retraction.
+    /// Overlap batch forming never holds a request without one.
+    pub(super) queued_at_ms: Option<f64>,
 }
 
 impl SglangRequest {
@@ -63,6 +66,7 @@ impl SglangRequest {
             kv_lease,
             materialized_tokens: 0,
             allocated_tokens: 0,
+            queued_at_ms: req.arrival_timestamp_ms,
         }
     }
 

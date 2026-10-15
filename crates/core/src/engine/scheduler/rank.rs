@@ -479,6 +479,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
             overlap_schedule: config.sglang.overlap_schedule,
             evict_whole_lru_leaves: config.sglang.evict_whole_lru_leaves,
+            overlap_prefill_launch_ms: config.sglang.overlap_prefill_launch_ms,
         }),
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,

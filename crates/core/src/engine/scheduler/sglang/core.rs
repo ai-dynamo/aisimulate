@@ -63,6 +63,8 @@ pub(crate) struct SglangCore {
     // With overlap, the previous pass's prefill prefixes: (request, page-aligned
     // length). This pass caches them after its own admission and step.
     delayed_prefill_cache: Vec<(Uuid, usize)>,
+    // Overlap batch forming: the last pass that ran model work.
+    last_formed_pass: Option<FormedPass>,
     pub(super) kv_manager: SglangKvManager,
     belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
@@ -84,6 +86,15 @@ pub(crate) struct SglangCore {
 
 struct HeldSglangPrefill {
     request: SglangRequest,
+}
+
+/// A pass as SGLang's overlap loop formed it: when the pass started, the latest queue
+/// time its admission accepted, and whether it launched a prefill.
+#[derive(Clone, Copy)]
+struct FormedPass {
+    start_ms: f64,
+    cutoff_ms: f64,
+    prefill: bool,
 }
 
 struct ReservedSglangDecode {
@@ -217,6 +228,7 @@ impl SglangCore {
             batch_is_full: false,
             completion_latch_decode_passes: 0,
             delayed_prefill_cache: Vec::new(),
+            last_formed_pass: None,
             kv_manager,
             belady: None,
             speculative_sampler,
@@ -261,10 +273,22 @@ impl SglangCore {
         Ok(self.apply_command_effects(command, true)?.result)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_command_effects(
         &mut self,
         command: SchedulerCommand,
         allow_destination_admission: bool,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        self.apply_command_effects_at(command, allow_destination_admission, None)
+    }
+
+    /// `command_now_ms` is the engine time of the command. A submitted request
+    /// without its own arrival time enters the waiting queue then.
+    pub(crate) fn apply_command_effects_at(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        command_now_ms: Option<f64>,
     ) -> anyhow::Result<SchedulerCommandEffects> {
         match command {
             SchedulerCommand::FlushCache => {
@@ -279,7 +303,7 @@ impl SglangCore {
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request)?),
+                    SchedulerCommandResult::Submitted(self.submit(request, command_now_ms)?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
@@ -309,7 +333,7 @@ impl SglangCore {
                 self.validate_request_id(uuid)?;
                 self.source_holds.register(uuid, handoff_id)?;
                 let submitted = self
-                    .submit(request)
+                    .submit(request, command_now_ms)
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -489,8 +513,13 @@ impl SglangCore {
         self.active_request_ids.contains(&uuid)
     }
 
-    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
-        let request = self.build_request(request);
+    fn submit(
+        &mut self,
+        request: DirectRequest,
+        command_now_ms: Option<f64>,
+    ) -> anyhow::Result<Uuid> {
+        let mut request = self.build_request(request);
+        request.queued_at_ms = request.queued_at_ms.or(command_now_ms);
         if self.request_is_active(request.uuid) {
             anyhow::bail!("request {} is already active", request.uuid);
         }
@@ -673,6 +702,7 @@ impl SglangCore {
         }
         self.kv_manager.flush_cache();
         self.delayed_prefill_cache.clear();
+        self.last_formed_pass = None;
         // Native flush leaves the admission ratio alone, but it succeeds only
         // on a fully idle scheduler. Unless paused in place, that scheduler's
         // loop has already reached on_idle(), which resets the ratio (see
@@ -913,6 +943,19 @@ impl SglangCore {
             self.batch_is_full = false;
             self.completion_latch_decode_passes = 0;
         }
+        // SGLang 0.5.19's overlap loop forms this batch while the previous pass runs: after
+        // launching the previous batch (no launch time for a graph-replayed decode) and
+        // after the batch before it finished, which is when the previous pass started.
+        // Requests queued later wait for the next pass. With nothing running, it forms now.
+        let admission_cutoff_ms = self
+            .config
+            .overlap_prefill_launch_ms
+            .zip(self.last_formed_pass)
+            .filter(|_| !self.running.is_empty())
+            .map(|(launch_ms, prev)| {
+                let launch_ms = if prev.prefill { launch_ms } else { 0.0 };
+                (prev.cutoff_ms + launch_ms).max(prev.start_ms)
+            });
         let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let chunk_continuation = self.waiting.iter().any(|req| req.materialized_tokens > 0);
@@ -931,6 +974,7 @@ impl SglangCore {
                 &self.config,
                 self.new_token_ratio,
                 &self.running,
+                admission_cutoff_ms,
             ),
             // Gate the entire prefill entry point, including chunk continuation.
             AdmissionStage::FreshKv => Default::default(),
@@ -1142,6 +1186,17 @@ impl SglangCore {
                     .extend_cached_prefix(&req.sequence_tokens[..tokens], &mut req.kv_lease);
             }
         }
+        if self.config.overlap_prefill_launch_ms.is_some() {
+            if self.model_work_in_pass {
+                self.last_formed_pass = Some(FormedPass {
+                    start_ms: now_ms,
+                    cutoff_ms: admission_cutoff_ms.unwrap_or(now_ms),
+                    prefill: self.prefill_in_pass,
+                });
+            } else if self.running.is_empty() {
+                self.last_formed_pass = None;
+            }
+        }
 
         let completed = decode.output_signals.iter().any(|s| s.completed);
         if !decode.requests.is_empty() || (prefill_pass && completed) {
@@ -1191,7 +1246,10 @@ impl SglangCore {
 
         // SGLang re-queues retracted requests through `_add_request_to_queue`, i.e. at the back of
         // the FCFS waiting queue, behind requests that have not run yet.
-        for req in decode.requests.drain(..) {
+        for mut req in decode.requests.drain(..) {
+            if req.queued_at_ms.is_some() {
+                req.queued_at_ms = Some(now_ms);
+            }
             self.waiting.push_back(req);
         }
 

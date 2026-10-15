@@ -464,6 +464,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             kv_lease: zero_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         },
         SglangRequest {
             is_decode_handoff: false,
@@ -476,6 +477,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             kv_lease: normal_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         },
     ];
 
@@ -529,6 +531,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             kv_lease: r1_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         },
         SglangRequest {
             is_decode_handoff: false,
@@ -541,6 +544,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             kv_lease: r2_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         },
     ];
     let result = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -578,6 +582,7 @@ fn committed_decode_membership_excludes_retracted_requests() {
             kv_lease: allocation.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         });
     }
     let pass = core.execute_hidden_pass(0.0);
@@ -622,8 +627,9 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         materialized_tokens: 0,
         kv_lease: RadixRequestLease::default(),
         allocated_tokens: 0,
+        queued_at_ms: None,
     }]);
-    let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[])
+    let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], None)
         .can_run
         .pop()
         .unwrap();
@@ -648,6 +654,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         kv_lease: blocker_alloc.lease,
         materialized_tokens: 7,
         allocated_tokens: 8,
+        queued_at_ms: None,
     };
     buffer.drain();
 
@@ -1316,6 +1323,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                queued_at_ms: None,
             },
             SglangRequest {
                 is_decode_handoff: false,
@@ -1328,6 +1336,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                queued_at_ms: None,
             },
         ]);
 
@@ -1363,6 +1372,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                queued_at_ms: None,
             });
         }
         let unique_uuid = Uuid::new_v4();
@@ -1377,6 +1387,7 @@ mod scheduling {
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
+            queued_at_ms: None,
         });
 
         apply_schedule_policy(&mut waiting, &kv_manager, &config);
@@ -1471,9 +1482,10 @@ mod core_behavior {
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
+            queued_at_ms: None,
         }]);
 
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
+        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[], None);
         assert!(admit.can_run.is_empty());
         assert!(admit.batch_is_full);
         assert_eq!(waiting.len(), 1);
@@ -1506,6 +1518,7 @@ mod core_behavior {
             kv_lease: alloc.lease,
             materialized_tokens: 6,
             allocated_tokens: 8,
+            queued_at_ms: None,
         }];
 
         let first = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -1552,6 +1565,7 @@ mod core_behavior {
             kv_lease: base_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         }];
 
         let mut fast_kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
@@ -1567,6 +1581,7 @@ mod core_behavior {
             kv_lease: fast_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         }];
 
         let base = simulate_decode_step(
@@ -1618,6 +1633,7 @@ mod core_behavior {
                 kv_lease: RadixRequestLease::from_parts(first, 8, 4, kv_manager.cache().root()),
                 materialized_tokens: 8,
                 allocated_tokens: 8,
+                queued_at_ms: None,
             },
             SglangRequest {
                 is_decode_handoff: false,
@@ -1630,6 +1646,7 @@ mod core_behavior {
                 kv_lease: RadixRequestLease::from_parts(second, 5, 4, kv_manager.cache().root()),
                 materialized_tokens: 5,
                 allocated_tokens: 8,
+                queued_at_ms: None,
             },
         ];
 
@@ -1659,7 +1676,7 @@ mod core_behavior {
                     prompt_len:prompt,max_output_tokens:20,max_new_tokens:20,
                     planned_output_ids:None,
                     kv_lease:RadixRequestLease::from_parts(pages,len,4,kv.cache().root()),
-                    materialized_tokens:len,allocated_tokens:len.div_ceil(4)*4,
+                    materialized_tokens:len,allocated_tokens:len.div_ceil(4)*4, queued_at_ms: None,
                 });
             }
             let removed=decode::check_decode_mem(&mut running,&mut kv,&config);
@@ -1695,6 +1712,7 @@ mod core_behavior {
             kv_lease: alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            queued_at_ms: None,
         }];
 
         // This fixture starts after a native prefill, which publishes its input.
@@ -3526,7 +3544,7 @@ fn fresh_prefill_rechecks_budget_after_locking_an_evictable_prefix() {
     let req = SglangRequest::new(direct_request(prompt, 1), 4, 1);
     let mut waiting = WaitingQueue::from([req]);
     // 8 + 1 + 4 fits before locking, but the 16-token lock leaves only 8.
-    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], None);
     assert!(admitted.can_run.is_empty());
     assert!(admitted.batch_is_full);
     assert_eq!(manager.cache().evictable_size, 16);
@@ -3548,7 +3566,7 @@ fn earlier_prefill_locks_and_page_reservations_reduce_later_candidate_budget() {
     ]);
     // First request leaves 64 - 24 locked - 4 input - 1 output - 4 page = 31.
     // Second requires 24 + 4 + 4 = 32, so it must wait without allocating.
-    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], None);
     assert_eq!(admitted.can_run.len(), 1);
     assert!(admitted.batch_is_full);
     assert_eq!(waiting.len(), 1);
@@ -3561,7 +3579,7 @@ fn owned_chunk_continues_without_repeating_the_full_admission_gate() {
     let mut manager = SglangKvManager::new(32, 4, KvEventPublishers::default(), 0);
     let req = SglangRequest::new(direct_request((0..20).collect(), 1), 4, 1);
     let mut waiting = WaitingQueue::from([req]);
-    let first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[]);
+    let first = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &[], None);
     assert_eq!(first.can_run[0].materialized_tokens, 8);
     for request in first.can_run {
         waiting.push_back(request);
@@ -3569,7 +3587,7 @@ fn owned_chunk_continues_without_repeating_the_full_admission_gate() {
     // Isolate the reservation calculation: a running request reserves 20,
     // leaving 4 for this already-admitted continuation, whose full tail is 12.
     let running = vec![SglangRequest::new(direct_request(vec![], 20), 4, 20)];
-    let second = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &running);
+    let second = get_new_batch_prefill(&mut waiting, &mut manager, &config, 1.0, &running, None);
     assert_eq!(second.can_run.len(), 1);
     assert_eq!(second.can_run[0].materialized_tokens, 12);
     assert!(second.admissions.is_empty());
@@ -3653,14 +3671,14 @@ fn retraction_evicts_unlocked_prefix_for_survivor_headroom() {
             uuid: Uuid::from_u128(91_001), sequence_tokens: survivor_tokens,
             prompt_len: 3, max_output_tokens: 20, max_new_tokens: 20,
             planned_output_ids: None, kv_lease: survivor_alloc.lease,
-            materialized_tokens: 7, allocated_tokens: 8,
+            materialized_tokens: 7, allocated_tokens: 8, queued_at_ms: None,
         },
         SglangRequest {
             is_decode_handoff: false,
             uuid: Uuid::from_u128(91_002), sequence_tokens: victim_tokens.clone(),
             prompt_len: 8, max_output_tokens: 20, max_new_tokens: 20,
             planned_output_ids: None, kv_lease: victim_alloc.lease,
-            materialized_tokens: 8, allocated_tokens: 8,
+            materialized_tokens: 8, allocated_tokens: 8, queued_at_ms: None,
         },
     ];
     let retracted = decode::check_decode_mem(&mut running, &mut manager, &config);
@@ -3732,7 +3750,7 @@ fn accepted_last_readmission_latches_exhausted_original_output_budget() {
     let mut req = SglangRequest::new(direct_request((0..8).collect(), 16), 4, 16);
     req.sequence_tokens.extend(100..108); // eight previously sampled tokens, KV retracted
     let mut waiting = WaitingQueue::from([req]);
-    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[]);
+    let admitted = get_new_batch_prefill(&mut waiting, &mut manager, &config, 0.7, &[], None);
     // Gate: 16 input + 8 remaining output + 4 page = 28 < 32.
     // Charge: 16 input + 16 ORIGINAL output cap + 4 page = 36 >= 32.
     assert_eq!(admitted.can_run.len(), 1);
@@ -3783,4 +3801,104 @@ fn overlap_caches_a_prefill_prompt_one_pass_late() {
         assert_eq!(admission.reused_input_tokens, c_cached);
         assert_eq!(core.kv_manager.cache().prefix_match_len(&b), 48);
     }
+}
+
+#[test]
+fn overlap_batch_forming_holds_calls_queued_after_native_formation() {
+    // A reaches an idle engine at 0 ms; B arrives while pass 1 runs. SGLang forms pass 2
+    // right after launching pass 1: with a launch time past B's arrival, B joins pass 2
+    // and, with the one-pass-late insert, misses A's prompt. With a shorter launch time,
+    // B waits: pass 2 decodes A, and B joins pass 3 with A's 32-token prefix.
+    let shared: Vec<u32> = (0..32).collect();
+    let a = [shared.clone(), (100..116).collect()].concat();
+    let b = [shared, (200..216).collect()].concat();
+    let timed = |tokens: Vec<u32>, at_ms: f64| DirectRequest {
+        arrival_timestamp_ms: Some(at_ms),
+        ..direct_request(tokens, 8)
+    };
+    let first_pass_ms = {
+        let mut args = test_args(64, 16, 256);
+        args.sglang.as_mut().unwrap().overlap_schedule = true;
+        let mut core = SglangCore::new(args);
+        core.receive(timed(a.clone(), 0.0));
+        core.execute_hidden_pass(0.0).end_ms
+    };
+    let b_at = first_pass_ms / 2.0;
+    for (launch_ms, b_pass, b_cached) in [
+        (None, 2, 0),
+        (Some(first_pass_ms), 2, 0),
+        (Some(b_at / 2.0), 3, 32),
+    ] {
+        let mut args = test_args(64, 16, 256);
+        let sglang = args.sglang.as_mut().unwrap();
+        sglang.overlap_schedule = true;
+        sglang.overlap_prefill_launch_ms = launch_ms;
+        let mut core = SglangCore::new(args);
+        core.receive(timed(a.clone(), 0.0));
+        let mut pass = core.execute_hidden_pass(0.0);
+        let b_id = core.receive(timed(b.clone(), b_at));
+        let mut admitted = None;
+        for pass_index in 2..=3 {
+            pass = core.execute_hidden_pass(pass.end_ms);
+            if let Some(admission) = pass.admissions.iter().find(|x| x.uuid == b_id) {
+                admitted = Some((pass_index, admission.reused_input_tokens));
+                break;
+            }
+        }
+        assert_eq!(admitted, Some((b_pass, b_cached)), "launch {launch_ms:?}");
+    }
+}
+
+#[test]
+fn overlap_batch_forming_admits_everything_when_nothing_runs() {
+    // An idle engine forms its batch at once: a call queued after the last pass's
+    // formation time is still admitted when no call is running.
+    let mut args = test_args(64, 16, 256);
+    let sglang = args.sglang.as_mut().unwrap();
+    sglang.overlap_schedule = true;
+    sglang.overlap_prefill_launch_ms = Some(0.0);
+    let mut core = SglangCore::new(args);
+    let only_output = |tokens: Vec<u32>, at_ms: f64| DirectRequest {
+        arrival_timestamp_ms: Some(at_ms),
+        ..direct_request(tokens, 1)
+    };
+    core.receive(only_output((0..48).collect(), 0.0));
+    let pass = core.execute_hidden_pass(0.0);
+    assert!(core.running.is_empty());
+    let late = core.receive(only_output((100..148).collect(), pass.end_ms + 1.0));
+    let pass = core.execute_hidden_pass(pass.end_ms + 1.0);
+    assert!(pass.admissions.iter().any(|x| x.uuid == late));
+}
+
+#[test]
+fn overlap_batch_forming_queues_a_submission_at_the_engine_time() {
+    // The replay engine submits requests without their own arrival time and passes
+    // the engine time of the command instead; that is when the request is queued.
+    let shared: Vec<u32> = (0..32).collect();
+    let a = [shared.clone(), (100..116).collect()].concat();
+    let b = [shared, (200..216).collect()].concat();
+    let mut args = test_args(64, 16, 256);
+    let sglang = args.sglang.as_mut().unwrap();
+    sglang.overlap_schedule = true;
+    sglang.overlap_prefill_launch_ms = Some(0.0);
+    let mut core = SglangCore::new(args);
+    let submit = |core: &mut SglangCore, tokens: Vec<u32>, at_ms: f64| {
+        let request = direct_request(tokens, 8);
+        let effects = core
+            .apply_command_effects_at(SchedulerCommand::Submit(request), true, Some(at_ms))
+            .unwrap();
+        match effects.result {
+            SchedulerCommandResult::Submitted(uuid) => uuid,
+            other => panic!("unexpected submit result {other:?}"),
+        }
+    };
+    submit(&mut core, a, 0.0);
+    let pass = core.execute_hidden_pass(0.0);
+    let b_id = submit(&mut core, b, pass.end_ms / 2.0);
+    // With no launch time, pass 2 was formed when pass 1 started, before B arrived.
+    let pass = core.execute_hidden_pass(pass.end_ms);
+    assert!(pass.admissions.iter().all(|x| x.uuid != b_id));
+    let pass = core.execute_hidden_pass(pass.end_ms);
+    let admission = pass.admissions.iter().find(|x| x.uuid == b_id).unwrap();
+    assert_eq!(admission.reused_input_tokens, 32);
 }

@@ -186,6 +186,11 @@ pub struct SglangConfig {
     pub overlap_schedule: bool,
     /// Sensitivity mode: evict whole unlocked LRU leaves, as native radix cache does.
     pub evict_whole_lru_leaves: bool,
+    /// With `overlap_schedule`: SGLang's CPU time in ms to launch a prefill batch. When
+    /// set, a pass admits only calls that had arrived when SGLang 0.5.19's overlap loop
+    /// would form its batch: after launching the previous batch and after the batch
+    /// before that finished. Unset admits every arrived call. FIFO only.
+    pub overlap_prefill_launch_ms: Option<f64>,
 }
 
 impl Default for SglangConfig {
@@ -198,6 +203,7 @@ impl Default for SglangConfig {
             schedule_conservativeness: default_schedule_conservativeness(),
             overlap_schedule: false,
             evict_whole_lru_leaves: false,
+            overlap_prefill_launch_ms: None,
         }
     }
 }
@@ -216,6 +222,20 @@ impl SglangConfig {
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
         );
+        if let Some(launch_ms) = self.overlap_prefill_launch_ms {
+            ensure!(
+                launch_ms.is_finite() && launch_ms >= 0.0,
+                "sglang.overlap_prefill_launch_ms must be finite and non-negative"
+            );
+            ensure!(
+                self.overlap_schedule,
+                "sglang.overlap_prefill_launch_ms requires sglang.overlap_schedule"
+            );
+            ensure!(
+                matches!(self.schedule_policy, SglangSchedulePolicy::Fifo),
+                "sglang.overlap_prefill_launch_ms requires the fifo schedule_policy"
+            );
+        }
         Ok(())
     }
 }
@@ -1789,6 +1809,29 @@ mod tests {
                 .to_string()
                 .contains("prefill_schedule_interval")
         );
+    }
+
+    #[test]
+    fn overlap_prefill_launch_requires_overlap_fifo_and_a_finite_time() {
+        let mut config = EngineConfig::for_backend(Backend::Sglang);
+        config.sglang.overlap_schedule = true;
+        config.sglang.overlap_prefill_launch_ms = Some(7.5);
+        config.validate().unwrap();
+
+        let (fifo, lpm) = (SglangSchedulePolicy::Fifo, SglangSchedulePolicy::Lpm);
+        for (overlap, policy, launch, message) in [
+            (true, fifo, f64::NAN, "finite and non-negative"),
+            (true, fifo, -1.0, "finite and non-negative"),
+            (false, fifo, 7.5, "requires sglang.overlap_schedule"),
+            (true, lpm, 7.5, "requires the fifo schedule_policy"),
+        ] {
+            let mut config = EngineConfig::for_backend(Backend::Sglang);
+            config.sglang.overlap_schedule = overlap;
+            config.sglang.schedule_policy = policy;
+            config.sglang.overlap_prefill_launch_ms = Some(launch);
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(message), "{error}");
+        }
     }
 
     #[test]

@@ -163,6 +163,7 @@ pub(crate) struct SglangArgs {
     pub schedule_conservativeness: Option<f64>,
     pub overlap_schedule: bool,
     pub evict_whole_lru_leaves: bool,
+    pub overlap_prefill_launch_ms: Option<f64>,
 }
 
 /// Rank-local view of `EngineConfig`.

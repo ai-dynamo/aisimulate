@@ -32,6 +32,8 @@ pub(super) struct SglangConfig {
     pub(super) clip_max_new_tokens: usize,
     pub(super) overlap_schedule: bool,
     pub(super) evict_whole_lru_leaves: bool,
+    /// Overlap batch forming; see `engine::SglangConfig::overlap_prefill_launch_ms`.
+    pub(super) overlap_prefill_launch_ms: Option<f64>,
     pub(super) init_new_token_ratio: f64,
     pub(super) min_new_token_ratio: f64,
     pub(super) new_token_ratio_decay_step: f64,
@@ -94,6 +96,9 @@ impl SglangConfig {
                 .unwrap_or(DEFAULT_CLIP_MAX_NEW_TOKENS),
             overlap_schedule: sglang.is_some_and(|s| s.overlap_schedule),
             evict_whole_lru_leaves: sglang.is_some_and(|s| s.evict_whole_lru_leaves),
+            overlap_prefill_launch_ms: sglang
+                .filter(|s| s.overlap_schedule)
+                .and_then(|s| s.overlap_prefill_launch_ms),
             init_new_token_ratio,
             min_new_token_ratio,
             new_token_ratio_decay_step: decay_step,
