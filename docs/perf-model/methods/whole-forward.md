@@ -34,9 +34,9 @@ execution_profile:
 The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
 draft tokens. Acceptance length belongs to replay progress, not this timing
 selector. Omitting `execution_profile` preserves existing AR profile JSON and
-cell keys. Identity publication alone does not enable execution: canonical
-construction rejects these profiles with either `nextn: 0` or nonzero `nextn`
-until the corresponding consumer is supported.
+cell keys. Consumption requires explicit `estimation_mode: fpm_interpolation`,
+`method: direct`, `database_mode: SILICON`, `fallback_policy: deny`, and `nextn`
+equal to `num_draft_tokens`. Ordinary AR profiles cannot supply SD-round timing.
 
 Rust produces the exact table `execution_profile` string by prefixing
 `speculative_round_v1:` to its canonical serialization of
@@ -70,6 +70,37 @@ admit AR-labelled rows or scheduler/host wall-time rows; renaming a CPU clock is
 not a valid conversion. Cached prefill and decode must retain the existing
 `real_kv` provenance requirement. Missing or fabricated state cannot be healed
 into these measured-only cells.
+
+### Consuming a measured round
+
+Use the same canonical `ForwardPassPerfModel.best_available(config)` path as
+ordinary FPM profiles. Both prefill and decode cells must carry the identical
+execution binding. The decode lookup uses request count and actual total past
+KV tokens, without multiplying the request count by `nextn + 1`. The measured
+latency already includes target verification, sampling and draft work; no draft
+operation tail is added. Prefill must likewise use the matching measured SD
+prefill cell, not a relabelled AR prefill cell.
+
+Resources must use a linear cache with observed `runtime_memory`. The recorded
+usable KV pool already reflects draft and graph allocations; capacity sizing
+does not subtract them again. Pending or analytically declared memory alone is
+insufficient. Grouped caches, ngram, recorded DCP and non-pure-TP topologies
+remain unsupported on this route.
+
+Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
+static/detailed queries, and replay's decode query with actual total KV tokens.
+Raw mixed FPM, static multi-round generation, per-operation and ad-hoc operation
+queries fail explicitly. Ordinary replay retains its existing separate P/D
+phase composition; this is an approximation for mixed iterations, not a measured
+mixed-round model. Partial-width decode rounds still use the configured depth's
+timing. The existing replay prefill callback uses integer per-request mean
+lengths, so ragged batches can lose remainder tokens; raw FPM totals do not have
+that approximation. Enable query coverage to identify holes rather than
+extrapolating.
+
+The SD identity does not expand the guided `onboard` collector or its replay
+validation scope. Prepare and validate the measured table separately, then use
+ordinary `predict` with the [replay SD controls](../../replay/engine/speculation.md#measured-sd-round-fpm).
 
 ## Direct and SOL-assisted methods
 

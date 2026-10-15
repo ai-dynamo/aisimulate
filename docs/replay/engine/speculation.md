@@ -26,7 +26,7 @@ draft tokens.
 | `engine.speculation.num_speculative_tokens` | Required | fixed | Integer from 1 to 5. |
 | `engine.speculation.acceptance_rates` | Required | fixed | Exactly one value per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
-| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. |
+| `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. For a measured SD-round FPM profile, must equal its recorded draft depth. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
 `recommend` keeps these values fixed for every candidate; it does not search
@@ -115,7 +115,7 @@ draft readiness. TensorRT-LLM retains its existing scheduling approximation.
 These are scheduling/progress semantics, not a new timing estimator: the
 current timing callback still prices the configured verification round for a
 partial-width decode. It does not interpolate dynamically by actual draft
-width or enable measured full-SD-round FPM ingestion. These limits matter
+width. Measured full-SD-round profiles use the separate timing contract below. These limits matter
 when benchmarking tiny token budgets.
 
 HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
@@ -125,3 +125,26 @@ Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matchin
 with `prefix_match_unit`. Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
+
+### Measured SD-round FPM
+
+Ordinary `predict` can consume an explicitly tagged EAGLE3 profile through
+`engine.fpm_profile`, including HBM-only AgentX traffic. Each deployment records
+the [SD execution identity](../../perf-model/methods/whole-forward.md#recorded-speculative-round-identity)
+and observed linear-cache `runtime_memory`. Select `fpm_interpolation`, direct
+interpolation and deny fallback in the worker's timing configuration; `nextn`
+must match the recorded depth. For three drafts and mean total acceptance length
+2.78, use `nextn: 3` and `nextn_accepted: 1.78`.
+
+Acceptance determines sampled output progress, not a latency multiplier. Each
+decode query consumes one measured complete round at the request count and
+actual past-KV total, without another draft charge. Prefill uses its own matching
+SD cell. Mixed scheduled iterations retain replay's separate P/D phase-cost
+composition; the data does not establish mixed-round fidelity. Small token
+budgets can produce partial-width rounds that are still priced at the configured
+depth. Query coverage and a measured serving comparison remain separate checks.
+
+The recorded usable pool is already net of draft/graph allocations. Do not add
+another reservation or scalar capacity override. This path requires vLLM pure
+TP, PP1/DP1/CP1, no recorded DCP, linear cache and HBM-only replay. It does not
+enable grouped-cache or offload SD, nor expand guided `onboard` collection.

@@ -491,7 +491,8 @@ def compile_engine(
     Rust constructor supplies an already resolved ``sol`` or ``direct`` method.
     Profile precision is authoritative on either route, with
     conflicting caller overrides rejected. ``cp_size`` completes the profile
-    identity; profiles currently support only CP1/PP1 and no speculation.
+    identity; profiles support CP1/PP1, with explicitly identified speculative
+    rounds confined to direct interpolation.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
@@ -544,7 +545,7 @@ def compile_engine(
             raise InvalidEngineConfigurationError("FPM profiles do not support moe_kernel_source")
         if dcp_size is not None:
             raise InvalidEngineConfigurationError("fpm_profile does not describe recorded DCP identity")
-        if nextn or speculation is not None:
+        if speculation is not None:
             raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
         literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
         deployment = profile.select(
@@ -560,6 +561,13 @@ def compile_engine(
             moe_ep_size=moe_ep_size,
             cp_size=cp_size,
         )
+        if deployment.execution_profile is None:
+            if nextn:
+                raise InvalidEngineConfigurationError(
+                    "FPM profiles support plain autoregressive decoder-only execution"
+                )
+        elif forward_model != "fpm" or interpolation != "direct":
+            raise InvalidEngineConfigurationError("speculative-round FPM profiles require direct FPM compilation")
         deployment.validate_overrides(
             gemm_quant_mode=gemm_quant_mode,
             moe_quant_mode=moe_quant_mode,
@@ -595,6 +603,7 @@ def compile_engine(
                 fpm_fmha_quant_mode=fpm_fmha_quant_mode,
                 worker_type=worker_type,
                 fpm_options=fpm_config.options,
+                nextn=nextn,
             )
             return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
         gemm_quant_mode = deployment.gemm_quant_mode
@@ -733,11 +742,15 @@ def _direct_fpm_spec_json(
     fpm_fmha_quant_mode: str | None = None,
     worker_type: str = "aggregated",
     fpm_options: dict | None = None,
+    nextn: int = 0,
 ) -> str:
     """Build whole-forward timing operations from metadata, without a graph."""
     if _database_mode_name(None, database_mode) != "SILICON":
         raise ValueError("direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model")
     identity = deployment.match_identity()
+    execution = deployment.execution_profile
+    if execution is not None:
+        identity += list(deployment.execution_identity(profile.model_revision))
     if fpm_fmha_quant_mode is not None:
         if fpm_fmha_quant_mode not in {"bfloat16", "fp8", "fp8_block"}:
             raise ValueError("fpm_fmha_quant_mode must be bfloat16, fp8, or fp8_block")
@@ -776,6 +789,12 @@ def _direct_fpm_spec_json(
             "estimator_config": json.dumps({"fpm_interpolation": controls}),
         },
     }
+    if execution is not None:
+        engine["nextn"] = nextn
+        engine["extra"]["fpm_execution_profile"] = json.dumps(
+            {"model_revision": profile.model_revision, "execution_profile": execution.model_dump(mode="json")},
+            sort_keys=True,
+        )
 
     def phase_op(phase: str) -> dict:
         return {

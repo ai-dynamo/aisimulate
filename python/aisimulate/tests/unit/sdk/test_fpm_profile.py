@@ -273,6 +273,8 @@ def test_unknown_profile_auto_compiles_without_operations(profile_dict, direct_c
     assert json.loads(spec["engine"]["extra"]["fpm_profile"]) == profile.model_dump(mode="json")
     assert json.loads(spec["engine"]["extra"]["estimator_config"])["fpm_interpolation"]["method"] == "direct"
     assert spec["engine"]["activation_dtype"] == "fp8"
+    assert "nextn" not in spec["engine"]
+    assert "fpm_execution_profile" not in spec["engine"]["extra"]
     for key, phase in (("context_ops", "prefill"), ("generation_ops", "decode")):
         assert len(spec[key]) == 1
         op = spec[key][0]["FpmForward"]
@@ -810,6 +812,100 @@ def runtime_profile(profile_dict):
         "provenance": "Synthetic worker initialization observation; not a silicon qualification.",
     }
     return profile_dict
+
+
+@pytest.fixture
+def speculative_profile(runtime_profile, monkeypatch):
+    runtime_profile["model_revision"] = "1" * 40
+    runtime_profile["deployments"][0]["execution_profile"] = {
+        "kind": "speculative_round",
+        "method": "eagle3",
+        "num_draft_tokens": 3,
+        "draft_model": "test/draft",
+        "draft_revision": "2" * 40,
+        "timing_scope": "model_step_cuda",
+    }
+
+    def download(model, filename, *, revision):
+        assert (model, filename, revision) == (runtime_profile["model"], "config.json", "1" * 40)
+        return {"architectures": [runtime_profile["architecture"]]}
+
+    monkeypatch.setattr(utils, "_download_hf_json", download)
+    return runtime_profile
+
+
+def test_speculative_round_direct_spec_preserves_identity_and_raw_batch_width(speculative_profile, direct_compile):
+    spec = direct_compile(speculative_profile, fpm_interpolation="direct", nextn=3)
+    profile = load_fpm_profile(speculative_profile)
+    deployment = profile.deployments[0]
+    binding = {
+        "model_revision": profile.model_revision,
+        "execution_profile": deployment.execution_profile.model_dump(mode="json"),
+    }
+    assert spec["engine"]["nextn"] == 3
+    assert json.loads(spec["engine"]["extra"]["fpm_execution_profile"]) == binding
+    saved = json.loads(spec["engine"]["extra"]["fpm_profile"])
+    assert _normalize(_request(saved, "direct", nextn=3))["fpm_profile"] == saved
+    expected_identity = deployment.match_identity() + list(deployment.execution_identity(profile.model_revision))
+    assert len(expected_identity) == 19
+    for phase in ("context_ops", "generation_ops"):
+        assert len(spec[phase]) == 1
+        op = spec[phase][0]["FpmForward"]
+        assert op["match_identity"] == expected_identity
+        assert op["verify_width"] == 1  # Full-round curves already use request count, not verify-token count.
+        assert op["interpolation"] == "direct"
+        assert op["sol_ops"] == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"nextn": 0}, {"nextn": 2}, {"estimation_mode": "auto"}, {"fallback_policy": "allow"}],
+)
+def test_speculative_round_profile_rejects_implicit_or_mismatched_execution(speculative_profile, overrides):
+    config = _request(speculative_profile, "direct", nextn=3)
+    config.update(overrides)
+    with pytest.raises(ValueError):
+        _normalize(config)
+
+
+def test_speculative_round_memory_forwards_depth_and_uses_observed_pool(
+    speculative_profile, profile_memory, monkeypatch
+):
+    calls = []
+    estimate = RustForwardPassPerfModel.estimate_cache_budget
+
+    def observe(config, request):
+        calls.append(copy.deepcopy(config))
+        return estimate(config, request)
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "estimate_cache_budget", observe)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    result = profile_memory(nextn=3, context_length=1024, gpu_memory_capacity_bytes_override=2000)
+    assert calls[0]["nextn"] == 3
+    assert calls[0]["estimation_mode"] == "fpm_interpolation"
+    assert calls[0]["fallback_policy"] == "deny"
+    assert calls[0]["estimator_config"]["fpm_interpolation"]["method"] == "direct"
+    assert (
+        calls[0]["fpm_profile"]["deployments"][0]["execution_profile"]
+        == (speculative_profile["deployments"][0]["execution_profile"])
+    )
+    assert result["total_kv_size_bytes"] == 600  # Recorded pool, independent of the 2000-byte device bound.
+    assert result["total_kv_size_tokens"] == 60  # The fixture records ten bytes per token.
+    assert result["memory_breakdown"] is None
+    with pytest.raises(ValueError):
+        profile_memory(nextn=0, context_length=1024, allow_naive_fallback=True)
+
+
+def test_speculative_round_memory_rejects_declared_budget_without_analytical_fallback(
+    speculative_profile, profile_memory, monkeypatch
+):
+    resources = speculative_profile["deployments"][0]["resources"]
+    resources.pop("runtime_memory")
+    resources.update(weights_bytes=100, activations_bytes=20, runtime_overhead_bytes=30, comm_overhead_bytes=50)
+    monkeypatch.setattr(memory.KVCacheEstimator, "_estimate_from_breakdown", _fail_graph)
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", _fail_graph)
+    with pytest.raises(ValueError, match="runtime|observed"):
+        profile_memory(nextn=3, context_length=1024, allow_naive_fallback=True)
 
 
 def test_runtime_memory_selects_exact_role_capacity_and_scheduler(runtime_profile, profile_memory):

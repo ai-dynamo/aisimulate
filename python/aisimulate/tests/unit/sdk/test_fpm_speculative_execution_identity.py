@@ -182,14 +182,17 @@ def test_unrelated_speculative_deployment_does_not_block_selected_ar(monkeypatch
     assert after["fpm_profile"]["deployments"][1]["execution_profile"] == execution()
 
 
-@pytest.mark.parametrize("nextn", [0, 3])
+@pytest.mark.parametrize(
+    "nextn,error",
+    [(0, "nextn must match"), (2, "nextn must match"), (3, "observed runtime memory")],
+)
 @pytest.mark.parametrize("entry", ["normalize_config", "best_available"])
-def test_identity_publication_does_not_enable_unimplemented_execution(nextn, entry, monkeypatch):
+def test_speculative_execution_rejects_depth_mismatch_and_pending_memory(nextn, error, entry, monkeypatch):
     monkeypatch.setattr(
         fpm_profile, "_load_pinned_checkpoint_config", lambda *_: {"architectures": ["TestDecoderForCausalLM"]}
     )
     config = canonical_request(profile(), nextn=nextn)
-    with pytest.raises(ValueError, match="identity-only|does not support MTP"):
+    with pytest.raises(ValueError, match=error):
         getattr(RustForwardPassPerfModel, entry)(config)
 
 

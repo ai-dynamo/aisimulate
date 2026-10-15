@@ -1099,7 +1099,10 @@ fn build_native_candidate(
             "FPM interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides".into(),
         ));
     }
-    if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
+    if config.estimation_mode == EstimationMode::FpmInterpolation
+        && config.nextn != 0
+        && config.validate_fpm_execution()?.is_none()
+    {
         return Err(AicError::UnsupportedModel(
             "FPM interpolation does not support MTP".into(),
         ));

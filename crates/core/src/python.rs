@@ -1020,8 +1020,12 @@ fn aic_capacity_kwargs<'py>(
         "cuda_graph_reserved_bytes",
         config.cuda_graph_reserved_bytes,
     )?;
-    // Capacity intentionally omits NextN until AIC's Eagle memory model no
-    // longer returns negative KV capacity. Timing compilation still uses it.
+    // Legacy analytical capacity still omits NextN. Profile resources have
+    // already been validated by materialize_aic_capacity; nonzero depth here
+    // identifies measured SD memory, whose recorded pool must not be re-priced.
+    if config.fpm_profile.is_some() && config.nextn > 0 {
+        kwargs.set_item("nextn", config.nextn)?;
+    }
     kwargs.set_item("systems_path", config.systems_path.as_deref())?;
     Ok(kwargs)
 }
@@ -3897,6 +3901,40 @@ mod tests {
             };
             materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
         }
+    }
+
+    #[test]
+    fn measured_profile_capacity_forwards_depth_without_changing_analytical_defaults() {
+        pyo3::prepare_freethreaded_python();
+        let role = aggregated_role(&ReplayEngineConfig::default());
+        let mut config = aic_config();
+        Python::with_gil(|py| {
+            for depth in [0, 3] {
+                config.nextn = depth;
+                let kwargs = aic_capacity_kwargs(py, &config, &role).unwrap();
+                assert!(!kwargs.contains("nextn").unwrap());
+            }
+            // Selection/resource validity is enforced by materialize_aic_capacity.
+            // This unit test isolates only the previously missing kwargs hop.
+            config.fpm_profile = Some(serde_json::Map::new());
+            let kwargs = aic_capacity_kwargs(py, &config, &role).unwrap();
+            assert_eq!(
+                kwargs
+                    .get_item("nextn")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                3
+            );
+            config.nextn = 0;
+            assert!(
+                !aic_capacity_kwargs(py, &config, &role)
+                    .unwrap()
+                    .contains("nextn")
+                    .unwrap()
+            );
+        });
     }
 
     #[test]
