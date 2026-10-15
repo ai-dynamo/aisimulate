@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use uuid::Uuid;
+
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::common::speculative::SpeculativeDecodeSampler;
 use crate::engine::common::utils::compute_prefill_handoff_delay_ms;
@@ -30,6 +32,9 @@ pub(super) struct DecodeResult {
     pub(super) new_token_ratio_estimate: Option<f64>,
     pub(super) end_ms: f64,
     pub(super) decode_acceptance: DecodeAcceptance,
+    /// With overlap scheduling: (request, page-aligned prefill length) for each request that
+    /// finished its prefill and keeps running. The core caches these one pass later.
+    pub(super) delayed_prefill_cache: Vec<(Uuid, usize)>,
 }
 
 /// What a scheduler pass asks the step simulation to do with `running`.
@@ -300,8 +305,18 @@ fn prefill_first_tokens(
 
     // Native cache_unfinished_req publishes only the prefill input. The token
     // sampled by that forward has no computed KV yet and must not enter the tree.
+    // With overlap, native forms the next batch before it caches this one. Record
+    // the length now: materialized_tokens grows with each decoded token.
+    let mut delayed_prefill_cache = Vec::new();
     for req in running.iter_mut() {
-        cache_materialized_prefix(req, kv_manager, config);
+        if config.overlap_schedule {
+            delayed_prefill_cache.push((
+                req.uuid,
+                req.page_aligned_materialized_tokens(config.block_size),
+            ));
+        } else {
+            cache_materialized_prefix(req, kv_manager, config);
+        }
     }
 
     // The rest need a slot for the first output token. Make room by evicting cached pages only.
@@ -316,6 +331,7 @@ fn prefill_first_tokens(
             completed_requests,
             output_signals,
             end_ms: current_time_ms,
+            delayed_prefill_cache,
             ..DecodeResult::default()
         };
     };
@@ -350,6 +366,7 @@ fn prefill_first_tokens(
         completed_requests,
         output_signals,
         end_ms: current_time_ms,
+        delayed_prefill_cache,
         ..DecodeResult::default()
     }
 }
@@ -622,5 +639,6 @@ fn simulate_step(
         new_token_ratio_estimate,
         end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
         decode_acceptance,
+        ..DecodeResult::default()
     })
 }

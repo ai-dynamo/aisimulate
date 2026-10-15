@@ -182,6 +182,7 @@ pub struct SglangConfig {
     pub schedule_conservativeness: f64,
     /// SGLang 0.5.19 overlap completion: retain the terminal sampled token's KV
     /// and defer reopening a full batch until overlapping decode work drains.
+    /// A prefill's prompt also enters the radix tree one pass late.
     pub overlap_schedule: bool,
     /// Sensitivity mode: evict whole unlocked LRU leaves, as native radix cache does.
     pub evict_whole_lru_leaves: bool,

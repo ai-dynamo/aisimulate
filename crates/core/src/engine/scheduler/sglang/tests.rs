@@ -3757,3 +3757,30 @@ fn whole_leaf_eviction_can_free_more_than_the_requested_pages() {
         assert_eq!(manager.cache().prefix_match_len(&tokens), if whole { 0 } else { 12 });
     }
 }
+
+#[test]
+fn overlap_caches_a_prefill_prompt_one_pass_late() {
+    for (overlap, b_cached, c_cached) in [(false, 32, 48), (true, 0, 32)] {
+        let mut args = test_args(64, 16, 256);
+        args.sglang.as_mut().unwrap().overlap_schedule = overlap;
+        let mut core = SglangCore::new(args);
+        let shared: Vec<u32> = (0..32).collect();
+        let a = [shared.clone(), (100..116).collect()].concat();
+        let b = [shared, (200..216).collect()].concat();
+        let c = [b.clone(), (300..316).collect()].concat();
+        // A runs alone in pass 1. B arrives during pass 1 and runs in pass 2, directly
+        // after it. With overlap, native forms pass 2 before it caches pass 1's prompt.
+        core.receive(direct_request(a, 8));
+        let pass = core.execute_hidden_pass(0.0);
+        let b_id = core.receive(direct_request(b.clone(), 8));
+        let pass = core.execute_hidden_pass(pass.end_ms);
+        let admission = pass.admissions.iter().find(|a| a.uuid == b_id).unwrap();
+        assert_eq!(admission.reused_input_tokens, b_cached);
+        // Pass 2 cached A's prompt at its end. With overlap, B's prompt is still missing.
+        let c_id = core.receive(direct_request(c, 8));
+        let pass = core.execute_hidden_pass(pass.end_ms);
+        let admission = pass.admissions.iter().find(|a| a.uuid == c_id).unwrap();
+        assert_eq!(admission.reused_input_tokens, c_cached);
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&b), 48);
+    }
+}

@@ -60,6 +60,9 @@ pub(crate) struct SglangCore {
     // Ratio decay alone does not reopen admission. Chunk continuations may run.
     batch_is_full: bool,
     completion_latch_decode_passes: usize,
+    // With overlap, the previous pass's prefill prefixes: (request, page-aligned
+    // length). This pass caches them after its own admission and step.
+    delayed_prefill_cache: Vec<(Uuid, usize)>,
     pub(super) kv_manager: SglangKvManager,
     belady: Option<BeladyOracle>,
     speculative_sampler: Option<SpeculativeDecodeSampler>,
@@ -213,6 +216,7 @@ impl SglangCore {
             new_token_ratio: SglangConfig::from_args(&args).init_new_token_ratio,
             batch_is_full: false,
             completion_latch_decode_passes: 0,
+            delayed_prefill_cache: Vec::new(),
             kv_manager,
             belady: None,
             speculative_sampler,
@@ -609,6 +613,9 @@ impl SglangCore {
             return false;
         };
         self.active_request_ids.remove(&request_id);
+        // A new request can reuse this ID before the delayed prefix is cached.
+        self.delayed_prefill_cache
+            .retain(|(uuid, _)| *uuid != request_id);
         if let Some(oracle) = &self.belady {
             oracle.retire_requests([request_id]);
         }
@@ -665,6 +672,7 @@ impl SglangCore {
             return false;
         }
         self.kv_manager.flush_cache();
+        self.delayed_prefill_cache.clear();
         // Native flush leaves the admission ratio alone, but it succeeds only
         // on a fully idle scheduler. Unless paused in place, that scheduler's
         // loop has already reached on_idle(), which resets the ratio (see
@@ -1116,6 +1124,23 @@ impl SglangCore {
             // Keep FIFO order: older requests stay ahead of the ones admitted in this pass.
             stalled.append(&mut self.running);
             self.running = stalled;
+        }
+        // With overlap, cache the previous pass's prefill prefixes after this pass's
+        // admission and step. Calls that have since finished, been retracted or been
+        // cancelled are no longer running.
+        let delayed = std::mem::replace(
+            &mut self.delayed_prefill_cache,
+            std::mem::take(&mut decode.delayed_prefill_cache),
+        );
+        for (uuid, tokens) in delayed {
+            if let Some(req) = self
+                .running
+                .iter_mut()
+                .find(|req| req.uuid == uuid && req.kv_lease.is_active())
+            {
+                self.kv_manager
+                    .extend_cached_prefix(&req.sequence_tokens[..tokens], &mut req.kv_lease);
+            }
         }
 
         let completed = decode.output_signals.iter().any(|s| s.completed);
