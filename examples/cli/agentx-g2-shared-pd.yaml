@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# One P and one D join the same eight-block host pool. The capacity is not 16.
+# Run from the repository root. Fixed timing is for functional validation only.
+traffic:
+  source:
+    type: trace
+    format: weka
+    block_size: 4
+    nested_timestamp_basis: absolute
+    paths: [tests/e2e/configs/unified_cli/fixtures/traces/weka-g2-restore.jsonl]
+  load: {type: trace_timestamps, agentic_lanes: 1}
+engine:
+  mode: disaggregated
+  model: tests/e2e/configs/unified_cli/fixtures/tiny-model
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 2048
+  kv_transfer: {bytes_per_token: 250000, bandwidth_gb_per_second: 1}
+  workers:
+    prefill: &worker
+      parallelism: {replicas: 1, tensor: 1, attention_data: 1}
+      scheduler: {max_batched_tokens: 16, max_sequences: 1}
+      kv_cache:
+        block_size: 4
+        prefix_caching: true
+        bytes_per_token: 250000
+        capacity: {type: fixed, blocks: 3}
+        host_offload:
+          scope: cluster_shared
+          num_host_blocks: 8
+          d2h_bandwidth_gbps: 1
+          h2d_bandwidth_gbps: 1
+          shared_d2h_bandwidth_gbps: 1
+          shared_h2d_bandwidth_gbps: 1
+          latency_to_first_byte_ms: 0
+      timing: {type: fixed, prefill_ms: 2, decode_ms: 1}
+    decode: *worker

@@ -22,6 +22,7 @@ CONTROLS = {
     "enable_eplb": True,
     "wideep_num_slots": 256,
     "moe_backend": "deepep_moe",
+    "moe_kernel_source": "sglang_flashinfer_trtllm_moe",
     "attention_backend": "fa3",
     "gemm_quant_mode": "fp8",
     "moe_quant_mode": "fp8",
@@ -205,11 +206,9 @@ def test_migration_example_parses_and_preserves_shared_prefix():
 
     import yaml
 
-    text = (Path(__file__).parents[2] / "docs/cli/migrate-from-aiconfigurator.md").read_text()
+    text = (Path(__file__).parents[2] / "docs/aic-backward-compatibility/migration.md").read_text()
     example = (
-        text.split("#### 4.6.3 Preserve pinned engine and request controls", 1)[1]
-        .split("```yaml", 1)[1]
-        .split("```", 1)[0]
+        text.split("### Preserve pinned engine and request controls", 1)[1].split("```yaml", 1)[1].split("```", 1)[0]
     )
     smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(yaml.safe_load(example)))
     assert smart.workload.cached_prefix_tokens == 256

@@ -197,6 +197,43 @@ def test_runner_capabilities_accept_supported_spec_and_wildcards():
     capabilities.require_compatible(_replay_spec(hook=hook))
 
 
+def test_runner_capabilities_preserve_existing_positional_constructor():
+    capabilities = RunnerCapabilities(
+        REPLAY_SPEC_API_VERSION,
+        (("vllm", "agg"),),
+        (),
+        False,
+        ("offline",),
+        ("*",),
+        False,
+        ("agg", "disagg"),
+        None,
+        False,
+        ("*",),
+        True,
+        True,
+        False,
+        False,
+        True,  # supports_cached_prefix_tokens
+        ("kv_cache_dtype",),  # supported_engine_model_controls
+        True,  # supports_mtp_expected_acceptance
+        True,  # supports_state_cache
+    )
+
+    assert capabilities.supports_cached_prefix_tokens is True
+    assert capabilities.supported_engine_model_controls == ("kv_cache_dtype",)
+    assert capabilities.supports_mtp_expected_acceptance is True
+    assert capabilities.supports_state_cache is True
+    assert capabilities.supports_agentic_profile is False
+    capabilities.require_compatible(
+        ReplaySpec(
+            backend_deployment=_deployment(),
+            workload={"cached_prefix_tokens": 4},
+            goal={},
+        )
+    )
+
+
 def test_runner_capabilities_require_explicit_online_support():
     spec = _replay_spec()
     spec = ReplaySpec(

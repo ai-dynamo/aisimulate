@@ -83,7 +83,7 @@ refactors that don't change user-visible behavior.
 | Change Type | Update |
 |---|---|
 | Pipeline/rendering logic | `docs/generator_overview.md` |
-| New CLI parameter | `docs/cli/legacy-aic-user-guide.md` (repository root) |
+| New CLI parameter | `docs/aic-backward-compatibility/cli.md` (repository root) |
 | Model config changes | `docs/add_a_new_model.md` |
 | K8s/deployment changes | `docs/dynamo_deployment_guide.md` |
 | New backend version | `docs/support-matrix/` |

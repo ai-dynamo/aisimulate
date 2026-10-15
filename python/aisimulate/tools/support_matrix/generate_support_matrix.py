@@ -15,9 +15,10 @@ import os
 import sys
 
 # Ensure local repo paths are importable when running as a standalone script.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.join(_REPO_ROOT, "src"))
-sys.path.insert(0, _REPO_ROOT)
+if __name__ == "__main__":
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "src"))
+    sys.path.insert(0, _REPO_ROOT)
 
 from tools.support_matrix.support_matrix import (
     VALID_STATUSES,

@@ -12,8 +12,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from fpm_accuracy.exceptions import ConfigurationError
-from fpm_accuracy.hf.models import OrderingKind
+from scripts.fpm_accuracy.exceptions import ConfigurationError
+from scripts.fpm_accuracy.hf.models import OrderingKind
 
 
 class HfCaseOverride(BaseModel):

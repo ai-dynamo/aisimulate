@@ -111,7 +111,8 @@ def test_pure_afd_uses_finite_generic_sampler_and_serializes_no_engine(monkeypat
     assert deployment.performance_model_metadata["afd"]["measurement_required"] is True
 
 
-def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch):
+@pytest.mark.parametrize("context_length", [None, 64_000])
+def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch, context_length):
     companion = ReplicaParallelConfig(
         shape=ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=1),
         replicas=1,
@@ -136,6 +137,7 @@ def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch):
         afd_companion_parallel_configs=[{"tp": 4}],
         prefill_max_num_batched_tokens=[4096],
         prefill_max_num_seqs=[8],
+        prefill_context_length=context_length,
     )
 
     (branch,) = enumerate_branches(config, runner_capabilities=_capabilities("afd+pd"))
@@ -149,10 +151,12 @@ def test_afd_plus_pd_pairs_only_opposite_phase_companion(monkeypatch):
 
     assert calls[0]["deployment_mode"] == "agg"
     assert calls[0]["role_runtime"] == {"agg": (4096, 8, 0.9, None)}
+    assert calls[0]["role_max_seq_len"] == ({"agg": context_length} if context_length is not None else None)
     assert suggestion.parallel_config.companion_role == "prefill"
     assert sample["used_gpus"] == 12
     assert deployment.num_prefill_workers == 1
     assert deployment.prefill_engine_args["worker_type"] == "prefill"
+    assert deployment.prefill_engine_args.get("max_model_len") == context_length
     assert deployment.decode_engine_args is None
     assert "decode_tp" not in deployment.parallel_config
 

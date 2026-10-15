@@ -226,7 +226,12 @@ def _nvcc_stub_dir() -> Path:
 
 def _clean_env(**overrides: str) -> dict[str, str]:
     """Subprocess environment without host FPM/orchestrator contamination."""
-    env = {name: value for name, value in os.environ.items() if not name.startswith(("FPM_", "LWS_", "GROVE_"))}
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(("FPM_", "LWS_", "GROVE_"))
+        and name not in ("FLASHINFER_CUBIN_DIR", "DYN_BENCH_KV_WARMUP_CACHE_DIR")
+    }
     env["PATH"] = f"{_nvcc_stub_dir()}{os.pathsep}{env.get('PATH', '')}"
     env.update(overrides)
     return env
@@ -396,9 +401,14 @@ def _pod_template_labels(artifacts: dict[str, str], kind: str) -> list[dict]:
 
 
 @pytest.mark.parametrize("kind", ["Pod", "LeaderWorkerSet", "PodCliqueSet"])
-def test_fpm_cell_label_reaches_every_pod_template(kind):
+def test_fpm_ownership_labels_reach_every_resource_and_pod_template(kind):
     params = _params()
-    params["K8sConfig"]["fpm_resource_labels"] = {FPM_CELL_LABEL: "glm52-fpm-cell-0"}
+    ownership = {
+        "aiconfigurator.nvidia.com/owned-by": "fpm-forward-collector",
+        "aiconfigurator.nvidia.com/plan": "a" * 16,
+        FPM_CELL_LABEL: "glm52-fpm-cell-0",
+    }
+    params["K8sConfig"]["fpm_resource_labels"] = ownership
     if kind != "Pod":
         params["NodeConfig"].update({"system_name": "gb200", "num_gpus_per_node": 4})
         params["WorkerConfig"]["agg_gpus_per_worker"] = 8
@@ -406,11 +416,49 @@ def test_fpm_cell_label_reaches_every_pod_template(kind):
     if kind == "PodCliqueSet":
         params["K8sConfig"]["fpm_orchestrator"] = "grove"
 
-    label_sets = _pod_template_labels(_render(params), kind)
+    artifacts = _render(params)
+    label_sets = [document["metadata"]["labels"] for document in _k8s_documents(artifacts)]
+    label_sets.extend(_pod_template_labels(artifacts, kind))
 
     assert label_sets
     for labels in label_sets:
-        assert labels[FPM_CELL_LABEL] == "glm52-fpm-cell-0"
+        assert ownership.items() <= labels.items()
+
+
+def test_fpm_compute_domain_preserves_metadata_and_source_document(monkeypatch):
+    from aisimulate.generator.builders import fpm_builder
+    from aisimulate.generator.builders.dgd_model import ComputeDomainDoc
+
+    params = _params()
+    params["NodeConfig"].update({"system_name": "gb200", "num_gpus_per_node": 4})
+    params["WorkerConfig"]["agg_gpus_per_worker"] = 8
+    params["params"]["agg"].update({"gpus_per_worker": 8, "tensor_parallel_size": 8})
+    params["K8sConfig"]["fpm_resource_labels"] = {FPM_CELL_LABEL: "glm52-fpm-cell-0"}
+    original_build = fpm_builder.build_dgd
+    sources = []
+
+    def build_with_metadata(*args, **kwargs):
+        documents = original_build(*args, **kwargs)
+        domain = next(document for document in documents if isinstance(document, ComputeDomainDoc))
+        domain.metadata_extra = {
+            "labels": {"infrastructure.example.com/owner": "gpu-team"},
+            "annotations": {"infrastructure.example.com/description": "reserved fabric"},
+            "finalizers": ["resource.nvidia.com/domain"],
+        }
+        sources.append((domain, domain.to_dict()))
+        return documents
+
+    monkeypatch.setattr(fpm_builder, "build_dgd", build_with_metadata)
+    artifacts = _render(params)
+    domain = _k8s_document(artifacts, "ComputeDomain")
+    workload = _k8s_document(artifacts, "LeaderWorkerSet")
+    assert len(sources) == 1
+    source, before = sources[0]
+    expected = copy.deepcopy(before)
+    expected["metadata"]["labels"].update(workload["metadata"]["labels"])
+    assert domain == expected
+    assert source.to_dict() == before
+    assert domain["metadata"]["name"] != workload["metadata"]["name"]
 
 
 @pytest.mark.parametrize(
@@ -770,6 +818,208 @@ raise SystemExit(23)
     assert "--benchmark-mode" in report["argv"]
 
 
+def _engine_cubin_dir(tmp_path: Path, model_cache: Path, **case_env: str) -> tuple[str, str]:
+    """Run run.sh with HF_HOME rendered under ``model_cache``; return the
+    FLASHINFER_CUBIN_DIR the engine inherits and run.sh's stderr."""
+    report_path = tmp_path / "cubin-dir.txt"
+    pythonpath = _write_fake_engine(
+        tmp_path,
+        """\
+import os
+import pathlib
+
+pathlib.Path(os.environ["FAKE_REPORT_PATH"]).write_text(os.environ.get("FLASHINFER_CUBIN_DIR", ""))
+""",
+    )
+    params = _params()
+    params["K8sConfig"]["k8s_pvc_mount_path"] = str(model_cache)
+    params["K8sConfig"]["k8s_hf_home"] = f"{model_cache}/GLM-5"
+    artifacts = _render(params)
+    assert _export_value(artifacts[FPM_RUN_SCRIPT_FILENAME], "HF_HOME") == f"{model_cache}/GLM-5"
+    completed = subprocess.run(
+        ["bash", str(_write_runtime(tmp_path, artifacts))],
+        text=True,
+        capture_output=True,
+        env=_clean_env(PYTHONPATH=str(pythonpath), FAKE_REPORT_PATH=str(report_path), **case_env),
+        timeout=8,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return report_path.read_text(), completed.stderr
+
+
+def test_fpm_run_script_caches_flashinfer_cubins_on_writable_model_cache(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    cubin_dir, _ = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+
+    assert cubin_dir == f"{model_cache}/GLM-5/flashinfer-cubins"
+    assert Path(cubin_dir).is_dir()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_falls_back_to_scratch_when_model_cache_is_read_only(tmp_path):
+    """Shared model caches are often read-only or owned by another user.
+    Pointing FlashInfer at an unwritable cubin dir fails every engine worker
+    at init with EACCES, so run.sh must fall back to writable scratch."""
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        snapshot.chmod(0o755)
+
+    assert cubin_dir.startswith(f"{scratch}/flashinfer-cubins.")
+    assert (os.stat(cubin_dir).st_mode & 0o077) == 0
+    assert not (snapshot / "flashinfer-cubins").exists()
+    assert "HF_HOME is not writable" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_honors_explicit_flashinfer_cubin_dir(tmp_path):
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    explicit = tmp_path / "operator-cubins"
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, FLASHINFER_CUBIN_DIR=str(explicit))
+    finally:
+        snapshot.chmod(0o755)
+
+    assert cubin_dir == str(explicit)
+    assert "HF_HOME is not writable" not in stderr
+
+
+def _engine_kvwarm_cache_dir(tmp_path: Path, model_cache: Path, **case_env: str) -> tuple[str, str]:
+    """Run run.sh with HF_HOME rendered under ``model_cache``; return the
+    DYN_BENCH_KV_WARMUP_CACHE_DIR the engine inherits and run.sh's stderr."""
+    report_path = tmp_path / "kvwarm-cache-dir.txt"
+    pythonpath = _write_fake_engine(
+        tmp_path,
+        """\
+import os
+import pathlib
+
+pathlib.Path(os.environ["FAKE_REPORT_PATH"]).write_text(os.environ.get("DYN_BENCH_KV_WARMUP_CACHE_DIR", ""))
+""",
+    )
+    params = _params()
+    params["K8sConfig"]["k8s_pvc_mount_path"] = str(model_cache)
+    params["K8sConfig"]["k8s_hf_home"] = f"{model_cache}/GLM-5"
+    artifacts = _render(params)
+    completed = subprocess.run(
+        ["bash", str(_write_runtime(tmp_path, artifacts))],
+        text=True,
+        capture_output=True,
+        env=_clean_env(PYTHONPATH=str(pythonpath), FAKE_REPORT_PATH=str(report_path), **case_env),
+        timeout=8,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return report_path.read_text(), completed.stderr
+
+
+def test_fpm_run_script_keeps_engine_kvwarm_cache_default_on_writable_model_cache(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+
+    # Unset means the engine uses its own default, fpm_datasets/ next to HF_HOME.
+    assert cache_dir == ""
+    assert "KV warm-up dataset" not in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_falls_back_to_scratch_kvwarm_cache_when_model_cache_is_read_only(tmp_path):
+    """The engine defaults the KV warm-up dataset cache to fpm_datasets/ next
+    to HF_HOME. On a read-only shared model cache that cannot be created, so
+    warm-up is skipped and readiness blocks warm-required strategies."""
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir.startswith(f"{scratch}/fpm_datasets.")
+    assert (os.stat(cache_dir).st_mode & 0o077) == 0
+    assert not (model_cache / "fpm_datasets").exists()
+    assert "KV warm-up dataset" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_honors_explicit_kvwarm_cache_dir(tmp_path):
+    model_cache = tmp_path / "models"
+    (model_cache / "GLM-5").mkdir(parents=True)
+    explicit = tmp_path / "operator-datasets"
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, DYN_BENCH_KV_WARMUP_CACHE_DIR=str(explicit))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir == str(explicit)
+    assert "KV warm-up dataset" not in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_uses_private_scratch_when_shared_scratch_name_is_unwritable(tmp_path):
+    """Another user may already own ${TMPDIR}/flashinfer-cubins; the fallback
+    must then hand the engine a private writable directory, not that path."""
+    model_cache = tmp_path / "models"
+    snapshot = model_cache / "GLM-5"
+    snapshot.mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "flashinfer-cubins").mkdir(parents=True)
+    (scratch / "flashinfer-cubins").chmod(0o555)
+    snapshot.chmod(0o555)
+    try:
+        cubin_dir, stderr = _engine_cubin_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+        assert cubin_dir.startswith(f"{scratch}/flashinfer-cubins.")
+        assert os.access(cubin_dir, os.W_OK)
+    finally:
+        snapshot.chmod(0o755)
+        (scratch / "flashinfer-cubins").chmod(0o755)
+    assert "HF_HOME is not writable" in stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permission bits")
+def test_fpm_run_script_probes_engine_kvwarm_path_for_symlinked_hf_home(tmp_path):
+    """The engine resolves fpm_datasets lexically (os.path.abspath), so a
+    symlinked HF_HOME must be probed at its lexical parent, not the target's."""
+    real_parent = tmp_path / "cache"
+    (real_parent / "checkpoint").mkdir(parents=True)
+    model_cache = tmp_path / "models"
+    model_cache.mkdir()
+    (model_cache / "GLM-5").symlink_to(real_parent / "checkpoint")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    model_cache.chmod(0o555)
+    try:
+        cache_dir, stderr = _engine_kvwarm_cache_dir(tmp_path, model_cache, TMPDIR=str(scratch))
+    finally:
+        model_cache.chmod(0o755)
+
+    assert cache_dir.startswith(f"{scratch}/fpm_datasets.")
+    assert (os.stat(cache_dir).st_mode & 0o077) == 0
+    assert not (real_parent / "fpm_datasets").exists()
+    assert "KV warm-up dataset" in stderr
+
+
 def test_default_and_explicit_normal_targets_remain_identical():
     params = _params()
     params["K8sConfig"].pop("extra_env")
@@ -921,6 +1171,10 @@ def test_fpm_multinode_worker_emits_keepalive_leaderworkerset_and_rank_aware_scr
         "metadata": {
             "name": "glm52-fpm-agg-compute-domain",
             "namespace": "default",
+            "labels": {
+                "app.kubernetes.io/name": "glm52-fpm-agg",
+                "app.kubernetes.io/component": "fpm-resource",
+            },
         },
         "spec": {
             "channel": {
@@ -981,6 +1235,10 @@ def test_fpm_multinode_gb200_grove_emits_compute_domain_and_keepalive_podcliques
         "metadata": {
             "name": "glm52-fpm-agg-compute-domain",
             "namespace": "default",
+            "labels": {
+                "app.kubernetes.io/name": "glm52-fpm-agg",
+                "app.kubernetes.io/component": "fpm-resource",
+            },
         },
         "spec": {
             "channel": {
@@ -1572,3 +1830,38 @@ def test_fpm_pod_renders_guaranteed_qos_by_default():
     assert limits["memory"] == "256Gi"  # 64Gi x 4 GPUs
     assert requests["cpu"] == limits["cpu"]
     assert requests["memory"] == limits["memory"]
+
+
+def test_fpm_dynamo_version_is_metadata_only(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.generator import api
+    from aisimulate.generator.request import from_legacy_params
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("FPM collection consulted the Dynamo release matrix")
+
+    monkeypatch.setattr(api, "resolve_backend_version_for_dynamo", forbidden)
+    plain = from_legacy_params(_params(), "vllm")
+    plain = replace(plain, emit=replace(plain.emit, deployment_target="fpm"))
+    custom = replace(plain, backend=replace(plain.backend, dynamo_version="unpublished-dynamo-build"))
+    assert api.generate_from_request(custom) == api.generate_from_request(plain)
+
+
+def test_serving_generation_still_resolves_dynamo_version(monkeypatch):
+    from dataclasses import replace
+
+    from aisimulate.generator import api
+    from aisimulate.generator.request import from_legacy_params
+
+    resolved = []
+    monkeypatch.setattr(
+        api,
+        "resolve_backend_version_for_dynamo",
+        lambda version, backend: resolved.append((version, backend)) or "0.27.0",
+    )
+    monkeypatch.setattr(api, "generate_backend_artifacts", lambda *_args, **_kwargs: {})
+    request = from_legacy_params(_params(), "vllm")
+    request = replace(request, backend=replace(request.backend, dynamo_version="1.3.0"))
+    api.generate_from_request(request)
+    assert resolved == [("1.3.0", "vllm")]

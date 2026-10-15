@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 # Columns that never participate in a perf-table shape key.
-META_COLUMNS = frozenset({"framework", "version", "device", "op_name", "kernel_source"})
+META_COLUMNS = frozenset({"framework", "version", "device", "op_name", "kernel_source", "default_eligible"})
 
 # Files to skip entirely (markers, already-shared layers, irregular formats).
 # reuse.yaml/collection_meta.yaml never match the *.parquet/*.txt glob below;

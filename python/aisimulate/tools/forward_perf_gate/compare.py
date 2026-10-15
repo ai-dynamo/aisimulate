@@ -47,7 +47,7 @@ def _response_error(case_id: str, side: str, response: object) -> str | None:
 
 
 def pair_disposition(case_id: str, base: object, head: object) -> tuple[str, str | None]:
-    """Return COMPARE, SKIP, or INVALID for one base/head response pair."""
+    """Return COMPARE or INVALID for one base/head response pair."""
     for side, response in (("base", base), ("head", head)):
         reason = _response_error(case_id, side, response)
         if reason:
@@ -61,14 +61,6 @@ def pair_disposition(case_id: str, base: object, head: object) -> tuple[str, str
     base_status, head_status = base.get("status"), head.get("status")
     if base_status == "OK" and head_status == "OK":
         return "COMPARE", None
-    if base_status == "DATA_MISS" and head_status == "DATA_MISS":
-        details = list(dict.fromkeys(filter(None, (_error_text(base), _error_text(head)))))
-        suffix = f": {'; '.join(details)}" if details else ""
-        return "SKIP", f"DATA_MISS on base and head{suffix}"
-    if base_status == "DATA_MISS" and head_status == "OK":
-        detail = _error_text(base)
-        suffix = f": {detail}" if detail else ""
-        return "SKIP", f"base DATA_MISS{suffix}; head has no timing baseline"
 
     details = []
     for side, response in (("base", base), ("head", head)):
@@ -126,15 +118,14 @@ def compare_point(
     metric: str,
     *,
     skip_reason: str | None = None,
-    availability_succeeded: bool = False,
 ) -> dict:
     threshold = THRESHOLDS[metric]
     result = {**_point_identity(case, metric), "rounds": []}
     if skip_reason is not None:
         result.update(
             {
-                "classification": "SKIPPED",
-                "skip_reason": skip_reason,
+                "classification": "INVALID_COMPARISON",
+                "invalid_reasons": [f"case was skipped: {skip_reason}"],
                 "exceed_count": 0,
                 "consensus_required": 0,
             }
@@ -143,22 +134,11 @@ def compare_point(
 
     round_results: list[dict] = []
     invalid_reasons: list[str] = []
-    skipped_reasons: list[str] = []
     for paired in rounds:
         base, head = paired.get("base"), paired.get("head")
         disposition, reason = pair_disposition(case["case_id"], base, head)
-        if disposition == "SKIP" and availability_succeeded:
-            disposition = "INVALID"
-            reason = "; ".join(
-                f"{side} status is DATA_MISS after successful availability: {_error_text(response)}"
-                for side, response in (("base", base), ("head", head))
-                if response["status"] == "DATA_MISS"
-            )
         if disposition == "INVALID":
             invalid_reasons.append(f"round {paired.get('round')}: {reason}")
-            continue
-        if disposition == "SKIP":
-            skipped_reasons.append(reason or "no timing baseline")
             continue
 
         assert isinstance(base, dict)
@@ -188,23 +168,6 @@ def compare_point(
         )
 
     result["rounds"] = round_results
-    if skipped_reasons and not invalid_reasons and not round_results and len(skipped_reasons) == len(rounds):
-        unique_reasons = list(dict.fromkeys(skipped_reasons))
-        if len(unique_reasons) > 1:
-            invalid_reasons.append("response status changed between measured rounds")
-        else:
-            result.update(
-                {
-                    "classification": "SKIPPED",
-                    "skip_reason": unique_reasons[0],
-                    "exceed_count": 0,
-                    "consensus_required": 0,
-                }
-            )
-            return result
-
-    elif skipped_reasons:
-        invalid_reasons.append("response status changed between measured rounds")
     if not rounds:
         invalid_reasons.append("no paired rounds")
     if invalid_reasons or len(round_results) != len(rounds):
@@ -252,7 +215,7 @@ def _cell_summaries(points: list[dict]) -> list[dict]:
         grouped.setdefault(key, []).append(point)
 
     cells = []
-    for key, cell_points in sorted(grouped.items()):
+    for key, cell_points in grouped.items():
         valid = [point for point in cell_points if "median_ratio" in point]
         ratios = [point["median_ratio"] for point in valid if point["median_ratio"] > 0]
         worst = max(valid, key=lambda point: point["median_ratio"], default=None)
@@ -268,7 +231,6 @@ def _cell_summaries(points: list[dict]) -> list[dict]:
                 "regressions": sum(point["classification"] == "REGRESSION" for point in cell_points),
                 "unstable": sum(point["classification"] == "UNSTABLE" for point in cell_points),
                 "invalid": sum(point["classification"] == "INVALID_COMPARISON" for point in cell_points),
-                "skipped": sum(point["classification"] == "SKIPPED" for point in cell_points),
             }
         )
     return sorted(
@@ -314,7 +276,6 @@ def _validate_case_set(raw: dict) -> list[str]:
 def compare_raw(raw: dict) -> dict:
     run_errors = [str(error) for error in raw.get("run_errors", [])]
     run_errors.extend(_validate_case_set(raw))
-    available_cases = {entry["case_id"] for entry in raw.get("prewarm", []) if entry.get("disposition") == "COMPARE"}
     points = []
     for entry in raw.get("cases", []):
         if not isinstance(entry, dict) or not isinstance(entry.get("case"), dict):
@@ -326,7 +287,6 @@ def compare_raw(raw: dict) -> dict:
                     entry.get("rounds", []),
                     metric,
                     skip_reason=entry.get("skip_reason"),
-                    availability_succeeded=entry["case"]["case_id"] in available_cases,
                 )
             )
     blocking = bool(run_errors) or any(
@@ -334,7 +294,7 @@ def compare_raw(raw: dict) -> dict:
     )
     configuration = raw.get("configuration", {})
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "base_revision": raw.get("base_revision", ""),
         "head_revision": raw.get("head_revision", ""),
         "mode": configuration.get("mode", "full"),
@@ -358,8 +318,6 @@ def _cell_status(cell: dict) -> str:
         return "❌ invalid"
     if cell["unstable"]:
         return "⚠️ noisy"
-    if cell["skipped"]:
-        return "skipped"
     return "✅ stable"
 
 
@@ -370,7 +328,6 @@ def render_markdown(comparison: dict) -> str:
     unchanged = [point for point in points if point["classification"] == "OK"]
     invalid = [point for point in points if point["classification"] == "INVALID_COMPARISON"]
     unstable = [point for point in points if point["classification"] == "UNSTABLE"]
-    skipped = [point for point in points if point["classification"] == "SKIPPED"]
     stable_count = len(regressions) + len(improvements) + len(unchanged)
     result = "FAIL" if comparison["blocking"] else "PASS"
     mode_label = " — smoke" if comparison.get("mode") == "smoke" else ""
@@ -398,20 +355,14 @@ def render_markdown(comparison: dict) -> str:
         if collapsed:
             lines.extend(["", "</details>"])
 
-    def add_reason_table(title: str, selected: list[dict], *, collapsed: bool = False) -> None:
+    def add_reason_table(title: str, selected: list[dict]) -> None:
         if not selected:
             return
-        if collapsed:
-            lines.extend(["", "<details>", f"<summary>{title} ({len(selected)})</summary>", ""])
-        else:
-            lines.extend(["", f"### {title}", ""])
+        lines.extend(["", f"### {title}", ""])
         lines.extend(["| case | cache | reason |", "|---|---|---|"])
         for point in selected:
-            reasons = point.get("invalid_reasons") or [point.get("skip_reason", "")]
-            reason = "; ".join(reasons).replace("|", "\\|")
+            reason = "; ".join(point["invalid_reasons"]).replace("|", "\\|")
             lines.append(f"| `{point['case_id']}` | {point['metric']} | {reason} |")
-        if collapsed:
-            lines.extend(["", "</details>"])
 
     def add_full_matrix(cells: list[dict]) -> None:
         if not cells:
@@ -423,8 +374,8 @@ def render_markdown(comparison: dict) -> str:
                 f"<summary>Full matrix ({len(cells)} cells)</summary>",
                 "",
                 "| status | model | database | phase | cache | geometric mean | worst point "
-                "| regressions | noisy | invalid | skipped |",
-                "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+                "| regressions | noisy | invalid |",
+                "|---|---|---|---|---|---:|---:|---:|---:|---:|",
             ]
         )
         for cell in cells:
@@ -432,7 +383,7 @@ def render_markdown(comparison: dict) -> str:
                 f"| {_cell_status(cell)} | {cell['model_id']} | {cell['database_mode']} | "
                 f"{cell['phase']} | {cell['metric']} "
                 f"| {_percent(cell['geomean_ratio'])} | {_percent(cell['worst_ratio'])} "
-                f"| {cell['regressions']} | {cell['unstable']} | {cell['invalid']} | {cell['skipped']} |"
+                f"| {cell['regressions']} | {cell['unstable']} | {cell['invalid']} |"
             )
         lines.extend(["", "</details>"])
 
@@ -442,7 +393,7 @@ def render_markdown(comparison: dict) -> str:
         f"**{result}** — {stable_count} of {len(points)} comparisons stable: "
         f"{len(improvements)} faster, {len(unchanged)} unchanged, "
         f"{len(regressions)} regressions; {len(unstable)} noisy, "
-        f"{len(invalid)} invalid, {len(skipped)} skipped.",
+        f"{len(invalid)} invalid.",
         "",
         f"Base `{comparison['base_revision']}` vs head `{comparison['head_revision']}`.",
     ]
@@ -461,7 +412,6 @@ def render_markdown(comparison: dict) -> str:
     add_timing_table("❌ Confirmed regressions", regressions)
     add_reason_table("❌ Invalid comparisons", invalid)
     add_timing_table("⚠️ Noisy comparisons", unstable, collapsed=True)
-    add_reason_table("Skipped comparisons", skipped, collapsed=True)
     add_full_matrix(comparison["cells"])
     lines.extend(["", "This check is advisory and is not required by branch protection."])
     return "\n".join(lines)
@@ -479,17 +429,19 @@ def write_outputs(comparison: dict, output_dir: Path) -> None:
             "phase",
             "metric",
             "classification",
-            "skip_reason",
             "exceed_count",
             "consensus_required",
             "base_median_us",
             "head_median_us",
             "median_delta_us",
             "median_ratio",
+            "invalid_reasons",
         ]
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
-        writer.writerows(comparison["points"])
+        writer.writerows(
+            {**point, "invalid_reasons": "; ".join(point.get("invalid_reasons", []))} for point in comparison["points"]
+        )
     annotations = [f"INVALID_RUN: {error}" for error in comparison["run_errors"]]
     for point in comparison["points"]:
         if point["classification"] in {"REGRESSION", "INVALID_COMPARISON"}:

@@ -197,6 +197,14 @@ _QUERY_VERSIONS_BASENAME = "query_versions.yaml"
 _SLOT_ALIASES = ("current", "previous", "next")
 
 
+class UnlistedQueryVersionError(ValueError):
+    """A requested backend version exists outside the queryable slots.
+
+    A ValueError subclass so existing callers keep working; wrappers use the
+    type to surface the slot guidance unchanged instead of re-labelling it.
+    """
+
+
 @functools.cache
 def _load_query_slots_doc(systems_paths: tuple[str, ...]) -> dict | None:
     for systems_root in systems_paths:
@@ -336,13 +344,17 @@ def resolve_query_version(
     # production use; the fixture-discipline follow-up retires it.
     if os.environ.get("AIC_ALLOW_UNLISTED_VERSIONS", "").lower() in ("1", "true", "yes"):
         return version
-    raise ValueError(
-        f"{backend}/{version!r} looks like an old-style raw version query; "
-        f"{system} now resolves versions through queryable slots. "
-        f"New way: use an alias ('current'/'previous'/'next') or one of the "
-        f"slot versions {slots}. "
-        f"Old way (raw data-coordinate access, data outside these slots is "
-        f"not maintained to the queryable bar): re-run with the environment "
+    accepted = ", ".join(f"{slot} = {slots[slot]}" for slot in _SLOT_ALIASES if slot in slots)
+    raise UnlistedQueryVersionError(
+        f"{backend} version {version!r} is not a queryable version on {system}. "
+        f"Accepted versions for {system}/{backend}: {accepted}. "
+        f"Fix: set the backend version to one of these or to an alias, "
+        f"for example `backend_version: current` in an aisimulate config, or "
+        f"`--backend-version current` for aiconfigurator cli. "
+        f"Support-matrix rows at other versions record performance-data "
+        f"coverage, not versions that predict or recommend accept. "
+        f"To query {version!r} anyway (data outside these versions is not "
+        f"maintained to the queryable bar), re-run with the environment "
         f"variable AIC_ALLOW_UNLISTED_VERSIONS=1, or pass "
         f"allow_unlisted_version=True in SDK code."
     )
@@ -670,7 +682,23 @@ _COLLECTION_EVENT_REQUIRED_KEYS = (
 )
 _COLLECTION_EVENT_OPTIONAL_KEYS = ("source_campaign_rows", "source_campaign_status", "runtime")
 _COLLECTION_STATUSES = frozenset({"complete", "partial"})
-_COLLECTION_RUNTIME_KEYS = ("framework", "version", "image", "image_variant", "image_digest")
+# Mirror the authored collection_meta runtime contract in collector.provenance
+# without making the installed core depend on the GPU collector package.
+_COLLECTION_RUNTIME_STRING_KEYS = ("image", "image_variant", "image_digest", "source_commit")
+_COLLECTION_RUNTIME_MAPPING_KEYS = (
+    "abi",
+    "live_abi",
+    "transport",
+    "backend_capability",
+    "backend_abis",
+    "backend_capabilities",
+)
+_COLLECTION_RUNTIME_KEYS = (
+    "framework",
+    "version",
+    *_COLLECTION_RUNTIME_STRING_KEYS,
+    *_COLLECTION_RUNTIME_MAPPING_KEYS,
+)
 
 
 def _validate_non_negative_row_count(value: object, *, field: str, path: str) -> None:
@@ -687,9 +715,12 @@ def _validate_collection_runtime(runtime: object, *, field: str, path: str) -> N
     for key in ("framework", "version"):
         if not isinstance(runtime.get(key), str) or not runtime[key].strip():
             raise ValueError(f"{path}: {field}.{key} must be a non-empty string")
-    for key in _COLLECTION_RUNTIME_KEYS[2:]:
+    for key in _COLLECTION_RUNTIME_STRING_KEYS:
         if key in runtime and (not isinstance(runtime[key], str) or not runtime[key].strip()):
             raise ValueError(f"{path}: {field}.{key} must be a non-empty string when provided")
+    for key in _COLLECTION_RUNTIME_MAPPING_KEYS:
+        if key in runtime and not isinstance(runtime[key], dict):
+            raise ValueError(f"{path}: {field}.{key} must be a mapping when provided")
 
 
 def _validate_collection_event(event: object, *, table: str, index: int, path: str) -> None:

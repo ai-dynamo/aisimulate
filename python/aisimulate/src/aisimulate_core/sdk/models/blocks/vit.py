@@ -12,6 +12,9 @@
 # Kimi topology is a modified adaptation (Apache-2.0), copyright contributors
 # to the vLLM project:
 # https://github.com/vllm-project/vllm/blob/d2906091bfc579cebefe3d8e8fb9077397ce9882/vllm/model_executor/models/kimi_k25_vit.py
+# Mistral3 projector topology is adapted and modified for performance modeling
+# from vLLM (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 """Generic ViT encoder op builder for multimodal VL models.
 
@@ -34,6 +37,7 @@ For a ViT with depth D and projector_dims with P (in, out) pairs::
     encoder_proj_gemm     GEMM  (low_precision_input=True)
     encoder_ar_1          CustomAllReduce
     encoder_add_norm_2    ElementWise
+    encoder_gate_gemm     GEMM  (only if gated_mlp; SwiGLU gate projection)
     encoder_ffn1_gemm     GEMM
     encoder_act           ElementWise
     encoder_ffn2_gemm     GEMM  (low_precision_input=True)
@@ -60,14 +64,16 @@ The ViT transformer ends with a CustomAllReduce so every projector layer
 receives a full (un-sharded) first-layer input.  For a two-layer projector
 (the common case for PatchMerger-style architectures):
 
-  - Layer 0: row-parallel   (M = out // tp, K = in      — shards the output)
-  - Layer 1: column-parallel (M = out,       K = in // tp — input is sharded
+  - Layer 0: column-parallel (M = out // tp, K = in      — shards the output)
+  - Layer 1: row-parallel    (M = out,       K = in // tp — input is sharded
                                from the previous layer, output is reduced by AR)
 
-For P = 1 the single layer is row-parallel (M = out // tp, K = in) followed by
+For P = 1 the single layer is column-parallel (M = out // tp, K = in) followed by
 the AllReduce.  For P > 2 intermediate layers also receive sharded inputs; callers
 are responsible for choosing a projector_dims layout that is TP-correct.
 Replicated projectors retain full dimensions for every layer and omit AllReduce.
+Some PatchMerger layouts replicate only their first projection; those use
+``projector_merger_replicated`` while retaining TP sharding on later layers.
 """
 
 from __future__ import annotations
@@ -147,6 +153,14 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ),
         ops.CustomAllReduce("encoder_ar_1", depth, h_vit, tp_size),
         ops.ElementWise("encoder_add_norm_2", depth, 2 * h_vit, 2 * h_vit, 0.8),
+        # SwiGLU-style FFN (enc_cfg.gated_mlp) has a separate gate projection
+        # (hidden -> intermediate) alongside the up projection below; plain
+        # up/down FFNs omit it.
+        *(
+            [ops.GEMM("encoder_gate_gemm", depth, inter_vit // tp_size, h_vit, vit_gemm_mode)]
+            if enc_cfg.gated_mlp
+            else []
+        ),
         ops.GEMM(
             "encoder_ffn1_gemm",
             depth,
@@ -157,7 +171,9 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
         ops.ElementWise(
             "encoder_act",
             depth,
-            inter_vit // tp_size,
+            # SwiGLU activation reads both the gate and up projections (two
+            # per-shard intermediate tensors); a plain FFN reads only one.
+            2 * (inter_vit // tp_size) if enc_cfg.gated_mlp else inter_vit // tp_size,
             inter_vit // tp_size,
             0.8,
         ),
@@ -192,15 +208,22 @@ def _vit_transformer_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> l
     return result
 
 
-def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
+def _projector_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    activation_indices: tuple[int, ...] | None = None,
+) -> list:
     """Build the projector MLP ops from enc_cfg.projector_dims.
 
     TP layout per layer:
-      - Non-final layers: row-parallel (M = out // tp, K = in; output sharded) + activation
-      - Final layer: column-parallel if P > 1 (M = out, K = in // tp; input sharded)
-                     row-parallel if P == 1 (M = out // tp, K = in; full input)
+      - Non-final layers: column-parallel (M = out // tp, K = in; output sharded) + activation
+      - Final layer: row-parallel if P > 1 (M = out, K = in // tp; input sharded)
+                     column-parallel if P == 1 (M = out // tp, K = in; full input)
       - Ends with a CustomAllReduce over the final output dimension unless
         projector_replicated=True (full dimensions and no projector collectives).
+
+    ``activation_indices`` selects non-final layers that have an activation;
+    ``None`` retains the default activation after every non-final layer.
 
     Returns [] if projector_dims is empty.
     """
@@ -234,22 +257,27 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
         )
     for i, (in_d, out_d) in enumerate(dims):
         is_last = i == n_layers - 1
+        merger_replicated = i == 0 and enc_cfg.projector_merger_replicated
         # Final layer in a multi-layer projector takes sharded input from the previous
-        # row-parallel layer (column-parallel style). Single-layer and non-final layers
-        # always receive a full (non-sharded) input (row-parallel style).
-        col_parallel = is_last and n_layers > 1
-        if col_parallel:
+        # column-parallel layer (row-parallel style). Single-layer and non-final layers
+        # always receive a full (non-sharded) input (column-parallel style), except for
+        # architectures that explicitly replicate only their patch-merger projection.
+        row_parallel = is_last and n_layers > 1
+        if merger_replicated:
+            m, k = out_d, in_d
+        elif row_parallel:
             m, k = out_d, in_d // tp_size
         else:
             m, k = out_d // tp_size, in_d
         result.append(ops.GEMM(f"encoder_projector_fc{i}_gemm", n_inst, m, k, vit_gemm_mode))
-        if not is_last:
+        if not is_last and (activation_indices is None or i in activation_indices):
+            activation_width = out_d if merger_replicated else out_d // tp_size
             result.append(
                 ops.ElementWise(
                     f"encoder_projector_fc{i}_act",
                     n_inst,
-                    out_d // tp_size,
-                    out_d // tp_size,
+                    activation_width,
+                    activation_width,
                     0.8,
                 )
             )
@@ -261,7 +289,12 @@ def _projector_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int) -> list:
     return result
 
 
-def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_encoder_dp: bool = True) -> list:
+def build_encoder_ops(
+    enc_cfg: common.VisionEncoderConfig,
+    tp_size: int,
+    enable_encoder_dp: bool = True,
+    projector_activation_indices: tuple[int, ...] | None = None,
+) -> list:
     """Build the complete list of encoder ops for a ViT-based vision encoder.
 
     Combines the patch/position input ops, ViT transformer ops (10 ops x depth
@@ -274,16 +307,26 @@ def build_encoder_ops(enc_cfg: common.VisionEncoderConfig, tp_size: int, enable_
                  else the ViT weight-sharding degree (must evenly divide
                  num_heads and intermediate_size when tp_size > 1).
         enable_encoder_dp: Encoder data parallelism over the TP group (default
-                 True) — see module docstring.
+            True) — see module docstring.
+        projector_activation_indices: Optional non-final projector layer
+            indices to activate. ``None`` activates every non-final layer.
 
     Returns:
         Flat list of operation objects ready to assign to model.encoder_ops.
     """
     if not enable_encoder_dp:
-        return _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, tp_size) + _projector_ops(enc_cfg, tp_size)
+        return (
+            _patch_embedding_ops(enc_cfg)
+            + _vit_transformer_ops(enc_cfg, tp_size)
+            + _projector_ops(enc_cfg, tp_size, projector_activation_indices)
+        )
 
     # DP: full-replica ops (tp=1); the per-layer AllReduces degenerate to no-ops.
-    result = _patch_embedding_ops(enc_cfg) + _vit_transformer_ops(enc_cfg, 1) + _projector_ops(enc_cfg, 1)
+    result = (
+        _patch_embedding_ops(enc_cfg)
+        + _vit_transformer_ops(enc_cfg, 1)
+        + _projector_ops(enc_cfg, 1, projector_activation_indices)
+    )
     if tp_size > 1:
         result.append(
             ops.NCCL(

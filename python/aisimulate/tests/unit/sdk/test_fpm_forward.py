@@ -41,6 +41,7 @@ from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
+from aisimulate_core.sdk.fpm_config import FpmCompileConfig
 from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
 pytestmark = pytest.mark.unit
@@ -53,6 +54,50 @@ MODEL_PATH = "test-org/test-model"
 import aisimulate_core
 
 _CORE_SYSTEMS = os.path.join(os.path.dirname(aisimulate_core.__file__), "systems")
+
+
+def test_fpm_compile_context_uses_rust_defaults_without_python_fallbacks(monkeypatch):
+    resolved = {"text_only": True, "unrecorded_quant_modes": ["fmha"], "fpm_parquet_path": "/profile.parquet"}
+    calls = []
+
+    class RustOptions:
+        @staticmethod
+        def _normalize_fpm_options(payload, fmha, comm, has_profile):
+            calls.append((json.loads(payload), fmha, comm, has_profile))
+            return json.dumps(resolved)
+
+    monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RustOptions)
+    context = FpmCompileConfig(attention_backend="FLASHINFER_MLA")
+    assert calls == [({}, None, None, False)]
+    assert context.options == resolved
+    assert context.cache_identity() == {"options": resolved, "attention_backend": "FLASHINFER_MLA"}
+
+
+def test_fpm_compile_context_survives_model_copy_and_cannot_be_mutated():
+    import copy
+    import pickle
+    from dataclasses import FrozenInstanceError, replace
+
+    context = FpmCompileConfig({"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]})
+    model_config = _model_config(forward_model="fpm", fpm_config=context)
+    expected = context.cache_identity()
+    context.options["unrecorded_quant_modes"].clear()
+    with pytest.raises(FrozenInstanceError):
+        context.attention_backend = "other"
+    for copied in (copy.deepcopy(model_config), pickle.loads(pickle.dumps(model_config)), replace(model_config)):
+        assert copied.fpm_config.cache_identity() == expected
+
+
+def test_fpm_execution_identity_and_dcp_are_independent_fields():
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    execution = ("checkpoint-digest", "decoder_bounded", "hbm_tp_sharded", "text")
+    op = FPMForwardOp("prefill", _model_config(tp_size=4, dcp_size=4), MODEL_PATH, sol_ops=[], execution=execution)
+    identity = dict(zip(_CELL_MATCH_COLUMNS, op._match_identity, strict=True))
+    assert tuple(identity[field] for field in EXECUTION_COLUMNS) == execution
+    assert "dcp" not in identity
+    assert _fpm_spec_dict(op)["FpmForward"]["dcp_size"] == 4
 
 
 def _row(
@@ -152,6 +197,282 @@ def _model_config(**overrides) -> sdk_config.ModelConfig:
     )
     defaults.update(overrides)
     return sdk_config.ModelConfig(**defaults)
+
+
+_NATIVE_FPM_CONTRACTS = {
+    "vllm": (
+        "vllm_native_fpm_prefix_seed_median_v1",
+        "glm53flash_prefix_cache_real_seed_v1",
+        "dynamo_vllm_instrumented_scheduler_fpm_wall_time",
+    ),
+    "sglang": (
+        "sglang_native_fpm_radix_seed_median_v1",
+        "glm53flash_sglang_radix_real_seed_v1",
+        "sglang_native_fpm_rank0_device_timer_wall_time",
+    ),
+}
+
+
+def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash", version=None, tp=2, points=None):
+    """Synthetic measured medians, independent of the production writer.
+
+    There are no operator tables, so the public SILICON query must use these
+    exact already-reduced millisecond values, without SOL or per-sample scaling.
+    """
+    system = "gb300"
+    version = version or ("0.31.0" if backend == "vllm" else "0.5.20")
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{system}.yaml", systems_root / f"{system}.yaml")
+    model = models.get_model(
+        model_path, sdk_config.ModelConfig(tp_size=tp, moe_tp_size=tp, moe_ep_size=1, forward_model="fpm"), backend
+    )
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    policy, protocol, boundary = _NATIVE_FPM_CONTRACTS[backend]
+    rows = [
+        _row(phase, batch, q, kv, latency, model_path=model_path, identity=identity)
+        | {key: identity[key] for key in _CELL_MATCH_COLUMNS[-4:]}
+        | dict(
+            system=system,
+            backend=backend,
+            backend_version=version,
+            measurement_policy=policy,
+            global_warmup_iterations=0,
+            warmup_repeats=5,
+            measurement_repeats=10,
+            state_protocol=protocol,
+            timing_boundary=boundary,
+            kv_seed_regime="n/a" if phase == "prefill" and kv == 0 else "real_kv",
+        )
+        for phase, batch, q, kv, latency in (
+            points
+            if points is not None
+            else [
+                ("prefill", 1, 512, 0, 13.25),
+                ("prefill", 1, 1024, 0, 26.5),
+                ("decode", 1, 0, 512, 7.125),
+                ("decode", 1, 0, 1024, 14.25),
+            ]
+        )
+    ]
+    metadata = dict(
+        schema_version=7,
+        system=system,
+        backend=backend,
+        backend_version=version,
+        measurement_policy=policy,
+        warmup_repeats=5,
+        measurement_repeats=10,
+    )
+    path = _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    config = ForwardPassPerfModelConfig(
+        model=model_path,
+        system=system,
+        backend=backend,
+        backend_version=version,
+        worker_type="aggregated",
+        tp=tp,
+        moe_tp_size=tp,
+        moe_ep_size=1,
+        database_mode="SILICON",
+        strict_provenance=True,
+        estimation_mode="fpm_interpolation",
+        fallback_policy="deny",
+        systems_paths=(str(systems_root),),
+        estimator_config={"fpm_interpolation": {"fpm_parquet_path": path}},
+    )
+    return config, rows, metadata
+
+
+# TEST_ONLY invented values on and off the 4-token grid; never measured data.
+_UNALIGNED_PREFIXES = (122, 125, 131, 134, 4346, 4349, 4355, 4358)
+
+
+def _prefix_metrics(batch, query, prefix):
+    metrics = _median_metrics("prefill", batch * query)
+    metrics["scheduled_requests"].update(num_prefill_requests=batch, sum_prefill_kv_tokens=batch * prefix)
+    return metrics
+
+
+def test_public_glm_fpm_predicts_unaligned_prefixes(tmp_path):
+    # Align-4 is a collection rule; predictions for any prefix are never refused.
+    points = [("prefill", 1, 32, p, 15.0) for p in _UNALIGNED_PREFIXES]
+    config, _, _ = _median_pair_request(tmp_path, "vllm", points=points)
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        for prefix in _UNALIGNED_PREFIXES:
+            assert predictor.estimate_forward_pass_time_ms(_prefix_metrics(1, 32, prefix)) == 15.0
+    finally:
+        predictor.close()
+
+
+def _median_metrics(phase, tokens):
+    return dict(
+        version=1,
+        wall_time=1.0,
+        scheduled_requests=dict(
+            num_prefill_requests=int(phase == "prefill"),
+            num_decode_requests=int(phase == "decode"),
+            sum_prefill_tokens=tokens if phase == "prefill" else 0,
+            sum_prefill_kv_tokens=0,
+            sum_decode_kv_tokens=tokens if phase == "decode" else 0,
+            var_prefill_length=0.0,
+            var_decode_kv_tokens=0.0,
+        ),
+    )
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("model_path", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+def test_public_median_fpm_preserves_ms_interpolation_and_saved_identity(tmp_path, backend, model_path):
+    config, rows, metadata = _median_pair_request(tmp_path, backend, model_path=model_path)
+    median = RustForwardPassPerfModel.best_available(config)
+    resolved = median.diagnostics()["provenance"]["config"]
+    restored = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**resolved))
+    # The legacy table has the identical numerical data. Only its measurement
+    # contract differs; this anchors unchanged interpolation without copying math.
+    legacy_rows = [
+        {
+            k: v
+            for k, v in row.items()
+            if k
+            not in {
+                "measurement_policy",
+                "global_warmup_iterations",
+                "warmup_repeats",
+                "measurement_repeats",
+                "state_protocol",
+                "timing_boundary",
+            }
+        }
+        for row in rows
+    ]
+    legacy_path = _write_pair(
+        str(tmp_path / "legacy"),
+        legacy_rows,
+        sidecar_overrides=metadata | {"measurement_policy": "dynamo_native_single_sample_v1"},
+    )
+    legacy_config = config.to_dict() | {"estimator_config": {"fpm_interpolation": {"fpm_parquet_path": legacy_path}}}
+    legacy = RustForwardPassPerfModel.best_available(legacy_config)
+    try:
+        assert restored.diagnostics()["provenance"]["config"] == resolved
+        for phase, endpoints in [("prefill", (13.25, 26.5)), ("decode", (7.125, 14.25))]:
+            for tokens, expected in [(512, endpoints[0]), (1024, endpoints[1]), (768, None)]:
+                metrics = _median_metrics(phase, tokens)
+                value = median.estimate_forward_pass_time_ms(metrics)
+                assert value == restored.estimate_forward_pass_time_ms(metrics)
+                assert value == legacy.estimate_forward_pass_time_ms(metrics)
+                if expected is not None:
+                    assert value == expected
+                else:
+                    assert endpoints[0] < value < endpoints[1]
+    finally:
+        median.close()
+        restored.close()
+        legacy.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("measurement_policy", "dynamo_native_single_sample_v1"),
+        ("measurement_policy", None),
+        ("measurement_policy", "MISSING"),
+        ("global_warmup_iterations", 1),
+        ("warmup_repeats", 4),
+        ("measurement_repeats", 1),
+        ("measurement_repeats", 10.0),
+        ("measurement_repeats", "10"),
+        ("measurement_repeats", True),
+        ("measurement_repeats", None),
+        ("measurement_repeats", "MISSING"),
+        ("state_protocol", "wrong"),
+        ("state_protocol", None),
+        ("state_protocol", "MISSING"),
+        ("timing_boundary", "wrong"),
+        ("timing_boundary", None),
+        ("timing_boundary", "MISSING"),
+        ("kv_seed_regime", "fake_fallback"),
+    ],
+)
+def test_public_median_fpm_rejects_row_contract_before_prediction(tmp_path, backend, key, value):
+    config, rows, metadata = _median_pair_request(tmp_path, backend)
+    # A whole-column type change is valid parquet but invalid protocol. A
+    # single contradictory row tests that valid siblings cannot hide a mix.
+    changed = rows if value == "MISSING" or type(value) in (float, bool) or value == "10" else [rows[1]]
+    for row in changed:
+        if value == "MISSING":
+            row.pop(key)
+        else:
+            row[key] = value
+    _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    with pytest.raises((ValueError, RuntimeError), match="fake_fallback" if key == "kv_seed_regime" else key):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512))
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("schema_version", 6),
+        ("measurement_policy", "per_row"),
+        ("measurement_policy", "OTHER_BACKEND"),
+        ("warmup_repeats", 4),
+        ("warmup_repeats", None),
+        ("warmup_repeats", "MISSING"),
+        ("measurement_repeats", 1),
+        ("measurement_repeats", 10.0),
+        ("measurement_repeats", "10"),
+        ("measurement_repeats", True),
+        ("measurement_repeats", None),
+        ("measurement_repeats", "MISSING"),
+    ],
+)
+def test_public_median_fpm_rejects_sidecar_contract(tmp_path, backend, key, value):
+    config, rows, metadata = _median_pair_request(tmp_path, backend)
+    if value == "OTHER_BACKEND":
+        value = _NATIVE_FPM_CONTRACTS["sglang" if backend == "vllm" else "vllm"][0]
+    if value == "MISSING":
+        metadata.pop(key)
+    else:
+        metadata[key] = value
+    _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    with pytest.raises((ValueError, RuntimeError), match="measurement_policy|median sidecar"):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512))
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("optional_policy", [None, "historical-label"])
+def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_path, optional_policy):
+    config, rows, metadata = _median_pair_request(tmp_path, "vllm")
+    for row in rows:
+        row["measurement_policy"] = optional_policy
+        for key in (
+            "state_protocol",
+            "timing_boundary",
+            "global_warmup_iterations",
+            "warmup_repeats",
+            "measurement_repeats",
+        ):
+            row.pop(key)
+    _write_pair(
+        str(tmp_path / "measured"),
+        rows,
+        sidecar_overrides=metadata | {"measurement_policy": "dynamo_native_single_sample_v1"},
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512)) == 13.25
+    finally:
+        model.close()
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +1015,242 @@ class TestFPMStaticAndMixed:
         assert total == pytest.approx(7.0)
 
 
+def test_text_only_kimi_profile_preserves_encoder_weights_and_dcp_identity():
+    cfg = _model_config(
+        forward_model="fpm",
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
+    )
+    model = models.get_model("moonshotai/Kimi-K3", cfg, "vllm")
+    assert model.encoder_ops
+    assert sum(op.get_weights() for op in model.encoder_ops) > 0
+    assert all(isinstance(op, FPMForwardOp) for op in (*model.context_ops, *model.generation_ops))
+    identity = model.context_ops[0]._match_identity
+    assert identity[2:4] == ("", "")
+    assert identity[12] == "FLASHINFER_MLA"
+    assert len(identity) == len(_CELL_MATCH_COLUMNS)
+    assert model.context_ops[0]._dcp_size == 8
+    assert cfg.total_gpus_per_worker == 8
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+
+    prefill = model.context_ops[0]
+    assert _fpm_spec_dict(prefill)["FpmForward"]["dcp_size"] == 8
+    resident = _fpm_spec_dict(prefill)["FpmForward"]["weight_bytes"]
+    assert resident == prefill.get_weights() + sum(op.get_weights() for op in model.encoder_ops)
+
+
+@pytest.fixture
+def kimi_fpm_profile(tmp_path, request):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    recorded_dcp = getattr(request, "param", 8)
+
+    systems = tmp_path / "systems"
+    systems.mkdir()
+    shutil.copyfile(os.path.join(_CORE_SYSTEMS, "h200_sxm.yaml"), systems / "h200_sxm.yaml")
+    data = systems / "data" / SYSTEM / BACKEND / VERSION
+    identity = {
+        "tp": "8",
+        "moe_tp": "8",
+        "moe_ep": "1",
+        "fmha_quant_mode": "",
+        "comm_quant_mode": "",
+        "moe_quant_mode": "w4a16_mxfp4",
+        "kv_cache_dtype": "fp8",
+        "attention_backend": "FLASHINFER_MLA",
+    }
+    rows = [
+        _row("prefill", 1, 128, 0, 7.0, model_path="moonshotai/Kimi-K3", identity=identity),
+        _row("decode", 1, 0, 128, 3.0, model_path="moonshotai/Kimi-K3", identity=identity),
+    ]
+    for row in rows:
+        row.update(measurement_policy="kvwarm_median_of_3", measurement_repeats=3)
+        if recorded_dcp is not None:
+            row["dcp"] = recorded_dcp
+    # Independent oracle: the synthetic measured records above define 7 ms
+    # prefill and 3 ms decode, irrespective of the model's operator estimates.
+    _write_pair(
+        str(data),
+        rows,
+        sidecar_overrides={
+            "measurement_policy": "per_row_single_sample_or_median_of_3",
+            "configuration_selector": {"dcp": recorded_dcp} if recorded_dcp is not None else {},
+        },
+    )
+    return ForwardPassPerfModelConfig(
+        model="moonshotai/Kimi-K3",
+        system=SYSTEM,
+        backend=BACKEND,
+        backend_version=VERSION,
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp=recorded_dcp,
+        kvcache_quant_mode="fp8",
+        attention_backend="FLASHINFER_MLA",
+        estimation_mode="fpm_interpolation",
+        systems_paths=(str(systems),),
+        estimator_config={
+            "fpm_interpolation": {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]},
+            "correction": {"enabled": False},
+        },
+    )
+
+
+@pytest.mark.parametrize("kimi_fpm_profile", [None, 1, 8], indirect=True)
+def test_canonical_kimi_dcp_profile_queries_measured_points(kimi_fpm_profile):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_prefill_requests": 1,
+                    "sum_prefill_tokens": 128,
+                },
+            }
+        ) == pytest.approx(7.0)
+        assert model.estimate_forward_pass_time_ms(
+            {
+                "version": 1,
+                "scheduled_requests": {
+                    "num_decode_requests": 1,
+                    "sum_decode_kv_tokens": 128,
+                },
+            }
+        ) == pytest.approx(3.0)
+        assert model.diagnostics()["provenance"]["config"]["dcp"] == config.dcp
+    finally:
+        model.close()
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+    for dcp in (None, 1, 8):
+        if dcp == config.dcp:
+            continue
+        with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+            RustForwardPassPerfModel.best_available(replace(config, dcp=dcp))
+    automatic = RustForwardPassPerfModel.best_available(replace(config, estimation_mode="auto"))
+    try:
+        provenance = automatic.diagnostics()["provenance"]
+        assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+        assert provenance["config"]["dcp"] == config.dcp
+    finally:
+        automatic.close()
+
+
+def test_session_cache_preserves_fpm_identity(kimi_fpm_profile):
+    from dataclasses import replace
+
+    from aisimulate.sdk.inference_session import InferenceSession
+    from aisimulate_core.sdk.config import RuntimeConfig
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.rust_engine_step import _engine_handle_cache_clear
+
+    config = _model_config(
+        tp_size=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        dcp_size=8,
+        forward_model="fpm",
+        fpm_config=FpmCompileConfig(
+            {"text_only": True, "unrecorded_quant_modes": ["fmha", "comm"]}, attention_backend="FLASHINFER_MLA"
+        ),
+        kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+        moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4,
+    )
+    database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=kimi_fpm_profile.systems_paths[0])
+    runtime = RuntimeConfig(batch_size=1, isl=128, osl=2)
+
+    def prefill(model_config):
+        model = models.get_model(kimi_fpm_profile.model, model_config, BACKEND)
+        return InferenceSession(model, database, get_backend(BACKEND)).run_static_latency_only(runtime, "static_ctx")
+
+    _engine_handle_cache_clear()
+    try:
+        assert prefill(config) == pytest.approx(7.0)  # synthetic measured prefill row
+        for different in (
+            replace(config, dcp_size=1),
+            replace(config, fpm_config=FpmCompileConfig({"text_only": True}, attention_backend="FLASHINFER_MLA")),
+            replace(config, fpm_config=FpmCompileConfig(config.fpm_config.options, attention_backend="auto")),
+        ):
+            with pytest.raises(PerfDataNotAvailableError, match="No FPM cell matches"):
+                prefill(different)
+        with pytest.raises(NotImplementedError, match="encoder/multimodal"):
+            prefill(replace(config, fpm_config=FpmCompileConfig()))
+        assert prefill(config) == pytest.approx(7.0)
+    finally:
+        _engine_handle_cache_clear()
+
+
+def test_session_cache_separates_text_only_mode(fpm_session):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle, _engine_handle_cache_clear
+
+    plain, database, _, isl, _ = fpm_session
+    text_only = models.get_model(
+        plain.model_path, replace(plain.config, fpm_config=FpmCompileConfig({"text_only": True})), BACKEND
+    )
+    _engine_handle_cache_clear()
+    try:
+        plain_handle = _cached_engine_handle(plain, database)
+        text_handle = _cached_engine_handle(text_only, database)
+        assert text_handle is not plain_handle
+        # Both valid modes query the fixture's measured 40 ms prefill row.
+        for handle in (plain_handle, text_handle):
+            assert handle.predict_prefill_latency(bs=2, isl=isl, prefix=0) == pytest.approx(40.0)
+        assert _cached_engine_handle(plain, database) is plain_handle
+    finally:
+        _engine_handle_cache_clear()
+
+
+def test_dcp_cannot_select_regression_without_a_profile(kimi_fpm_profile):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    config = kimi_fpm_profile
+    data = Path(config.systems_paths[0]) / "data" / SYSTEM / BACKEND / VERSION
+    for name in ("fpm_forward_perf.parquet", "fpm_forward_perf.metadata.json"):
+        (data / name).unlink()
+    for mode, fallback in (("fpm_regression", "deny"), ("auto", "deny"), ("fpm_interpolation", "allow")):
+        with pytest.raises(ValueError, match="DCP timing requires measured vLLM FPM interpolation"):
+            RustForwardPassPerfModel.best_available(replace(config, estimation_mode=mode, fallback_policy=fallback))
+
+
+@pytest.mark.parametrize(
+    "options,overrides,error",
+    [
+        ({"unrecorded_quant_modes": ["fmha"]}, {"fmha_quant_mode": "bfloat16"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["fmha"]}, {"fpm_fmha_quant_mode": "fp8"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["comm"]}, {"comm_quant_mode": "half"}, "explicit quantization override"),
+        ({"unrecorded_quant_modes": ["unknown_mode"]}, {}, "unknown variant"),
+        (False, {}, "invalid FPM interpolation options"),
+    ],
+)
+def test_direct_compile_validates_fpm_options(options, overrides, error, monkeypatch):
+    from aisimulate_core.sdk import compile_engine
+
+    def unexpected_model_build(*args, **kwargs):
+        pytest.fail("invalid options must be rejected before model construction")
+
+    monkeypatch.setattr("aisimulate_core.sdk.engine.get_model", unexpected_model_build)
+    with pytest.raises(ValueError, match=error):
+        compile_engine(MODEL_PATH, SYSTEM, BACKEND, forward_model="fpm", fpm_options=options, **overrides)
+
+
 def test_explicit_selector_emits_matched_cell_warning_once(fpm_session, capfd):
     from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
 
@@ -804,8 +1361,8 @@ def test_external_fpm_pair_drives_yaml_replay_without_backend_data(external_fpm_
     assert not (systems_root / "data").exists()
     assert report.metrics["completed_requests"] == 1
     record = report.metadata["native_report"]["per_request"][0]
-    # Replay emits the first token after prefill plus the first decode step.
-    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0 + 6.0)
+    # The final prefill forward produces the first token; only later tokens decode.
+    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0)
     assert record["last_token_ms"] - record["first_token_ms"] == pytest.approx(6.0)
 
 
@@ -1012,6 +1569,45 @@ def test_external_fpm_pair_drives_afd_companion_replay(
     assert report.metrics["mean_ttft_ms" if companion_role == "prefill" else "mean_tpot_ms"] == pytest.approx(latency)
 
 
+@pytest.fixture(params=["prefill", "decode"])
+def external_fpm_companion_spec(external_fpm_config, request):
+    config, _systems_root = external_fpm_config
+    role = request.param
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="afd+pd",
+            backend=BACKEND,
+            backend_version=VERSION,
+            parallel_config={f"{role}_tp": 1},
+            **{
+                f"{role}_engine_args": {
+                    "aic_model_path": config.engine.model,
+                    "aic_system": SYSTEM,
+                    "aic_forward_model": "fpm",
+                    "aic_fpm_parquet_path": config.engine.workers.aggregated.timing.fpm_parquet_path,
+                    "max_num_batched_tokens": 512,
+                    "max_num_seqs": 1,
+                },
+                f"num_{role}_workers": 1,
+            },
+        ),
+        workload={"isl": 512, "osl": 2},
+        goal={"target": "throughput", "sla": None},
+        concurrency=1,
+    )
+    return spec, role
+
+
+def test_external_fpm_companion_timing(external_fpm_companion_spec):
+    spec, role = external_fpm_companion_spec
+
+    timing = AICAFDCompanionPerformanceModel().measure(spec)
+
+    assert timing.phase.value == role
+    assert timing.latency_ms == pytest.approx(22.0 if role == "prefill" else 6.0)
+    assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
+
+
 def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_fpm_config, tmp_path, capsys):
     config, _systems_root = external_fpm_config
     path = tmp_path / "fpm.yaml"
@@ -1029,9 +1625,13 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}
-    assert sections["time"]["diagnostics"]["status"] == "unavailable"
-    assert sections["source"]["status"] == "unavailable"
-    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
+    assert sections["time"]["diagnostics"]["status"] == "available"
+    assert sections["source"]["status"] == "available"
+    operations = [op for phase in sections["source"]["phases"] for op in phase["operations"]]
+    assert operations and all(op["fpm_estimates"] for op in operations)
+    assert sections["energy"]["status"] == "unsupported"
+    assert sections["energy"]["diagnostics"]["power_w"] is None
+    assert sections["energy"]["diagnostics"]["power_coverage"] is None
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
 
 
@@ -1076,8 +1676,10 @@ def test_canonical_config_preserves_positional_quantization_fields():
         "bfloat16",
         0,
         fpm_fmha_quant_mode="fp8",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
     )
     assert config.kvcache_quant_mode == "fp8"
     assert config.comm_quant_mode == "bfloat16"
     assert config.nextn == 0
     assert config.fpm_fmha_quant_mode == "fp8"
+    assert config.moe_kernel_source == "sglang_flashinfer_trtllm_moe"

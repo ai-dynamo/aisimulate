@@ -6,6 +6,7 @@ mod driver;
 mod dynamo;
 mod generated;
 mod phase;
+mod profile;
 mod snapshot;
 mod steppable;
 mod trace;
@@ -26,6 +27,7 @@ pub use phase::{
     AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
     AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
 };
+pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
 pub use snapshot::{
     AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
@@ -45,6 +47,8 @@ pub use types::{
     SessionPartitionSpec, SessionTrace, SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace,
     ValidatedAgenticGraph, effective_replay_key, output_replay_id_annotation,
 };
+#[cfg(feature = "python")]
+pub(crate) use weka::load_weka_agentic_graph_cached;
 pub use weka::{
     WekaImportOptions, WekaImportSummary, WekaImporter, WekaNestedTimestampBasis,
     WekaResolvedTimestampBasis, load_weka_agentic_graph, load_weka_agentic_graph_with_options,

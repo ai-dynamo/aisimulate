@@ -170,7 +170,9 @@ def _energy_detail_validator():
 
     from jsonschema import Draft202012Validator
 
-    schema = json.loads((Path(__file__).parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
 

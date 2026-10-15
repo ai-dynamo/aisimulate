@@ -120,3 +120,92 @@ def test_baselines_reject_mislabeled_native_layout_before_measurement(native_bas
     torch.randn.assert_not_called()
     dist.all_reduce.assert_not_called()
     assert not list(tmp_path.glob("baseline-rank-*.jsonl"))
+
+
+def test_baselines_preserve_hopper_native_w4a16_dispatch(native_baseline, tmp_path):
+    make, _torch, _dist = native_baseline
+    for rank in range(2):
+        runner, options, provenance, experts, _gate = make(2, rank)
+        experts.quant_method = type(
+            "Mxfp4FlashinferCutlassMoEMethod",
+            (),
+            {"_use_mxfp8_act_scaling": False, "_use_sm90_humming": False},
+        )()
+        experts._dsv4_mxfp4_backend = "flashinfer_cutlass_sm90"
+        collect_native_baselines(runner, options, rank, provenance)
+        rows = [json.loads(line) for line in (tmp_path / f"baseline-rank-{rank}.jsonl").read_text().splitlines()]
+        moe_rows = [row for row in rows if row["kind"] == "moe"]
+        assert len(moe_rows) == 2
+        assert all(row["moe_dtype"] == "w4a16_mxfp4_cutlass" for row in moe_rows)
+        assert all(row["kernel_source"] == "sglang_flashinfer_cutlass_moe" for row in moe_rows)
+        assert all(row["inter_size"] == 2304 and row["moe_tp_size"] == 2 for row in moe_rows)
+        assert experts.call_count == 6
+    tables = aggregate_baseline_records(sorted(tmp_path.glob("baseline-rank-*.jsonl")), 2)
+    assert all(row["moe_dtype"] == "w4a16_mxfp4_cutlass" for row in tables["moe"])
+
+
+@pytest.mark.parametrize("mismatch", ["sm120", "humming", "missing_precision", "unloaded", "unknown", "trtllm_bf16"])
+def test_baselines_reject_unqualified_moe_precision_before_measurement(native_baseline, tmp_path, mismatch):
+    make, torch, dist = native_baseline
+    runner, options, provenance, experts, _gate = make(2)
+    if mismatch == "trtllm_bf16":
+        experts.quant_method.flashinfer_mxfp4_moe_precision = "bf16"
+    else:
+        attributes = {"_use_mxfp8_act_scaling": False, "_use_sm90_humming": False}
+        if mismatch == "sm120":
+            attributes["_use_mxfp8_act_scaling"] = True
+        elif mismatch == "humming":
+            attributes["_use_sm90_humming"] = True
+        elif mismatch == "missing_precision":
+            del attributes["_use_sm90_humming"]
+        name = "UnknownMoEMethod" if mismatch == "unknown" else "Mxfp4FlashinferCutlassMoEMethod"
+        experts.quant_method = type(name, (), attributes)()
+        experts._dsv4_mxfp4_backend = None if mismatch == "unloaded" else "flashinfer_cutlass_sm90"
+    with pytest.raises(RuntimeError, match="native baseline.*MoE"):
+        collect_native_baselines(runner, options, 0, provenance)
+    torch.randn.assert_not_called()
+    dist.all_reduce.assert_not_called()
+    assert not list(tmp_path.glob("baseline-rank-*.jsonl"))
+
+
+def test_humming_rows_require_matching_native_operand_qualification(native_baseline, tmp_path, monkeypatch):
+    from collector.sglang import dsv41_native_runner as producer
+
+    make, _torch, _dist = native_baseline
+    monkeypatch.setattr(producer, "loaded_humming_geometry", lambda experts: {"w2": {"shape_k": 640}})
+    monkeypatch.setattr(
+        producer,
+        "qualify_native_humming",
+        lambda *args: {
+            "state": "actual_bf16_native_humming_calls_verified",
+            "calls": [
+                {
+                    "sublayer": name,
+                    "input_dtype": "torch.bfloat16",
+                    "has_input_scale": False,
+                    "compute_config": {"use_f16_accum": False, "gemm_type": "indexed"},
+                }
+                for name in ("w13", "w2")
+            ],
+            "configs": [{"core_id": 123}],
+        },
+    )
+    for rank in range(4):
+        runner, options, provenance, experts, _gate = make(4, rank)
+        experts.quant_method = type("Mxfp4HummingMoEMethod", (), {})()
+        collect_native_baselines(runner, options, rank, provenance)
+        rows = [json.loads(line) for line in (tmp_path / f"baseline-rank-{rank}.jsonl").read_text().splitlines()]
+        assert all(row["physical_local_intermediate"] == 640 for row in rows)
+    paths = sorted(tmp_path.glob("baseline-rank-*.jsonl"))
+    tables = aggregate_baseline_records(paths, 4)
+    assert all(row["moe_dtype"] == "w4a16_mxfp4_humming" for row in tables["moe"])
+    assert all(row["kernel_source"] == "sglang_mxfp4_humming_moe" for row in tables["moe"])
+    receipt = tmp_path / "humming-qualification-rank-3.json"
+    bad = json.loads(receipt.read_text())
+    bad["calls"][1]["input_dtype"] = "torch.float8_e4m3fn"
+    receipt.write_text(json.dumps(bad))
+    with pytest.raises(RuntimeError, match="quantized activations"):
+        aggregate_baseline_records(paths, 4)
+    receipt.unlink()
+    with pytest.raises(ValueError, match="missing actual native Humming"):
+        aggregate_baseline_records(paths, 4)

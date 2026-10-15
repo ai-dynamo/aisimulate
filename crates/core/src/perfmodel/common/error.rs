@@ -14,7 +14,9 @@ use thiserror::Error;
 /// All errors surfaced by the Rust core.
 #[derive(Debug, Error)]
 pub enum AicError {
-    #[error("unsupported schema version for {kind}: got {got}, expected {expected}")]
+    #[error(
+        "unsupported schema version for {kind}: got {got}, expected {expected}; recompile with this engine"
+    )]
     UnsupportedSchemaVersion {
         kind: &'static str,
         got: u32,

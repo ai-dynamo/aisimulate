@@ -206,6 +206,7 @@ class DeepSeekV41Model(BaseModel):
                     model_config.moe_quant_mode,
                     distribution,
                     model_config.attention_dp_size,
+                    moe_kernel_source=model_config.moe_kernel_source,
                 ),
             ]
             # The post-expert reduction consumes both routed and shared

@@ -1,0 +1,262 @@
+{
+  "axes": [
+    {
+      "definition": "max_dp_rank(attn_score)",
+      "id": "attention",
+      "label": "Attn Score",
+      "point_index": 0,
+      "rank_columns": [
+        2
+      ],
+      "short": "Attn<br>Score",
+      "unit": "score"
+    },
+    {
+      "definition": "sum_dp_rank(prefill_tokens + decode_batch_size)",
+      "id": "moe",
+      "label": "MOE Score",
+      "point_index": 1,
+      "rank_columns": [
+        3
+      ],
+      "reduction": "sum",
+      "short": "MOE<br>Score",
+      "unit": "tokens"
+    },
+    {
+      "definition": "max_dp_rank(prefill_requests + decode_batch_size)",
+      "feature_index": 0,
+      "id": "batch",
+      "label": "Max batch size",
+      "rank_columns": [
+        5,
+        8
+      ],
+      "short": "Max batch<br>size",
+      "unit": "requests"
+    },
+    {
+      "definition": "max_dp_rank(prefill_tokens)",
+      "feature_index": 1,
+      "id": "prefill",
+      "label": "Max prefill tokens",
+      "rank_columns": [
+        6
+      ],
+      "short": "Max prefill<br>tokens",
+      "unit": "tokens"
+    },
+    {
+      "definition": "max_dp_rank(decode_batch_size)",
+      "feature_index": 2,
+      "id": "decode_batch",
+      "label": "Max decode batch size",
+      "rank_columns": [
+        8
+      ],
+      "short": "Max decode<br>batch size",
+      "unit": "requests"
+    },
+    {
+      "definition": "max_dp_rank(prefill_kv_read)",
+      "feature_index": 3,
+      "id": "prefill_kv",
+      "label": "Max prefill KV read",
+      "rank_columns": [
+        7
+      ],
+      "short": "Max prefill<br>KV read",
+      "unit": "KV tokens"
+    },
+    {
+      "definition": "max_dp_rank(decode_kv_read)",
+      "feature_index": 4,
+      "id": "decode_kv",
+      "label": "Max decode KV read",
+      "rank_columns": [
+        9
+      ],
+      "short": "Max decode<br>KV read",
+      "unit": "KV tokens"
+    }
+  ],
+  "catalog": [
+    {
+      "availability": "ready",
+      "case_id": "case-9a58bf2b2534362cc5a819cf",
+      "configuration_id": "data/Org--Model/h100-sxm/vllm/1.0/single@aisim-commit-aaaaaaaa",
+      "coordinate_scope": "dp_iteration",
+      "diagnostic_count": 0,
+      "diagnostic_issues": {},
+      "diagnostic_note": "",
+      "groups": [
+        "d9bdae5cc36a0827bfe0e74955dd4123647a6f529e33ffa648cd86759df4968b",
+        "91e3031cb698e2b17a46cb1c1dd4d79dc971f294dfa632fa41caf2cf403b62c6"
+      ],
+      "id": "0d633ccdeffb4aa9d4555f7ccb0679350fcf382b097939879ff30fa443aaf3ee",
+      "issues": [],
+      "label": "H100 \u00b7 vllm 1.0 \u00b7 single \u00b7 aisim-commit-aaaaaaaa \u00b7 Current",
+      "measured": 40,
+      "membership_digest": "5c51a40d5918fb7157913fc84a46e0d42a759eee55270f895344b6349a344cd7",
+      "model": "Org/Model",
+      "override_effects": [],
+      "override_sha256": null,
+      "parser_policy_id": "aisim-fpm/forward-pass-measurement-v1/max-rank-v3",
+      "protocol_id": "forward-pass-measurement-v1",
+      "provenance": [
+        {
+          "path": "data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
+          "sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
+          "url": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz"
+        }
+      ],
+      "reason": "No accepted measurement iterations are declared.",
+      "snapshot": "current",
+      "snapshot_id": "aisim-commit-aaaaaaaa",
+      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/manifest.json",
+      "warnings": []
+    }
+  ],
+  "catalogRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "defaults": {
+    "left": {
+      "configuration": "0d633ccdeffb4aa9d4555f7ccb0679350fcf382b097939879ff30fa443aaf3ee",
+      "model": "Org/Model",
+      "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb"
+    },
+    "right": {
+      "configuration": "0d633ccdeffb4aa9d4555f7ccb0679350fcf382b097939879ff30fa443aaf3ee",
+      "model": "Org/Model",
+      "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb"
+    }
+  },
+  "full": true,
+  "groups": [
+    {
+      "above_zoom": 0,
+      "all_files": [
+        "decode-chunk-1.json",
+        "decode-chunk-2.json"
+      ],
+      "axis_ranges": [
+        [
+          2,
+          2
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          40
+        ]
+      ],
+      "id": "d9bdae5cc36a0827bfe0e74955dd4123647a6f529e33ffa648cd86759df4968b",
+      "label": "run-0.jsonl.gz \u00b7 worker",
+      "n": 27,
+      "phase": "decode",
+      "ranges": [
+        [
+          1,
+          40
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          11.0,
+          50.0
+        ]
+      ],
+      "role": "aggregated",
+      "sample_file": "decode-sample.json",
+      "sample_indices": [
+        0,
+        5,
+        10,
+        16,
+        26
+      ],
+      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
+      "source_sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
+      "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb",
+      "zoom": 54.0
+    },
+    {
+      "above_zoom": 0,
+      "all_files": [
+        "prefill-chunk-1.json"
+      ],
+      "axis_ranges": [
+        [
+          1,
+          1
+        ],
+        [
+          20,
+          20
+        ],
+        [
+          0,
+          0
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "id": "91e3031cb698e2b17a46cb1c1dd4d79dc971f294dfa632fa41caf2cf403b62c6",
+      "label": "run-0.jsonl.gz \u00b7 worker",
+      "n": 13,
+      "phase": "prefill",
+      "ranges": [
+        [
+          294.0,
+          294.0
+        ],
+        [
+          20,
+          20
+        ],
+        [
+          13.000000000000002,
+          49.0
+        ]
+      ],
+      "role": "aggregated",
+      "sample_file": "prefill-sample.json",
+      "sample_indices": [
+        0,
+        1,
+        3,
+        5,
+        12
+      ],
+      "source": "https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/data/Org--Model/h100-sxm/vllm/1.0/single/measurements/run-0.jsonl.gz",
+      "source_sha256": "62cc12962b11e47d9f642caa06322b35813968e616f3ba7d693cfa02525791ad",
+      "worker": "f7009b3d36c669af32b68ac108d1cbd72fd9fb9164c00ebeffa07792a4b03ccb",
+      "zoom": 52.92
+    }
+  ],
+  "hf_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "pointsRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "policy": "native-online-rank-unit-features-v1",
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "sampling": "stable identity hash plus each axis and latency extremes per worker/workload",
+  "schema_version": 1,
+  "source_feature_commit": "99d6acb722bf75e2b16119c59c79e1bad73b4efd"
+}

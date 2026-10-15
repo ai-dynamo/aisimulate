@@ -247,8 +247,7 @@ def test_public_afd_predict_cli_writes_summary_and_per_request(tmp_path, monkeyp
 
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: EngineReplayRunnerFactory())
     monkeypatch.setattr(
-        cli,
-        "prediction_to_replay_spec",
+        "aisimulate.predict.prediction_to_replay_spec",
         lambda config, **kwargs: compile_prediction(
             config,
             afd_performance_model=performance_model,

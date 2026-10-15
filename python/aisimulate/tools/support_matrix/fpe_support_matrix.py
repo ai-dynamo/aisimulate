@@ -502,9 +502,9 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
-    # hybrid_moe, gemma4. Match the type and complete diagnostic only while building;
+    # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
-    topology_rejections = (
+    sdk_rejections = (
         (
             ValueError,
             r"Cross-node EP requires pure expert parallelism \(moe_tp_size=1\); "
@@ -517,11 +517,29 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
             r"Invalid quantized MoE configuration: \(moe_intermediate_size=\d+ / moe_tp_size=\d+\) "
             r"% weight_block_size=\d+ != 0\.",
         ),
+        (
+            NotImplementedError,
+            r"DeepSeek-V4\.1 text baseline requires attention_dp_size=1, pp_size=1 and cp_size=1; "
+            r"DP Engram collectives and PP cache ownership need separate contracts",
+        ),
+        (
+            ValueError,
+            r"DeepSeek-V4\.1 EP must divide experts; TP must divide index heads and output groups",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
+        ),
+        (NotImplementedError, r"GLM-5\.3-Flash currently supports vLLM and SGLang"),
     )
     if stage == "build" and any(
         isinstance(item, error_type) and re.fullmatch(pattern, str(item).strip())
         for item in chain
-        for error_type, pattern in topology_rejections
+        for error_type, pattern in sdk_rejections
     ):
         return STATUS_SDK_UNREPRESENTABLE
     names = " ".join(type(item).__name__ for item in chain).lower()

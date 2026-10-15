@@ -83,7 +83,7 @@ def _model(*, tp=4, dp=1, ep=1, hidden_size=7168, heads=128):
         _topk=6,
         config=SimpleNamespace(pp_size=1, tp_size=tp, attention_dp_size=dp, moe_ep_size=ep, nextn=0),
         get_kvcache_bytes_per_sequence=lambda _seq: 1024,
-        _cp_kv_memory_divisor=lambda: 1,
+        get_kvcache_rank_bytes_per_sequence=lambda _seq: 1024,
     )
 
 

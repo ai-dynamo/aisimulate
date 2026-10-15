@@ -405,6 +405,98 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
     assert mc.wideep_num_slots == 288
 
 
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_task_rejects_invalid_moe_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        Task(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_task_round_trip_preserves_exact_moe_kernel_source(source):
+    task = Task(moe_kernel_source=source)
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+
+    assert task.moe_kernel_source == source
+    assert restored.moe_kernel_source == source
+    assert restored.build_model_config(role="agg").moe_kernel_source == source
+
+
+def test_moe_kernel_source_reaches_qwen38_compute_ops_and_compiled_spec():
+    """A V2 Task pins only Qwen3.8's compute MoE lane, including the native spec."""
+    from aisimulate.sdk import models
+    from aisimulate.sdk.engine import build_engine_spec_json
+    from aisimulate.sdk.operations.moe import MoE, MoEDispatch
+    from aisimulate.sdk.perf_database import get_database
+
+    lane = "sglang_flashinfer_trtllm_moe"
+    task = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+        moe_kernel_source=lane,
+    )
+    model_config = task.build_model_config(role="agg", parallel=(8, 1, 1, 1, 8, 1))
+    assert model_config.moe_kernel_source == lane
+
+    model = models.get_model(task.model_path, model_config, task.backend_name)
+
+    def all_ops(ops):
+        pending = list(ops)
+        while pending:
+            op = pending.pop()
+            yield op
+            for group in ("_group_a", "_group_b", "_fallback"):
+                pending.extend(getattr(op, group, ()) or ())
+
+    ops = list(all_ops([*model.context_ops, *model.generation_ops]))
+    compute_ops = [op for op in ops if isinstance(op, MoE)]
+    dispatch_ops = [op for op in ops if isinstance(op, MoEDispatch)]
+    assert compute_ops
+    assert all(op._moe_kernel_source == lane for op in compute_ops)
+    assert all(not hasattr(op, "_moe_kernel_source") for op in dispatch_ops)
+
+    database = get_database("b200_sxm", "sglang", "0.5.17")
+    spec = json.loads(
+        build_engine_spec_json(
+            model,
+            model_path=task.model_path,
+            system=task.system_name,
+            backend=task.backend_name,
+            backend_version=task.backend_version,
+            kv_block_size=None,
+            systems_path=None,
+            nextn=task.nextn,
+            database=database,
+        )
+    )
+
+    def all_moe_specs(value):
+        if isinstance(value, list):
+            for item in value:
+                yield from all_moe_specs(item)
+        elif isinstance(value, dict):
+            if "Moe" in value:
+                yield value["Moe"]
+            for item in value.values():
+                yield from all_moe_specs(item)
+
+    moe_specs = list(all_moe_specs([spec["context_ops"], spec["generation_ops"]]))
+    assert spec["engine"]["moe_kernel_source"] == lane
+    assert moe_specs
+    assert all(moe["moe_kernel_source"] == lane for moe in moe_specs)
+
+    default_config = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
+        system_name="b200_sxm",
+        backend_name="sglang",
+        backend_version="0.5.17",
+    ).build_model_config(role="agg")
+    assert default_config.moe_kernel_source is None
+
+
 def test_invalid_attention_backend_rejected():
     with pytest.raises(ValueError, match="attention_backend"):
         Task(
@@ -2458,3 +2550,113 @@ def test_engine_step_backend_is_validated_at_task_construction():
     assert _task(engine_step_backend="rust").engine_step_backend == "rust"
     assert _task(engine_step_backend="RUST").engine_step_backend == "rust"
     assert _task(engine_step_backend=None).engine_step_backend is None
+
+
+# ---------------------------------------------------------------------------
+# Context parallelism: prefill CP candidates vs the per-role decode-CP scalar
+# ---------------------------------------------------------------------------
+
+
+def _disagg_task(**overrides) -> Task:
+    # sglang: the only backend whose prefill CP is modeled (enumerate_parallel_config
+    # rejects cp>1 elsewhere), so the CP candidates below are actually enumerated.
+    kwargs = {
+        "serving_mode": "disagg",
+        "prefill_model_path": "deepseek-ai/DeepSeek-V3",
+        "prefill_system_name": "h200_sxm",
+        "prefill_backend_name": "sglang",
+        "decode_model_path": "deepseek-ai/DeepSeek-V3",
+        "decode_system_name": "h200_sxm",
+        "decode_backend_name": "sglang",
+        "total_gpus": 32,
+    }
+    kwargs.update(overrides)
+    return Task(**kwargs)
+
+
+def test_decode_prefill_cp_candidates_are_enumerated_not_rejected():
+    """The old ``decode CP must be 1`` gate is gone: a decode worker's prefill-CP
+    list is priced as given (the optimizer, not a gate, decides it is useless)."""
+    t = _disagg_task(decode_cp_candidates=[1, 2])
+    tuples = list(t.iter_parallel("decode"))
+    assert tuples
+    assert all(len(tup) == 6 for tup in tuples)
+
+
+def test_decode_prefill_cp_defaults_to_one():
+    assert _disagg_task().decode_cp_candidates == [1]
+
+
+def test_role_dcp_size_reaches_model_config():
+    # ModelConfig requires dcp_size to divide tp_size, so pin the decode TP.
+    t = _disagg_task(decode_dcp_size=8, decode_tp_candidates=[8])
+    assert t.build_model_config(role="decode").dcp_size == 8
+    # Not requested stays None (priced as 1; keeps the unrecorded FPM identity).
+    assert t.build_model_config(role="prefill").dcp_size is None
+
+
+def test_malformed_role_dcp_size_is_rejected_not_defaulted():
+    t = _disagg_task(decode_dcp_size=0)
+    with pytest.raises(ValueError, match="dcp_size must be positive"):
+        t.build_model_config(role="decode")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ({"prefill_dcp_size": 4}, "PCP\\+DCP layout"),
+        ({"prefill_dcp_size": 2, "prefill_cp_candidates": [1, 2]}, "PCP\\+DCP layout"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode; DCP sizes divide one another.
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [2], "decode_dcp_size": 8},
+            "replicated-PCP",
+        ),
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [4], "prefill_dcp_size": 4, "decode_dcp_size": 6},
+            "divide one another",
+        ),
+    ],
+)
+def test_disagg_prefill_context_parallel_layout_rules(overrides, needle):
+    # Task validates its parallel space on construction, so the rule fires there.
+    with pytest.raises(ValueError, match=needle):
+        list(_disagg_task(**overrides).iter_parallel("prefill"))
+
+
+def test_disagg_allows_prefill_cp_and_decode_dcp_on_different_workers():
+    """SGLang re-lays the KV out per decode DCP rank on the prefill side: no pairing rule."""
+    t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8, decode_tp_candidates=[8])
+    assert list(t.iter_parallel("prefill"))
+    assert list(t.iter_parallel("decode"))
+    assert t.build_model_config(role="decode").dcp_size == 8
+
+
+def test_agg_rejects_prefill_cp_candidates_combined_with_dcp():
+    # Task construction already enumerates the agg search space (fmha data
+    # fallback), so the topology rule fires at construction time.
+    with pytest.raises(ValueError, match="at most one of prefill CP and decode CP"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            backend_name="sglang",
+            total_gpus=8,
+            dcp_size=8,
+            agg_cp_candidates=[1, 2],
+        )
+
+
+def test_agg_dcp_with_pinned_prefill_cp_enumerates_and_reaches_model_config():
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        total_gpus=8,
+        dcp_size=8,
+        agg_cp_candidates=[1],
+        agg_tp_candidates=[8],
+    )
+    assert list(t.iter_parallel("agg"))
+    assert t.build_model_config(role="agg").dcp_size == 8

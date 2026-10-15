@@ -232,6 +232,7 @@ mod tests {
             // survives, not just a single-element degenerate case.
             lane_order: vec!["trtllm_mha".into(), "flashinfer".into(), "default".into()],
             apply_rope: false,
+            dcp_size: 3,
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
             use_qk_norm: true,
             scale_num_tokens: 8,
             verify_query_tokens: 7,
+            dcp_size: 4,
         }
     }
 
@@ -270,6 +272,7 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Bfloat16,
             fmha_quant_mode: FmhaQuantMode::Bfloat16,
             cp_size: 1,
+            dcp_size: 4,
         }
     }
 
@@ -279,6 +282,7 @@ mod tests {
             scale_factor: 1.0,
             num_heads: 128,
             kv_cache_dtype: KvCacheQuantMode::Fp8,
+            dcp_size: 8,
         }
     }
 
@@ -291,6 +295,7 @@ mod tests {
             fmha_quant_mode: FmhaQuantMode::Fp8,
             gemm_quant_mode: GemmQuantMode::Fp8Block,
             native_num_heads: Some(128),
+            dcp_size: 2,
         }
     }
 
@@ -319,6 +324,7 @@ mod tests {
             workload_distribution: "power_law_1.2".into(),
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: Some("sglang_flashinfer_trtllm_moe".into()),
             enable_eplb: false,
             is_context: false,
         }
@@ -407,6 +413,7 @@ mod tests {
             cp_size: 1,
             full_frac: 1.0,
             attn_projection_quant_modes: None,
+            dcp_size: 2,
         }
     }
 
@@ -562,6 +569,7 @@ mod tests {
             kv_cache_dtype: KvCacheQuantMode::Fp8,
             fmha_quant_mode: FmhaQuantMode::Fp8,
             attn_backend: "flashinfer".into(),
+            dcp_size: 4,
         }
     }
 
@@ -623,6 +631,8 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            interpolation: Default::default(),
+            dcp_size: None,
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -764,6 +774,65 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
+            OpSpec::Glm53Attention(crate::operators::glm53flash::tests::attention("kda")),
+            OpSpec::Glm53Mhc(crate::operators::Glm53MhcOp {
+                name: "mhc_pre_attn_0".into(),
+                role: "pre".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
+                name: "router_3".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                num_experts: 288,
+                topk: 8,
+            }),
+            OpSpec::Glm53Ffn(crate::operators::Glm53FfnOp {
+                name: "ffn_0".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                is_context: true,
+                is_dense: true,
+                hidden_size: 4096,
+                intermediate_size: 12288,
+                num_experts: 288,
+                topk: 8,
+                tp_size: 2,
+                n_shared_experts: 1,
+                swiglu_limit: 10.0,
+                scoring_func: "sigmoid".into(),
+                routed_scaling_factor: 2.5,
+                n_group: 1,
+                topk_group: 1,
+                norm_topk_prob: true,
+                gemm_quant_mode: GemmQuantMode::Nvfp4,
+                shared_quant_mode: GemmQuantMode::Bfloat16,
+                moe_quant_mode: MoeQuantMode::Nvfp4,
+                children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
+            }),
+            OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
+                name: "embedding".into(),
+                role: "embedding".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                vocab_size: 154880,
+                token_selection: "all_scheduled".into(),
+                output_dtype: "bfloat16".into(),
+                collective: "none".into(),
+                children: vec![],
+                measured: vec![],
+            }),
             OpSpec::FastAfdMoeStage(FastAfdMoeStageOp {
                 name: "generation_fastafd_moe_stage".into(),
                 points: vec![FastAfdMoeStagePoint {
@@ -818,6 +887,11 @@ mod tests {
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
+                | OpSpec::Glm53Attention(_)
+                | OpSpec::Glm53Mhc(_)
+                | OpSpec::Glm53Router(_)
+                | OpSpec::Glm53Ffn(_)
+                | OpSpec::Glm53Primitive(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_)
                 | OpSpec::FastAfdMoeStage(_) => {}
@@ -837,6 +911,7 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -845,6 +920,7 @@ mod tests {
                 moe_tp_size: Some(1),
                 moe_ep_size: Some(8),
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: Some(DataType::Fp8),
@@ -914,14 +990,29 @@ mod tests {
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
+        let appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(36)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             appended,
             vec![36, 37, 38, 39, 40, 41],
             "appended indices moved"
         );
+        // GLM-5.3-Flash variants append after the V41 variants.
+        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).map(index_of).collect();
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 7,
+            glm_appended,
+            vec![41, 42, 43, 44, 45],
+            "GLM appended indices moved"
+        );
+        // FastAfdMoeStage appends after the GLM-5.3-Flash variants.
+        let fastafd_appended: Vec<_> = all_op_variants().iter().skip(46).map(index_of).collect();
+        assert_eq!(fastafd_appended, vec![46], "FastAfdMoeStage index moved");
+        assert_eq!(
+            47,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -996,6 +1087,32 @@ mod tests {
         assert_eq!(spec, decoded);
     }
 
+    #[test]
+    fn moe_and_fpm_fields_round_trip_and_reject_concurrent_schema20() {
+        // These independent positional fields were both introduced as schema20
+        // on separate branches. The merged wire layout needs its own version.
+        let spec = EngineSpec::new(
+            sample_engine_config(),
+            vec![OpSpec::FpmForward(fpm_forward())],
+            vec![OpSpec::Moe(moe())],
+        );
+        assert_eq!(spec.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+
+        bytes[..4].copy_from_slice(&20u32.to_le_bytes());
+        // Reject the stale version before even trying to decode its payload.
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 20,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
+    }
+
     /// A version skew combined with an op-layout change must surface as a clear
     /// [`AicError::UnsupportedSchemaVersion`], NOT a generic bincode I/O error.
     ///
@@ -1060,6 +1177,49 @@ mod tests {
             .expect("from_bincode");
         assert_eq!(decoded, spec);
         assert_eq!(decoded.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn fpm_interpolation_and_dcp_round_trip_and_stale_layout_rejection() {
+        let mut op = fpm_forward();
+        op.interpolation = crate::operators::fpm_forward::FpmInterpolation::Direct;
+        op.sol_ops.clear();
+        op.original_fmha_quant_mode = None;
+        op.dcp_size = None;
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::FpmForward(op)]);
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // The final op ends in interpolation (4 bytes), empty sol_ops (8),
+        // original-FMHA None (1), and recorded-DCP None (1).
+        let selector = bytes.len() - 14;
+        assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
+        // Recreate both branches' incompatible payloads, not just their stamps.
+        for version in [20u32, 21, 22, 23, 24, 25, 26] {
+            let mut stale = bytes.clone();
+            if !matches!(version, 21 | 25 | 26) {
+                stale.drain(selector..selector + 4);
+            }
+            if version < 24 {
+                stale.pop();
+            }
+            stale[..4].copy_from_slice(&version.to_le_bytes());
+            assert!(matches!(
+                EngineSpec::from_bincode(&stale),
+                Err(AicError::UnsupportedSchemaVersion {
+                    kind: "EngineSpec",
+                    got,
+                    expected: ENGINE_SPEC_SCHEMA_VERSION,
+                }) if got == version
+            ));
+        }
+        let mut recorded = spec;
+        if let OpSpec::FpmForward(op) = &mut recorded.generation_ops[0] {
+            op.dcp_size = Some(8);
+        }
+        assert_eq!(
+            EngineSpec::from_bincode(&recorded.to_bincode().unwrap()).unwrap(),
+            recorded
+        );
     }
 
     /// A buffer too short to even hold the 4-byte version prefix must fail at the
@@ -1260,26 +1420,95 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("verify_query_tokens");
+        attention_json.as_object_mut().unwrap().remove("dcp_size");
         let attention: GenerationAttentionOp = serde_json::from_value(attention_json).unwrap();
         assert_eq!(attention.scale_num_tokens, 1);
         assert_eq!(attention.verify_query_tokens, 0);
+        // Pre-v26 producers never emitted decode CP: it defaults to "off".
+        assert_eq!(attention.dcp_size, 1);
         let mut fpm_json = serde_json::to_value(fpm_forward()).unwrap();
         fpm_json.as_object_mut().unwrap().remove("verify_width");
         let fpm: crate::operators::FpmForwardOp = serde_json::from_value(fpm_json).unwrap();
         assert_eq!(fpm.verify_width, 1);
 
         let mut bytes = handshake_spec().to_bincode().unwrap();
-        bytes[..4].copy_from_slice(&17u32.to_le_bytes());
+        bytes[..4].copy_from_slice(&18u32.to_le_bytes());
         bytes.truncate(4);
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
-                got: 17,
+                got: 18,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
         ));
     }
+    /// GLM `measured` compositions are positional: they round-trip under the
+    /// current schema and a schema-27 stamp is rejected before decoding.
+    #[test]
+    fn glm53_measured_round_trip_and_stale_v27_rejection() {
+        let measured = vec![OpSpec::Gemm(gemm())];
+        let ops: Vec<OpSpec> = all_op_variants()
+            .into_iter()
+            .filter_map(|op| match op {
+                OpSpec::Glm53Attention(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Attention(o))
+                }
+                OpSpec::Glm53Ffn(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Ffn(o))
+                }
+                OpSpec::Glm53Primitive(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Primitive(o))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 3);
+        let spec = EngineSpec::new(sample_engine_config(), ops, vec![]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        bytes[..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 27,
+                expected: ENGINE_SPEC_SCHEMA_VERSION
+            })
+        ));
+    }
+
+    #[test]
+    fn merged_schema_preserves_fpm_selectors() {
+        let mut fpm_config = sample_engine_config();
+        fpm_config.forward_model = Some("fpm".into());
+        fpm_config.parallel.dcp_size = Some(2);
+        fpm_config.quantization.fpm_fmha_dtype = Some(DataType::Fp8);
+        let mut fpm_op = fpm_forward();
+        fpm_op.dcp_size = Some(2);
+        let spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_op)], vec![]);
+
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        for previous_version in [20u32, 21, 22, 23, 24, 25, 26, 27] {
+            let mut stale = bytes.clone();
+            stale[..4].copy_from_slice(&previous_version.to_le_bytes());
+            for input in [stale.as_slice(), &stale[..4]] {
+                assert!(matches!(
+                    EngineSpec::from_bincode(input),
+                    Err(AicError::UnsupportedSchemaVersion {
+                        kind: "EngineSpec",
+                        got,
+                        expected: ENGINE_SPEC_SCHEMA_VERSION,
+                    }) if got == previous_version
+                ));
+            }
+        }
+    }
+
     #[test]
     fn fpm_selector_json_default_and_schema19_rejection() {
         let selected = fpm_forward();
@@ -1298,9 +1527,25 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 got: 19,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
-
                 ..
             })
+        ));
+    }
+    #[test]
+    fn recorded_dcp_and_legacy_absence_round_trip() {
+        let mut spec = handshake_spec();
+        spec.engine.parallel.dcp_size = Some(2);
+        let decoded = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+        assert_eq!(decoded.engine.parallel.dcp_size, Some(2));
+        let mut legacy = serde_json::to_value(&spec.engine).unwrap();
+        legacy.as_object_mut().unwrap().remove("dcp_size");
+        let legacy: EngineConfig = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.parallel.dcp_size, None);
+        let mut previous = spec.to_bincode().unwrap();
+        previous[..4].copy_from_slice(&23u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&previous),
+            Err(AicError::UnsupportedSchemaVersion { got: 23, .. })
         ));
     }
 }

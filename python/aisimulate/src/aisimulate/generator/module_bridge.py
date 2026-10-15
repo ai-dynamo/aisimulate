@@ -12,6 +12,7 @@ from aisimulate.sdk.perf_database import get_database
 from aisimulate.sdk.task_v2 import Task
 
 from .aggregators import collect_generator_params
+from .context_parallel import ContextParallelUnsupportedError, context_parallel_params
 from .rendering import apply_defaults
 
 
@@ -150,6 +151,11 @@ def task_config_to_generator_config(
         dp = _safe_int(_series_val(result_df, f"{prefix}dp", 1), 1)
         moe_tp = _safe_int(_series_val(result_df, f"{prefix}moe_tp", 1), 1)
         moe_ep = _safe_int(_series_val(result_df, f"{prefix}moe_ep", 1), 1)
+        # Prefill CP is a swept column of the result frame; decode CP is the
+        # task's per-role scalar (dcp_size / prefill_dcp_size / decode_dcp_size).
+        cp = _safe_int(_series_val(result_df, f"{prefix}cp", 1), 1)
+        dcp_attr = {"": "dcp_size", "(p)": "prefill_dcp_size", "(d)": "decode_dcp_size"}.get(prefix, "dcp_size")
+        dcp = _safe_int(getattr(task_config, dcp_attr, 1), 1)
         bs = _safe_int(_series_val(result_df, f"{prefix}bs", 1), 1)
         memory = _safe_float(_series_val(result_df, f"{prefix}memory", None), None)
 
@@ -165,11 +171,14 @@ def task_config_to_generator_config(
             "tensor_parallel_size": tp,
             "pipeline_parallel_size": pp,
             "data_parallel_size": dp,
-            "gpus_per_worker": tp * pp * dp,
             "moe_tensor_parallel_size": moe_tp,
             "moe_expert_parallel_size": moe_ep,
             "max_batch_size": bs,
             **{k: v for k, v in quant.items() if v is not None},
+            # Raw task-derived CP knobs; validated ONCE below, after the
+            # Workers.<role> overrides have had their say.
+            **{k: v for k, v in (("context_parallel_size", cp), ("decode_context_parallel_size", dcp)) if v != 1},
+            **{k: v for k, v in (("dcp_comm_backend", getattr(task_config, "dcp_comm", None)),) if v is not None},
         }
 
         if memory is not None:
@@ -182,6 +191,37 @@ def task_config_to_generator_config(
             worker_payload["attention_backend"] = attention_backend
 
         worker_payload = _deep_merge(worker_payload, extra_overrides)
+
+        # The single decision point sees the EFFECTIVE knobs (task values, then
+        # overrides) exactly once: it rejects malformed values (2.5, "x", True)
+        # and knobs the backend version cannot launch, and derives cp_strategy.
+        effective = context_parallel_params(
+            backend=task_config.primary_backend_name,
+            backend_version=getattr(task_config, "primary_backend_version", None),
+            context_parallel_size=worker_payload.pop("context_parallel_size", 1),
+            decode_context_parallel_size=worker_payload.pop("decode_context_parallel_size", 1),
+            dcp_comm_backend=worker_payload.pop("dcp_comm_backend", None),
+            architecture=getattr(task_config, "architecture", None),
+            model_family=getattr(task_config, "model_family", None) or None,
+        )
+        # cp_strategy follows the architecture (SGLang rejects zigzag for DSA
+        # at startup); an override may only restate it.
+        requested_strategy = worker_payload.pop("cp_strategy", None)
+        if requested_strategy is not None and requested_strategy != effective.get("cp_strategy"):
+            raise ContextParallelUnsupportedError(
+                f"Workers override cp_strategy={requested_strategy!r} does not match the strategy this "
+                f"model requires ({effective.get('cp_strategy')!r}); drop the override or fix the model"
+            )
+        worker_payload.update(effective)
+        # Prefill CP ranks are extra attention GPUs (folded into --tp by the
+        # SGLang rules, an expanded world size on vLLM); decode CP adds none.
+        if "gpus_per_worker" not in worker_payload:
+            worker_payload["gpus_per_worker"] = (
+                _safe_int(worker_payload.get("tensor_parallel_size"), tp)
+                * _safe_int(worker_payload.get("pipeline_parallel_size"), pp)
+                * _safe_int(worker_payload.get("data_parallel_size"), dp)
+                * effective.get("context_parallel_size", 1)
+            )
         effective_attention_backend = worker_payload.get("attention_backend")
         if effective_attention_backend is not None:
             # Task normalization promotes CLI strings to AttentionBackend
@@ -267,7 +307,8 @@ def task_config_to_generator_config(
             tp = agg_params.get("tensor_parallel_size", 1)
             pp = agg_params.get("pipeline_parallel_size", 1)
             dp = agg_params.get("data_parallel_size", 1)
-            gpus_per_replica = tp * pp * dp
+            # gpus_per_worker already counts the prefill-CP ranks.
+            gpus_per_replica = agg_params.get("gpus_per_worker") or tp * pp * dp
             agg_workers = effective_total_gpus // gpus_per_replica
         prefill_params, prefill_workers = None, 0
         decode_params, decode_workers = None, 0
@@ -281,12 +322,13 @@ def task_config_to_generator_config(
             p_tp = prefill_params.get("tensor_parallel_size", 1)
             p_pp = prefill_params.get("pipeline_parallel_size", 1)
             p_dp = prefill_params.get("data_parallel_size", 1)
-            prefill_gpus_per_worker = p_tp * p_pp * p_dp
+            # gpus_per_worker already counts the prefill-CP ranks.
+            prefill_gpus_per_worker = prefill_params.get("gpus_per_worker") or p_tp * p_pp * p_dp
 
             d_tp = decode_params.get("tensor_parallel_size", 1)
             d_pp = decode_params.get("pipeline_parallel_size", 1)
             d_dp = decode_params.get("data_parallel_size", 1)
-            decode_gpus_per_worker = d_tp * d_pp * d_dp
+            decode_gpus_per_worker = decode_params.get("gpus_per_worker") or d_tp * d_pp * d_dp
 
             # Each replica uses prefill_workers_per_replica prefill workers + decode_workers_per_replica decode workers
             # For simplicity, assume 1:1 prefill:decode ratio per replica

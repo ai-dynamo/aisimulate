@@ -22,6 +22,28 @@ pub(crate) enum ReplayStepOutcome {
     TimeLimitReached { now_ms: f64 },
 }
 
+/// Upper bound on consecutive progressing internal-work steps at one instant.
+const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
+
+/// Repeat `step` until it stops progressing, failing instead of spinning when
+/// engine internal work (for example host transfers) never converges.
+pub(super) fn settle_internal_work(
+    now_ms: f64,
+    consecutive_steps: &mut usize,
+    mut step: impl FnMut() -> anyhow::Result<bool>,
+) -> anyhow::Result<bool> {
+    let mut changed = false;
+    while step()? {
+        *consecutive_steps += 1;
+        anyhow::ensure!(
+            *consecutive_steps < MAX_CONSECUTIVE_INTERNAL_STEPS,
+            "offline replay detected non-converging engine internal work at {now_ms} ms"
+        );
+        changed = true;
+    }
+    Ok(changed)
+}
+
 pub(super) fn next_timestamp(
     next_arrival_ms: Option<f64>,
     next_event_ms: Option<f64>,
@@ -261,6 +283,22 @@ pub(super) fn pop_ready_telemetry_tick<Events: EngineEventBatch>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn internal_work_settles_until_idle_and_bounds_non_convergence() {
+        let mut steps = 0;
+        let mut progress = [true, true, false].into_iter();
+        assert!(settle_internal_work(5.0, &mut steps, || Ok(progress.next().unwrap())).unwrap());
+        assert!(!settle_internal_work(5.0, &mut steps, || Ok(false)).unwrap());
+        assert_eq!(steps, 2);
+        // The budget is shared by every settlement at one instant.
+        let error = settle_internal_work(7.5, &mut steps, || Ok(true)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "offline replay detected non-converging engine internal work at 7.5 ms"
+        );
+        assert_eq!(steps, MAX_CONSECUTIVE_INTERNAL_STEPS);
+    }
     use crate::engine::generalized::PassId;
     use crate::replay::components::ScheduledEngineCompletion;
     use crate::replay::events::SimulationWorkerStage;

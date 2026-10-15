@@ -5,6 +5,14 @@
 
 const state = {
   data: null,
+  rawData: null,
+  tab: "overview",
+  excludeOutliers: false,
+  excludeAbnormal: false,
+  excludeMultinode: false,
+  hiddenSeries: new Set(),
+  throughput: "output",
+  view: "interactivity",
   catalog: null,
   branch: null,
   loadId: 0,
@@ -18,11 +26,6 @@ const state = {
 const summaryGrid = document.getElementById("summary-grid");
 const matrixBody = document.getElementById("matrix-body");
 const identityLine = document.getElementById("identity-line");
-const releaseLabel = document.getElementById("release-label");
-const scopeControl = document.getElementById("scope-control");
-const scopeCheck = document.getElementById("scope-check");
-const multinodeLabel = document.getElementById("multinode-label");
-const measurementSourceLink = document.getElementById("measurement-source-link");
 const scopeClaim = document.getElementById("scope-claim");
 const provenanceContent = document.getElementById("provenance-content");
 const errorBanner = document.getElementById("error-banner");
@@ -93,19 +96,51 @@ function accuracyCard(label, metrics, className) {
         ${accuracyMetric("TPOT", metrics.tpot_mape_pct, metrics.tpot_shape_error_pct)}
         ${accuracyMetric("TTFT", metrics.ttft_mape_pct, metrics.ttft_shape_error_pct)}
       </div>
+      ${metrics.points === 0 ? '<p class="detail-scope">No included predictions in this snapshot or filter selection. Missing results are excluded from accuracy metrics.</p>' : ''}
     </article>`;
+}
+
+function visibleModels() {
+  return state.data?.models.filter(model => (model.aisimulate.status_counts?.success ?? model.aisimulate.points) > 0) ?? [];
 }
 
 function renderSummary() {
   const totals = state.data.totals;
   summaryGrid.innerHTML = [
-    basicCard("Models", String(totals.models), true),
-    basicCard("Points (AIC CLI)", totals.aic.points.toLocaleString()),
-    basicCard("Points (AISim CLI)", totals.aisimulate.points.toLocaleString()),
+    basicCard("Models", String(visibleModels().length), true),
+    basicCard("AIC (legacy CLI) points", totals.aic.points.toLocaleString()),
+    basicCard("AISim points", totals.aisimulate.points.toLocaleString()),
     basicCard("GPU SKUs", String(totals.gpu_skus.length)),
-    accuracyCard("AISim CLI (new) Error", totals.aisimulate, "aisimulate"),
-    accuracyCard("AIC CLI (legacy) Error", totals.aic, "aic"),
+    accuracyCard("AISim Error · all configurations", totals.aisimulate, "aisimulate"),
+    accuracyCard("AIC (legacy CLI) Error · all configurations", totals.aic, "aic"),
   ].join("");
+  const groups = new Map();
+  const hardwareGroups = new Map();
+  for (const model of visibleModels()) for (const workload of model.workloads) for (const gpu of workload.gpus) {
+    for (const topology of gpu.topologies || []) {
+      if (!hardwareGroups.has(gpu.gpu)) hardwareGroups.set(gpu.gpu, []);
+      hardwareGroups.get(gpu.gpu).push(topology);
+      if (!groups.has(topology.serving)) groups.set(topology.serving, new Map());
+      const frameworks = groups.get(topology.serving);
+      if (!frameworks.has(topology.framework)) frameworks.set(topology.framework, []);
+      frameworks.get(topology.framework).push(topology);
+    }
+  }
+  const frameworkOrder = ["vllm", "sglang", "trtllm", "dynamo-vllm", "dynamo-sglang", "dynamo-trtllm"];
+  document.getElementById("framework-summary").innerHTML = groups.size ? `<h2>AISim error by serving mode and framework</h2><div class="table-scroll"><table><thead><tr><th scope="col">Serving</th><th scope="col">Framework</th><th scope="col">Points</th><th scope="col">TPOT MAPE</th><th scope="col">TPOT shape</th><th scope="col">TTFT MAPE</th><th scope="col">TTFT shape</th></tr></thead>${[...groups].sort(([a], [b]) => a.localeCompare(b)).map(([serving, frameworks]) => {
+    const rows = [...frameworks].sort(([a], [b]) =>
+      (frameworkOrder.includes(a) ? frameworkOrder.indexOf(a) : frameworkOrder.length) -
+      (frameworkOrder.includes(b) ? frameworkOrder.indexOf(b) : frameworkOrder.length) || a.localeCompare(b));
+    return `<tbody>${rows.map(([framework, topologies], index) => {
+      const m = aggregateTopologies(topologies).aisimulate;
+      const servingLabel = {aggregated: "Agg", disaggregated: "Disagg"}[serving] || serving;
+      return `<tr>${index === 0 ? `<th scope="rowgroup" rowspan="${rows.length}">${escapeHtml(servingLabel)}</th>` : ""}<th scope="row">${escapeHtml(framework.toUpperCase())}</th><td>${m.points}</td>${["tpot_mape_pct", "tpot_shape_error_pct", "ttft_mape_pct", "ttft_shape_error_pct"].map(f => `<td>${formatPercent(m[f])}</td>`).join("")}</tr>`;
+    }).join("")}</tbody>`;
+  }).join("")}</table></div>` : "";
+  document.getElementById("hardware-summary").innerHTML = hardwareGroups.size ? `<h2>AISim error by hardware</h2><div class="table-scroll"><table><thead><tr><th scope="col">Hardware</th><th scope="col">Points</th><th scope="col">TPOT MAPE</th><th scope="col">TTFT MAPE</th></tr></thead><tbody>${[...hardwareGroups].sort(([a], [b]) => a.localeCompare(b)).map(([hardware, topologies]) => {
+    const m = aggregateTopologies(topologies).aisimulate;
+    return `<tr><th scope="row">${escapeHtml(hardware.toUpperCase())}</th><td>${m.points}</td><td>${formatPercent(m.tpot_mape_pct)}</td><td>${formatPercent(m.ttft_mape_pct)}</td></tr>`;
+  }).join("")}</tbody></table></div>` : "";
 }
 
 function renderSnapshot() {
@@ -113,25 +148,20 @@ function renderSnapshot() {
   if (!isSafeHttpsUrl(snapshot.measurement_source_url)) {
     throw new Error("unsafe measurement source URL");
   }
-  releaseLabel.textContent = `Measurements: ${snapshot.release_tag}`;
-  const includesMultinode = scope.multinode === "included";
-  scopeCheck.hidden = includesMultinode;
-  scopeControl.title = includesMultinode
-    ? "This snapshot includes multi-node predictions."
-    : "This snapshot includes single-node predictions only.";
-  multinodeLabel.textContent = includesMultinode
-    ? "Multi-node predictions included"
-    : `Exclude multi-node predictions (${scope.excluded_multinode_rows.toLocaleString()} hidden)`;
   identityLine.textContent = `GPU SKUs: ${totals.gpu_skus.join(", ")} · Precisions: ${totals.precisions.join(", ")}`;
-  measurementSourceLink.href = snapshot.measurement_source_url;
+  if (snapshot.campaign?.configuration) {
+    const counts = snapshot.campaign.configuration.counts;
+    identityLine.textContent += ` · Configuration: ${counts.verified ?? 0} verified, ${counts.estimated ?? 0} estimated (assumptions) · ${snapshot.campaign.selected - snapshot.campaign.published} excluded`;
+  }
   scopeClaim.textContent = scope.claim;
   provenanceContent.innerHTML = `
     <p>
       Measurements: <a href="${escapeHtml(snapshot.measurement_source_url)}">${escapeHtml(
         snapshot.measurement_source,
       )} ${escapeHtml(snapshot.release_tag)}</a><br />
+      Multi-node measurements: ${escapeHtml(scope.multinode)} (${scope.excluded_multinode_rows.toLocaleString()} points not exported).<br />
       Measured through: ${escapeHtml(formatDate(snapshot.measurement_date_through))}<br />
-      AISimulate run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
+      AISim run completed: ${escapeHtml(formatDate(snapshot.aisimulate_completed_at))}<br />
       Packages: ${escapeHtml(
         Object.entries(snapshot.aisimulate_packages)
           .map(([name, version]) => `${name} ${version}`)
@@ -141,14 +171,15 @@ function renderSnapshot() {
     <p>Evaluated revision: ${snapshot.evaluated_revision
       ? `<a href="https://github.com/ai-dynamo/aisimulate/commit/${escapeHtml(snapshot.evaluated_revision.commit_sha)}">${escapeHtml(snapshot.evaluated_revision.branch)} @ ${escapeHtml(snapshot.evaluated_revision.commit_sha.slice(0, 12))}</a>`
       : "Not recorded in this historical snapshot"}</p>
-    <p>Legacy AIC CLI source: ${snapshot.aic_source
-      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISimulate ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (bundled aiconfigurator CLI)`
+    <p>AIC (legacy CLI) source: ${snapshot.aic_source
+      ? `<a href="${snapshot.aic_source.repository}/commit/${snapshot.aic_source.commit_sha}">AISim ${escapeHtml(snapshot.aic_source.branch)} @ ${snapshot.aic_source.commit_sha.slice(0, 12)}</a> (${escapeHtml(snapshot.aic_source.cli_entry_point ?? "bundled aiconfigurator CLI")})`
       : "Repository provenance was not recorded in this historical snapshot"}</p>
     ${snapshot.campaign ? `<p>Accuracy campaign: <a href="https://github.com/ai-dynamo/aisimulate/actions/runs/${escapeHtml(snapshot.campaign.run_id)}">GitHub Actions run</a> (advisory)<br />
       Selected operating points: ${escapeHtml(snapshot.campaign.selected)}; published comparison points: ${escapeHtml(snapshot.campaign.published)}.<br />
+      ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -157,7 +188,11 @@ function renderSnapshot() {
         ? "Qualified e2e-accuracy-web artifact from the campaign above"
         : "Local preview; publication commit not recorded"}</p>
     <code>Predictions SHA-256: ${escapeHtml(snapshot.predictions_sha256)}</code>
-    <code>AISimulate evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
+    <code>AISim evidence SHA-256: ${escapeHtml(snapshot.aisimulate_sot_sha256)}</code>`;
+}
+
+function modelLabel(model) {
+  return model.hf_model_paths?.length ? model.hf_model_paths.join(", ") : model.model;
 }
 
 function sortValue(model) {
@@ -166,8 +201,6 @@ function sortValue(model) {
       return model.aic.points;
     case "aisimulatePoints":
       return model.aisimulate.points;
-    case "gpuSkus":
-      return model.gpu_skus.length;
     case "hardware":
       return model.gpu_skus.join(",");
     case "precisions":
@@ -181,7 +214,7 @@ function sortValue(model) {
     case "aicTtft":
       return model.aic.ttft_mape_pct;
     default:
-      return model.model;
+      return modelLabel(model);
   }
 }
 
@@ -200,15 +233,12 @@ function compareValues(left, right) {
 
 function metricCells(item) {
   return `
-    <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
-    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
-    <td class="count-cell">${escapeHtml(item.gpu_skus.length.toLocaleString())}</td>
     <td class="mono">${escapeHtml(item.gpu_skus.join(", "))}</td>
     <td>${escapeHtml(item.precisions.join(", "))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))}</td>
-    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
+    <td class="points-cell">${escapeHtml(item.aisimulate.points.toLocaleString())}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aisimulate.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aisimulate.ttft_mape_pct))}</td>
+    <td class="points-cell">${escapeHtml(item.aic.points.toLocaleString())}</td>
+    <td class="metric-cell">${escapeHtml(formatPercent(item.aic.tpot_mape_pct))} / ${escapeHtml(formatPercent(item.aic.ttft_mape_pct))}</td>`;
 }
 
 function gpuRow(model, workload, gpu) {
@@ -219,7 +249,7 @@ function gpuRow(model, workload, gpu) {
     <tr class="gpu-row${selected ? " selected" : ""}">
       <td><button type="button" class="gpu-button" data-gpu-key="${escapeHtml(key)}"
         aria-expanded="${selected}" aria-controls="drilldown"
-        aria-label="${selected ? "Hide" : "Show"} ${escapeHtml(model.model)} ${escapeHtml(workload.label)} ${escapeHtml(gpu.gpu)} details">
+        aria-label="${selected ? "Hide" : "Show"} ${escapeHtml(modelLabel(model))} ${escapeHtml(workload.label)} ${escapeHtml(gpu.gpu)} details">
         <span aria-hidden="true">↳</span> ${escapeHtml(gpu.gpu)} <span aria-hidden="true">↗</span>
       </button></td>
       ${metricCells(item)}
@@ -236,7 +266,7 @@ function workloadRow(model, workload) {
       role="button"
       aria-expanded="${String(expanded)}"
       data-workload-key="${escapeHtml(key)}"
-      aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(model.model)} ${escapeHtml(
+      aria-label="${expanded ? "Collapse" : "Expand"} ${escapeHtml(modelLabel(model))} ${escapeHtml(
         workload.label,
       )} GPU rows"
     >
@@ -251,29 +281,29 @@ function workloadRow(model, workload) {
 function modelRows(model) {
   return `
     <tr class="model-row">
-      <td><span class="model-name">${escapeHtml(model.model)}</span></td>
+      <td><span class="model-name">${escapeHtml(modelLabel(model))}</span></td>
       ${metricCells(model)}
     </tr>
     ${model.workloads.map((workload) => workloadRow(model, workload)).join("")}`;
 }
 
 function renderMatrix() {
-  const models = [...state.data.models].sort((left, right) => {
+  const models = visibleModels().sort((left, right) => {
     const compared = compareValues(sortValue(left), sortValue(right));
     return compared || left.model.localeCompare(right.model, undefined, { numeric: true });
   });
   matrixBody.innerHTML = models.length
     ? models.map(modelRows).join("")
-    : '<tr><td colspan="10" class="empty-cell">No accuracy data available.</td></tr>';
+    : '<tr><td colspan="7" class="empty-cell">No models with successful AISim predictions match this selection.</td></tr>';
 }
 
 function renderSortState() {
-  document.querySelectorAll(".sort-button").forEach((button) => {
+  const buttons = [...document.querySelectorAll(".sort-button")];
+  buttons.forEach(button => button.closest("th").setAttribute("aria-sort", "none"));
+  buttons.forEach(button => {
     const active = button.dataset.sort === state.sortKey;
-    button.closest("th").setAttribute(
-      "aria-sort",
-      active ? (state.sortDirection === "asc" ? "ascending" : "descending") : "none",
-    );
+    button.dataset.sortDirection = active ? state.sortDirection : "";
+    if (active) button.closest("th").setAttribute("aria-sort", state.sortDirection === "asc" ? "ascending" : "descending");
   });
 }
 
@@ -351,81 +381,59 @@ function focusData(property, value) {
 function selectedGpu() {
   if (!state.data || !state.selection) return null;
   const [modelName, workloadId, gpuName] = JSON.parse(state.selection);
-  const model = state.data.models.find((item) => item.model === modelName);
+  const model = visibleModels().find((item) => item.model === modelName);
   const workload = model?.workloads.find((item) => item.identity === workloadId);
   const gpu = workload?.gpus.find((item) => item.gpu === gpuName);
   return gpu ? { model, workload, gpu } : null;
 }
 
 function topologyLabel(topology) {
-  const parallelism = Object.entries(topology.parallelism)
-    .filter(([, value]) => value != null)
-    .map(([key, value]) => `${key.replace("_size", "").replace("attention_dp", "DP").toUpperCase()} ${value}`)
-    .join(" · ");
-  return `${topology.precision} · ${topology.framework} · ${topology.serving} · ${parallelism} · ${topology.spec_method} · ${topology.id.slice(0, 6)}`;
+  const labels = {tp_size: "TP", pp_size: "PP", attention_dp_size: "DP", moe_ep_size: "EP", moe_tp_size: "MoE TP"};
+  const parts = Object.entries(labels).filter(([key]) => topology.parallelism[key] != null &&
+    (key === "tp_size" || topology.parallelism[key] !== 1))
+    .map(([key, label]) => `${label} ${topology.parallelism[key]}`);
+  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method);
+  return parts.join(" · ") || "Default parallelism";
+}
+
+function topologyOptions(topologies) {
+  const labels = topologies.map(topologyLabel);
+  return topologies.map((t, i) => [t.id, labels.filter(label => label === labels[i]).length > 1
+    ? `${labels[i]} · ${t.id.slice(0, 6)}` : labels[i]]);
 }
 
 function coverageText(item) {
   const counts = item.aisimulate.status_counts;
-  return `${item.aisimulate.points}/${item.rows} successful replay points · ${counts.unsupported} unsupported · ${counts.failed} failed`;
+  return `${counts.success}/${item.rows} successful replay points · ${counts.unsupported} unsupported · ${counts.failed} failed`;
 }
 
 function errorBars(item) {
   const series = [
-    ["AISim CLI TPOT", item.aisimulate.tpot_mape_pct, "aisimulate"],
-    ["AIC CLI TPOT", item.aic.tpot_mape_pct, "aic"],
-    ["AISim CLI TTFT", item.aisimulate.ttft_mape_pct, "aisimulate"],
-    ["AIC CLI TTFT", item.aic.ttft_mape_pct, "aic"],
+    ["AISim TPOT", item.aisimulate.tpot_mape_pct, "aisimulate"],
+    ["AIC (legacy CLI) TPOT", item.aic.tpot_mape_pct, "aic"],
+    ["AISim TTFT", item.aisimulate.ttft_mape_pct, "aisimulate"],
+    ["AIC (legacy CLI) TTFT", item.aic.ttft_mape_pct, "aic"],
   ];
   const maximum = Math.max(1, ...series.map(([, value]) => value ?? 0));
   return `<div class="error-bars" aria-label="MAPE comparison">${series.map(([name, value, css]) => `
     <div class="error-bar"><span>${escapeHtml(name)}</span><span class="bar-track"><span class="bar ${css}" style="width:${(value ?? 0) / maximum * 100}%"></span></span><strong>${formatPercent(value)}</strong></div>`).join("")}</div>`;
 }
 
-function curveChart(topology, metric) {
-  const points = topology.points;
-  const names = ["measured", "aisimulate", "aic"];
-  const values = points.flatMap((point) => names.map((name) => point[name][`${metric}_relative`]))
-    .filter((value) => Number.isFinite(value));
-  const maxY = Math.max(1, ...values) * 1.08;
-  const minX = Math.log2(Math.min(...points.map((point) => point.concurrency)));
-  const maxX = Math.log2(Math.max(...points.map((point) => point.concurrency)));
-  const x = (concurrency) => 48 + (Math.log2(concurrency) - minX) / (maxX - minX || 1) * 330;
-  const y = (value) => 172 - value / maxY * 145;
-  const marks = names.map((name) => {
-    let previous = null;
-    return points.map((point) => {
-      const value = point[name][`${metric}_relative`];
-      if (!Number.isFinite(value)) { previous = null; return ""; }
-      const current = [x(point.concurrency), y(value)];
-      const line = previous ? `<line class="curve ${name}" x1="${previous[0]}" y1="${previous[1]}" x2="${current[0]}" y2="${current[1]}" />` : "";
-      previous = current;
-      return `${line}<circle class="point ${name}" cx="${current[0]}" cy="${current[1]}" r="3"><title>${name}: concurrency ${point.concurrency}, ${value.toFixed(3)}×</title></circle>`;
-    }).join("");
-  }).join("");
-  return `<figure class="curve-chart"><figcaption>${metric.toUpperCase()} trend</figcaption>
-    <svg viewBox="0 0 420 212" role="img" aria-label="${metric.toUpperCase()} normalized latency by concurrency; numeric values follow in the point table">
-      <path class="axis" d="M48 22V172H390" />
-      <text x="42" y="175" text-anchor="end">0</text>
-      <text x="42" y="32" text-anchor="end">${maxY.toFixed(1)}×</text>
-      <text x="48" y="190">${points[0].concurrency}</text>
-      <text x="378" y="190" text-anchor="end">${points.at(-1).concurrency}</text>
-      <text x="210" y="208" text-anchor="middle">Concurrency (log₂)</text>${marks}
-    </svg></figure>`;
-}
-
 function pointTable(topology) {
+  const absolute = topology.points.every(p => p.measured.ttft_ms > 0 && p.measured.tpot_ms > 0);
   return `<details class="point-details" open><summary>Operating points (${topology.points.length})</summary>
     <div class="table-scroll" tabindex="0" role="region" aria-label="Operating point details"><table class="point-table">
-    <caption>Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×.</caption>
-    <thead><tr><th>Concurrency</th><th>Replay status</th><th>Measured TTFT / TPOT</th><th>AISim CLI TTFT / TPOT</th><th>AIC CLI TTFT / TPOT</th><th>AISim CLI TTFT / TPOT error</th><th>AIC CLI TTFT / TPOT error</th></tr></thead>
+    <caption>${absolute ? "TTFT / TPOT in milliseconds and absolute percentage errors." : "Relative TTFT / TPOT and absolute percentage errors. Ratios use measured latency at the lowest concurrency as 1×."}</caption>
+    <thead><tr><th>Concurrency</th><th>Measured TTFT / TPOT</th><th>AISim TTFT / TPOT</th><th>AISim TTFT / TPOT error</th><th>AIC (legacy CLI) TTFT / TPOT</th><th>AIC (legacy CLI) TTFT / TPOT error</th><th>Configuration</th><th>InfX CI run</th><th>Replay / AIC status</th><th>AISim prediction error</th></tr></thead>
     <tbody>${topology.points.map((point) => {
       const ratios = (name) => ["ttft", "tpot"].map((metric) => {
-        const value = point[name][`${metric}_relative`];
-        return value == null ? "—" : `${value.toFixed(3)}×`;
+        const value = point[name][`${metric}_${absolute ? "ms" : "relative"}`];
+        return value == null ? "—" : `${value.toFixed(3)}${absolute ? " ms" : "×"}`;
       }).join(" / ");
       const errors = (name) => `${formatPercent(point[name].ttft_error_pct)} / ${formatPercent(point[name].tpot_error_pct)}`;
-      return `<tr><td>${point.concurrency}</td><td>${escapeHtml(point.status)}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aisimulate")}</td><td>${errors("aic")}</td></tr>`;
+      const run = point.infx_run_id ? `<a href="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/${escapeHtml(point.infx_run_id)}" target="_blank" rel="noopener noreferrer">${escapeHtml(point.infx_run_id)}</a>` : "—";
+      const failure = point.status === "success" ? "—" : point.aisim_error || "Not recorded";
+      return `<tr><td>${point.concurrency}</td><td>${ratios("measured")}</td><td>${ratios("aisimulate")}</td><td>${errors("aisimulate")}</td><td>${ratios("aic")}</td><td>${errors("aic")}</td><td>${escapeHtml(point.configuration_quality ?? point.configuration?.configuration_quality ?? "Not recorded")}</td><td>${run}</td><td>${escapeHtml(point.status)} / ${escapeHtml(point.aic_status ?? "success")}</td><td class="prediction-error">${escapeHtml(failure)}</td></tr>`;
     }).join("")}</tbody></table></div></details>`;
 }
 
@@ -440,17 +448,22 @@ function renderDrilldown() {
   state.topologyId = topology?.id ?? null;
   const item = topology ?? gpu;
   drilldown.innerHTML = `
-    <div class="detail-heading"><h2>${escapeHtml(model.model)} · ${escapeHtml(workload.label)} · ${escapeHtml(gpu.gpu)}</h2>
+    <div class="detail-heading"><h2>${escapeHtml(modelLabel(model))} · ${escapeHtml(workload.label)} · ${escapeHtml(gpu.gpu)}</h2>
       <button type="button" id="close-details" aria-label="Close accuracy details">×</button></div>
     <p class="detail-scope">${escapeHtml(state.branch.branch)} · ${escapeHtml(state.data.snapshot.release_tag)}</p>
     <a id="detail-permalink" href="${escapeHtml(location.href)}" target="_blank" rel="noopener">Open this selection in a separate tab ↗</a>
-    ${topologies.length ? `<label class="topology-control">Topology<select id="topology-select">${topologies.map((entry) => `<option value="${entry.id}"${entry.id === topology.id ? " selected" : ""}>${escapeHtml(topologyLabel(entry))}</option>`).join("")}</select></label>` : ""}
+    ${topologies.length ? `<div class="filter-toolbar">${["precision", "framework", "serving"].map(key => filterField(key, key, [...new Set(topologies.map(t => t[key]))].map(v => [v, v]), topology[key])).join("")}</div><label class="topology-control">Topology<select id="topology-select">${topologies.map((entry) => `<option value="${entry.id}"${entry.id === topology.id ? " selected" : ""}>${escapeHtml(topologyLabel(entry))}</option>`).join("")}</select></label>` : ""}
     <p class="coverage-text">${escapeHtml(coverageText(item))}</p>
-    <p class="detail-scope">AISim CLI errors cover successful replays. AIC CLI errors cover all selected points.</p>
-    ${errorBars(item)}
-    ${topology ? `<div class="chart-legend"><span class="measured">● Measured</span><span class="aisimulate">● AISim CLI</span><span class="aic">● AIC CLI</span></div>
-      <p class="detail-scope">Latency relative to the measured value at the lowest concurrency. Both predictors share that anchor; gaps indicate missing predictions.</p>
-      ${curveChart(topology, "tpot")}${curveChart(topology, "ttft")}${pointTable(topology)}` : `<p class="detail-empty">This historical snapshot contains GPU aggregates only. Topology and concurrency details appear after its evidence is regenerated with the updated publisher.</p>`}`;
+    <p class="detail-scope">AISim errors cover successful replays. AIC (legacy CLI) errors cover successful baseline predictions.</p>
+    ${topology ? "" : errorBars(item)}
+    ${topology ? topologyContent(topology) : `<p class="detail-empty">This historical snapshot contains GPU aggregates only. Topology and concurrency details appear after its evidence is regenerated with the updated publisher.</p>`}`;
+  bindCharts(drilldown, topology);
+  drilldown.querySelectorAll("[data-filter]").forEach(select => select.addEventListener("change", () => {
+    const key = select.dataset.filter;
+    const candidates = topologies.filter(t => t[key] === select.value);
+    state.topologyId = (candidates.find(t => ["precision", "framework", "serving"].every(k => k === key || t[k] === topology[k])) || candidates[0])?.id;
+    refreshCharts();
+  }));
   document.getElementById("close-details").addEventListener("click", () => {
     const key = state.selection;
     state.selection = null;
@@ -468,14 +481,14 @@ function renderDrilldown() {
   });
 }
 
-function validBranchName(branch) {
+function validBranchName(branch, preview = false) {
   return typeof branch === "string" && !branch.endsWith("/") &&
-    (branch === "main" || /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch));
+    (branch === "main" || (preview ? /^[A-Za-z0-9][A-Za-z0-9._/-]*$/ : /^release\/[A-Za-z0-9][A-Za-z0-9._/-]*$/).test(branch));
 }
 
-function validRevision(revision) {
+function validRevision(revision, preview = false) {
   return revision && typeof revision.commit_sha === "string" &&
-    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch);
+    /^[0-9a-f]{40}$/.test(revision.commit_sha) && validBranchName(revision.branch, preview);
 }
 
 function snapshotEvidence(branch, snapshot) {
@@ -491,6 +504,7 @@ function branchOption(entry) {
 }
 
 function validateSummary(data) {
+  const research = data?.snapshot?.research_preview;
   const statuses = ["success", "unsupported", "failed", "unknown"];
   const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const strings = (value) => Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string");
@@ -510,22 +524,38 @@ function validateSummary(data) {
     if (!object(topology) || typeof topology.id !== "string" || !/^[0-9a-f]{16}$/.test(topology.id) || !aggregate(topology) ||
       !object(topology.parallelism) || !Array.isArray(topology.points) || topology.points.length !== topology.rows ||
       !["framework", "precision", "serving", "spec_method"].every((key) => typeof topology[key] === "string")) return false;
+    if (topology.is_multinode !== undefined && typeof topology.is_multinode !== "boolean") return false;
+    if ((topology.total_gpus !== undefined || topology.is_multinode !== undefined) &&
+      (!Number.isInteger(topology.total_gpus) || topology.total_gpus <= 0)) return false;
     let previous = 0;
+    let aicSuccesses = 0;
     const counts = { success: 0, unsupported: 0, failed: 0, unknown: 0 };
     return topology.points.every((point) => {
       if (!object(point) || !Number.isFinite(point.concurrency) || point.concurrency <= 0 || point.concurrency < previous ||
-        !["success", "unsupported", "failed"].includes(point.status)) return false;
+        !["success", "unsupported", "failed"].includes(point.status) ||
+        !["success", "unsupported", "failed"].includes(point.aic_status === undefined ? "success" : point.aic_status) &&
+          !(research && data.snapshot.aic_commit_sha === "not-run" && point.aic_status === "pending")) return false;
+      if (point.configuration_quality !== undefined && !["verified", "estimated"].includes(point.configuration_quality)) return false;
       previous = point.concurrency;
+      if (point.aisim_error != null && (point.status === "success" || typeof point.aisim_error !== "string" ||
+        point.aisim_error.length === 0 || point.aisim_error.length > 2048)) return false;
+      if (point.infx_run_id != null && (typeof point.infx_run_id !== "string" || !/^[1-9][0-9]*$/.test(point.infx_run_id))) return false;
       counts[point.status] += 1;
+      if ((point.aic_status === undefined ? "success" : point.aic_status) === "success") aicSuccesses += 1;
       return ["measured", "aic", "aisimulate"].every((name) => object(point[name]) && ["ttft", "tpot"].every((metric) => {
+        const missing = name === "aisimulate" && point.status !== "success" || name === "aic" && (point.aic_status ?? "success") !== "success";
+        for (const field of ["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu", "interactivity_tok_s"]) {
+          const raw = point[name][field];
+          if (raw !== undefined && raw !== null && (!Number.isFinite(raw) || raw <= 0 || missing)) return false;
+        }
         const value = point[name]?.[`${metric}_relative`];
         const error = point[name]?.[`${metric}_error_pct`];
-        const missing = name === "aisimulate" && point.status !== "success";
         return missing ? value === null && error === null :
           Number.isFinite(value) && value >= 0 && (name === "measured" || Number.isFinite(error) && error >= 0);
       }));
     }) && Object.keys(topology.aisimulate.status_counts).length === statuses.length &&
-      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]);
+      statuses.every((key) => counts[key] === topology.aisimulate.status_counts[key]) &&
+      aicSuccesses === topology.aic.points;
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
     typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
@@ -547,7 +577,15 @@ function validateSummary(data) {
     throw new Error("unsupported accuracy summary schema");
   }
   const revision = data.snapshot.evaluated_revision;
-  if (revision != null && (!object(revision) || !validRevision(revision))) {
+  if (research !== undefined && (!object(research) || revision != null || data.snapshot.campaign != null ||
+    !/^[0-9a-f]{40}$/.test(research.source_commit) ||
+    !Number.isInteger(research.estimated_points) || research.estimated_points < 0 || research.estimated_points > data.totals.rows ||
+    !Number.isInteger(research.estimated_successes) || research.estimated_successes < 0 ||
+    research.estimated_successes > research.estimated_points || research.estimated_successes > data.totals.aisimulate.points)) {
+    throw new Error("invalid local research preview provenance");
+  }
+  if (data.scope.preview === true && revision == null ||
+    revision != null && (!object(revision) || !validRevision(revision, data.scope.preview === true))) {
     throw new Error("invalid evaluated revision");
   }
   const aicSource = data.snapshot.aic_source;
@@ -555,13 +593,31 @@ function validateSummary(data) {
     aicSource.repository !== "https://github.com/ai-dynamo/aisimulate" ||
     typeof aicSource.commit_sha !== "string" || !/^[0-9a-f]{40}$/.test(aicSource.commit_sha) || typeof aicSource.branch !== "string" ||
     aicSource.commit_sha !== data.snapshot.aic_commit_sha ||
+    (Object.hasOwn(aicSource, "cli_entry_point") &&
+      !["aiconfigurator.main:main", "aisimulate.legacy_cli.entrypoint:main"].includes(aicSource.cli_entry_point)) ||
     (revision && (aicSource.branch !== revision.branch || aicSource.commit_sha !== revision.commit_sha)))) {
-    throw new Error("invalid legacy AIC CLI source");
+    throw new Error("invalid AIC (legacy CLI) source");
   }
   const campaign = data.snapshot.campaign;
   const exclusions = campaign?.exclusion_reasons;
+  if (campaign?.configuration) {
+    const configuration = campaign.configuration;
+    const counts = {};
+    data.models.forEach((model) => model.workloads.forEach((workload) => workload.gpus.forEach((gpu) =>
+      (gpu.topologies ?? []).forEach((topology) => topology.points.forEach((point) => {
+        const quality = point.configuration_quality;
+        if (!["verified", "estimated"].includes(quality)) throw new Error("missing configuration quality");
+        counts[quality] = (counts[quality] ?? 0) + 1;
+      })))));
+    if (!["verified", "coverage-experiment/1"].includes(configuration.profile) ||
+      !object(configuration.counts) || Object.keys(configuration.counts).length !== Object.keys(counts).length ||
+      Object.entries(counts).some(([key, count]) => configuration.counts[key] !== count) ||
+      Object.values(counts).reduce((sum, count) => sum + count, 0) !== data.totals.rows ||
+      (configuration.profile === "verified" && counts.estimated)) throw new Error("invalid configuration coverage");
+  }
+
   const validExclusions = exclusions && typeof exclusions === "object" && !Array.isArray(exclusions) &&
-    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "baseline_failed"].includes(key)) &&
+    Object.keys(exclusions).every(key => ["recipe_required", "adapter_unsupported", "adapter_topology_mismatch", "baseline_failed", "source_unresolved", "database_unavailable"].includes(key)) &&
     Object.values(exclusions).every(value => Number.isInteger(value) && value >= 0);
   if (campaign !== undefined && (!campaign || !revision || campaign.status !== "complete" ||
     campaign.advisory !== true || !/^[0-9]+$/.test(campaign.run_id) ||
@@ -570,31 +626,44 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    campaign.selection_policy !== "latest-complete-config-run-v1" ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
+  }
+  const groups = data.totals.by_configuration_quality;
+  if (groups !== undefined && (!object(groups) || !Object.keys(groups).length ||
+    Object.entries(groups).some(([quality, group]) => !["verified", "estimated", "not_recorded"].includes(quality) ||
+      !object(group) || !Number.isInteger(group.rows) || group.rows <= 0 ||
+      !metrics(group.aic, group.rows) || !metrics(group.aisimulate, group.rows)) ||
+    Object.values(groups).reduce((sum, group) => sum + group.rows, 0) !== data.totals.rows ||
+    ["aic", "aisimulate"].some((name) => Object.values(groups).reduce((sum, group) => sum + group[name].points, 0) !== data.totals[name].points))) {
+    throw new Error("invalid configuration quality metrics");
   }
   return data;
 }
 
 function validateCatalog(catalog) {
   const seen = new Set();
-  if (!catalog || catalog.schema_version !== 1 || catalog.default_branch !== "main" ||
+  const preview = catalog?.preview === true;
+  if (!catalog || catalog.schema_version !== 1 ||
+    (preview ? !validBranchName(catalog.default_branch, true) : catalog.default_branch !== "main") ||
     !Array.isArray(catalog.branches) || !catalog.branches.length || catalog.branches.some((entry) => {
-      if (!entry || !validBranchName(entry.branch) ||
+      if (!entry || !validBranchName(entry.branch, preview) ||
         seen.has(entry.branch) || !["evaluated", "inherited", "historical", "unavailable"].includes(entry.status) ||
         (entry.summary_path !== null && !/^(summary\.json|branches\/[0-9a-f]{16}\/summary\.json)$/.test(entry.summary_path)) ||
         (entry.status === "unavailable") !== (entry.summary_path === null) ||
         !(entry.published_from_commit === null || typeof entry.published_from_commit === "string" &&
           /^[0-9a-f]{40}$/.test(entry.published_from_commit))) return true;
+      if (entry.last_update && (!["success", "failed"].includes(entry.last_update.status) ||
+        !/^[0-9]+$/.test(entry.last_update.run_id))) return true;
       const revision = entry.evaluated_revision;
       if (entry.published_source_path != null && !["pages/e2e-accuracy/summary.json", "python/aisimulate/docs/e2e-accuracy/summary.json"].includes(entry.published_source_path)) return true;
       if (["evaluated", "inherited"].includes(entry.status)) {
-        if (!validRevision(revision) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
+        if (!validRevision(revision, preview) || (entry.status === "evaluated") !== (revision.branch === entry.branch)) return true;
       } else if (revision != null) return true;
       seen.add(entry.branch);
       return false;
-    }) || !seen.has("main")) throw new Error("invalid accuracy branch catalog");
+    }) || !seen.has(catalog.default_branch)) throw new Error("invalid accuracy branch catalog");
   return catalog;
 }
 
@@ -608,28 +677,36 @@ function updateLocation() {
       if (value) url.searchParams.set(key, value);
     });
   }
+  for (const [key, value] of Object.entries({tab: state.tab, outliers: state.excludeOutliers ? "1" : null,
+    abnormal: state.excludeAbnormal ? "1" : null, multinode: state.excludeMultinode ? "1" : null,
+    throughput: state.throughput, view: state.view, hidden: [...state.hiddenSeries].join(",")})) {
+    if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
+  }
   history.replaceState(null, "", url);
   const permalink = document.getElementById("detail-permalink");
   if (permalink) permalink.href = url.href;
 }
 
 function clearSnapshot(message) {
+  document.getElementById("evidence-brief").textContent = message;
+  state.rawData = null;
   state.data = null;
   state.selection = null;
   state.topologyId = null;
   state.expandedWorkloads.clear();
+  document.getElementById("framework-summary").innerHTML = "";
+  document.getElementById("hardware-summary").innerHTML = "";
   summaryGrid.innerHTML = `<div class="loading-card">${escapeHtml(message)}</div>`;
-  matrixBody.innerHTML = `<tr><td colspan="10" class="empty-cell">${escapeHtml(message)}</td></tr>`;
+  matrixBody.innerHTML = `<tr><td colspan="7" class="empty-cell">${escapeHtml(message)}</td></tr>`;
   identityLine.textContent = "";
-  releaseLabel.textContent = "";
-  multinodeLabel.textContent = "";
   provenanceContent.textContent = "No snapshot selected.";
   scopeClaim.textContent = "No accuracy claim is available until a snapshot loads.";
   downloadJson.removeAttribute("href");
   downloadJson.setAttribute("aria-disabled", "true");
-  measurementSourceLink.href = "https://github.com/SemiAnalysisAI/InferenceX-app/releases";
   errorBanner.hidden = true;
   renderDrilldown();
+  document.getElementById("details-view").innerHTML = `<p role="status">${escapeHtml(message)}</p>`;
+  document.getElementById("detail-filters").innerHTML = "";
 }
 
 function showError(error) {
@@ -667,19 +744,42 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
     }
     const data = previewData || await fetchSummary(entry.summary_path);
     if (loadId !== state.loadId) return;
+    if ((state.catalog.preview === true) !== (data.scope.preview === true)) {
+      throw new Error("Preview and published accuracy evidence cannot be mixed");
+    }
     const evidence = snapshotEvidence(entry.branch, data.snapshot);
     const revision = data.snapshot.evaluated_revision;
     if (entry.status !== evidence.status ||
       revision && ["branch", "commit_sha"].some((key) => entry.evaluated_revision?.[key] !== revision[key])) {
       throw new Error("Branch catalog and snapshot provenance disagree");
     }
-    state.data = data;
+    state.rawData = data;
+    state.data = filterSnapshot(data);
     if (revision) {
       branchStatus.textContent = revision.branch === entry.branch
         ? `${entry.branch} · evaluated commit ${revision.commit_sha.slice(0, 12)} (snapshot results; no live rerun)`
         : `${entry.branch} · inherited evidence from ${revision.branch} @ ${revision.commit_sha.slice(0, 12)}; this branch has not been evaluated.`;
     } else {
       branchStatus.textContent = `${entry.branch} · historical package snapshot; evaluated branch and commit were not recorded. These are not current branch accuracy results.`;
+    }
+    if (data.scope.preview === true) branchStatus.textContent = "PR preview · " + branchStatus.textContent;
+    branchStatus.textContent += ` Measurements: ${data.snapshot.release_tag}; evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}.`;
+    if (entry.last_update?.status === "failed") branchStatus.textContent += " Update failed; showing previous evidence. See the accuracy workflow for details.";
+    const brief = document.getElementById("evidence-brief");
+    brief.textContent = `${entry.branch} · ${revision ? revision.commit_sha.slice(0, 8) : "historical snapshot"} · evaluated ${formatDate(data.snapshot.aisimulate_completed_at)}` +
+      (entry.status === "inherited" ? ` · inherited from ${revision.branch}` : "") +
+      (entry.last_update?.status === "failed" ? " · Update failed — showing previous results" : "");
+    if (data.scope.preview === true) brief.textContent = "PR preview · " + brief.textContent;
+    if (!revision) brief.textContent += " · not current branch accuracy; evaluated revision unrecorded";
+    brief.title = branchStatus.textContent;
+    if (data.snapshot.research_preview) {
+      const research = data.snapshot.research_preview;
+      brief.textContent = `Local research preview · ${data.snapshot.release_tag} · AISim ${research.source_commit.slice(0, 8)} · ` +
+        `${research.estimated_successes.toLocaleString()} successful predictions use estimated inputs · ` +
+        (data.snapshot.aic_commit_sha === "not-run" ? "AIC (legacy CLI): not run · " : "") +
+        "Not a qualified branch evaluation";
+      branchStatus.textContent = brief.textContent;
+      brief.title = brief.textContent;
     }
     downloadJson.href = `./${entry.summary_path}`;
     downloadJson.removeAttribute("aria-disabled");
@@ -697,11 +797,14 @@ async function loadBranch(branchName, restoreSelection = false, previewData = nu
       state.expandedWorkloads.add(JSON.stringify([params.get("model"), params.get("workload")]));
       state.topologyId = params.get("topology");
     }
+    restoreView(params);
+    state.data = filterSnapshot(data);
     renderSnapshot();
     renderSummary();
     renderMatrix();
     renderSortState();
     renderDrilldown();
+    renderView();
     updateLocation();
   } catch (error) {
     if (loadId === state.loadId) showError(error);
@@ -713,13 +816,292 @@ async function initialize() {
   // Directly serving the source docs remains useful before a Pages build.
   // Only a missing catalog permits this legacy single-snapshot mode.
   const previewData = response.status === 404 ? await fetchSummary("summary.json") : null;
+  const review = previewData?.scope.preview === true;
+  const defaultBranch = review ? previewData.snapshot.evaluated_revision.branch : "main";
   state.catalog = validateCatalog(previewData ? {
-    schema_version: 1, default_branch: "main",
-    branches: [{ branch: "main", ...snapshotEvidence("main", previewData.snapshot),
+    schema_version: 1, default_branch: defaultBranch, ...(review ? {preview: true} : {}),
+    branches: [{ branch: defaultBranch, ...snapshotEvidence(defaultBranch, previewData.snapshot),
       summary_path: "summary.json", published_from_commit: null }],
   } : response.ok ? await response.json() : (() => { throw new Error(`HTTP ${response.status}`); })());
   branchSelect.innerHTML = state.catalog.branches.map(branchOption).join("");
   branchSelect.disabled = false;
   branchSelect.addEventListener("change", () => loadBranch(branchSelect.value));
   await loadBranch(new URL(location.href).searchParams.get("branch") || state.catalog.default_branch, true, previewData);
+}
+
+// The public dashboard operates on qualified snapshots, including historical ones.
+let legendTimer;
+const SERIES_NAMES = {measured: "Measured silicon", aisimulate: "AISim", aic: "AIC (legacy CLI)"};
+const SERIES_COLORS = {measured: "#f59e0b", aisimulate: "#818cf8", aic: "#14b8a6"};
+const average = values => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+const numeric = value => Number.isFinite(value) ? value.toFixed(2) : "—";
+
+function abnormalPoint(points, index, metric) {
+  const values = points.map(p => p.measured[`${metric}_relative`]);
+  const v = values[index], before = values[index - 1], after = values[index + 1];
+  return (before > 0 && after > 0 && ((v > before * 1.05 && v > after * 1.05) ||
+    (before > v * 1.05 && after > v * 1.05))) || values.slice(index + 1).some(x => v > x * 1.05);
+}
+
+function aggregateTopologies(topologies, quality = null) {
+  const matchesQuality = point => quality === null || (point.configuration_quality ?? "not_recorded") === quality;
+  const rows = topologies.flatMap(t => t.points).filter(matchesQuality);
+  const result = {rows: rows.length};
+  for (const name of ["aic", "aisimulate"]) {
+    const acceptedPoints = new Set();
+    const metrics = {};
+    for (const metric of ["ttft", "tpot"]) {
+      const errors = [], shapes = [];
+      for (const topology of topologies) {
+        const points = topology.points.filter((point, i) => {
+          const error = point[name][`${metric}_error_pct`];
+          return matchesQuality(point) && Number.isFinite(error) && (!state.excludeOutliers || error <= 100) &&
+            (!state.excludeAbnormal || !abnormalPoint(topology.points, i, metric));
+        });
+        for (const point of points) { errors.push(point[name][`${metric}_error_pct`]); acceptedPoints.add(point); }
+        const anchor = points[0];
+        if (anchor) for (const point of points.slice(1)) {
+          const silicon = point.measured[`${metric}_relative`] / anchor.measured[`${metric}_relative`];
+          const predicted = point[name][`${metric}_relative`] / anchor[name][`${metric}_relative`];
+          if (silicon > 0 && Number.isFinite(predicted)) shapes.push(Math.abs(predicted / silicon - 1) * 100);
+        }
+      }
+      metrics[`${metric}_mape_pct`] = average(errors);
+      metrics[`${metric}_shape_error_pct`] = average(shapes);
+    }
+    result[name] = {...metrics, points: acceptedPoints.size};
+  }
+  result.aic.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
+    status => [status, rows.filter(p => (p.aic_status ?? "success") === status).length]));
+  result.aic.coverage_pct = rows.length ? result.aic.status_counts.success / rows.length * 100 : 0;
+  result.aisimulate.status_counts = Object.fromEntries(["success", "failed", "unsupported", "unknown"].map(
+    status => [status, rows.filter(p => p.status === status).length]));
+  return result;
+}
+
+function filterSnapshot(data) {
+  if (!state.excludeMultinode && !state.excludeOutliers && !state.excludeAbnormal) return data;
+  if (!data || !data.models.every(m => m.workloads.every(w => w.gpus.every(g => Array.isArray(g.topologies))))) return data;
+  const models = [];
+  const all = [];
+  for (const model of data.models) {
+    const workloads = [], modelTopologies = [];
+    for (const workload of model.workloads) {
+      const gpus = [], workloadTopologies = [];
+      for (const gpu of workload.gpus) {
+        const topologies = gpu.topologies.filter(t => !state.excludeMultinode || !t.is_multinode);
+        if (!topologies.length) continue;
+        gpus.push({...gpu, ...aggregateTopologies(topologies), topologies});
+        workloadTopologies.push(...topologies);
+      }
+      if (!gpus.length) continue;
+      workloads.push({...workload, ...aggregateTopologies(workloadTopologies), gpus, gpu_skus: gpus.map(g => g.gpu)});
+      modelTopologies.push(...workloadTopologies);
+    }
+    if (!workloads.length) continue;
+    models.push({...model, ...aggregateTopologies(modelTopologies), workloads,
+      gpu_skus: [...new Set(workloads.flatMap(w => w.gpu_skus))]});
+    all.push(...modelTopologies);
+  }
+  return {...data, models, totals: {...data.totals, ...aggregateTopologies(all), models: models.length,
+    by_configuration_quality: Object.fromEntries(["verified", "estimated", "not_recorded"].map(quality =>
+      [quality, aggregateTopologies(all, quality)]).filter(([, group]) => group.rows)),
+    gpu_skus: [...new Set(models.flatMap(m => m.gpu_skus))]}};
+}
+
+function restoreView(params) {
+  state.tab = params.get("tab") === "details" ? "details" : "overview";
+  state.excludeOutliers = params.get("outliers") === "1";
+  state.excludeAbnormal = params.get("abnormal") === "1";
+  state.excludeMultinode = params.get("multinode") === "1";
+  state.throughput = params.get("throughput") === "total" ? "total" : "output";
+  state.view = ["interactivity", "e2e", "ttft"].includes(params.get("view")) ? params.get("view") : "interactivity";
+  state.hiddenSeries = new Set((params.get("hidden") || "").split(",").filter(n => n in SERIES_NAMES));
+}
+
+function selectDefault() {
+  if (selectedGpu()) return;
+  const model = visibleModels()[0], workload = model?.workloads[0], gpu = workload?.gpus[0];
+  if (gpu) {
+    state.selection = JSON.stringify([model.model, workload.identity, gpu.gpu]);
+    state.expandedWorkloads.add(JSON.stringify([model.model, workload.identity]));
+    state.topologyId = null;
+  }
+}
+
+function filterField(key, title, values, selected) {
+  return `<label class="filter-${key}">${title}<select data-filter="${key}" title="${escapeHtml(values.find(([id]) => id === selected)?.[1] || title)}">${values.map(([id, label]) =>
+    `<option value="${escapeHtml(id)}"${id === selected ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}</select></label>`;
+}
+
+function renderView() {
+  const details = state.tab === "details";
+  document.getElementById("tab-overview").setAttribute("aria-pressed", String(!details));
+  document.getElementById("tab-details").setAttribute("aria-pressed", String(details));
+  matrixLayout.hidden = details;
+  summaryGrid.hidden = details;
+  document.getElementById("framework-summary").hidden = details;
+  document.getElementById("hardware-summary").hidden = details;
+  document.getElementById("details-view").hidden = !details;
+  document.getElementById("detail-filters").hidden = !details;
+  for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
+    document.getElementById(`exclude-${id}`).checked = state[key];
+  }
+  if (details) { selectDefault(); renderDetails(); }
+  else updateOutlierCounts(state.data?.models.flatMap(m => m.workloads.flatMap(w => w.gpus.flatMap(g => g.topologies || []))) || []);
+  const historical = state.data && !state.data.models.every(m => m.workloads.every(w => w.gpus.every(g => g.topologies)));
+  document.getElementById("filter-note").textContent = historical
+    ? "This historical snapshot has aggregates only. Regenerate its evaluation to enable point filters and charts."
+    : "Filters apply to each predictor and latency metric independently. Outliers remain visible in pink. Missing predictions remain gaps.";
+  for (const id of ["outliers", "abnormal", "multinode"]) document.getElementById(`exclude-${id}`).disabled = !!historical;
+}
+
+function renderDetails() {
+  const target = document.getElementById("details-view"), toolbar = document.getElementById("detail-filters");
+  const selected = selectedGpu();
+  if (!selected) { target.innerHTML = '<p role="status">No evaluated data matches this selection.</p>'; toolbar.innerHTML = ""; return; }
+  const {model, workload, gpu} = selected;
+  const topologies = gpu.topologies || [];
+  const topology = topologies.find(t => t.id === state.topologyId) || [...topologies].sort((a,b) => b.points.length - a.points.length)[0];
+  state.topologyId = topology?.id || null;
+  updateOutlierCounts(topology ? [topology] : []);
+  const options = (items, key) => items.map(v => [v[key], v[key]]);
+  toolbar.innerHTML = filterField("model", "Model", visibleModels().map(m => [m.model, modelLabel(m)]), model.model) +
+    filterField("workload", "ISL / OSL", model.workloads.map(w => [w.identity, w.identity.replace(":", " / ")]), workload.identity) +
+    filterField("gpu", "GPU", options(workload.gpus, "gpu"), gpu.gpu) +
+    ["precision", "framework", "serving"].map(key => filterField(key, key[0].toUpperCase() + key.slice(1),
+      [...new Set(topologies.map(t => t[key]))].sort().map(v => [v, v]), topology?.[key])).join("") +
+    filterField("topology", "Parallelism", topologyOptions(topologies.filter(t => !topology ||
+      ["precision", "framework", "serving"].every(k => t[k] === topology[k]))), topology?.id);
+  toolbar.querySelectorAll("select").forEach(select => select.addEventListener("change", event => {
+    const key = select.dataset.filter, value = event.target.value;
+    let nextModel = model, nextWorkload = workload, nextGpu = gpu;
+    if (key === "model") { nextModel = visibleModels().find(m => m.model === value); nextWorkload = nextModel.workloads.find(w => w.identity === workload.identity) || nextModel.workloads[0]; }
+    if (key === "workload") nextWorkload = model.workloads.find(w => w.identity === value);
+    nextGpu = nextWorkload.gpus.find(g => g.gpu === (key === "gpu" ? value : gpu.gpu)) || nextWorkload.gpus[0];
+    state.selection = JSON.stringify([nextModel.model, nextWorkload.identity, nextGpu.gpu]);
+    state.expandedWorkloads.add(JSON.stringify([nextModel.model, nextWorkload.identity]));
+    if (key === "topology") state.topologyId = value;
+    else if (["precision", "framework", "serving"].includes(key)) {
+      const candidates = topologies.filter(t => t[key] === value);
+      const compatible = candidates.find(t => ["precision", "framework", "serving"].every(k => k === key || t[k] === topology[k]));
+      state.topologyId = (compatible || candidates[0])?.id;
+    } else state.topologyId = null;
+    renderDetails(); renderDrilldown(); renderMatrix(); updateLocation();
+  }));
+  target.innerHTML = topology ? `<h2>${escapeHtml(modelLabel(model))} · ${escapeHtml(gpu.gpu)}</h2>${topologyContent(topology)}` :
+    '<p>This historical snapshot has no topology details. A new evaluation is required.</p>';
+  bindCharts(target, topology);
+}
+
+function topologyContent(topology) {
+  const stats = aggregateTopologies([topology]);
+  return `<p>${escapeHtml(topologyLabel(topology))} · ${escapeHtml(topology.total_gpus ?? "unknown")} GPUs</p>
+    <p class="coverage-text">${escapeHtml(coverageText({...stats, aisimulate: {...stats.aisimulate, points: stats.aisimulate.status_counts.success}}))}</p>
+    <div class="detail-cards">${accuracyCard("AISim error", stats.aisimulate, "aisimulate")}${accuracyCard("AIC (legacy CLI) error", stats.aic, "aic")}</div>
+    <div class="chart-legend">${Object.entries(SERIES_NAMES).map(([key, name]) => `<button data-series="${key}" aria-pressed="${!state.hiddenSeries.has(key)}" style="color:${SERIES_COLORS[key]}"><span class="legend-line ${key}" aria-hidden="true"></span> ${name}</button>`).join("")}</div>
+    <p class="detail-scope">Click a legend to hide a series; double-click or Shift+Enter to isolate it. Click a point for its configuration and values.</p>
+    <div class="detail-charts">
+      <section class="chart-panel" aria-label="Token latency"><h3>Token latency</h3>${metricChart(topology, "tpot")}</section>
+      <section class="chart-panel" aria-label="Time to first token"><h3>Time to first token</h3>${metricChart(topology, "ttft")}</section>
+      <section class="chart-panel" aria-label="Throughput"><h3>Throughput</h3>${metricChart(topology, "pareto")}
+        <div class="chart-options"><label>Tokens <select data-chart="throughput">${["output", "total"].map(v => `<option${state.throughput === v ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+        <label>Compare against <select data-chart="view">${[["interactivity", "Interactivity"], ["e2e", "E2E latency"], ["ttft", "TTFT"]].map(([v,l]) => `<option value="${v}"${state.view === v ? " selected" : ""}>${l}</option>`).join("")}</select></label></div>
+      </section>
+    </div>${pointTable(topology)}`;
+}
+
+function metricAvailability(series, field) {
+  if (series[field] != null) return numeric(series[field]);
+  const reason = series.unavailable_metrics?.[field];
+  return {unsupported_by_predictor: "Unsupported", prediction_failed: "Prediction failed", not_recorded: "Not recorded"}[reason] ?? "—";
+}
+
+function metricChart(topology, metric) {
+  const pareto = metric === "pareto";
+  const absolute = topology.points.every(p => p.measured[`${metric}_ms`] > 0);
+  const xLabel = !pareto ? "Concurrency" : {interactivity: "Interactivity (tok/s/user)", e2e: "E2E latency (ms)", ttft: "TTFT (ms)"}[state.view];
+  const yLabel = pareto ? `${state.throughput === "total" ? "Total" : "Output"} throughput (tok/s/GPU)` : `${metric.toUpperCase()} (${absolute ? "ms" : "relative to measured anchor"})`;
+  const series = Object.keys(SERIES_NAMES).filter(n => !state.hiddenSeries.has(n)).map(name => ({name,
+    points: topology.points.map((p, i) => {
+      const v = p[name], latencyMetric = pareto ? (state.view === "ttft" ? "ttft" : "tpot") : metric;
+      const abnormal = abnormalPoint(topology.points, i, latencyMetric);
+      return {i, x: !pareto ? p.concurrency : state.view === "interactivity" ? (v.interactivity_tok_s ?? (v.tpot_ms > 0 ? 1000 / v.tpot_ms : null)) : v[`${state.view}_ms`],
+        y: pareto ? v[`${state.throughput}_per_gpu`] : v[`${metric}_${absolute ? "ms" : "relative"}`],
+        exclude: state.excludeAbnormal && abnormal,
+        outlier: v[`${latencyMetric}_error_pct`] > 100};
+    })}));
+  const availability = pareto && state.throughput === "total" && topology.points.some(p =>
+    p.aic.unavailable_metrics?.total_per_gpu === "unsupported_by_predictor")
+    ? '<p class="detail-scope">AIC (legacy CLI) does not support total throughput.</p>' : "";
+  const valid = p => !p.exclude && Number.isFinite(p.x) && Number.isFinite(p.y);
+  const points = series.flatMap(s => s.points.filter(valid));
+  if (!points.length) return `<p class="detail-empty">${escapeHtml(yLabel)}: no values available for this snapshot or filter.</p>${availability}`;
+  const maxX = Math.max(...points.map(p => p.x), 1), maxY = Math.max(...points.map(p => p.y), 0.01) * 1.08;
+  const x = v => 65 + v / maxX * 465, y = v => 235 - v / maxY * 195;
+  let svg = `<svg viewBox="0 0 560 290" role="group" aria-label="${escapeHtml(yLabel)} versus ${escapeHtml(xLabel)}"><text x="65" y="18" fill="currentColor">${escapeHtml(yLabel)}</text>`;
+  for (let i = 0; i <= 4; i++) {
+    const yy = maxY * i / 4, xx = maxX * i / 4;
+    svg += `<path d="M65 ${y(yy)}H530" stroke="var(--border)"/><text x="58" y="${y(yy)+4}" text-anchor="end" fill="currentColor">${numeric(yy)}</text><text x="${x(xx)}" y="255" text-anchor="middle" fill="currentColor">${numeric(xx)}</text>`;
+  }
+  for (const {name, points: values} of series) {
+    let path = "", connected = false;
+    for (const p of values) {
+      if (!valid(p)) { connected = false; continue; }
+      path += `${connected ? "L" : "M"}${x(p.x)},${y(p.y)} `; connected = true;
+    }
+    svg += `<path d="${path}" stroke="${SERIES_COLORS[name]}" fill="none" stroke-width="2"${name === "measured" ? "" : ' stroke-dasharray="1 6" stroke-linecap="round"'}/>`;
+    for (const p of values.filter(valid)) svg += `<circle class="point ${name}" cx="${x(p.x)}" cy="${y(p.y)}" r="4" fill="${p.outlier ? "#ec4899" : SERIES_COLORS[name]}" tabindex="0" role="button" data-point="${p.i}" aria-label="${SERIES_NAMES[name]}, concurrency ${topology.points[p.i].concurrency}, ${numeric(p.y)}"><title>${SERIES_NAMES[name]} · concurrency ${topology.points[p.i].concurrency} · ${numeric(p.x)}, ${numeric(p.y)}</title></circle>`;
+  }
+  return `<div class="metric-chart">${svg}<text x="290" y="282" text-anchor="middle" fill="currentColor">${escapeHtml(xLabel)}</text></svg></div>${availability}`;
+}
+
+function bindCharts(container, topology) {
+  if (!topology) return;
+  container.querySelectorAll("[data-series]").forEach(button => {
+    button.addEventListener("click", () => { clearTimeout(legendTimer); legendTimer = setTimeout(() => { const n = button.dataset.series; state.hiddenSeries.has(n) ? state.hiddenSeries.delete(n) : state.hiddenSeries.add(n); refreshCharts(); }, 250); });
+    button.addEventListener("dblclick", () => { clearTimeout(legendTimer); state.hiddenSeries = new Set(Object.keys(SERIES_NAMES).filter(n => n !== button.dataset.series)); refreshCharts(); });
+    button.addEventListener("keydown", event => {
+      if (event.shiftKey && ["Enter", " "].includes(event.key)) {
+        event.preventDefault(); clearTimeout(legendTimer);
+        state.hiddenSeries = new Set(Object.keys(SERIES_NAMES).filter(n => n !== button.dataset.series));
+        refreshCharts();
+        container.querySelector(`[data-series="${button.dataset.series}"]`)?.focus();
+      }
+    });
+  });
+  container.querySelectorAll("[data-chart]").forEach(select => select.addEventListener("change", () => {
+    state[select.dataset.chart] = select.value; refreshCharts();
+  }));
+  container.querySelectorAll("[data-point]").forEach(marker => {
+    const open = () => {
+      const point = topology.points[Number(marker.dataset.point)], selected = selectedGpu();
+      document.getElementById("point-content").innerHTML = `<h2 id="point-title">Concurrency ${point.concurrency}</h2><p>${escapeHtml(topologyLabel(topology))}</p><p>${escapeHtml(modelLabel(selected.model))} · ${escapeHtml(selected.workload.identity)} · ${escapeHtml(selected.gpu.gpu)} · ${escapeHtml(point.status)}</p>
+        <details open><summary>Recorded prediction configuration</summary><table><tbody>${Object.entries(point.configuration || {}).map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value ?? "Not recorded")}</td></tr>`).join("")}</tbody></table><p>This table contains a subset of prediction settings. Configuration evidence is labeled separately; recorded settings alone do not establish server-knob parity.</p></details>
+        <table><thead><tr><th>Series</th><th>TTFT ms</th><th>TPOT ms</th><th>E2E ms</th><th>Output tok/s/GPU</th><th>Total tok/s/GPU</th></tr></thead><tbody>${Object.entries(SERIES_NAMES).map(([key,name]) => `<tr><th>${name}</th>${["ttft_ms", "tpot_ms", "e2e_ms", "output_per_gpu", "total_per_gpu"].map(f => `<td>${escapeHtml(metricAvailability(point[key], f))}</td>`).join("")}</tr>`).join("")}</tbody></table><p>Missing values are labeled when the artifact records a reason. — means no value or reason was recorded.</p>`;
+      document.getElementById("point-dialog").showModal();
+    };
+    marker.addEventListener("click", open);
+    marker.addEventListener("keydown", e => { if (["Enter", " "].includes(e.key)) {e.preventDefault(); open();} });
+  });
+}
+
+function refreshCharts() { renderDrilldown(); if (state.tab === "details") renderDetails(); updateLocation(); }
+for (const tab of ["overview", "details"]) document.getElementById(`tab-${tab}`).addEventListener("click", () => {
+  state.tab = tab; renderView(); if (state.data) {renderMatrix(); renderDrilldown();} updateLocation();
+});
+for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeAbnormal"], ["multinode", "excludeMultinode"]]) {
+  document.getElementById(`exclude-${id}`).addEventListener("change", event => {
+    state[key] = event.target.checked;
+    if (!state.rawData) return;
+    state.data = filterSnapshot(state.rawData);
+    renderSummary(); renderMatrix(); renderDrilldown(); renderView(); updateLocation();
+  });
+}
+document.getElementById("close-point").addEventListener("click", () => document.getElementById("point-dialog").close());
+
+function updateOutlierCounts(topologies) {
+  const rows = topologies.flatMap(t => t.points);
+  const count = name => rows.filter(p => ["ttft", "tpot"].some(m => p[name][`${m}_error_pct`] > 100)).length;
+  document.getElementById("outlier-count").textContent = `(AISim: ${count("aisimulate")}, AIC (legacy CLI): ${count("aic")})`;
 }

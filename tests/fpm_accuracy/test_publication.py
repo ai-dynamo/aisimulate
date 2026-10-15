@@ -4,14 +4,17 @@
 import hashlib
 import io
 import json
+import subprocess
+import sys
 import urllib.error
 import zipfile
 from pathlib import Path
 
-import prepare_fpm_accuracy_pages as publish
 import pytest
 import yaml
-from fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
+
+import scripts.pages.prepare_fpm_accuracy_pages as publish
+from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -130,6 +133,26 @@ def test_reject_invalid_campaign(summary, field, value):
         validate_summary(summary)
 
 
+@pytest.mark.parametrize(
+    "settings",
+    [
+        None,
+        [{"value": -1, "unit": "session_trees"}],
+        [{"value": 4, "unit": "unknown"}],
+        [{"value": 4, "unit": "session_trees"}] * 2,
+    ],
+)
+def test_collection_concurrency_contract_is_optional_and_validated(summary, settings):
+    collection = dict(types=["trace_replay"], datasets=[], run_count=2, unattributed_measurements=0)
+    summary["rows"][0]["collection"] = collection
+    validate_summary(summary)
+    collection["concurrency_settings"] = [{"value": 4, "unit": "session_trees"}]
+    validate_summary(summary)
+    collection["concurrency_settings"] = settings
+    with pytest.raises(ValueError):
+        validate_summary(summary)
+
+
 def test_reject_raw_fields_bad_coverage_and_internal_links(summary):
     summary["rows"][0]["raw_latency"] = [123]
     with pytest.raises(ValueError):
@@ -236,3 +259,42 @@ def test_workflow_and_pages_contract():
         s for s in pages["jobs"]["build"]["steps"] if s.get("name") == "Build pull request preview from repository data"
     )
     assert "--fpm-artifacts" not in preview["run"]
+
+
+@pytest.mark.parametrize("module", ["run_fpm_accuracy", "prepare_fpm_measurements"])
+def test_fpm_entrypoints_do_not_shadow_standard_library_types(module):
+    result = subprocess.run(
+        [sys.executable, "-m", f"scripts.fpm_accuracy.{module}", "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+
+
+def test_summary_methods_accept_legacy_and_learned_lists(summary):
+    from scripts.fpm_accuracy.contract import LEGACY_METHODS, validate_summary
+
+    def fresh():
+        return json.loads(json.dumps(summary))
+
+    current = fresh()
+    validate_summary(current)
+    legacy = fresh()
+    legacy["methods"] = list(LEGACY_METHODS)
+    for row in legacy["rows"]:
+        row["results"].pop("learned", None)
+    validate_summary(legacy)
+    mixed = fresh()
+    mixed["methods"] = list(LEGACY_METHODS)  # rows still carry learned
+    with pytest.raises(ValueError, match="unexpected or missing public fields"):
+        validate_summary(mixed)
+    reordered = fresh()
+    reordered["methods"] = ["learned", *LEGACY_METHODS]
+    with pytest.raises(ValueError, match="unexpected predictors"):
+        validate_summary(reordered)
+    with_input = fresh()
+    with_input["rows"][0]["results"]["learned"]["artifact"] = with_input["rows"][0]["results"]["warmup"]["artifact"]
+    with pytest.raises(ValueError, match="learned has no FPM input"):
+        validate_summary(with_input)

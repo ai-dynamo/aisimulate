@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import statistics
@@ -15,7 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from collector.case_generator import _framework_specific_model_case_values, get_base_common_case_values
-from collector.sglang.dsv41_contract import build_manifest, validate_row
+from collector.sglang.dsv41_contract import build_manifest, canonical_json, validate_row
 
 __compat__ = "sglang@1aa0e962b206102b7c439a4a0c4981cfec6e87bc"
 
@@ -92,6 +93,196 @@ def aggregate_rank_records(paths: list[Path], tp_size: int) -> list[dict]:
     return output
 
 
+def aggregate_bounded_attention_records(
+    paths: list[Path],
+    tp_size: int,
+    manifest: dict,
+    workloads: dict,
+    *,
+    producer_kind: str,
+    evidence_path: Path,
+) -> list[dict]:
+    """Apply the source-audited eight-group equal-owner empirical policy.
+
+    Call only after the producer's complete runtime/input/output admission.
+    Every planned attention owner/rank/sample is independently checked here.
+    Different inputs and allocator locality are retained observations, not
+    claimed byte/timing equivalence. No accuracy threshold or owner selection
+    is inferred from the measured latencies. Raw files are never rewritten.
+    """
+    from collector.sglang.dsv41_workloads import freeze_workloads, projected_keys
+
+    modes = {"native_attention_isolated": 2, "native_checkpoint": 1}
+    if producer_kind not in modes or tp_size not in (2, 4):
+        raise ValueError("bounded owner policy requires the audited producer and TP2/TP4")
+    if producer_kind == "native_checkpoint" and tp_size != 4:
+        raise ValueError("whole-checkpoint bounded audit is limited to GB200 TP4")
+    if manifest != build_manifest(tp_size, True) or freeze_workloads(workloads["source_payload"]) != workloads:
+        raise ValueError("bounded owner policy requires unchanged native manifest and frozen workloads")
+    if {p.name for p in paths} != {f"rank-{rank}.jsonl" for rank in range(tp_size)} or len(paths) != tp_size:
+        raise ValueError("missing or unexpected TP rank files")
+    if evidence_path.exists():
+        raise ValueError("bounded owner evidence must use a new destination")
+    warmup, iterations = modes[producer_kind], 5
+    fields = ("component", "geometry", "batch_size", "prefix", "x")
+    owners = defaultdict(list)
+    for index, case in enumerate(workloads["cases"]):
+        for key in projected_keys(manifest, case):
+            if key[0] == "attention":
+                owners[key].append(index)
+    # Audited SGLang 1aa0e962 tail: native model deepseek_v4.py:3542-3563;
+    # backend metadata1492-1577/1647-1702; final FlashMLA3663-3765.
+    # This is a bounded empirical aggregation scope, not a case filter or an
+    # assertion that source-derived shapes imply equal inputs or timings.
+    audited = {
+        (1, 384): {(256, 256), (512, 0)},
+        (1, 640): {(256, 512), (512, 256), (768, 0)},
+        (2, 256): {(128, 256), (384, 0)},
+        (2, 640): {(256, 512), (768, 0)},
+    }
+    observed_groups = set()
+    for key, indices in owners.items():
+        if len(indices) == 1:
+            continue
+        shape, batch, prefix, x = json.loads(key[1]), *key[2:]
+        logical = {(workloads["cases"][i]["query"], workloads["cases"][i]["prefix"]) for i in indices}
+        group = (batch, prefix, shape["role"])
+        if (
+            not shape["is_context"]
+            or not shape["bounded_prefill"]
+            or shape["compress_ratio"] != 1
+            or shape["role"] not in ("reuse", "reindex")
+            or x != 128
+            or logical != audited.get((batch, prefix))
+            or len(indices) != len(logical)
+            or group in observed_groups
+        ):
+            raise ValueError("collision owners fall outside the audited bounded policy")
+        observed_groups.add(group)
+    if observed_groups != {(b, p, role) for b, p in audited for role in ("reuse", "reindex")}:
+        raise ValueError("bounded owner policy requires all eight audited collision groups")
+
+    samples = range(warmup, warmup + iterations)
+    expected = {(key, owner, sample) for key, indices in owners.items() for owner in indices for sample in samples}
+    groups, templates, provenance, raw_hashes = defaultdict(lambda: defaultdict(dict)), {}, set(), {}
+    for path in paths:
+        rank = int(path.stem.split("-")[1])
+        raw = path.read_bytes()
+        raw_hashes[path.name] = hashlib.sha256(raw).hexdigest()
+        observed = set()
+        for line in raw.decode().splitlines():
+            row = json.loads(line)
+            validate_row(row)
+            if isinstance(row["latency"], bool) or type(row["tp_rank"]) is not int:
+                raise ValueError("bounded samples require numeric latency and an integer TP rank")
+            if row["component"] != "attention":
+                if producer_kind != "native_checkpoint":
+                    raise ValueError("isolated attention contains another component")
+                continue
+            if (
+                row["source_sha256"] != "d50217d8f78e4bd173774c36713650bbf44b058c9575ac8babba208a5c5173a2"
+                or row["config_sha256"] != manifest["config_sha256"]
+                or row["runtime_digest"]
+                not in (
+                    "sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5",
+                    "sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d",
+                )
+                or row["used_cuda_graph"] is not False
+                or row["execution_profile"] != "decoder_bounded"
+                or row["kernel_source"] != "sglang.srt.models.deepseek_v4.MQALayer.forward"
+            ):
+                raise ValueError("attention source/runtime/method differs from bounded policy audit")
+            provenance.add(tuple(row[k] for k in ("source_sha256", "config_sha256", "runtime_digest")))
+            if producer_kind == "native_checkpoint" and row["runtime_digest"] != (
+                "sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d"
+            ):
+                raise ValueError("whole-checkpoint bounded audit requires its exact ARM runtime")
+            sample, invocation = row["sample"], row["invocation"]
+            if type(sample) is not int or type(invocation) is not int or sample not in samples:
+                raise ValueError("unplanned bounded sample or invocation")
+            owner = (
+                invocation
+                if producer_kind == "native_attention_isolated"
+                else (invocation - 1) // (warmup + iterations)
+            )
+            if producer_kind == "native_checkpoint" and invocation != owner * (warmup + iterations) + sample + 1:
+                raise ValueError("whole-model invocation differs from native sample order")
+            key = tuple(row[k] for k in fields)
+            identity = (key, owner, sample)
+            if identity not in expected or identity in observed or row["tp_rank"] != rank or row["sample_count"] != 1:
+                raise ValueError("duplicate, unexpected or wrong-rank bounded sample")
+            if producer_kind == "native_attention_isolated" and (
+                row.get("case_id") != workloads["cases"][owner]["case_id"]
+                or row.get("producer_kind") != producer_kind
+                or row.get("collection_purpose") != "calibration"
+            ):
+                raise ValueError("isolated bounded owner identity differs")
+            observed.add(identity)
+            groups[key][owner].setdefault(sample, {})[rank] = row["latency"]
+            templates[key] = row
+        if observed != expected:
+            raise ValueError("incomplete bounded owner/rank/sample coverage")
+    if len(provenance) != 1:
+        raise ValueError("bounded aggregation cannot mix runtime/source identities")
+    output, distributions = [], []
+    columns = (
+        *fields,
+        "latency",
+        "kernel_source",
+        "measurement_scope",
+        "used_cuda_graph",
+        "sample_count",
+        "kv_seed_regime",
+        "source_sha256",
+        "config_sha256",
+        "runtime_digest",
+        "execution_profile",
+    )
+    for key in sorted(groups):
+        estimates, owner_evidence = [], []
+        for owner in sorted(groups[key]):
+            rank_samples = groups[key][owner]
+            maxima = [max(rank_samples[sample].values()) for sample in samples]
+            estimate = statistics.median(maxima)
+            estimates.append(estimate)
+            owner_evidence.append(
+                {
+                    "case": workloads["cases"][owner],
+                    "owner_index": owner,
+                    "rank_samples_ms": [{"sample": sample, "ranks": rank_samples[sample]} for sample in samples],
+                    "rank_maxima_ms": maxima,
+                    "median_ms": estimate,
+                }
+            )
+        result = {column: templates[key][column] for column in columns}
+        result.update(latency=statistics.mean(estimates), sample_count=iterations * len(estimates))
+        validate_row(result)
+        output.append(result)
+        distributions.append({"key": key, "owners": owner_evidence, "equal_owner_mean_ms": result["latency"]})
+    evidence = {
+        "policy": "dsv41_bounded_eight_groups_equal_owner_mean_v1",
+        "aggregator_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "producer_kind": producer_kind,
+        "tp_size": tp_size,
+        "source_identity": dict(
+            zip(("source_sha256", "config_sha256", "runtime_digest"), provenance.pop(), strict=True)
+        ),
+        "raw_sha256": raw_hashes,
+        "manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "workloads_sha256": hashlib.sha256(canonical_json(workloads).encode()).hexdigest(),
+        "collision_groups": len(observed_groups),
+        "physical_rows": len(output),
+        "reducer": "median of sample rank maxima per logical owner, then equal-weight mean of all owners",
+        "input_or_timing_equivalence_asserted": False,
+        "accuracy_acceptance": "NOT_EVALUATED",
+        "distributions": distributions,
+    }
+    with evidence_path.open("x") as stream:
+        json.dump(evidence, stream, indent=2)
+        stream.write("\n")
+    return output
+
+
 def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, list[dict]]:
     """Admit measured native baselines only after every rank/sample agrees."""
     import math
@@ -115,11 +306,31 @@ def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, lis
     }
     groups = defaultdict(list)
     for path in paths:
+        humming_qualification = None
         for line in path.read_text().splitlines():
             row = json.loads(line)
             kind = row["kind"]
             if kind not in columns or not math.isfinite(row["latency"]) or row["latency"] <= 0:
                 raise ValueError("invalid native baseline observation")
+            if kind == "moe" and row["moe_dtype"] == "w4a16_mxfp4_humming":
+                from collector.sglang.dsv41_humming import validate_humming_observations
+
+                if humming_qualification is None:
+                    receipt = path.parent / f"humming-qualification-rank-{row['tp_rank']}.json"
+                    if not receipt.is_file():
+                        raise ValueError("missing actual native Humming qualification")
+                    humming_qualification = json.loads(receipt.read_text())
+                if (
+                    humming_qualification.get("state") != "actual_bf16_native_humming_calls_verified"
+                    or humming_qualification.get("tp_rank") != row["tp_rank"]
+                    or row["kernel_source"] != "sglang_mxfp4_humming_moe"
+                    or any(
+                        humming_qualification.get("provenance", {}).get(key) != row[key]
+                        for key in ("source_sha256", "config_sha256", "runtime_digest", "execution_profile")
+                    )
+                ):
+                    raise ValueError("native Humming qualification provenance differs")
+                validate_humming_observations(humming_qualification["calls"], humming_qualification["configs"])
             key = (kind, *(row[c] for c in columns[kind]))
             groups[key].append(row)
     result = defaultdict(list)

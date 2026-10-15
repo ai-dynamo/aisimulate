@@ -63,15 +63,23 @@ def _latest_support_matrix_version(
     backend: str,
     model: str | None = None,
     architecture: str | None = None,
+    queryable_versions: set[str] | None = None,
 ) -> str | None:
     """Pick the highest PEP 440 version for the relevant support-matrix rows.
 
     Matches system and backend case-insensitively. When a model is provided,
     exact-model rows win, then architecture rows. If neither model nor
     architecture matches, return None instead of selecting an unrelated row.
+    When ``queryable_versions`` is given, rows for other versions are ignored
+    before model precedence applies, so an exact-model row at a stale version
+    cannot hide a queryable architecture row.
     """
     rows = [
-        row for row in matrix if row["System"].lower() == system.lower() and row["Backend"].lower() == backend.lower()
+        row
+        for row in matrix
+        if row["System"].lower() == system.lower()
+        and row["Backend"].lower() == backend.lower()
+        and (queryable_versions is None or row["Version"] in queryable_versions)
     ]
 
     if model:
@@ -108,6 +116,17 @@ def _latest_support_matrix_version(
     if not versions:
         return None
     return max(versions, key=lambda version: version[1])[0]
+
+
+def _queryable_versions(system: str, backend: str) -> set[str] | None:
+    """Versions prediction accepts for (system, backend), or None when ungated.
+
+    Support-matrix rows can outlive a version slot (a regenerated ``next``
+    replaces the old one), and reporting such a version would advertise data
+    that prediction rejects.
+    """
+    slots = perf_database.get_version_slots(system.lower(), backend.lower())
+    return set(slots.values()) if slots else None
 
 
 def _build_common_cli_parser() -> argparse.ArgumentParser:
@@ -2489,7 +2508,14 @@ def _run_support_matrix_mode(args):
             if version_filter:
                 version = version_filter
             else:
-                version = _latest_support_matrix_version(matrix, system, be, model=model, architecture=architecture)
+                version = _latest_support_matrix_version(
+                    matrix,
+                    system,
+                    be,
+                    model=model,
+                    architecture=architecture,
+                    queryable_versions=_queryable_versions(system, be),
+                )
                 if version is None:
                     results[(system, be)] = None
                     continue
@@ -2570,7 +2596,14 @@ def _run_support_mode(args):
     # If no version specified, find the latest model-relevant version in the support matrix
     if not version:
         matrix = common.get_support_matrix()
-        version = _latest_support_matrix_version(matrix, system, backend, model=model, architecture=architecture)
+        version = _latest_support_matrix_version(
+            matrix,
+            system,
+            backend,
+            model=model,
+            architecture=architecture,
+            queryable_versions=_queryable_versions(system, backend),
+        )
         if version is None:
             logger.info(
                 "No valid support-matrix backend version found for model=%s system=%s backend=%s",

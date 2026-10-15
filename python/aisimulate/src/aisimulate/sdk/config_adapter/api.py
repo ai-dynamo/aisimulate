@@ -9,15 +9,18 @@ from typing import Any
 
 from .dynamo import DynamoRecipeSource, adapt_dynamo
 from .inferencex import InferenceXSource, adapt_inferencex
+from .resolved import ResolvedInferenceXSource, adapt_resolved_inferencex
 from .schema import AdaptationReport, AdapterOverrides, EstimateRequestV1
 
 
 def adapt_config(
-    source: InferenceXSource | DynamoRecipeSource,
+    source: InferenceXSource | ResolvedInferenceXSource | DynamoRecipeSource,
     overrides: AdapterOverrides | None = None,
 ) -> AdaptationReport:
     """Adapt source config without executing an estimate."""
     resolved_overrides = overrides or AdapterOverrides()
+    if isinstance(source, ResolvedInferenceXSource):
+        return adapt_resolved_inferencex(source, resolved_overrides)
     if isinstance(source, InferenceXSource):
         return adapt_inferencex(source, resolved_overrides)
     if isinstance(source, DynamoRecipeSource):

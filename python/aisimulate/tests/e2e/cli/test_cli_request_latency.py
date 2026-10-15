@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Build/E2E tests for the request-latency CLI flow documented in repository-root docs/cli/legacy-aic-user-guide.md.
+Build/E2E tests for the request-latency CLI flow documented in repository-root docs/aic-backward-compatibility/cli.md.
 
 We cover multiple backends and both "with explicit TTFT" and "derive TTFT automatically"
 scenarios to ensure the request-latency mode remains stable.

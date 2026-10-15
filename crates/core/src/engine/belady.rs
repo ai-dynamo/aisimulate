@@ -18,9 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub(crate) use super::common::hashing::SequenceHash;
-use super::common::hashing::{
-    XXH3_SEED, compute_block_hash_for_tokens, compute_next_sequence_hash,
-};
+use super::common::hashing::{block_hashes, compute_next_sequence_hash};
 
 /// Native eviction ranking for offline replay. LRU requires no forecast.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,10 +34,8 @@ pub enum KvEvictionPolicy {
 pub(crate) fn input_sequence_hashes(tokens: &[u32], block_size: usize) -> Vec<SequenceHash> {
     assert!(block_size > 0, "Belady block size must be positive");
     let mut parent = None;
-    tokens
-        .chunks_exact(block_size)
-        .map(|block| {
-            let local = compute_block_hash_for_tokens(block, XXH3_SEED);
+    block_hashes(tokens, block_size)
+        .map(|local| {
             let hash = parent.map_or(local, |parent| compute_next_sequence_hash(parent, local));
             parent = Some(hash);
             hash

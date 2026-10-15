@@ -285,6 +285,7 @@ class Gemma4MixModel(BaseModel):
                 moe_q,
                 wl_dist,
                 attn_dp,
+                moe_kernel_source=self.config.moe_kernel_source,
             ),
             ops.MoEDispatch(
                 f"{prefix}_moe_post_dispatch",

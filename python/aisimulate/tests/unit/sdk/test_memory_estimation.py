@@ -19,6 +19,8 @@ checkable parity assertion for the port.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -31,6 +33,7 @@ pytestmark = pytest.mark.unit
 pytest.importorskip("aisimulate_core")
 
 from aisimulate.sdk import memory
+from aisimulate_core.sdk.models.helpers import _apply_model_quant_defaults
 
 _GIB = 1 << 30
 
@@ -179,6 +182,54 @@ def test_native_zero_per_token_raises():
             fraction=0.9,
             gpu_memory_capacity_bytes_override=None,
         )
+
+
+@pytest.mark.parametrize(
+    "override, resolved, token_capacity",
+    [(None, "fp8", 2097152), ("fp8", "fp8", 2097152), ("bfloat16", "bfloat16", 1048576)],
+)
+def test_native_capacity_discloses_resolved_kv_precision(monkeypatch, override, resolved, token_capacity):
+    def get_model(_path, config, backend):
+        # Exercise real default resolution for an FP8 checkpoint with no KV declaration.
+        _apply_model_quant_defaults(config, {"quant_algo": "fp8"}, "Qwen3ForCausalLM", backend)
+        # K and V, eight layers, two KV heads, head dimension 64.
+        bytes_per_token = 2 * 8 * 2 * 64 * config.kvcache_quant_mode.value.memory
+        return SimpleNamespace(
+            config=config,
+            get_kvcache_bytes_per_sequence=lambda length: length * bytes_per_token,
+            get_kvcache_batch_capacity=lambda budget, _batch: int(budget // bytes_per_token),
+        )
+
+    monkeypatch.setattr(memory, "get_model", get_model)
+    monkeypatch.setattr(
+        memory,
+        "get_backend",
+        lambda _: SimpleNamespace(_get_memory_usage=lambda *_a, **_k: dict(weights=1, activations=1, others=1, nccl=1)),
+    )
+    monkeypatch.setattr(
+        memory.perf_database,
+        "get_database",
+        lambda *_a, **_k: SimpleNamespace(version="0.19.0", system_spec={"gpu": {"mem_capacity": 8 * _GIB}}),
+    )
+    diagnostics = {}
+    blocks = memory.estimate_num_gpu_blocks(
+        "test/fp8-checkpoint",
+        "test_gpu",
+        "vllm",
+        "0.19.0",
+        max_num_tokens=128,
+        max_batch_size=1,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=1.0,
+        scheduler_block_size=64,
+        kvcache_quant_mode=override,
+        diagnostics=diagnostics,
+    )
+    # Identical 4 GiB cache budgets: FP8 uses 2048 bytes/token, BF16 uses 4096.
+    assert diagnostics["total_kv_size_bytes"] == 4 * _GIB
+    assert diagnostics["total_kv_size_tokens"] == token_capacity
+    assert blocks == token_capacity // 64
+    assert diagnostics["kvcache_quant_mode"] == resolved
 
 
 def test_breakdown_applies_nextn_to_model_config(monkeypatch):
@@ -901,6 +952,67 @@ def test_estimate_kv_cache_falls_back_when_breakdown_raises(monkeypatch):
     )
     assert out["source"] == "naive_fallback"
     assert out["tolerance_adjusted"] is None
+    assert "kvcache_quant_mode" not in out
+
+
+@pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
+def test_estimate_kv_cache_rejects_malformed_context_parallel_sizes_before_any_build(monkeypatch, knob):
+    # Validation runs before the model build and the naive fallback: neither
+    # may turn True (int 1) into a cp=dcp=1 estimate.
+    def _never(*args, **kwargs):
+        raise AssertionError("model build must not be reached")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_never))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", classmethod(_never))
+    with pytest.raises(ValueError, match=f"{knob} must be a positive integer"):
+        memory.estimate_kv_cache(
+            "foo/bar",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=True,
+            **{knob: True},
+        )
+
+
+def test_estimate_kv_cache_never_falls_back_after_a_context_parallel_capability_rejection(monkeypatch):
+    # get_model rejects dcp/cp>1 for families without the sharded path with
+    # NotImplementedError; the naive estimator knows neither knob, so falling
+    # back would silently return an unstriped capacity for a striped request.
+    def _unsupported(*args, **kwargs):
+        raise NotImplementedError("Decode context parallelism (dcp_size=2) is not supported")
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_unsupported))
+    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "_load_config", lambda *a, **k: dict(_RAW_UNSUPPORTED))
+    with pytest.raises(ValueError, match="context parallelism is not supported"):
+        memory.estimate_kv_cache(
+            "foo/bar-unknown-arch",
+            "h200_sxm",
+            "vllm",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            gpu_memory_capacity_bytes_override=200 * _GIB,
+            dcp_size=2,
+            allow_naive_fallback=True,
+        )
+    # Without a CP knob the same rejection keeps the documented naive fallback.
+    out = memory.estimate_kv_cache(
+        "foo/bar-unknown-arch",
+        "h200_sxm",
+        "vllm",
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        gpu_memory_capacity_bytes_override=200 * _GIB,
+        allow_naive_fallback=True,
+    )
+    assert out["source"] == "naive_fallback"
 
 
 def test_estimate_kv_cache_propagates_when_fallback_disabled(monkeypatch):
@@ -920,6 +1032,33 @@ def test_estimate_kv_cache_propagates_when_fallback_disabled(monkeypatch):
             gpu_memory_capacity_bytes_override=200 * _GIB,
             allow_naive_fallback=False,
         )
+
+
+def test_estimate_kv_cache_keeps_version_slot_rejection_unwrapped(monkeypatch):
+    # A backend version outside the queryable slots is a configuration error
+    # with its own fix; it must not be re-labelled as an unsupported model.
+    from aisimulate_core.sdk import perf_database
+
+    slot_error = perf_database.UnlistedQueryVersionError("sglang version '0.5.10' is not a queryable version")
+
+    def _reject(*args, **kwargs):
+        raise slot_error
+
+    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_reject))
+    with pytest.raises(perf_database.UnlistedQueryVersionError) as excinfo:
+        memory.estimate_kv_cache(
+            "Qwen/Qwen3-32B",
+            "b300_sxm",
+            "sglang",
+            backend_version="0.5.10",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            allow_naive_fallback=False,
+        )
+    assert excinfo.value is slot_error
+    assert "unsupported model/backend/GPU" not in str(excinfo.value)
 
 
 def test_estimate_kv_cache_nextn_reaches_breakdown(monkeypatch):

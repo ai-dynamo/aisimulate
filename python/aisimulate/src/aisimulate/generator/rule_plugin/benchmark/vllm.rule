@@ -7,7 +7,8 @@ when not (preserve_engine_limits or false):
     decode max_batch_size = (max_batch_size if max_batch_size else 128)
 
 
-agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
+# vLLM prefill CP (-pcp) expands the world size; decode CP adds no GPUs.
+agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1) * (context_parallel_size or 1)
 agg_prefill_decode enable_expert_parallel = ((moe_expert_parallel_size or 1) > 1)
 
 agg_prefill_decode cuda_graph_batch_sizes = ((range(1, max_batch_size + 1) | list) if max_batch_size else [])

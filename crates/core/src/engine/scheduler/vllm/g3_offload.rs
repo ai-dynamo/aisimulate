@@ -4,9 +4,37 @@
 //! G3 writes own G2 source pins; promotions own pending G2 destinations.
 //! Request termination detaches from admitted promotions rather than aborting I/O.
 use crate::engine::g3_offload::{Direction, Probe, SharedG3Tier};
-use crate::engine::host_offload::{HostBlockKey, HostTier, Lookup, StoreOutcome, TransferId};
+use crate::engine::host_offload::{
+    HostBlockKey, HostBlockMeta, HostTier, Lookup, StoreOutcome, TransferId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+/// Restore rounds (lookups that submit G3 promotions) a waiting request may
+/// make while its DP rank schedules no work and emits no output. A prefix
+/// larger than G2 can evict its own promotions forever; past this bound the
+/// request stops restoring from G3 and computes what G2 cannot supply. A
+/// request merely waiting behind running work never reaches it.
+const MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS: usize = 1024;
+
+/// Request-local G3 restore progress.
+#[derive(Default)]
+pub(super) struct G3Restore {
+    rounds_without_progress: usize,
+    /// The rank's progress count at this request's last round.
+    rank_progress: u64,
+}
+
+impl G3Restore {
+    pub(super) fn bypassed(&self) -> bool {
+        self.rounds_without_progress >= MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS
+    }
+
+    /// The request was scheduled or preempted: its restores start over.
+    pub(super) fn reset(&mut self) {
+        self.rounds_without_progress = 0;
+    }
+}
 
 struct G3StagingState {
     owner: Option<Uuid>,
@@ -21,6 +49,8 @@ pub(super) struct VllmG3OffloadAdapter {
     attempted: BTreeSet<(Uuid, HostBlockKey)>,
     pub(super) epoch: u64,
     observed_completion_epoch: u64,
+    /// Passes in which this rank scheduled work or emitted output.
+    rank_progress: u64,
 }
 
 impl VllmG3OffloadAdapter {
@@ -33,23 +63,44 @@ impl VllmG3OffloadAdapter {
             attempted: BTreeSet::new(),
             epoch: 0,
             observed_completion_epoch: 0,
+            rank_progress: 0,
         }
     }
 
+    /// The rank scheduled work or emitted output: every waiting request's
+    /// restore rounds start over.
+    pub(super) fn note_rank_progress(&mut self) {
+        self.rank_progress += 1;
+    }
+
+    /// Hand completed D2H sources to write-through. The G2 tier holds each
+    /// completed source pin until this handoff: accepted blocks keep it until
+    /// their G3 write completes; blocks G3 declines are released now.
     pub(super) fn store(&mut self, tier: &mut HostTier, keys: &[HostBlockKey], now: f64) {
         let mut registry = self.registry.lock().unwrap();
-        if let Some(job) = registry.submit(self.worker, Direction::Write, keys, now) {
-            tier.pin_external(&registry.job_keys(job));
-            self.epoch += 1;
-        }
+        let accepted = registry
+            .submit(self.worker, Direction::Write, keys, now)
+            .map(|job| registry.job_keys(job))
+            .unwrap_or_default();
+        let declined = keys
+            .iter()
+            .copied()
+            .filter(|key| !accepted.contains(key))
+            .collect::<Vec<_>>();
+        tier.unpin_external(&declined);
+        self.epoch += u64::from(!accepted.is_empty());
     }
 
     /// Return true only when a concrete pending transfer can wake the lookup.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn stage(
         &mut self,
         tier: &mut HostTier,
+        client: u64,
         owner: Uuid,
+        restore: &mut G3Restore,
         keys: &[HostBlockKey],
+        meta: Option<&[HostBlockMeta]>,
         now: f64,
     ) -> bool {
         if now > self.attempted_at {
@@ -60,7 +111,7 @@ impl VllmG3OffloadAdapter {
         let mut reservations = Vec::new();
         let mut deferred = false;
         let mut registry = self.registry.lock().unwrap();
-        for key in keys.iter().copied() {
+        for (index, key) in keys.iter().copied().enumerate() {
             match tier.lookup(key) {
                 Lookup::Hit => {}
                 Lookup::Pending { .. } => deferred = true,
@@ -84,8 +135,9 @@ impl VllmG3OffloadAdapter {
                                 break;
                             }
                         }
+                        let meta = meta.map(|meta| &meta[index..=index]);
                         let StoreOutcome::Prepared { transfer_id, .. } =
-                            tier.reserve_external(owner, &[key], now)
+                            tier.reserve_external(client, owner, &[key], meta, now)
                         else {
                             break;
                         };
@@ -106,6 +158,19 @@ impl VllmG3OffloadAdapter {
             }
             return deferred;
         };
+        if restore.rank_progress != self.rank_progress {
+            restore.rank_progress = self.rank_progress;
+            restore.rounds_without_progress = 0;
+        }
+        restore.rounds_without_progress += 1;
+        if restore.bypassed() {
+            registry.stats.bypassed_restores += 1;
+            tracing::warn!(
+                %owner,
+                "G3 restore made no progress in {MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS} rounds; \
+                 continuing without further G3 restores"
+            );
+        }
         self.attempted
             .extend(missing.into_iter().map(|key| (owner, key)));
         self.stages.insert(
@@ -181,7 +246,7 @@ impl VllmG3OffloadAdapter {
 mod tests {
     use super::*;
     use crate::engine::g3_offload::G3Tier;
-    use crate::engine::host_offload::HostTierConfig;
+    use crate::engine::host_offload::{C, private};
     use crate::engine::{G3OffloadConfig, G3Scope};
 
     fn fixture(capacity: usize) -> (VllmG3OffloadAdapter, HostTier, SharedG3Tier) {
@@ -206,13 +271,7 @@ mod tests {
             1_000_000,
         )
         .unwrap();
-        let tier = HostTier::new(HostTierConfig {
-            capacity_blocks: capacity,
-            block_bytes: 1_000_000,
-            d2h_bandwidth_gbps: 0.0,
-            h2d_bandwidth_gbps: 0.0,
-        })
-        .unwrap();
+        let tier = private(capacity, 0.0, 0.0);
         (
             VllmG3OffloadAdapter::new(registry.clone(), 1),
             tier,
@@ -222,11 +281,24 @@ mod tests {
 
     fn seed(tier: &mut HostTier, key: HostBlockKey) {
         assert!(matches!(
-            tier.prepare_store(Uuid::nil(), &[key], 0.0),
+            tier.prepare_store(C, Uuid::nil(), &[key], None, 0.0),
             StoreOutcome::Prepared { .. }
         ));
-        tier.submit_prepared_stores(0.0);
-        tier.tick(0.0);
+        tier.submit_prepared_stores(C, 0.0);
+        tier.tick(C, 0.0);
+    }
+
+    impl VllmG3OffloadAdapter {
+        /// Stage `keys` with a fresh restore budget and no block metadata.
+        fn stage_new(
+            &mut self,
+            tier: &mut HostTier,
+            owner: Uuid,
+            keys: &[HostBlockKey],
+            now: f64,
+        ) -> bool {
+            self.stage(tier, C, owner, &mut G3Restore::default(), keys, None, now)
+        }
     }
 
     fn seed_secondary(registry: &SharedG3Tier, tier: &mut HostTier, keys: &[HostBlockKey]) -> f64 {
@@ -234,7 +306,7 @@ mod tests {
         let mut r = registry.lock().unwrap();
         r.submit(0, Direction::Write, keys, 0.0).unwrap();
         r.take_completed(0, now);
-        tier.tick(now);
+        tier.tick(C, now);
         now
     }
 
@@ -246,10 +318,10 @@ mod tests {
         tier.pin_external(&[x]);
         let now = seed_secondary(&registry, &mut tier, &[a, b]);
         let owner = Uuid::from_u128(1);
-        assert!(g3.stage(&mut tier, owner, &[a, b], now));
+        assert!(g3.stage_new(&mut tier, owner, &[a, b], now));
         assert!(matches!(tier.lookup(a), Lookup::Pending { .. }));
         assert_eq!(tier.lookup(b), Lookup::Miss);
-        assert!(g3.stage(&mut tier, Uuid::from_u128(2), &[a, b], now));
+        assert!(g3.stage_new(&mut tier, Uuid::from_u128(2), &[a, b], now));
         assert!(!g3.release(Uuid::from_u128(2)));
         assert_eq!(registry.lock().unwrap().snapshot().read.submitted_jobs, 1);
         assert!(g3.release(owner));
@@ -260,12 +332,12 @@ mod tests {
             1_000_000
         );
         // Completion removes promotion ownership; next lookup may evict A for B.
-        assert!(g3.stage(&mut tier, owner, &[a, b], now + 1.0));
+        assert!(g3.stage_new(&mut tier, owner, &[a, b], now + 1.0));
         assert_eq!(tier.lookup(a), Lookup::Miss);
         g3.advance(&mut tier, now + 2.0);
         assert_eq!(tier.lookup(b), Lookup::Hit);
         tier.unpin_external(&[x]);
-        assert!(g3.stage(&mut tier, owner, &[a, b], now + 2.0));
+        assert!(g3.stage_new(&mut tier, owner, &[a, b], now + 2.0));
         // Releasing X touches it in LRU, so this retry may re-promote both
         // A and B while evicting X. Account for the full merged2MB job.
         g3.advance(&mut tier, now + 4.0);
@@ -278,8 +350,8 @@ mod tests {
         let (mut g3, mut tier, registry) = fixture(3);
         let [a, b, c] = [1, 2, 3].map(HostBlockKey::new);
         let now = seed_secondary(&registry, &mut tier, &[a, b, c]);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a], now));
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a, b, c], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b, c], now));
         assert_eq!(g3.stages.len(), 2);
         let stats = registry.lock().unwrap().snapshot();
         assert_eq!(stats.read.submitted_jobs, 2); // [A], then one merged [B,C].
@@ -306,15 +378,15 @@ mod tests {
             tier.pin_external(&[x]);
             let now = seed_secondary(&registry, &mut tier, &[b]);
             let load = if pin {
-                Some(tier.schedule_load(Uuid::nil(), &[a], now, now))
+                Some(tier.schedule_load(C, Uuid::nil(), &[a], now, now))
             } else {
                 None
             };
-            assert_eq!(g3.stage(&mut tier, Uuid::nil(), &[a, b], now), !pin);
+            assert_eq!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now), !pin);
             assert_eq!(tier.lookup(a), if pin { Lookup::Hit } else { Lookup::Miss });
             if let Some(crate::engine::host_offload::LoadOutcome::Queued(id)) = load {
-                assert!(tier.cancel_load(id, now, now));
-                assert!(g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+                assert!(tier.cancel_load(C, id, now, now));
+                assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
             }
         }
     }
@@ -326,17 +398,17 @@ mod tests {
         seed(&mut tier, x);
         tier.pin_external(&[x]);
         let now = seed_secondary(&registry, &mut tier, &[a, b]);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
         g3.advance(&mut tier, now);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
         g3.advance(&mut tier, now);
-        assert!(!g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+        assert!(!g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
         assert_eq!(tier.lookup(a), Lookup::Miss); // no fabricated prefix hit.
         assert_eq!(registry.lock().unwrap().snapshot().read.completed_jobs, 2);
         tier.unpin_external(&[x]);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
         g3.advance(&mut tier, now);
-        assert!(!g3.stage(&mut tier, Uuid::nil(), &[a, b], now));
+        assert!(!g3.stage_new(&mut tier, Uuid::nil(), &[a, b], now));
         assert_eq!(tier.lookup(a), Lookup::Hit);
         assert_eq!(tier.lookup(b), Lookup::Hit);
     }
@@ -356,7 +428,7 @@ mod tests {
         assert_eq!(tier.lookup(a), Lookup::Hit);
         assert_eq!(tier.lookup(x), Lookup::Hit);
         assert!(matches!(
-            tier.reserve_external(Uuid::nil(), &[b], 0.0),
+            tier.reserve_external(C, Uuid::nil(), &[b], None, 0.0),
             StoreOutcome::Prepared { .. }
         ));
         assert_eq!(tier.lookup(a), Lookup::Miss); // still older than X.
@@ -368,20 +440,20 @@ mod tests {
         let (mut g3, mut tier, registry) = fixture(1);
         let [a, missing] = [1, 2].map(HostBlockKey::new);
         let now = seed_secondary(&registry, &mut tier, &[a]);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[a, missing], now));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, missing], now));
         g3.advance(&mut tier, now + 1.0);
-        assert!(!g3.stage(&mut tier, Uuid::nil(), &[a, missing], now + 1.0));
+        assert!(!g3.stage_new(&mut tier, Uuid::nil(), &[a, missing], now + 1.0));
         assert_eq!(tier.lookup(a), Lookup::Hit);
         let crate::engine::host_offload::LoadOutcome::Queued(load) =
-            tier.schedule_load(Uuid::nil(), &[a], now + 1.0, now + 1.0)
+            tier.schedule_load(C, Uuid::nil(), &[a], now + 1.0, now + 1.0)
         else {
             panic!("the partial prefix must be available to H2D");
         };
         assert!(matches!(
-            tier.prepare_store(Uuid::nil(), &[missing], now + 1.0),
+            tier.prepare_store(C, Uuid::nil(), &[missing], None, now + 1.0),
             StoreOutcome::RetryCapacity { .. }
         ));
-        assert!(tier.cancel_load(load, now + 1.0, now + 1.0));
+        assert!(tier.cancel_load(C, load, now + 1.0, now + 1.0));
         assert_eq!(registry.lock().unwrap().snapshot().read.submitted_jobs, 1);
     }
 
@@ -392,7 +464,7 @@ mod tests {
         seed(&mut tier, x);
         let reserve = |tier: &mut HostTier, owner, key| {
             let StoreOutcome::Prepared { transfer_id, .. } =
-                tier.reserve_external(owner, &[key], 0.0)
+                tier.reserve_external(C, owner, &[key], None, 0.0)
             else {
                 panic!("free slot")
             };
@@ -427,12 +499,12 @@ mod tests {
                 .submit(0, Direction::Write, &[b], 0.0)
                 .unwrap();
             registry.lock().unwrap().take_completed(0, 1.0);
-            tier.tick(1.0);
+            tier.tick(C, 1.0);
             let owner = Uuid::from_u128(1);
-            assert!(g3.stage(&mut tier, owner, &[a, b], 1.0));
+            assert!(g3.stage_new(&mut tier, owner, &[a, b], 1.0));
             assert!(matches!(tier.lookup(b), Lookup::Pending { .. }));
             assert!(matches!(
-                tier.prepare_store(Uuid::nil(), &[c], 1.0),
+                tier.prepare_store(C, Uuid::nil(), &[c], None, 1.0),
                 StoreOutcome::Prepared { .. }
             ));
             assert_eq!(tier.lookup(a), Lookup::Miss);
@@ -453,15 +525,16 @@ mod tests {
         let (mut g3, mut tier, _) = fixture(1);
         let a = HostBlockKey::new(1);
         let b = HostBlockKey::new(2);
+        tier.hold_completed_sources(C);
         seed(&mut tier, a);
         g3.store(&mut tier, &[a], 0.0);
         assert!(matches!(
-            tier.prepare_store(Uuid::nil(), &[b], 0.0),
+            tier.prepare_store(C, Uuid::nil(), &[b], None, 0.0),
             StoreOutcome::RetryCapacity { .. }
         ));
         assert!(g3.advance(&mut tier, 1.0));
         assert!(matches!(
-            tier.prepare_store(Uuid::nil(), &[b], 1.0),
+            tier.prepare_store(C, Uuid::nil(), &[b], None, 1.0),
             StoreOutcome::Prepared { .. }
         ));
     }
@@ -475,7 +548,7 @@ mod tests {
             .unwrap()
             .submit(0, Direction::Write, &[key], 0.0)
             .unwrap();
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[key], 0.0));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[key], 0.0));
         assert!(
             !g3.has_work(),
             "foreign pending writes do not belong to this worker"
@@ -489,7 +562,7 @@ mod tests {
         assert_eq!(g3.next_deadline(), Some(1.0));
         assert!(g3.advance(&mut tier, 1.0));
         assert!(g3.next_deadline().is_none());
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[key], 1.0));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[key], 1.0));
         assert_eq!(g3.stages.len(), 1);
     }
 
@@ -504,11 +577,78 @@ mod tests {
             .unwrap();
         registry.lock().unwrap().take_completed(0, 1.0);
         g3.advance(&mut tier, 1.0);
-        assert!(g3.stage(&mut tier, Uuid::nil(), &[key], 1.0));
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[key], 1.0));
         registry.lock().unwrap().advance(50.0);
         assert!(g3.advance(&mut tier, 1.0));
         assert!(matches!(tier.lookup(key), Lookup::Pending { .. }));
         assert!(g3.advance(&mut tier, 2.0));
         assert_eq!(tier.lookup(key), Lookup::Hit);
+    }
+
+    #[test]
+    fn declined_store_source_reenters_lru_after_same_tick_loads() {
+        // Native vLLM keeps a completed CPU store pinned until its secondary
+        // job completes, even when the file already exists; it then becomes
+        // newest in LRU, after the H2D sources released in the same step.
+        let (mut g3, mut tier, registry) = fixture(4);
+        let [a0, a1, a2, b, c] = [1, 2, 3, 4, 5].map(HostBlockKey::new);
+        for key in [a0, a1, a2] {
+            seed(&mut tier, key);
+        }
+        seed_secondary(&registry, &mut tier, &[b]);
+        tier.hold_completed_sources(C);
+        let load = tier.schedule_load(C, Uuid::nil(), &[a0, a1, a2], 1.0, 1.0);
+        assert!(matches!(
+            load,
+            crate::engine::host_offload::LoadOutcome::Queued(_)
+        ));
+        tier.prepare_store(C, Uuid::nil(), &[b], None, 1.0);
+        tier.submit_prepared_stores(C, 1.0);
+        // Zero-bandwidth lanes: the H2D and the held D2H finish together.
+        let (completed, _) = tier.tick(C, 1.0);
+        assert_eq!(completed.len(), 2);
+        assert_eq!(tier.pins(b), 1, "held until the G3 handoff");
+        g3.store(&mut tier, &[b], 1.0);
+        assert_eq!(tier.pins(b), 0, "G3 already holds B and declines it");
+        tier.prepare_store(C, Uuid::nil(), &[c], None, 1.0);
+        assert_eq!(
+            tier.lookup(a0),
+            Lookup::Miss,
+            "the oldest H2D source is the victim"
+        );
+        assert!(tier.is_resident(b));
+    }
+
+    #[test]
+    fn restore_bypass_counts_rounds_while_the_rank_makes_no_progress() {
+        // G2 holds one block, so promoting A and B evicts the other each round.
+        let (mut g3, mut tier, registry) = fixture(1);
+        let [a, b] = [1, 2].map(HostBlockKey::new);
+        let mut now = seed_secondary(&registry, &mut tier, &[a, b]);
+        let mut restore = G3Restore::default();
+        // Rank progress before round 10 starts the count over.
+        let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
+        for round in 0..rounds {
+            assert!(!restore.bypassed(), "round {round}");
+            if round == 10 {
+                g3.note_rank_progress();
+            }
+            assert!(g3.stage(&mut tier, C, Uuid::nil(), &mut restore, &[a, b], None, now));
+            if round == 0 {
+                // Waiting on the pending promotion is not another round.
+                assert!(g3.stage(&mut tier, C, Uuid::nil(), &mut restore, &[a, b], None, now));
+                assert_eq!(restore.rounds_without_progress, 1);
+            }
+            now += 1.0;
+            g3.advance(&mut tier, now);
+        }
+        assert!(restore.bypassed());
+        let stats = registry.lock().unwrap().snapshot();
+        assert_eq!(
+            (stats.bypassed_restores, stats.read.submitted_jobs),
+            (1, rounds as u64)
+        );
+        restore.reset();
+        assert!(!restore.bypassed());
     }
 }

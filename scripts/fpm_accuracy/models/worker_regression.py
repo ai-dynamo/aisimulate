@@ -8,10 +8,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
+from math import prod
 from typing import Any, Literal
 
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
-from fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration, WorkloadKind, classify_workload
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
+from scripts.fpm_accuracy.types.forward_pass import (
+    ForwardPassInput,
+    ForwardPassIteration,
+    WorkloadKind,
+    classify_workload,
+)
 
 WorkerRole = Literal["prefill", "decode", "aggregated"]
 REGRESSION_ROLE_POLICY = "offline_all_observations_all_active_ranks_v1"
@@ -103,7 +109,9 @@ class WorkerRegressionPredictor(ForwardPassTimePredictor):
         factory: Callable[[str, PredictorContext], ForwardPassTimePredictor],
     ) -> None:
         self.roles = dict(roles)
-        self.options = {"max_observations": 64, **context.options}
+        # Rust owns defaults; only caller-supplied options may participate in
+        # migration conflicts with an explicit canonical sampling block.
+        self.options = dict(context.options)
         self.min_observations = int(self.options.get("min_observations", 5))
         self._children: dict[str, ForwardPassTimePredictor] = {}
         self._observations: dict[tuple[str, str], int] = {}
@@ -159,16 +167,31 @@ class WorkerRegressionPredictor(ForwardPassTimePredictor):
             self._observations[key] = self._observations.get(key, 0) + 1
 
     def diagnostics(self) -> Mapping[str, Any]:
+        workers = {worker_id: child.diagnostics() for worker_id, child in self._children.items()}
+        sampling_configs = [
+            config["sampling"]
+            for diagnostics in workers.values()
+            if (
+                config := diagnostics.get("provenance", {})
+                .get("config", {})
+                .get("estimator_config", {})
+                .get("fpm_regression")
+            )
+        ]
+        bucket_counts = {prod(config["bins_per_axis"]) for config in sampling_configs}
+        capacities = {config["max_observations"] for config in sampling_configs}
+        if not capacities:
+            capacities.add(self.options.get("max_observations", 64))
         return {
             "mode": "regression",
             "model_scope": "worker_id_within_case",
             "worker_role_policy": REGRESSION_ROLE_POLICY,
             "bucket_policy": REGRESSION_BUCKET_POLICY,
             "worker_roles": self.roles,
-            "max_observations_per_store": self.options["max_observations"],
+            "max_observations_per_store": next(iter(capacities)) if len(capacities) == 1 else None,
             "min_observations": self.min_observations,
-            "spatial_bucket_count": self.options.get("bucket_count", 16),
-            "worker_diagnostics": {worker_id: child.diagnostics() for worker_id, child in self._children.items()},
+            "spatial_bucket_count": next(iter(bucket_counts)) if len(bucket_counts) == 1 else None,
+            "worker_diagnostics": workers,
         }
 
     def close(self) -> None:

@@ -122,3 +122,23 @@ test("HF resolution rejects failed responses and invalid immutable revisions", a
     await assert.rejects(resolve({hfResponse: {ok: true, sha}}), /HF revision/);
   }
 });
+
+test("shared measurements and every branch consume the single resolved HF revision", () => {
+  assert.equal((workflow.match(/huggingface\.co\/api\/datasets/g) || []).length, 1);
+  assert.match(workflow, /measurements:\s+name: Qualify FPM measurements\s+needs: resolve/);
+  assert.match(workflow, /HF_REVISION: \$\{\{ needs\.resolve\.outputs\.hf_revision \}\}/);
+  assert.match(workflow, /name: fpm-accuracy-measurements/);
+  assert.match(workflow, /retention-days: 90/);
+  assert.match(workflow, /hf_revision: \$\{\{ needs\.resolve\.outputs\.hf_revision \}\}/);
+  const branch = readFileSync(new URL('../.github/workflows/fpm-accuracy-branch.yml', import.meta.url), 'utf8');
+  assert.match(branch, /HF_HOME: .*inputs\.hf_revision/);
+});
+
+test("manual migration previews pin an exact dataset revision", async () => {
+  const revision = "d".repeat(40);
+  const inputs = { EXPECTED_SHA: sha, EVALUATED_BRANCH: "main", HF_REVISION: revision };
+  const result = await resolve({ event: "workflow_dispatch", inputs });
+  assert.deepEqual(result, [entry("main", sha)]);
+  await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "migration-branch"} }), /full commit SHA/);
+  await assert.rejects(resolve({ event: "workflow_dispatch", inputs: {...inputs, HF_REVISION: "e".repeat(40)} }), /differs/);
+});

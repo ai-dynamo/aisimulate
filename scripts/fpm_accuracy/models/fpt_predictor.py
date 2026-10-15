@@ -11,8 +11,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
-from fpm_accuracy.types.worker_config import WorkerConfigRecord
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
+from scripts.fpm_accuracy.types.worker_config import WorkerConfigRecord
 
 
 @dataclass(frozen=True, slots=True)

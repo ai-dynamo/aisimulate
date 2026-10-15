@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 import runpy
 import subprocess
 import sys
@@ -54,6 +55,85 @@ def _run(config: dict):
     )
 
 
+def _agentic_profile_config(tmp_path: Path, backend: str, mode: str, warmup: bool, duration: float) -> dict:
+    """Locally authored corpus with long idle gaps and enough work to recycle."""
+    path = tmp_path / "continuous-profile.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"play-{play}",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "requests": [
+                        {
+                            "t": start,
+                            "type": "s",
+                            "model": "example/model",
+                            "in": 128,
+                            "out": 2,
+                            "api_time": 0.5,
+                            "hash_ids": [10, 20],
+                        }
+                        for start in [0.0, 600.0, 1200.0]
+                    ],
+                }
+            )
+            + "\n"
+            for play in range(2)
+        )
+    )
+    engine = {**_engine(mode), "backend": backend}
+    for worker in engine["workers"].values():
+        worker["timing"] = {"type": "fixed", "prefill_ms": 250, "decode_ms": 250}
+        # SGLang defaults to one-token blocks. Both active 130-token requests
+        # must fit independently, including their decode tokens.
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
+    return {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+            "load": {
+                "type": "trace_timestamps",
+                "agentic_lanes": 2,
+                "agentic_snapshot": {"seed": 42},
+                "agentic_warmup": warmup,
+                "agentic_profile": {"duration_seconds": duration},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("warmup", [False, True])
+def test_native_continuous_agentic_profile_recycles_and_closes_admission(tmp_path, backend, mode, warmup):
+    report = _run(_agentic_profile_config(tmp_path, backend, mode, warmup, 120.0)).metadata["native_report"]
+    profile = report["agentic_profile"]
+    assert profile["admission_closed"]
+    assert profile["admission_cutoff_ms"] - profile["profile_start_ms"] == pytest.approx(120_000.0)
+    assert profile["plays_started"] > 4
+    assert profile["client_completed_plays"] >= 4
+    assert profile["corpus_cursor"] == profile["plays_started"]
+    assert profile["idle_shifts"]
+    assert not profile["cancel_drain_timed_out"]
+    assert profile["unsettled_server_requests"] == 0
+    assert profile["canceled_requests"] == 0
+    records = report["per_request"]
+    assert len(records) == profile["issued_requests"] == profile["successful_responses"]
+    assert all(0.0 <= record["arrival_time_ms"] < 120_000.0 for record in records)
+    cache_by_play: dict[str, set[str]] = {}
+    for record in records:
+        identity = record["agentic"]
+        cache_by_play.setdefault(identity["play_id"], set()).add(identity["cache_id"])
+    assert all(len(ids) == 1 for ids in cache_by_play.values())
+    assert len({next(iter(ids)) for ids in cache_by_play.values()}) == len(cache_by_play)
+    if warmup:
+        assert profile["profile_start_ms"] == report["agentic_phases"]["profile_start_ms"] > 0
+    else:
+        assert profile["profile_start_ms"] == 0
+
+
 @pytest.mark.parametrize(
     "timestamps,expected",
     [
@@ -85,6 +165,26 @@ def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, 
     assert sorted(record["arrival_time_ms"] for record in records) == expected
     assert all(record["output_length"] == 1 for record in records)
     assert report.metrics["completed_requests"] == 2
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("prefill_limit,completed", [(32, 0), (33, 1)])
+def test_disaggregated_prefill_context_requires_room_for_first_token(backend, prefill_limit, completed):
+    engine = _engine("disaggregated")
+    engine["backend"] = backend
+    engine["workers"]["prefill"]["context_length"] = prefill_limit
+    engine["workers"]["decode"]["context_length"] = 36
+    report = _run(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 32, "output_tokens": 4},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    assert report.metrics["completed_requests"] == completed
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
@@ -268,11 +368,12 @@ def test_b200_power_survives_native_json_and_runner_normalization() -> None:
 
     assert report.metrics["completed_requests"] == 100
     native_summary = report.metadata["native_report"]
-    # Decode converts scheduler-inclusive length to past KV before pricing the
-    # current token. Reverting only that conversion reproduces the older
-    # section 4.11 capture (655.9411158961074 W, coverage 0.9070317503277924).
-    for name, expected in {"power_w": 655.957349601573, "power_coverage": 0.907023184956731}.items():
-        assert native_summary[name] == pytest.approx(expected)
+    # Exact energy weighting and the publication gate have independent fixtures;
+    # this data-backed replay checks publication and lossless normalization.
+    power = native_summary["power_w"]
+    assert math.isfinite(power) and power > 0.0
+    assert 0.9 <= native_summary["power_coverage"] <= 1.0
+    for name in ("power_w", "power_coverage"):
         assert report.metrics[name] == native_summary[name]
 
 
@@ -531,22 +632,59 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
         "/artifacts/reviewed-fpm.parquet"
     )
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
-    assert (
-        deployment.performance_model_metadata["aggregated"]["config"]["fpm_parquet_path"]
-        == "/artifacts/reviewed-fpm.parquet"
+    config = deployment.performance_model_metadata["aggregated"]["config"]
+    assert all(value == timing["config"][name] for name, value in config.items())
+    assert config["estimation_mode"] == "fpm_interpolation"
+    assert config["fallback_policy"] == "deny"
+    assert config["worker_type"] == "aggregated"
+    assert "forward_model" not in config
+    assert config["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == ("/artifacts/reviewed-fpm.parquet")
+    assert config["model"] == parsed.engine.model
+    assert config["system"] == parsed.engine.hardware
+    assert config["backend"] == parsed.engine.backend
+    assert config["backend_version"] == parsed.engine.backend_version
+    assert (config["tp"], config["pp"], config["attention_dp"], config["moe_tp_size"], config["moe_ep_size"]) == (
+        4,
+        1,
+        1,
+        4,
+        1,
     )
 
 
-def test_prediction_spec_lowers_default_timing_into_canonical_auto_selection() -> None:
+@pytest.mark.parametrize("explicit_mode", [False, True])
+def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level(monkeypatch, explicit_mode: bool) -> None:
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
+    engine["backend_version"] = "0.24.0"  # A shipped op-level database, independent of external FPM data.
     engine["workers"]["aggregated"]["timing"] = {"type": "default"}
+    if explicit_mode:
+        engine["workers"]["aggregated"]["timing"]["estimation_mode"] = "op_level"
     parsed = CorePredictionConfig.model_validate({"engine": engine})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.agg_engine_args
-    assert deployment.agg_engine_args["timing_model"]["config"]["estimation_mode"] == "auto"
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "op_level"
+    config = deployment.performance_model_metadata["aggregated"]["config"]
+    requested_mode = "op_level" if explicit_mode else "auto"
+    assert "forward_model" not in config
+    assert config["estimation_mode"] == requested_mode
+    assert config["model"] == engine["model"]
+    assert config["system"] == engine["hardware"]
+    assert config["backend_version"] == engine["backend_version"]
+    assert config["worker_type"] == "aggregated"
+    assert config["tp"] == config["moe_tp_size"] == 4
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        provenance = model.diagnostics()["provenance"]
+    finally:
+        model.close()
+    assert provenance["requested_estimation_mode"] == requested_mode
+    assert provenance["selected_estimation_mode"] == "op_level"
+    assert provenance["config"]["estimation_mode"] == "op_level"
+    for field in ("model", "system", "backend", "backend_version", "worker_type", "tp", "moe_tp_size"):
+        assert provenance["config"][field] == config[field]
 
 
 def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -> None:
@@ -571,8 +709,24 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
     assert prefill["worker_type"] == "prefill"
     assert decode["estimation_mode"] == "fpm_interpolation"
     assert decode["worker_type"] == "decode"
-    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
-    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
+    for role, identity in (("prefill", prefill), ("decode", decode)):
+        config = deployment.performance_model_metadata[role]["config"]
+        assert all(value == identity[name] for name, value in config.items())
+        assert config["estimation_mode"] == ("auto" if role == "prefill" else "fpm_interpolation")
+        assert config["worker_type"] == role
+        assert "forward_model" not in config
+        assert config["fallback_policy"] == "deny"
+        assert config["model"] == engine["model"]
+        assert config["system"] == engine["hardware"]
+        assert config["backend"] == engine["backend"]
+        assert config["backend_version"] == engine["backend_version"]
+        assert (config["tp"], config["pp"], config["attention_dp"], config["moe_tp_size"], config["moe_ep_size"]) == (
+            4,
+            1,
+            1,
+            4,
+            1,
+        )
 
 
 _SMALL_TRAFFIC = {
@@ -724,7 +878,7 @@ def test_agentx_replay_default_python_result_retains_qualification_without_dynam
 def test_agentx_replay_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
-    gate = runpy.run_path(str(scripts / "qualify_agentx_replay.py"))
+    gate = runpy.run_path(str(scripts / "prediction_regression" / "qualify_agentx_replay.py"))
     source = _TRACE_FIXTURES / "weka-relative.json"
     block_size = json.loads(source.read_text())["block_size"]
     assert block_size == 4
@@ -788,7 +942,9 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert stdout["details"] == saved["details"]
     from jsonschema import validate
 
-    schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
     assert set(sections) == {"summary", "memory", "time", "energy", "source"}
@@ -1119,3 +1275,67 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
         first = min(report["per_request"], key=lambda record: record["first_admit_ms"])
         assert first["admission_history"][0]["reused_input_tokens"] == 0
         assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)
+
+
+@pytest.mark.parametrize(
+    "backend,mode,traffic_kind",
+    [
+        ("vllm", "aggregated", "synthetic"),
+        ("vllm", "aggregated", "multiworker"),
+        ("sglang", "disaggregated", "synthetic"),
+        ("vllm", "aggregated", "weka"),
+        ("sglang", "disaggregated", "weka"),
+    ],
+)
+def test_engine_runner_canonical_determinism(backend, mode, traffic_kind):
+    engine = {**_engine(mode), "backend": backend}
+    if traffic_kind == "multiworker":
+        engine["workers"]["aggregated"]["parallelism"] = {
+            "replicas": 2,
+            "attention_data": 2,
+        }
+    traffic = {
+        "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 4},
+        "load": {"type": "concurrency", "concurrency": 3},
+        "stop": {"requests": 8},
+    }
+    if traffic_kind == "weka":
+        traffic = {
+            "source": {
+                "type": "trace",
+                "format": "weka",
+                "paths": [str(_TRACE_FIXTURES / "weka-two-plays.jsonl")],
+            },
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine, "traffic": traffic}))
+    records = []
+    for _ in range(2):
+        runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
+        try:
+            report = runner.run(
+                spec,
+                output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+            ).metadata["native_report"]
+        finally:
+            runner.close()
+        records.append(
+            {
+                key: value
+                for key, value in report.items()
+                if key
+                not in {
+                    "wall_time_ms",
+                    "processed_tokens_per_s",
+                    "processed_output_tokens_per_s",
+                }
+            }
+        )
+    assert records[0] == records[1]
+    assert records[0]["completed_requests"] > 0
+
+
+def test_engine_runner_rejects_unknown_determinism():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": _engine()}))
+    with pytest.raises(ValueError, match="unsupported replay determinism"):
+        EngineReplayRunnerFactory(determinism="typo").create(0).run(spec)
