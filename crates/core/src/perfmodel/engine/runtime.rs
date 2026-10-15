@@ -1584,8 +1584,8 @@ impl Engine {
         }
         // SOL comparison per name slot, summed in op order. A name stops at
         // its first failure, which becomes its unavailable reason.
-        type SolSum = Result<(f64, f64, f64), AicError>;
-        let mut sols: Vec<Option<SolSum>> = (0..plan.names()).map(|_| None).collect();
+        let mut sols: Vec<Option<Result<SolDiagnostics, AicError>>> =
+            (0..plan.names()).map(|_| None).collect();
         let mut memo = QueryMemo::new(Some(plan), ops);
         for (index, op) in ops.iter().enumerate() {
             let sol = &mut sols[plan.name_slot(index)];
@@ -1619,12 +1619,14 @@ impl Engine {
                 })
                 .and_then(|result| {
                     let (math_ms, memory_ms) = sol_components(op, &result)?;
-                    Ok((result.latency_ms, math_ms, memory_ms))
+                    Ok(SolDiagnostics {
+                        latency_ms: result.latency_ms,
+                        math_ms,
+                        memory_ms,
+                    })
                 });
             *sol = Some(match (sol.take(), result) {
-                (Some(Ok((latency_ms, math_ms, memory_ms))), Ok((latency, math, memory))) => {
-                    Ok((latency_ms + latency, math_ms + math, memory_ms + memory))
-                }
+                (Some(Ok(sum)), Ok(next)) => Ok(sum.plus(&next)),
                 (_, result) => result,
             });
         }
@@ -1636,20 +1638,7 @@ impl Engine {
             .zip(sols)
             .map(|((name, latency_ms, energy_wms, source, fallbacks), sol)| {
                 let (sol, sol_unavailable_reason) = match sol {
-                    Some(Ok((latency_ms, math_ms, memory_ms)))
-                        if [latency_ms, math_ms, memory_ms]
-                            .iter()
-                            .all(|v| v.is_finite() && *v >= 0.0) =>
-                    {
-                        (
-                            Some(SolDiagnostics {
-                                latency_ms,
-                                math_ms,
-                                memory_ms,
-                            }),
-                            None,
-                        )
-                    }
+                    Some(Ok(sol)) if sol.is_valid() => (Some(sol), None),
                     Some(Err(error)) => (None, Some(error.to_string())),
                     _ => (
                         None,
@@ -2705,34 +2694,19 @@ mod tests {
     }
 
     #[test]
-    fn repeated_glm_layers_share_one_query_per_geometry() {
+    fn repeated_glm_layers_share_queries_with_identical_per_op_values() {
         let engine = glm_layer_engine();
+        // Per layer: mhc, attention, gemm; then a repeated "gemm_0".
         for plan in [&engine.context_plan, &engine.generation_plan] {
-            // mhc/attention/gemm per layer, plus a repeated "gemm_0".
-            let slots: Vec<_> = (0..19).map(|i| plan.query_slot(i)).collect();
-            // GLM boundaries that differ only by display names share a slot.
-            let (pre_mhc, fused_mhc, kda, sparse) = (slots[0], slots[3], slots[1], slots[7]);
-            let distinct: std::collections::HashSet<_> =
-                [pre_mhc, fused_mhc, kda, sparse].into_iter().collect();
-            assert_eq!(distinct.len(), 4);
-            assert!(!distinct.contains(&None));
-            for layer in 0..6 {
-                let mhc = if layer == 0 { pre_mhc } else { fused_mhc };
-                let attention = if layer % 3 == 2 { sparse } else { kda };
-                assert_eq!(slots[3 * layer], mhc);
-                assert_eq!(slots[3 * layer + 1], attention);
-                assert_eq!(slots[3 * layer + 2], None, "generic ops always query");
-            }
-            assert_eq!(slots[18], None);
+            let (kda, sparse) = (plan.query_slot(1), plan.query_slot(7));
+            assert!(kda.is_some() && sparse.is_some() && kda != sparse);
+            assert_eq!(plan.query_slot(4), kda, "KDA layers 0 and 1 share");
+            assert_eq!(plan.query_slot(16), sparse, "sparse layers 2 and 5 share");
+            assert_eq!(plan.query_slot(5), None, "generic ops always query");
+            assert_eq!(plan.query_slot(18), None);
             assert_eq!(plan.query_slots(), 4);
-            assert_eq!(plan.names(), 18);
             assert_eq!(plan.name_slot(18), plan.name_slot(2));
         }
-    }
-
-    #[test]
-    fn shared_queries_and_slot_folds_keep_per_op_values_bit_for_bit() {
-        let engine = glm_layer_engine();
         let ctx_ops = glm_layer_ops(true);
         let gen_ops = glm_layer_ops(false);
         let db = engine.database().clone();

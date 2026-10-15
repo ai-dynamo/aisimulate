@@ -19,7 +19,7 @@ use crate::perf_database::PerfDatabase;
 
 /// Build-time facts about one immutable op list. Passes use them to skip
 /// repeated work; every op still reports its own name and value.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct OpListPlan {
     /// Ops sharing a slot price identically, so a pass queries the first one
     /// it visits and reuses that result. `None` always queries.

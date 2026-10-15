@@ -68,6 +68,35 @@ impl TimingEvidenceSource {
 /// Unavailable reason once accumulated operations disagree on SOL coverage.
 const PARTIAL_SOL_REASON: &str = "some accumulated operations lack SOL evidence";
 
+/// Accumulated SOL of two operations, available only when both export it.
+fn summed_sol(
+    left: &crate::perfmodel::engine::diagnostics::OperationDetails,
+    right: &crate::perfmodel::engine::diagnostics::OperationDetails,
+) -> Option<crate::perfmodel::engine::diagnostics::SolDiagnostics> {
+    Some(left.sol.as_ref()?.plus(right.sol.as_ref()?))
+}
+
+/// Merge `right`'s unavailable reason and fallbacks after `left.sol` holds
+/// the accumulated SOL. FPM estimates are counted separately.
+fn merge_reason_and_fallbacks(
+    left: &mut crate::perfmodel::engine::diagnostics::OperationDetails,
+    right: &crate::perfmodel::engine::diagnostics::OperationDetails,
+) {
+    if left.sol.is_none() && left.sol_unavailable_reason.is_none() {
+        left.sol_unavailable_reason = Some(
+            right
+                .sol_unavailable_reason
+                .clone()
+                .unwrap_or_else(|| PARTIAL_SOL_REASON.into()),
+        );
+    }
+    for fallback in &right.fallbacks {
+        if !left.fallbacks.contains(fallback) {
+            left.fallbacks.push(fallback.clone());
+        }
+    }
+}
+
 /// Evidence for one name-folded operation evaluated by a timing provider.
 ///
 /// A missing `energy_wms` is intentional: latency-only and uncovered results
@@ -146,12 +175,7 @@ impl TimingOperationEvidence {
                 "SOL unavailable reason cannot be empty"
             );
             if let Some(sol) = &details.sol {
-                ensure!(
-                    [sol.latency_ms, sol.math_ms, sol.memory_ms]
-                        .iter()
-                        .all(|v| v.is_finite() && *v >= 0.0),
-                    "invalid SOL evidence"
-                );
+                ensure!(sol.is_valid(), "invalid SOL evidence");
             }
             for fallback in &details.fallbacks {
                 ensure!(
@@ -191,26 +215,8 @@ impl TimingOperationEvidence {
         combined.source = combined.source.merge(other.source);
         combined.details = match (combined.details, other.details) {
             (Some(mut left), Some(right)) => {
-                left.sol = match (left.sol, right.sol) {
-                    (Some(mut a), Some(b)) => {
-                        a.latency_ms += b.latency_ms;
-                        a.math_ms += b.math_ms;
-                        a.memory_ms += b.memory_ms;
-                        Some(a)
-                    }
-                    _ => None,
-                };
-                if left.sol.is_none() {
-                    left.sol_unavailable_reason = left
-                        .sol_unavailable_reason
-                        .or(right.sol_unavailable_reason)
-                        .or_else(|| Some(PARTIAL_SOL_REASON.into()));
-                }
-                for fallback in right.fallbacks {
-                    if !left.fallbacks.contains(&fallback) {
-                        left.fallbacks.push(fallback);
-                    }
-                }
+                left.sol = summed_sol(&left, &right);
+                merge_reason_and_fallbacks(&mut left, &right);
                 crate::perfmodel::fpm::accumulate_fpm_estimates(
                     &mut left.fpm_estimates,
                     right.fpm_estimates,
@@ -426,25 +432,13 @@ impl TimingEvidenceAccumulator {
                 latency_ms
             );
             let sol = match (&left.details, &right.details) {
-                (Some(left), Some(right)) => match (&left.sol, &right.sol) {
-                    (Some(a), Some(b)) => {
-                        let sol = crate::perfmodel::engine::diagnostics::SolDiagnostics {
-                            latency_ms: a.latency_ms + b.latency_ms,
-                            math_ms: a.math_ms + b.math_ms,
-                            memory_ms: a.memory_ms + b.memory_ms,
-                        };
-                        ensure!(
-                            [sol.latency_ms, sol.math_ms, sol.memory_ms]
-                                .iter()
-                                .all(|v| v.is_finite() && *v >= 0.0),
-                            "invalid SOL evidence"
-                        );
-                        Some(sol)
-                    }
-                    _ => None,
-                },
+                (Some(left), Some(right)) => summed_sol(left, right),
                 _ => None,
             };
+            ensure!(
+                sol.as_ref().is_none_or(|sol| sol.is_valid()),
+                "invalid SOL evidence"
+            );
             let energy_wms = energy_wms.filter(|energy| *energy > 0.0);
             self.pending.push(OperationUpdate {
                 latency_ms,
@@ -500,22 +494,9 @@ impl TimingEvidenceAccumulator {
             if left.source != right.source {
                 left.source = TimingEvidenceSource::Mixed;
             }
-            // The checked merge rules for diagnostics, applied in place.
             if let (Some(left), Some(right)) = (&mut left.details, &right.details) {
                 left.sol = update.sol.clone();
-                if left.sol.is_none() && left.sol_unavailable_reason.is_none() {
-                    left.sol_unavailable_reason = Some(
-                        right
-                            .sol_unavailable_reason
-                            .clone()
-                            .unwrap_or_else(|| PARTIAL_SOL_REASON.into()),
-                    );
-                }
-                for fallback in &right.fallbacks {
-                    if !left.fallbacks.contains(fallback) {
-                        left.fallbacks.push(fallback.clone());
-                    }
-                }
+                merge_reason_and_fallbacks(left, right);
             }
         }
         if let Some(source) = &incoming.source {
@@ -1012,77 +993,46 @@ mod tests {
         use crate::perfmodel::engine::diagnostics::{
             ExecutedFallback, OperationDetails, SolDiagnostics,
         };
-        let sol = SolDiagnostics {
-            latency_ms: 0.5,
-            math_ms: 0.25,
-            memory_ms: 0.5,
-        };
-        let fallback = ExecutedFallback {
-            inference_phase: "generation".into(),
-            comm_backend: "nccl".into(),
-            requested_ep_size: 8,
-            requested_node_num: 2,
-            measurement_ep_size: 8,
-            measurement_node_num: 1,
-        };
-        let details = |sol, reason: Option<&str>, fallbacks| OperationDetails {
-            sol,
-            sol_unavailable_reason: reason.map(Into::into),
-            fallbacks,
-            fpm_estimates: Vec::new(),
-        };
-        let mut bad_fallback = fallback.clone();
-        bad_fallback.inference_phase = "mixed".into();
-        for (index, details) in [
-            details(Some(sol.clone()), None, vec![fallback.clone()]),
-            details(None, Some("unsupported"), Vec::new()),
-            details(None, None, Vec::new()),
-            details(Some(sol.clone()), Some("both"), Vec::new()),
-            details(None, Some(" "), Vec::new()),
-            details(
-                Some(SolDiagnostics {
-                    latency_ms: f64::INFINITY,
-                    ..sol.clone()
-                }),
-                None,
-                Vec::new(),
-            ),
-            details(Some(sol.clone()), None, vec![bad_fallback.clone()]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let operations = ["first", "second"]
-                .map(|name| {
-                    let mut operation = TimingOperationEvidence::new(
-                        name,
-                        1.0,
-                        Some(2.0),
-                        TimingEvidenceSource::Silicon,
-                    )
+        let operations = |reason: Option<&str>| {
+            let mut operation =
+                TimingOperationEvidence::new("op", 1.0, Some(2.0), TimingEvidenceSource::Silicon)
                     .unwrap();
-                    operation.details = Some(details.clone());
-                    operation
-                })
-                .to_vec();
-            let expected = ValidatedTimingPhase::from_operations(operations.clone());
-            let actual = ValidatedTimingPhase::from_name_folded_operations(operations);
-            match (actual, expected) {
-                (Ok(actual), Ok(expected)) => {
-                    assert!(index < 2, "case {index} must be rejected");
-                    assert_phase_bits(actual.as_phase(), expected.as_phase());
-                }
-                (Err(actual), Err(expected)) => {
-                    assert!(index >= 2, "case {index} must be accepted");
-                    assert_eq!(actual.to_string(), expected.to_string());
-                }
-                (actual, expected) => panic!(
-                    "case {index}: {:?} vs {:?}",
-                    actual.map(|_| ()),
-                    expected.map(|_| ())
-                ),
-            }
-        }
+            operation.details = Some(OperationDetails {
+                sol: Some(SolDiagnostics {
+                    latency_ms: 0.5,
+                    math_ms: 0.25,
+                    memory_ms: 0.5,
+                }),
+                sol_unavailable_reason: reason.map(Into::into),
+                fallbacks: vec![ExecutedFallback {
+                    inference_phase: "generation".into(),
+                    comm_backend: "nccl".into(),
+                    requested_ep_size: 8,
+                    requested_node_num: 2,
+                    measurement_ep_size: 8,
+                    measurement_node_num: 1,
+                }],
+                fpm_estimates: Vec::new(),
+            });
+            vec![operation]
+        };
+        assert_phase_bits(
+            ValidatedTimingPhase::from_name_folded_operations(operations(None))
+                .unwrap()
+                .as_phase(),
+            ValidatedTimingPhase::from_operations(operations(None))
+                .unwrap()
+                .as_phase(),
+        );
+        // SOL with an unavailable reason is invalid; both builders reject it alike.
+        assert_eq!(
+            ValidatedTimingPhase::from_name_folded_operations(operations(Some("both")))
+                .unwrap_err()
+                .to_string(),
+            ValidatedTimingPhase::from_operations(operations(Some("both")))
+                .unwrap_err()
+                .to_string()
+        );
     }
 
     #[test]
@@ -1600,54 +1550,7 @@ mod tests {
             !fast.pending.is_empty(),
             "the matching-layout path must run"
         );
-        // Matching diagnostic layouts merge in place with the checked rules.
-        let mut fast = TimingEvidenceAccumulator::default();
-        let mut checked = TimingPhaseEvidence::default();
-        let fallback = |ep| crate::perfmodel::engine::diagnostics::ExecutedFallback {
-            inference_phase: "generation".into(),
-            comm_backend: "nccl".into(),
-            requested_ep_size: ep,
-            requested_node_num: 1,
-            measurement_ep_size: 1,
-            measurement_node_num: 1,
-        };
-        for step in 0..64u32 {
-            let operations = (0..3u32)
-                .map(|op| {
-                    let mut operation = TimingOperationEvidence::new(
-                        format!("op{op}"),
-                        0.1 * f64::from(step + op + 1),
-                        (step % 5 != op).then_some(0.3),
-                        TimingEvidenceSource::Silicon,
-                    )
-                    .unwrap();
-                    let has_sol = (step + op) % 7 != 0;
-                    operation.details =
-                        Some(crate::perfmodel::engine::diagnostics::OperationDetails {
-                            sol: has_sol.then(|| {
-                                crate::perfmodel::engine::diagnostics::SolDiagnostics {
-                                    latency_ms: 0.01 * f64::from(step),
-                                    math_ms: 0.003 * f64::from(op),
-                                    memory_ms: 1e-17,
-                                }
-                            }),
-                            sol_unavailable_reason: (!has_sol)
-                                .then(|| format!("reason {}", step % 3)),
-                            fallbacks: (1..=(step + op) % 3).map(fallback).collect(),
-                            fpm_estimates: Vec::new(),
-                        });
-                    operation
-                })
-                .collect();
-            let incoming = ValidatedTimingPhase::from_operations(operations).unwrap();
-            fast.record(&incoming, false).unwrap();
-            checked.try_accumulate(incoming.as_phase().clone()).unwrap();
-            assert_phase_bits(&fast.snapshot().decode, &checked);
-        }
-        assert_eq!(fast.pending.len(), 3, "diagnostics must take the fast path");
-        // Mixed diagnostic presence keeps the checked accumulator's merge rules.
-        let mut fast = TimingEvidenceAccumulator::default();
-        let mut checked = TimingEvidenceSummary::default();
+        // Optional diagnostics retain the checked accumulator's merge rules.
         for detailed in [true, true, false] {
             let mut op = TimingOperationEvidence::new(
                 "diagnostic",
@@ -1682,6 +1585,79 @@ mod tests {
                 .unwrap();
             assert_phase_bits(&fast.snapshot().decode, &checked.decode);
         }
+    }
+
+    #[test]
+    fn provider_accumulator_merges_matching_diagnostics_in_place() {
+        use crate::perfmodel::engine::diagnostics::{
+            ExecutedFallback, OperationDetails, SolDiagnostics,
+        };
+        let mut fast = TimingEvidenceAccumulator::default();
+        let mut checked = TimingPhaseEvidence::default();
+        for step in 0..32u32 {
+            let operations = (0..3u32)
+                .map(|op| {
+                    let mut operation = TimingOperationEvidence::new(
+                        format!("op{op}"),
+                        0.1 * f64::from(step + op + 1),
+                        (step % 5 != op).then_some(0.3),
+                        TimingEvidenceSource::Silicon,
+                    )
+                    .unwrap();
+                    let has_sol = (step + op) % 7 != 0;
+                    operation.details = Some(OperationDetails {
+                        sol: has_sol.then(|| SolDiagnostics {
+                            latency_ms: 0.01 * f64::from(step),
+                            math_ms: 0.003 * f64::from(op),
+                            memory_ms: 1e-17,
+                        }),
+                        sol_unavailable_reason: (!has_sol).then(|| format!("reason {}", step % 3)),
+                        fallbacks: (1..=(step + op) % 3)
+                            .map(|ep| ExecutedFallback {
+                                inference_phase: "generation".into(),
+                                comm_backend: "nccl".into(),
+                                requested_ep_size: ep,
+                                requested_node_num: 1,
+                                measurement_ep_size: 1,
+                                measurement_node_num: 1,
+                            })
+                            .collect(),
+                        fpm_estimates: Vec::new(),
+                    });
+                    operation
+                })
+                .collect();
+            let incoming = ValidatedTimingPhase::from_operations(operations).unwrap();
+            fast.record(&incoming, false).unwrap();
+            checked.try_accumulate(incoming.as_phase().clone()).unwrap();
+            assert_phase_bits(&fast.snapshot().decode, &checked);
+        }
+        assert_eq!(fast.pending.len(), 3, "diagnostics must take the fast path");
+        // A SOL overflow reports the checked error and leaves the state intact.
+        let mut operation =
+            TimingOperationEvidence::new("op", 1.0, Some(1.0), TimingEvidenceSource::Silicon)
+                .unwrap();
+        operation.details = Some(OperationDetails {
+            sol: Some(SolDiagnostics {
+                latency_ms: f64::MAX,
+                math_ms: 0.0,
+                memory_ms: 0.0,
+            }),
+            sol_unavailable_reason: None,
+            fallbacks: Vec::new(),
+            fpm_estimates: Vec::new(),
+        });
+        let overflow = ValidatedTimingPhase::from_operations(vec![operation]).unwrap();
+        let mut fast = TimingEvidenceAccumulator::default();
+        fast.record(&overflow, false).unwrap();
+        let before = fast.snapshot().decode;
+        let expected = before
+            .clone()
+            .try_accumulate(overflow.as_phase().clone())
+            .unwrap_err();
+        let actual = fast.record(&overflow, false).unwrap_err();
+        assert_eq!(actual.to_string(), expected.to_string());
+        assert_phase_bits(&fast.snapshot().decode, &before);
     }
 
     #[test]
@@ -1721,34 +1697,6 @@ mod tests {
                 .unwrap();
             assert_phase_bits(&fast.snapshot().decode, &before.decode);
         }
-        // A diagnostic SOL overflow reports the checked error and stays atomic.
-        let detailed = |latency_ms| {
-            let mut operation =
-                TimingOperationEvidence::new("op", 1.0, Some(1.0), TimingEvidenceSource::Silicon)
-                    .unwrap();
-            operation.details = Some(crate::perfmodel::engine::diagnostics::OperationDetails {
-                sol: Some(crate::perfmodel::engine::diagnostics::SolDiagnostics {
-                    latency_ms,
-                    math_ms: 0.0,
-                    memory_ms: 0.0,
-                }),
-                sol_unavailable_reason: None,
-                fallbacks: Vec::new(),
-                fpm_estimates: Vec::new(),
-            });
-            ValidatedTimingPhase::from_operations(vec![operation]).unwrap()
-        };
-        let mut fast = TimingEvidenceAccumulator::default();
-        fast.record(&detailed(f64::MAX), false).unwrap();
-        let before = fast.snapshot();
-        let expected = before
-            .decode
-            .clone()
-            .try_accumulate(detailed(f64::MAX).as_phase().clone())
-            .unwrap_err();
-        let actual = fast.record(&detailed(f64::MAX), false).unwrap_err();
-        assert_eq!(actual.to_string(), expected.to_string());
-        assert_phase_bits(&fast.snapshot().decode, &before.decode);
         // Phase-only evidence always takes the public checked fallback. Such
         // values cannot currently be constructed by the provider adapter.
         let phase_only = ValidatedTimingPhase(TimingPhaseEvidence {
