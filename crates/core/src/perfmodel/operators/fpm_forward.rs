@@ -667,50 +667,61 @@ impl FpmForwardOp {
         coords: &[f64],
     ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         let (batch, tokens, kv) = (coords[0], coords[1], coords[2]);
-        // A collection's maximum KV can differ at each measured token count.
-        // Transpose only after the usual path fails, retaining the same batch
-        // and genuine measurements; supported queries keep their old answer.
-        let mut kv_curves: BTreeMap<u32, BTreeMap<u32, f64>> = BTreeMap::new();
-        for (&(_, site_kv), curve) in cell
-            .direct_prefill
-            .range((batch as u32, 0)..=(batch as u32, u32::MAX))
-        {
-            for (&site_tokens, &latency) in curve {
-                kv_curves
-                    .entry(site_tokens)
-                    .or_default()
-                    .insert(site_kv, latency);
-            }
-        }
-        let token_curve: BTreeMap<u32, f64> = kv_curves
-            .iter()
-            .filter_map(|(&site_tokens, curve)| {
-                direct_curve_value(curve, kv).map(|latency| (site_tokens, latency))
-            })
-            .collect();
-        let latency = direct_curve_value(&token_curve, tokens).ok_or_else(|| {
+        let unsupported = || {
             self.direct_coverage_err(
                 cell,
                 coords,
                 "no same-batch, two-sided measured support in either token-first or KV-first interpolation",
             )
-        })?;
-        let support = direct_curve_support(&token_curve, tokens, |token| {
-            fpm_coordinates(self.phase, &[batch, token, kv])
-        })
-        .into_iter()
-        .flat_map(|token_point| {
-            let token = token_point.coordinates.total_prefill_tokens.unwrap();
-            direct_curve_support(&kv_curves[&(token as u32)], kv, |site_kv| {
-                fpm_coordinates(self.phase, &[batch, token, site_kv])
-            })
+        };
+        if !tokens.is_finite() || tokens < 0.0 || tokens > u32::MAX as f64 {
+            return Err(unsupported());
+        }
+        // A collection's maximum KV can differ at each measured token count.
+        // Only after the usual path fails, interpolate KV at the nearest
+        // KV-covering token count on each side, retaining the same batch and
+        // genuine measurements; supported queries keep their old answer.
+        let rows = cell.direct_prefill_by_tokens();
+        let batch_key = batch as u32;
+        let covered = |(&(_, row_tokens), curve): (&(u32, u32), &BTreeMap<u32, f64>)| {
+            direct_curve_value(curve, kv).map(|latency| (row_tokens, latency))
+        };
+        let (lo, lo_ms) = rows
+            .range((batch_key, 0)..=(batch_key, tokens as u32))
+            .rev()
+            .find_map(covered)
+            .ok_or_else(unsupported)?;
+        let (latency, token_support) = if tokens == lo as f64 {
+            (lo_ms, [Some((lo, 1.0)), None])
+        } else {
+            let (hi, hi_ms) = rows
+                .range((
+                    std::ops::Bound::Excluded((batch_key, lo)),
+                    std::ops::Bound::Included((batch_key, u32::MAX)),
+                ))
+                .find_map(covered)
+                .ok_or_else(unsupported)?;
+            let weight = direct_weight(lo, hi, tokens);
+            (
+                direct_lerp((lo, lo_ms), (hi, hi_ms), tokens),
+                [Some((lo, 1.0 - weight)), Some((hi, weight))],
+            )
+        };
+        let support = token_support
             .into_iter()
-            .map(move |mut point| {
-                point.weight *= token_point.weight;
-                point
+            .flatten()
+            .flat_map(|(row_tokens, row_weight)| {
+                let token = row_tokens as f64;
+                direct_curve_support(&rows[&(batch_key, row_tokens)], kv, |site_kv| {
+                    fpm_coordinates(self.phase, &[batch, token, site_kv])
+                })
+                .into_iter()
+                .map(move |mut point| {
+                    point.weight *= row_weight;
+                    point
+                })
             })
-        })
-        .collect();
+            .collect();
         self.direct_result(
             cell,
             coords,
@@ -1018,7 +1029,7 @@ fn direct_curve_support(
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()
         .expect("covered curve");
-    let weight = (coordinate - lo as f64) / (hi as f64 - lo as f64);
+    let weight = direct_weight(lo, hi, coordinate);
     vec![
         FpmMeasurementSupport {
             coordinates: coordinates(lo as f64),
@@ -1046,7 +1057,18 @@ fn direct_curve_value(curve: &BTreeMap<u32, f64>, coordinate: f64) -> Option<f64
     let (&hi, &hi_ms) = curve
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()?;
-    Some(lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64))
+    Some(direct_lerp((lo, lo_ms), (hi, hi_ms), coordinate))
+}
+
+/// Raw linear interpolation between two measured points. Shared with the
+/// KV-first fallback so both keep the same floating-point evaluation order.
+fn direct_lerp((lo, lo_ms): (u32, f64), (hi, hi_ms): (u32, f64), coordinate: f64) -> f64 {
+    lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64)
+}
+
+/// Support weight of the upper point; the lower point's is `1.0 - weight`.
+fn direct_weight(lo: u32, hi: u32, coordinate: f64) -> f64 {
+    (coordinate - lo as f64) / (hi as f64 - lo as f64)
 }
 
 /// FPM interpolation configs: prefill sites `(batch, kv)` own the new-token
@@ -1485,6 +1507,141 @@ mod tests {
         ] {
             assert!(direct.query_totals(&db, &coords).is_err(), "{coords:?}");
         }
+    }
+
+    /// The per-query transposition that the token-major index replaced.
+    fn kv_first_reference(
+        op: &FpmForwardOp,
+        cell: &FpmForwardCell,
+        coords: &[f64],
+    ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
+        let (batch, tokens, kv) = (coords[0], coords[1], coords[2]);
+        let mut kv_curves: BTreeMap<u32, BTreeMap<u32, f64>> = BTreeMap::new();
+        for (&(_, site_kv), curve) in cell
+            .direct_prefill
+            .range((batch as u32, 0)..=(batch as u32, u32::MAX))
+        {
+            for (&site_tokens, &latency) in curve {
+                kv_curves
+                    .entry(site_tokens)
+                    .or_default()
+                    .insert(site_kv, latency);
+            }
+        }
+        let token_curve: BTreeMap<u32, f64> = kv_curves
+            .iter()
+            .filter_map(|(&site_tokens, curve)| {
+                direct_curve_value(curve, kv).map(|latency| (site_tokens, latency))
+            })
+            .collect();
+        let latency = direct_curve_value(&token_curve, tokens).ok_or_else(|| {
+            op.direct_coverage_err(
+                cell,
+                coords,
+                "no same-batch, two-sided measured support in either token-first or KV-first interpolation",
+            )
+        })?;
+        let support = direct_curve_support(&token_curve, tokens, |token| {
+            fpm_coordinates(op.phase, &[batch, token, kv])
+        })
+        .into_iter()
+        .flat_map(|token_point| {
+            let token = token_point.coordinates.total_prefill_tokens.unwrap();
+            direct_curve_support(&kv_curves[&(token as u32)], kv, |site_kv| {
+                fpm_coordinates(op.phase, &[batch, token, site_kv])
+            })
+            .into_iter()
+            .map(move |mut point| {
+                point.weight *= token_point.weight;
+                point
+            })
+        })
+        .collect();
+        op.direct_result(
+            cell,
+            coords,
+            latency,
+            FpmQueryResolution::KvFirstInterpolation,
+            support,
+            false,
+        )
+    }
+
+    #[test]
+    fn direct_prefill_kv_first_index_matches_per_query_transposition() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        // Ragged KV grids: each token count has its own KV offset and ceiling.
+        let mut rows = Vec::new();
+        for batch in [1, 2] {
+            for (row, tokens) in [16, 64, 100, 128, 256, 300, 512].into_iter().enumerate() {
+                let offset = (row as u32 % 3) * 8;
+                let ceiling = 1024 - tokens - 40 * row as u32;
+                for kv in (0..=ceiling)
+                    .step_by(96)
+                    .map(|kv| if kv == 0 { 0 } else { kv + offset })
+                {
+                    rows.push(RowSpec {
+                        workload_kind: "prefill",
+                        batch_size: batch,
+                        total_prefill_tokens: tokens,
+                        total_kv_read_tokens: kv,
+                        latency_ms: 1.0
+                            + 0.013 * f64::from(tokens)
+                            + 0.0031 * f64::from(kv)
+                            + f64::from((tokens * 7 + kv * 3 + batch) % 11) * 0.07,
+                        ..RowSpec::default()
+                    });
+                }
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut direct = op(FpmPhase::Prefill);
+        direct.interpolation = FpmInterpolation::Direct;
+        let cell = direct.select_cell(&db).unwrap();
+        let mut queries = vec![
+            [1.0, f64::NAN, 100.0],
+            [1.0, -1.0, 100.0],
+            [1.0, 100.0, f64::NAN],
+            [1.0, 5e9, 100.0],
+            [3.0, 100.0, 100.0],
+        ];
+        for batch in [1.0, 2.0] {
+            for tokens in (0..=560).step_by(8) {
+                for kv in (0..=1040).step_by(8) {
+                    queries.push([batch, f64::from(tokens), f64::from(kv)]);
+                    queries.push([batch, f64::from(tokens) + 0.25, f64::from(kv) + 0.5]);
+                }
+            }
+        }
+        let (mut supported, mut two_sided) = (0, 0);
+        for coords in &queries {
+            let expected = kv_first_reference(&direct, cell, coords);
+            let actual = direct.resolve_direct_prefill_kv_first(cell, coords);
+            match (expected, actual) {
+                (Ok((expected, expected_kind)), Ok((actual, actual_kind))) => {
+                    assert_eq!(
+                        actual.latency_ms.to_bits(),
+                        expected.latency_ms.to_bits(),
+                        "{coords:?}"
+                    );
+                    assert_eq!(actual_kind, expected_kind, "{coords:?}");
+                    assert_eq!(actual.fpm_queries, expected.fpm_queries, "{coords:?}");
+                    supported += 1;
+                    two_sided += usize::from(coords[1].fract() != 0.0);
+                }
+                (Err(expected), Err(actual)) => {
+                    assert_eq!(actual.to_string(), expected.to_string(), "{coords:?}");
+                }
+                (expected, actual) => panic!("{coords:?}: {expected:?} != {actual:?}"),
+            }
+        }
+        assert!(
+            supported > 10_000 && two_sided > 5_000,
+            "{supported} {two_sided}"
+        );
+        assert!(supported < queries.len());
     }
 
     #[test]
