@@ -1,18 +1,52 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Send the weekly PR digest; --dry-run prints messages without contacting Slack."""
+"""Send the Monday/Thursday PR digest; --dry-run previews without contacting Slack."""
 
 import argparse
 import json
 import os
+import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
+REVIEW_PICS = (
+    "Simone Chen",
+    "Harry Lee",
+    "Jason Zhou",
+    "Yongming Ding",
+    "Hongkuan Zhou",
+    "Yueqi Zhao",
+)
+ROTATION_START = date(2026, 10, 19)
+
+
+def review_pic(now, user_ids, overrides):
+    """Resolve the weekly PIC, with explicit Monday-date overrides for coverage swaps."""
+    ids = [value.strip() for value in user_ids.split(",")]
+    if (
+        len(ids) != len(REVIEW_PICS)
+        or len(set(ids)) != len(ids)
+        or any(not re.fullmatch(r"[UW][A-Z0-9]{8,}", value) for value in ids)
+    ):
+        raise ValueError("SLACK_REVIEW_PIC_IDS must contain six unique Slack user IDs in roster order")
+    coverage = json.loads(overrides or "{}")
+    if not isinstance(coverage, dict):
+        raise ValueError("SLACK_REVIEW_PIC_OVERRIDES must map Monday dates to PIC names")
+    for week, name in coverage.items():
+        monday = date.fromisoformat(week)
+        if monday.isoformat() != week or monday.weekday() != 0 or name not in REVIEW_PICS:
+            raise ValueError("Coverage overrides require YYYY-MM-DD Monday dates and roster names")
+    # Subtract local wall-clock hours so the Monday 09:00 handoff survives DST changes.
+    shift_date = (now.astimezone(PACIFIC) - timedelta(hours=9)).date()
+    week_start = shift_date - timedelta(days=shift_date.weekday())
+    index = max(0, (week_start - ROTATION_START).days // 7) % len(REVIEW_PICS)
+    name = coverage.get(week_start.isoformat(), REVIEW_PICS[index])
+    return name, ids[REVIEW_PICS.index(name)]
 
 
 def timestamp(value):
@@ -57,7 +91,7 @@ def messages(repository, open_prs, recent_prs, now):
     merged = sum(in_window(pr["merged_at"]) for pr in recent_prs)
     opened = sum(in_window(pr["created_at"]) for pr in recent_prs)
     lines = [
-        f"AISimulate Weekly PR digest — {local:%Y-%m-%d, %I:%M %p %Z}",
+        f"AISim PR digest — {local:%Y-%m-%d, %I:%M %p %Z}",
         f":merged-2472: PRs merged in the past 7 days: {merged}",
         f":pr-opened: PRs opened in the past 7 days: {opened}",
         f":reminder-alarm: PRs waiting for review: {len(ready)}",
@@ -106,10 +140,18 @@ def main():
     if not args.dry_run and not webhook:
         raise ValueError("Set SLACK_REVIEW_DIGEST_WEBHOOK_URL before sending the digest")
     now = datetime.now(timezone.utc)
+    pic_name, pic_id = review_pic(
+        now,
+        os.environ.get("SLACK_REVIEW_PIC_IDS", ""),
+        os.environ.get("SLACK_REVIEW_PIC_OVERRIDES", ""),
+    )
     start = now.astimezone(PACIFIC) - timedelta(days=7)
     open_prs = list(pull_requests(repository, token, "open"))
     recent_prs = list(pull_requests(repository, token, "all", since=start))
     payload = messages(repository, open_prs, recent_prs, now)
+    payload["message"] += f"\nReview PIC: {pic_name} — please triage external-contributor PRs."
+    # Workflow Builder must declare this as User ID; Text inputs do not parse mentions.
+    payload["review_pic"] = pic_id
     if args.dry_run:
         print("CHANNEL MESSAGE:\n" + payload["message"])
         print("\nTHREAD REPLY:\n" + payload["pr_details"])

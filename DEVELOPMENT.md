@@ -177,13 +177,13 @@ Explore the automation helpers under `python/aisimulate/tools/automation/`.
 
 This project is licensed under Apache 2.0. All contributions must include SPDX license headers and DCO sign-off.
 
-## Daily Slack review digest
+## Slack review digest and weekly PIC
 
-The `Slack review digest` workflow runs every day at 17:07
+The `Slack review digest` workflow runs every Monday and Thursday at 17:07
 `America/Los_Angeles` (including daylight saving changes). It reports:
 
 - Open non-draft PRs, including approved PRs.
-- PRs merged or created since Pacific midnight, through the run's start time.
+- PRs merged or created in the past seven local calendar days, through the run's start time.
   Created PRs count even if subsequently closed or merged, including drafts.
 - Every open non-draft PR created more than 5 days (120 hours) ago, oldest first, with
   its link, title, author, and age. Age measures creation time, not inactivity
@@ -203,15 +203,20 @@ failures in subsequent steps.
 To enable delivery:
 
 1. In Slack Workflow Builder, create a **From a webhook** workflow. Add a
-   Text variables named `message` and `pr_details`. Add **Send a message to a
-   channel**, select the destination, and insert `message` into its body.
+   pair of Text variables named `message` and `pr_details`, and a **User ID**
+   variable named `review_pic`. Add **Send a message to a channel**, select the
+   destination, and insert `review_pic` as a mention alongside `message` in its
+   body. A literal `<@USER_ID>` in the Text variable will not notify the PIC.
    Then add **Reply to a message in thread**. For the message to reply to,
    select the message output from the preceding send step; insert `pr_details`
    into the reply body. Leave any option to broadcast the reply to the channel
    disabled. Publish the Slack workflow (republish after changing variables).
 2. Save its Web request URL (`https://hooks.slack.com/triggers/...`) under repository **Settings → Secrets and variables → Actions**
    as `SLACK_REVIEW_DIGEST_WEBHOOK_URL`. Never commit the URL.
-3. Merge the workflow into the default branch. In **Actions → Slack review
+3. Save `SLACK_REVIEW_PIC_IDS` as an Actions secret containing six comma-separated
+   Slack member IDs in this order: Simone Chen, Harry Lee, Jason Zhou, Yongming
+   Ding, Hongkuan Zhou, Yueqi Zhao. Keep real workspace IDs out of the repository.
+4. Merge the workflow into the default branch. In **Actions → Slack review
    digest → Run workflow**, leave `dry_run` enabled to preview; disable it
    to send a test message.
 
@@ -220,7 +225,29 @@ uses its read-only repository token. Missing secrets and API errors fail the
 job. Runs are not automatically retried; rerunning a sent or partially sent
 job can duplicate messages. GitHub schedules may be delayed, so the digest
 shows the actual reporting time. Activity after that time is outside the
-same-day report.
+seven-day report.
+
+The PIC changes every Monday at 09:00 Pacific, starting October 19, 2026 with
+Simone Chen. Both reminders in a week use the same PIC. The first PIC also covers
+runs before the start date. The six-person sequence repeats every six weeks and
+uses local calendar dates across daylight-saving changes. The
+[Linear review project](https://linear.app/nvidia/project/aisim-review-pic-51559cd6cfe2)
+records the roster, responsibilities, and schedule. The digest computes the PIC;
+it does not update the Linear project lead.
+
+For OOO coverage, set the Actions **variable** `SLACK_REVIEW_PIC_OVERRIDES` to a
+JSON object mapping Monday dates to exact roster names. For example, this swaps
+Jason's November 2 shift with Yongming's November 9 shift:
+
+```json
+{"2026-11-02": "Yongming Ding", "2026-11-09": "Jason Zhou"}
+```
+
+Overrides affect both reminders for the named week without shifting later weeks.
+Confirm the coverage and update the Linear schedule when setting an override.
+An unset/empty variable uses the normal rotation. Invalid dates, unknown names,
+or an incomplete/duplicate ID roster fail before contacting Slack. Configure
+and republish the Slack User ID input before enabling the updated sender.
 
 Local preview (requires an authenticated GitHub CLI and Python 3.9+):
 The digest and its offline tests use standard-library Python modules and require
@@ -230,6 +257,8 @@ with `python3 -m pip install tzdata`. Both files retain a Python 3.9 lint target
 in `scripts/pyproject.toml`.
 
 ```bash
+# Fake member IDs are sufficient for a local preview; never send them to Slack.
+export SLACK_REVIEW_PIC_IDS=U00000001,U00000002,U00000003,U00000004,U00000005,U00000006
 GH_TOKEN="$(gh auth token)" python3 scripts/notifications/slack_review_digest.py --dry-run
 ```
 
