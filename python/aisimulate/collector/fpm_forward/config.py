@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -392,6 +392,23 @@ class FPMCollectionOptions:
     # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
     slurm_cpus_per_task: int | None = None
     slurm_cpu_bind: str | None = None
+
+    def resolve_model_execution(self, architecture: str | None) -> FPMCollectionOptions:
+        if architecture != "DeepseekV41ForCausalLM" or self.enforce_eager:
+            return self
+        if (
+            self.cudagraph_mode not in (None, "NONE")
+            or self.cudagraph_capture_sizes is not None
+            or self.max_cudagraph_capture_size is not None
+            or self.max_prefill_cudagraph_size is not None
+            or self.prefill_cudagraph_policy != "runtime"
+        ):
+            raise ValueError(
+                "DeepSeek V4.1 requires eager execution; pass --fpm-enforce-eager, or use "
+                "--fpm-prefill-cudagraph-policy runtime without CUDA graph capture flags "
+                "(cudagraph_mode=NONE)"
+            )
+        return replace(self, enforce_eager=True)
 
     def __post_init__(self) -> None:
         collection_phases(self.worker_type)
@@ -778,7 +795,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
-        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
+        help="Disable both CUDA graphs and torch.compile via worker --enforce-eager; included in the frozen plan.",
     )
     group.add_argument(
         "--fpm-benchmark-points-file",

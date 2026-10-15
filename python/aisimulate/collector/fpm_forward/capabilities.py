@@ -54,6 +54,25 @@ def _attention_template(
         # MiniMax-M3's MSA op has no standalone silicon table. AIC transfers
         # utilization from DSA at the same (batch, suffix, prefix) coordinate.
         return "dsa_module", "moe_msa"
+    layer_types = config.get("layer_types")
+    layers = config.get("num_hidden_layers")
+    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
+        raise ValueError("num_hidden_layers must be a positive integer")
+    if "layer_types" in config and (
+        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
+    ):
+        raise ValueError("layer_types must have one entry per num_hidden_layers")
+    allowed_layers = {"full_attention", "sliding_attention"}
+    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
+        allowed_layers.add("deepseek_sparse_attention")
+    if layer_types is not None and any(
+        not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types
+    ):
+        raise ValueError(
+            f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "
+            "FPM attention templates cannot represent linear-attention/recurrent state. "
+            "Use a qualified model-specific collection adapter and verified cache profile."
+        )
     if "dsa" in lowered or model_family == "DEEPSEEKV32":
         return "dsa_module", "moe_dsa"
     if any(config.get(key) is not None for key in ("kv_lora_rank", "q_lora_rank")) or model_family in {

@@ -335,6 +335,16 @@ capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)
 for execution and cache combinations.
 
+FP8 tensor-core compute is rejected during estimator construction on pre-SM89
+GPUs, including `a100_sxm`. Choose a BF16 checkpoint on A100, or an FP8-capable
+GPU with matching backend timing data. This checks compute precision, not weight
+storage or KV dtype: weight-only formats that compute in BF16 remain distinct.
+FPM also checks the preserved GEMM/MoE identity before selecting a timing cell,
+including profiles without an original op-level graph.
+Missing hardware metadata still follows the system-spec/data diagnostics.
+Serving runtimes may execute FP8 checkpoints through weight-only kernels such as
+Marlin on these GPUs; AISimulate does not model that path.
+
 ### KV precision and token capacity
 
 An explicit `engine.kvcache_quant_mode` or worker timing override takes precedence,

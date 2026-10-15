@@ -38,6 +38,7 @@ from .detail import (
     energy_diagnostics,
     prediction_summary,
 )
+from .estimator_readiness import perf_data_missing_message
 from .output import (
     format_prediction_stdout,
     format_recommendation_stdout,
@@ -196,6 +197,22 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         summary["kv_cache_precision"] = kv_precision
     if "memory" not in args.detail:
         native = {key: value for key, value in native.items() if key != "memory_diagnostics"}
+    provenance = report.metadata.get("prediction_provenance")
+    if provenance is None or provenance == {}:
+        provenance = {"runner": {"unavailable_reason": "runner did not report effective timing provenance"}}
+    if not isinstance(provenance, dict):
+        raise _CliExecutionError("runner prediction_provenance must be a mapping of worker roles")
+    for role, entry in provenance.items():
+        if not isinstance(role, str) or not role or not isinstance(entry, dict):
+            raise _CliExecutionError("runner prediction_provenance requires named roles with mapping values")
+        if entry.get("unavailable_reason"):
+            required = ("unavailable_reason",)
+        else:
+            version_key = "data_version" if entry.get("data_version") is not None else "data_version_unavailable_reason"
+            required = ("estimator", "timing_source", version_key)
+        if any(not isinstance(entry.get(key), str) or not entry[key].strip() for key in required):
+            raise _CliExecutionError(f"runner prediction_provenance.{role} requires nonempty strings for {required}")
+    summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
     if summary.get("completed_requests") == 0:
         summary.update(
@@ -443,7 +460,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"could not save resource plan: {output_error}\n")
         return 3
     except _CliExecutionError as exc:
-        sys.stderr.write(f"aisimulate {args.command} failed: {exc}\n")
+        message = perf_data_missing_message(exc) or str(exc)
+        sys.stderr.write(f"aisimulate {args.command} failed: {message}\n")
         return 1
     except Exception as exc:
         sys.stderr.write(f"aisimulate {args.command} failed: {type(exc).__name__}: {exc}\n")

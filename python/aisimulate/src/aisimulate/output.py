@@ -146,10 +146,21 @@ def format_prediction_stdout(
             + "\n\n"
             + format_power_diagnostics(power_diagnostics, top_n=diagnostics_top_n)
         )
-    precision_lines = [
+    provenance_lines = [
         f"KV cache ({role}): {precision['dtype']} (source: {precision['source']})"
         for role, precision in summary.get("kv_cache_precision", {}).items()
     ]
+    for role, provenance in summary.get("prediction_provenance", {}).items():
+        if reason := provenance.get("unavailable_reason"):
+            provenance_lines.append(f"Timing ({role}): unavailable ({reason})")
+            continue
+        version = provenance.get("data_version")
+        if version is None:
+            version = f"unavailable ({provenance['data_version_unavailable_reason']})"
+        provenance_lines.append(
+            f"Timing ({role}): estimator={provenance['estimator']}; "
+            f"source={provenance['timing_source']}; data_version={version}"
+        )
     invalid_banner = ""
     if summary.get("prediction_status") == "invalid":
         invalid_banner = f"INVALID prediction ({summary['stop_reason']}): {summary['diagnostic']}\n"
@@ -168,13 +179,13 @@ def format_prediction_stdout(
         ):
             lines.append(f"{name}: {summary.get(name, 'N/A')}")
         lines.append(format_power_summary(summary))
-        lines.extend(precision_lines)
+        lines.extend(provenance_lines)
         lines.append("duration_ms is a rate-derived accounting interval, not an EPD event timeline.")
         return invalid_banner + "\n".join(lines)
 
     table = invalid_banner + format_report_table(summary)
-    if precision_lines:
-        table += "\n" + "\n".join(precision_lines)
+    if provenance_lines:
+        table += "\n" + "\n".join(provenance_lines)
     if summary.get("agentic_qualification") == "functional_only":
         return "AgentX functional replay only; not an AgentX benchmark result.\n" + table
     return table

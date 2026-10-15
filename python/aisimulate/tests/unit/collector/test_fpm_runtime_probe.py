@@ -101,6 +101,31 @@ def _inputs(tmp_path, *, graph_policy="runtime"):
     return launch, manifest, marker
 
 
+@pytest.mark.parametrize("mode", [None, "NONE"])
+def test_probe_automatically_selects_eager_from_v41_config(tmp_path, mode):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, marker = _inputs(tmp_path)
+    # Keep the arbitrary model identifier: selection must use actual config metadata.
+    config = Path(launch["model_config"]["path"])
+    payload = json.loads(config.read_text())
+    payload["architectures"] = ["DeepseekV41ForCausalLM"]
+    config.write_text(json.dumps(payload))
+    launch["model_config"]["sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    launch["worker_type"] = "aggregated"
+    launch["collection"]["cudagraph_mode"] = mode
+    bundle = load_instrumentation(manifest)
+    plan = runtime_probe.build_runtime_probe_plan("v41", launch, bundle)
+    assert plan.launch["collection"]["enforce_eager"] is True
+    assert runtime_probe.build_runtime_probe_plan("v41", plan.launch, bundle).sha256 == plan.sha256
+    for cell in plan.cells:
+        request = runner._cell_generator_overrides(plan, cell, {})
+        assert "--enforce-eager" in request["params"]["agg"]["extra_cli_args"]
+    assert not marker.exists()
+    assert "enforce_eager" not in launch["collection"]
+
+
 class _SyntheticExecutor:
     def __init__(self, plan, cell, cell_dir, executions, *, fail_configuration=None):
         self.plan, self.cell, self.cell_dir = plan, cell, cell_dir

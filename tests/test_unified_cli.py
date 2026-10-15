@@ -286,6 +286,48 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
 
 
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("MoE data missing for test shape", "missing performance data: MoE data missing for test shape"),
+        (
+            "perf file is an unresolved git-lfs pointer; run git lfs pull",
+            "RuntimeError: perf database error: perf file is an unresolved git-lfs pointer; run git lfs pull",
+        ),
+    ],
+)
+def test_predict_reports_missing_data_after_execution(tmp_path, monkeypatch, capsys, detail, expected):
+    class FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            error = RuntimeError(f"perf database error: {detail}")
+            error.fpm_query_coverage = {"schema_version": 1, "queries": []}
+            raise error
+
+    runner = FailingRunner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(runner))
+    config_path = tmp_path / "prediction.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+
+    assert cli.main(["predict", "--config", str(config_path), "--output-dir", str(output)]) == 1
+    assert f"aisimulate predict failed: {expected}" in capsys.readouterr().err
+    assert runner.closed
+    coverage = json.loads((output / "fpm-coverage.json").read_text())
+    assert coverage["status"] == "incomplete"
+    assert coverage["error"] == f"perf database error: {detail}"
+
+
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
     config_path = tmp_path / "prediction.yaml"
     config_path.write_text(
@@ -2068,6 +2110,99 @@ def test_predict_discloses_kv_precision_without_detail(
     else:
         for role, dtype in modes.items():
             assert f"KV cache ({role}): {dtype} (source: {expected_source})" in stdout
+
+
+@pytest.mark.parametrize("output_format", ["table", "json"])
+@pytest.mark.parametrize("provenance_state", ["omitted", "null", "empty", "available"])
+def test_predict_reports_effective_timing_provenance_without_details(
+    tmp_path, monkeypatch, capsys, output_format, provenance_state
+):
+    available = provenance_state == "available"
+    provenance = {
+        "aggregated": {
+            "estimator": "op_level",
+            "timing_source": "aic",
+            "data_version": "0.24.0",
+            "data_version_unavailable_reason": None,
+        }
+    }
+
+    class ProvenanceRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            assert not self.output_requirements.capture_performance_diagnostics
+            if provenance_state != "omitted":
+                report.metadata["prediction_provenance"] = {"null": None, "empty": {}, "available": provenance}[
+                    provenance_state
+                ]
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(ProvenanceRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {"timing": {}}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--format", output_format, "--output-dir", str(output)]) == 0
+    stdout = capsys.readouterr().out
+    saved = json.loads((output / "prediction.json").read_text())["summary"]["prediction_provenance"]
+    if available:
+        assert saved == provenance
+    else:
+        assert "runner did not report" in saved["runner"]["unavailable_reason"]
+    if output_format == "json":
+        assert json.loads(stdout)["prediction_provenance"] == saved
+    elif available:
+        assert "Timing (aggregated): estimator=op_level; source=aic; data_version=0.24.0" in stdout
+    else:
+        assert "Timing (runner): unavailable (runner did not report" in stdout
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        [],
+        "bad",
+        {"aggregated": None},
+        {"aggregated": {}},
+        {"aggregated": {"estimator": "op_level", "timing_source": "aic"}},
+        {"aggregated": {"unavailable_reason": True}},
+    ],
+)
+def test_predict_rejects_malformed_runner_provenance_before_output(tmp_path, monkeypatch, capsys, provenance):
+    class MalformedRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["prediction_provenance"] = provenance
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(MalformedRunner()))
+    path = tmp_path / "prediction.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 4096,
+                    "workers": {"aggregated": {"timing": {}}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "out"
+    assert cli.main(["predict", "-c", str(path), "--output-dir", str(output)]) == 1
+    assert "runner prediction_provenance" in capsys.readouterr().err
+    assert not (output / "prediction.json").exists()
 
 
 @pytest.mark.parametrize("output_format", ["table", "json"])

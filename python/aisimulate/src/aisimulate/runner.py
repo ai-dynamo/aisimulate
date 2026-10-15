@@ -2099,6 +2099,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     metadata = {
         key: payload[key]
         for key in (
+            "prediction_provenance",
             "state_cache",
             "agentic_qualification",
             "agentic_input_format",

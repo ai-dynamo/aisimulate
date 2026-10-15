@@ -455,6 +455,26 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 ### Serving roles and CUDA graph settings
 
+DeepSeek V4.1 requires eager execution to avoid the graph-compilation startup
+timeout that motivated this collection policy; see the
+[historical startup evidence](../../../benchmarks/evidence/dsv41-eager-startup.md).
+Compiled and CUDA-graph execution still need separate qualification for this
+collection path.
+In vLLM, `--enforce-eager` disables both CUDA graphs and `torch.compile`;
+`cudagraph_mode=NONE` only disables CUDA graphs and may leave compilation enabled. See the
+[CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
+
+For direct `collector --fpm` calls, pass `--fpm-enforce-eager`, or select
+`--fpm-prefill-cudagraph-policy runtime` without CUDA graph capture flags.
+
+The collector and runtime probe recognize `DeepseekV41ForCausalLM` from the
+resolved model config
+and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
+is needed. Use the default `runtime` prefill policy, with graph mode omitted or
+`NONE` and no capture sizes. Explicit graph requests fail with a diagnostic;
+they are not silently overridden. This model-specific rule does not make `NONE`
+select eager execution for other models.
+
 Use `--worker-type prefill`, `decode` or `aggregated` to bind new collection and memory evidence to its serving role. `prefill` and `decode` requests collect only their own phase and use separate output roots. Their configured graph modes, capture limits and usable KV capacities need not agree with each other. Within each role, observed settings and rank-local cache evidence must match that role's accepted launch; an unexpected runtime change still fails validation. Aggregated requests exercise both phases with one shared serving configuration and combine compatible memory observations conservatively. A batch selecting PIECEWISE during prefill and FULL during decode is not itself a configuration mismatch.
 
 The following optional settings describe vLLM's configuration for the selected role. They require an explicit `--worker-type`, are included in saved request and collection identities, and remain editable during the review/accept/save step. Enter `clear` when editing a generic graph field to remove that override:
@@ -583,6 +603,29 @@ Source notes identify assumptions and packaged hardware hashes. Weight precision
 The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
 ### Review grouped cache resources
+
+GLM mixed-attention support in the generic `onboard` workflow is work in
+progress (WIP), planned for an upcoming update. The remaining work is to connect
+existing model-specific collection and replay/cache capabilities through profile
+generation, collection, import and validation.
+
+Until that integration is complete, generic onboarding rejects GLM Flash's
+linear-attention and sparse-attention combination before checking ordinary head
+dimensions. Generic MLA/GQA templates do not capture its full cache/state layout,
+even when the config includes MLA rank fields or the architecture is registered.
+Use a qualified model-specific collection path and verified cache profile.
+Sparse-attention layer declarations are accepted only for the collector's
+supported DSA architectures; the layer name alone does not establish support.
+Unknown architectures can still use generic MLA/GQA planning when their
+declared layer layout is supported.
+The direct `collector --fpm` path also rejects Qwen3.5-family Gated DeltaNet
+hybrids, including Qwen3.6/3.8 checkpoints with that layout, in native and
+op-level modes. Registered model cases do not make the dense-attention FPM
+template represent recurrent state. Generic onboarding intake already rejects
+these layouts; complete mixed-attention onboarding remains WIP.
+An explicit `layer_types` list must have one entry per declared model layer.
+The declared `num_hidden_layers` must be a positive integer; fractional counts
+are rejected rather than rounded or truncated.
 
 Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
 

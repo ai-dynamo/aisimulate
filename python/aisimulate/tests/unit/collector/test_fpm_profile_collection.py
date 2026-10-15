@@ -146,7 +146,7 @@ def test_glm_cli_plans_without_model_classes_or_any_timing_data(
         assert decision["activation_envelope"]["scope"] == "rank_local"
 
 
-def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_models_or_timing_data):
+def test_unknown_architecture_requires_supported_layers_before_rendering(tmp_path, no_models_or_timing_data):
     profile = _profile()
     config = load_model_config(profile["model"]).payload
     config["architectures"] = ["UnregisteredMoeForCausalLM"]
@@ -154,8 +154,21 @@ def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_mo
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
 
-    plan = _plan(profile, model_config_path=str(path), has_model_cases=False)
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        _plan(profile, model_config_path=str(path), has_model_cases=False)
+
+    # A renamed DSA checkpoint does not qualify an unknown architecture. Use an
+    # explicit full-attention layout for the generic MLA bootstrap control.
+    config["layer_types"] = ["full_attention"] * config["num_hidden_layers"]
+    path.write_text(json.dumps(config))
+    plan = _plan(
+        profile,
+        model_config_path=str(path),
+        has_model_cases=False,
+        selected_ops={"context_mla", "generation_mla"},
+    )
     assert plan.capability.support_level == "bootstrap_template"
+    assert plan.capability.template_id == "generic:moe_mla"
     cell_dir = tmp_path / "rendered"
     cell_dir.mkdir()
     runner._render_cell(plan, plan.cells[0], cell_dir, {})
