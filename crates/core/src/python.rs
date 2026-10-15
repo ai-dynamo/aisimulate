@@ -616,7 +616,10 @@ impl AicTimingModel {
                     Ok(operation)
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let phase = Arc::new(ValidatedTimingPhase::from_operations(operations)?);
+            // Diagnostics are name-folded in first-encounter order.
+            let phase = Arc::new(ValidatedTimingPhase::from_name_folded_operations(
+                operations,
+            )?);
             self.phase_cache.insert(key, Arc::clone(&phase));
             return Ok(phase);
         }
