@@ -88,6 +88,37 @@ precision profiles and the resolved transfer policy; a pure SILICON request
 still needs data. New precision support requires native profile
 levels, their exported Python reachability view, and tests described in [Extending](../extending.md).
 
+## Measured FastAFD MoE stage
+
+`timing.fastafd_profile_path` with `timing.fastafd_moe_backend` replaces the decode
+routed-expert, shared-expert, dispatch, and combine span with the matching measured
+stage from an AISimulate [FastAFD MoE stage profile](../schemas/fastafd-moe-stage-profile.md),
+keeping the router and every non-MoE operation. It applies to an aggregated SGLang
+worker with `pipeline: 1` and `moe_tensor: 1` under `op_level` timing. Lookup is
+exact-only: an unsupported system, topology, backend, or runtime token count fails
+instead of interpolating or projecting across hardware. The engine spec records the
+profile path and digest, the producer repository, commit, benchmark, and source tree
+hashes, and the measurement method. FastAFD is not a runtime dependency. Set
+`engine.moe_quant_mode` when the model default differs from the profile's
+`moe_precision`; a mismatch fails closed.
+
+```yaml
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-235B-A22B-FP8
+  hardware: gb200
+  backend: sglang
+  moe_quant_mode: w4a8_mxfp4_mxfp8
+  workers:
+    aggregated:
+      parallelism: {tensor: 1, pipeline: 1, attention_data: 8, moe_tensor: 1, moe_expert: 8}
+      timing:
+        type: default
+        estimation_mode: op_level
+        fastafd_profile_path: /data/megamoe-colocated-gb200.json
+        fastafd_moe_backend: megamoe
+```
+
 ## Diagnostics and limits
 
 `static_phase_diagnostics` exposes operation timing, sources, measurement

@@ -233,6 +233,8 @@ concrete-only.
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.aggregated.timing.fastafd_profile_path` | `null` | `x` | `-` | Exact FastAFD MoE-stage profile for aggregated SGLang `op_level` timing; see [measured MoE stage](methods/op-level.md#measured-fastafd-moe-stage). The profile model, hardware, EP topology, MTP degree, top-k, precision, and runtime token count must match. |
+| `engine.workers.aggregated.timing.fastafd_moe_backend` | `null` | `x` | `-` | Required with `fastafd_profile_path`; `megamoe` or `deepep_deepgemm`. |
 
 The canonical `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
