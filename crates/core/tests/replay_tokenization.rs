@@ -303,3 +303,16 @@ fn agentic_workloads_are_rejected() {
     assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
     assert!(error.to_string().contains("agentic"), "{error}");
 }
+
+#[test]
+fn a_non_finite_tokenization_time_fails_the_run() {
+    for disagg in [false, true] {
+        let error = run(
+            spec(Backend::Vllm, disagg, 1, None),
+            burst(),
+            Some((1, 0.0, f64::MAX)),
+        )
+        .expect_err("an infinite tokenization time must fail");
+        assert!(error.to_string().contains("finite time"), "{error}");
+    }
+}

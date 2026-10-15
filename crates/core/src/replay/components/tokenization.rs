@@ -13,6 +13,8 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap};
 
+use anyhow::{Result, ensure};
+
 /// Tokenization cost and concurrency for every worker of the entry role.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TokenizationLatency {
@@ -65,24 +67,31 @@ impl<T> TokenizationStage<T> {
     }
 
     /// Queue `item` on `logical_worker`'s tokenizer and return its release time.
+    /// A release time that is not finite is rejected before any state changes.
     pub(crate) fn enter(
         &mut self,
         now_ms: f64,
         logical_worker: usize,
         input_tokens: usize,
         item: T,
-    ) -> f64 {
+    ) -> Result<f64> {
         // Only servers that have taken a request are tracked, so memory grows
         // with entered requests rather than with the configured server count.
         // An untracked server is idle, so it would start at `now_ms` too.
         let busy = self.servers.entry(logical_worker).or_default();
-        let start_ms = if busy.len() < self.latency.workers {
-            now_ms
-        } else {
-            let Reverse(FreeAt(free_at_ms)) = busy.pop().expect("tracked servers are busy");
-            now_ms.max(free_at_ms)
+        let reuse_server = busy.len() >= self.latency.workers;
+        let start_ms = match busy.peek() {
+            Some(Reverse(FreeAt(free_at_ms))) if reuse_server => now_ms.max(*free_at_ms),
+            _ => now_ms,
         };
         let release_at_ms = start_ms + self.latency.service_ms(input_tokens);
+        ensure!(
+            release_at_ms.is_finite(),
+            "tokenization of {input_tokens} input tokens does not finish in finite time"
+        );
+        if reuse_server {
+            busy.pop();
+        }
         busy.push(Reverse(FreeAt(release_at_ms)));
         self.pending.push(Pending {
             release_at_ms,
@@ -90,7 +99,7 @@ impl<T> TokenizationStage<T> {
             item,
         });
         self.next_entry += 1;
-        release_at_ms
+        Ok(release_at_ms)
     }
 
     /// Remove every request whose tokenization has finished by `now_ms`.
@@ -172,8 +181,8 @@ mod tests {
     #[test]
     fn one_server_serves_in_entry_order() {
         let mut stage = stage(1);
-        assert_eq!(stage.enter(0.0, 0, 64, "long"), 33.0);
-        assert_eq!(stage.enter(0.0, 0, 4, "short"), 36.0);
+        assert_eq!(stage.enter(0.0, 0, 64, "long").unwrap(), 33.0);
+        assert_eq!(stage.enter(0.0, 0, 4, "short").unwrap(), 36.0);
         assert_eq!(
             stage.release_due(40.0),
             vec![(33.0, "long"), (36.0, "short")]
@@ -183,8 +192,8 @@ mod tests {
     #[test]
     fn spare_servers_let_short_requests_overtake() {
         let mut stage = stage(2);
-        assert_eq!(stage.enter(0.0, 0, 64, "long"), 33.0);
-        assert_eq!(stage.enter(0.0, 0, 4, "short"), 3.0);
+        assert_eq!(stage.enter(0.0, 0, 64, "long").unwrap(), 33.0);
+        assert_eq!(stage.enter(0.0, 0, 4, "short").unwrap(), 3.0);
         assert_eq!(stage.next_release_ms(), Some(3.0));
         assert_eq!(stage.release_due(3.0), vec![(3.0, "short")]);
         assert_eq!(stage.len(), 1);
@@ -193,24 +202,32 @@ mod tests {
     #[test]
     fn workers_have_independent_tokenizers() {
         let mut stage = stage(1);
-        assert_eq!(stage.enter(0.0, 0, 64, "long"), 33.0);
-        assert_eq!(stage.enter(0.0, 1, 4, "short"), 3.0);
+        assert_eq!(stage.enter(0.0, 0, 64, "long").unwrap(), 33.0);
+        assert_eq!(stage.enter(0.0, 1, 4, "short").unwrap(), 3.0);
     }
 
     #[test]
     fn an_idle_server_starts_at_entry() {
         let mut stage = stage(1);
-        assert_eq!(stage.enter(0.0, 0, 4, "first"), 3.0);
-        assert_eq!(stage.enter(10.0, 0, 4, "second"), 13.0);
+        assert_eq!(stage.enter(0.0, 0, 4, "first").unwrap(), 3.0);
+        assert_eq!(stage.enter(10.0, 0, 4, "second").unwrap(), 13.0);
     }
 
     #[test]
     fn a_huge_server_count_tracks_only_used_servers() {
         let mut stage =
             TokenizationStage::new(TokenizationLatency::new(usize::MAX, 1.0, 0.0).unwrap());
-        assert_eq!(stage.enter(0.0, 0, 0, "first"), 1.0);
-        assert_eq!(stage.enter(0.0, 0, 0, "second"), 1.0);
+        assert_eq!(stage.enter(0.0, 0, 0, "first").unwrap(), 1.0);
+        assert_eq!(stage.enter(0.0, 0, 0, "second").unwrap(), 1.0);
         assert_eq!(stage.servers[&0].len(), 2);
+    }
+
+    #[test]
+    fn a_non_finite_release_time_is_rejected_without_state_changes() {
+        let mut stage = TokenizationStage::new(TokenizationLatency::new(1, 0.0, f64::MAX).unwrap());
+        assert!(stage.enter(0.0, 0, 2, "overflow").is_err());
+        assert_eq!(stage.len(), 0);
+        assert_eq!(stage.enter(0.0, 0, 1, "fits").unwrap(), f64::MAX);
     }
 
     #[test]

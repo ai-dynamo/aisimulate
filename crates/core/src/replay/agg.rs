@@ -296,7 +296,7 @@ where
                 logical_worker_id,
                 input_tokens,
                 (request, uuid, worker_idx),
-            );
+            )?;
         } else {
             self.engine.dispatch(worker_idx, request, self.now_ms)?;
         }

@@ -1323,7 +1323,7 @@ where
             logical_worker_id,
             input_tokens,
             (uuid, worker_idx, action),
-        );
+        )?;
         Ok(())
     }
 
