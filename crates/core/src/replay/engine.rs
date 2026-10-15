@@ -36,7 +36,7 @@ fn default_dp_size() -> u32 {
     1
 }
 
-fn default_tensor_parallel_size() -> u32 {
+fn default_parallel_size() -> u32 {
     1
 }
 
@@ -51,8 +51,11 @@ pub struct ReplayEngineConfig {
     pub kv_eviction_policy: KvEvictionPolicy,
     #[serde(default = "default_dp_size")]
     pub dp_size: u32,
-    #[serde(default = "default_tensor_parallel_size")]
+    #[serde(default = "default_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Prefill CP adds physical ranks; decode CP partitions existing TP ranks.
+    #[serde(default = "default_parallel_size")]
+    pub prefill_context_parallel_size: u32,
     /// Whether `rank.num_gpu_blocks` came from the user rather than an
     /// upstream capacity estimator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,6 +73,7 @@ impl Default for ReplayEngineConfig {
             kv_eviction_policy: KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
             prefill: None,
@@ -84,8 +88,11 @@ impl Default for ReplayEngineConfig {
 pub struct ReplayRoleConfig {
     #[serde(default = "default_dp_size")]
     pub dp_size: u32,
-    #[serde(default = "default_tensor_parallel_size")]
+    #[serde(default = "default_parallel_size")]
     pub tensor_parallel_size: u32,
+    /// Prefill CP adds physical ranks; decode CP partitions existing TP ranks.
+    #[serde(default = "default_parallel_size")]
+    pub prefill_context_parallel_size: u32,
     /// Whether `rank.num_gpu_blocks` came from the user rather than an
     /// upstream capacity estimator.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +105,7 @@ impl Default for ReplayRoleConfig {
         Self {
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: EngineConfig::default(),
         }
@@ -119,18 +127,21 @@ impl ReplayEngineConfig {
             WorkerStage::Aggregated => ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                prefill_context_parallel_size: self.prefill_context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             },
             WorkerStage::Prefill => self.prefill.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                prefill_context_parallel_size: self.prefill_context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
             WorkerStage::Decode => self.decode.clone().unwrap_or_else(|| ReplayRoleConfig {
                 dp_size: self.dp_size,
                 tensor_parallel_size: self.tensor_parallel_size,
+                prefill_context_parallel_size: self.prefill_context_parallel_size,
                 num_gpu_blocks_is_explicit: self.num_gpu_blocks_is_explicit,
                 rank: self.rank.clone(),
             }),
@@ -204,6 +215,7 @@ pub struct ReplayRoleFactory {
     needs_belady_oracle: bool,
     dp_size: NonZeroU32,
     tensor_parallel_size: u32,
+    prefill_context_parallel_size: u32,
     backend: Backend,
     total_blocks: u64,
     kv_cache_capacity_bytes: Option<u64>,
@@ -295,6 +307,11 @@ impl ReplayRoleFactory {
                     .ok()
                     .and_then(|tp| dp.checked_mul(tp))
             })
+            .and_then(|gpus| {
+                usize::try_from(self.prefill_context_parallel_size)
+                    .ok()
+                    .and_then(|cp| gpus.checked_mul(cp))
+            })
             .ok_or_else(|| ReplayError::InvalidSpec("engine GPU count overflows usize".into()))
     }
 
@@ -367,6 +384,11 @@ impl ReplayEngineFactory {
                 "native tensor_parallel_size must be positive".into(),
             ));
         }
+        if role.prefill_context_parallel_size == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "native prefill_context_parallel_size must be positive".into(),
+            ));
+        }
         let timing = match stage {
             WorkerStage::Aggregated => self.timing.as_ref(),
             WorkerStage::Prefill => self.prefill_timing.as_ref().or(self.timing.as_ref()),
@@ -408,6 +430,7 @@ impl ReplayEngineFactory {
             needs_belady_oracle: config.kv_eviction_policy == KvEvictionPolicy::Belady,
             dp_size,
             tensor_parallel_size: role.tensor_parallel_size,
+            prefill_context_parallel_size: role.prefill_context_parallel_size,
             backend,
             total_blocks,
             kv_cache_capacity_bytes,
@@ -537,6 +560,37 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+#[cfg(test)]
+mod disaggregated_tests {
+    use super::*;
+
+    #[test]
+    fn gpu_accounting_rejects_zero_cp_and_overflow() {
+        let mut config = ReplayEngineConfig {
+            prefill_context_parallel_size: 0,
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new();
+        assert!(
+            factory
+                .role_factory(&config, WorkerStage::Aggregated, false)
+                .is_err()
+        );
+        config.prefill_context_parallel_size = u32::MAX;
+        config.tensor_parallel_size = u32::MAX;
+        config.dp_size = u32::MAX;
+        let role = factory
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        assert!(
+            role.gpus_per_worker()
+                .unwrap_err()
+                .to_string()
+                .contains("overflows")
+        );
+    }
 }
 
 #[cfg(test)]
