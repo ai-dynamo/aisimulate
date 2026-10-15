@@ -85,6 +85,13 @@ GPUs. `moe_tensor`, `moe_expert` and `decode_context` partition those GPUs
 differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
 
+Engine replay reports each role's GPUs per worker as
+`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
+by engine replay). GPU-hours sum each role's worker-seconds times this count,
+divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
+`decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
+multiplier.
+
 `prefill_context` and `decode_context` are modeled only for some model and
 backend combinations, and an aggregated worker may set at most one of them above
 1. See [decode context parallelism](../../perf-model/configuration.md#decode-context-parallelism)
