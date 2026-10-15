@@ -11,11 +11,14 @@ from aisimulate.config.engine import TimingConfig
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import InvalidEngineConfigurationError, compile_engine
 from aisimulate_core.sdk.fastafd_backend import apply_fastafd_moe_profile
-from aisimulate_core.sdk.fastafd_profile import FASTAFD_OFFICIAL_REPOSITORY, FASTAFD_PROFILE_SCHEMA
+from aisimulate_core.sdk.fastafd_profile import FASTAFD_PROFILE_SCHEMA
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch
 
 pytestmark = pytest.mark.unit
+
+_REPOSITORY = "https://github.com/example/FastAFD"
+_COMMIT = "0" * 40
 
 
 def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25, mtp_nextn=0):
@@ -35,16 +38,17 @@ def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25, mtp_nextn=0):
         },
         "model_profile": "deepseek_v4_flash_fp4",
         "latency_ms": latency_ms,
-        "validation": {"stable": True, "correctness": True, "evidence": "test"},
+        "validation": {"stable": True, "correctness": None},
         "measurement": {
             "scope": "complete_moe_stage",
-            "method": "nsight-systems-cupti",
-            "method_version": "2025.5.2",
+            "method": "cuda_event",
+            "method_version": "torch 2.10.0+cu130; cuda 13.0",
             "statistic": "p50",
-            "sample_count": 10,
-            "procedure": "docs/profile-procedure.md",
-            "procedure_sha256": "a" * 64,
-            "raw_artifact": "raw/trace.nsys-rep",
+            "sample_count": 40,
+            "cv_percent": 0.5,
+            "routing": "balanced",
+            "source_tree_sha256": "c" * 64,
+            "raw_artifact": "deepseek_v4_flash_fp4_8ep_t8_n0_balanced_mega.json",
             "raw_sha256": "b" * 64,
         },
     }
@@ -55,8 +59,10 @@ def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25, mtp_nextn=0):
                 "schema": FASTAFD_PROFILE_SCHEMA,
                 "lookup_policy": "exact-only",
                 "source": {
-                    "repository": FASTAFD_OFFICIAL_REPOSITORY,
-                    "commit": "3c7161949310b6d59d6b4cf9bf997a4935c8113b",
+                    "repository": _REPOSITORY,
+                    "commit": _COMMIT,
+                    "benchmark": "fastafd.megamoe-colocated-model-benchmark.v2",
+                    "boundary": "colocated MoE stage",
                 },
                 "entries": [entry],
             }
@@ -114,10 +120,11 @@ def test_compiled_spec_records_source_and_method(tmp_path, monkeypatch):
     _compile(_profile(tmp_path))
 
     extra = captured["engine"]["extra"]
-    assert extra["source_repository"] == FASTAFD_OFFICIAL_REPOSITORY
-    assert extra["source_commit"] == "3c7161949310b6d59d6b4cf9bf997a4935c8113b"
-    assert extra["measurement_method"] == "nsight-systems-cupti"
-    assert extra["measurement_method_version"] == "2025.5.2"
+    assert extra["source_repository"] == _REPOSITORY
+    assert extra["source_commit"] == _COMMIT
+    assert extra["source_tree_sha256"] == "c" * 64
+    assert extra["measurement_method"] == "cuda_event"
+    assert extra["measurement_method_version"] == "torch 2.10.0+cu130; cuda 13.0"
 
 
 def test_fastafd_mtp_keeps_unmeasured_layer(tmp_path):
@@ -158,10 +165,10 @@ def test_fastafd_stage_preserves_generation_weights(tmp_path):
     stage = next(op for op in model.generation_ops if op._name == "generation_fastafd_moe_stage")
     assert stage.get_weights() > 0
     assert sum(op.get_weights() for op in model.generation_ops) == pytest.approx(before)
-    assert metadata["source_repository"] == FASTAFD_OFFICIAL_REPOSITORY
-    assert metadata["source_commit"] == "3c7161949310b6d59d6b4cf9bf997a4935c8113b"
-    assert metadata["measurement_method"] == "nsight-systems-cupti"
-    assert metadata["measurement_method_version"] == "2025.5.2"
+    assert metadata["source_repository"] == _REPOSITORY
+    assert metadata["source_commit"] == _COMMIT
+    assert metadata["source_benchmark"] == "fastafd.megamoe-colocated-model-benchmark.v2"
+    assert metadata["measurement_method"] == "cuda_event"
 
 
 def test_fastafd_timing_requires_a_backend_and_op_level():

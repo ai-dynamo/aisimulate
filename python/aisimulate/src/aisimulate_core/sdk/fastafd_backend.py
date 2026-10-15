@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import aisimulate_core.sdk.operations as ops
-from aisimulate_core.sdk.fastafd_profile import FASTAFD_OFFICIAL_REPOSITORY, FastAFDMoEStageProfile
+from aisimulate_core.sdk.fastafd_profile import FastAFDMoEStageProfile
 
 _PROFILE_PRECISION_ALIASES = {
     "w4a8_mxfp4_mxfp8_trtllm": "w4a8_mxfp4_mxfp8",
@@ -66,10 +66,11 @@ def apply_fastafd_moe_profile(
     measured_layers = measured_layer_counts.pop()
     if measured_layers > model._num_layers:
         raise ValueError("FastAFD moe_layers exceeds the model layer count")
-    methods = {(entry.method, entry.method_version, entry.procedure_sha256) for entry in matches}
+    methods = {(entry.method, entry.method_version) for entry in matches}
     if len(methods) != 1:
         raise ValueError("FastAFD AGG measurements use different methods")
-    method, method_version, procedure_sha256 = methods.pop()
+    method, method_version = methods.pop()
+    source_trees = sorted({entry.source_tree_sha256 for entry in matches})
 
     points = sorted(
         (
@@ -89,13 +90,14 @@ def apply_fastafd_moe_profile(
     )
     return {
         "provider": "fastafd",
-        "profile_path": str(profile.source),
+        "profile_path": str(profile.path),
         "profile_sha256": profile.profile_sha256,
-        "source_repository": FASTAFD_OFFICIAL_REPOSITORY,
-        "source_commit": matches[0].source_commit,
+        "source_repository": profile.source.repository,
+        "source_commit": profile.source.commit,
+        "source_benchmark": profile.source.benchmark,
+        "source_tree_sha256": ",".join(source_trees),
         "measurement_method": method,
         "measurement_method_version": method_version,
-        "measurement_procedure_sha256": procedure_sha256,
         "moe_backend": profile_backend,
         "stage": "agg",
         "topology": topology,
