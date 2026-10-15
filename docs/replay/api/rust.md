@@ -71,6 +71,10 @@ omitted from JSON; Rust struct literals should set it or use `..Default::default
 It multiplies DP × TP for resource reports without creating additional attention-DP
 schedulers. Decode context parallelism does not add physical GPUs.
 
+The pinned Dynamo CI adapter is updated during its build to set this field to
+1, matching its existing topology. That adapter does not expose PCP controls;
+its performance comparison does not qualify nondefault PCP configurations.
+
 ## Reports and capture
 
 `ReplayReport` is the native report with request counts, latency/throughput,

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
+REPLAY_ADAPTER_SHA256 = "2d03eb4fe0d62f2dd09521fc3cb1e5e97f6d956ef9efd2fb43eabc48d2318af3"
 
 
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 handoff adapter:
@@ -205,6 +206,41 @@ def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
     return records
 
 
+# Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 replay adapter:
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+def patch_replay_context_parallelism(core: Path, dynamo: Path) -> dict:
+    """Keep the pinned adapter's CP=1 topology when replay gains explicit PCP."""
+    path = dynamo / "lib/mocker/src/engine_adapter.rs"
+    original = path.read_bytes()
+    if hashlib.sha256(original).hexdigest() != REPLAY_ADAPTER_SHA256:
+        raise ValueError("pinned Dynamo replay adapter differs from reviewed source")
+    api = (core / "src/replay/engine.rs").read_text()
+    fields = [
+        _struct_fields(api, struct).get("prefill_context_parallel_size")
+        for struct in ("ReplayEngineConfig", "ReplayRoleConfig")
+    ]
+    if fields not in ([None, None], [(True, "u32"), (True, "u32")]):
+        raise ValueError("unreviewed AISimulate replay PCP API; update the pinned adapter")
+    patched = original
+    if fields[0] is not None:
+        anchor = b"        num_gpu_blocks_is_explicit: Some(true),\n"
+        if original.count(anchor) != 4:
+            raise ValueError("pinned replay adapter must have four capacity anchors")
+        patched = original.replace(
+            anchor,
+            b"        // Modified by AISimulate CI: the pinned adapter has no PCP control.\n"
+            b"        prefill_context_parallel_size: 1,\n" + anchor,
+        )
+        path.write_bytes(patched)
+    return {
+        "path": str(path.relative_to(dynamo)),
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(patched).hexdigest(),
+        "api_has_prefill_context_parallel_size": fields[0] is not None,
+        "prefill_context_parallel_size": 1,
+    }
+
+
 def build(source: Path, dynamo: Path, output: Path) -> None:
     source, dynamo, output = source.resolve(), dynamo.resolve(), output.resolve()
     revision = subprocess.check_output(["git", "-C", str(dynamo), "rev-parse", "HEAD"], text=True).strip()
@@ -214,6 +250,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     core = source / "crates/core"
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
+    replay_compatibility = patch_replay_context_parallelism(core, dynamo)
     bindings = dynamo / "lib/bindings/python"
     for manifest, options in (
         (dynamo / "Cargo.toml", ""),
@@ -271,6 +308,7 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
                 "features": ["ais-forward-pass"],
                 "handoff_compatibility": handoff_compatibility,
                 "literal_compatibility": literal_compatibility,
+                "replay_compatibility": replay_compatibility,
             },
             indent=2,
         )

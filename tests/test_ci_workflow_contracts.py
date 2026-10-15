@@ -3478,6 +3478,40 @@ def test_simulation_dynamo_optional_literal_fields_fail_closed(
         assert (dynamo / path).read_text() == text
 
 
+@pytest.mark.parametrize("field_type", [None, "u32", "usize"])
+@pytest.mark.parametrize("drift", [None, "source", "anchors", "role"])
+def test_simulation_dynamo_replay_cp_compatibility(tmp_path, monkeypatch, field_type, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / "src/replay/engine.rs"
+    api.parent.mkdir(parents=True)
+    field = f"pub prefill_context_parallel_size: {field_type}," if field_type else ""
+    api.write_text(
+        f"pub struct ReplayEngineConfig {{{field}}}\n"
+        f"pub struct ReplayRoleConfig {{{field if drift != 'role' else 'pub prefill_context_parallel_size: bool,'}}}\n"
+    )
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = "// synthetic adapter fixture\n" + "        num_gpu_blocks_is_explicit: Some(true),\n" * (
+        3 if drift == "anchors" else 4
+    )
+    adapter.write_text(source + ("// changed\n" if drift == "source" else ""))
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+    original = adapter.read_bytes()
+    if field_type == "usize" or drift in {"source", "role"} or (field_type and drift == "anchors"):
+        with pytest.raises(ValueError):
+            builder.patch_replay_context_parallelism(core, dynamo)
+        assert adapter.read_bytes() == original
+    else:
+        record = builder.patch_replay_context_parallelism(core, dynamo)
+        assert record["api_has_prefill_context_parallel_size"] == bool(field_type)
+        assert adapter.read_text().count("prefill_context_parallel_size: 1,") == (4 if field_type else 0)
+        assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+        if field_type is None:
+            assert adapter.read_bytes() == original
+
+
 @pytest.mark.parametrize("wrong_core", [False, True])
 def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
     from scripts.performance import build_simulation_dynamo as builder
@@ -3510,9 +3544,18 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         patched.append(("literals", actual_core, actual_dynamo))
         return literal_compatibility
 
+    def patch_replay_context_parallelism(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("replay", actual_core, actual_dynamo))
+        return {"prefill_context_parallel_size": 1}
+
     def check_output(args, **kwargs):
         if args[:2] == ["cargo", "metadata"]:
-            assert patched == [("handoff", core.parent, dynamo), ("literals", core.parent, dynamo)]
+            assert patched == [
+                ("handoff", core.parent, dynamo),
+                ("literals", core.parent, dynamo),
+                ("replay", core.parent, dynamo),
+            ]
             assert "--locked" not in args
             assert kwargs["cwd"] == bindings
             assert lock.read_bytes() == old_lock
@@ -3550,6 +3593,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder.subprocess, "run", run)
     monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
     monkeypatch.setattr(builder, "patch_optional_literal_fields", patch_optional_literal_fields)
+    monkeypatch.setattr(builder, "patch_replay_context_parallelism", patch_replay_context_parallelism)
     if wrong_core:
         with pytest.raises(ValueError, match="different AISimulate core"):
             builder.build(source, dynamo, output)
@@ -3563,6 +3607,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         assert provenance["aisimulate_sha"] == "a" * 40
         assert provenance["handoff_compatibility"] == compatibility
         assert provenance["literal_compatibility"] == literal_compatibility
+        assert provenance["replay_compatibility"] == {"prefill_context_parallel_size": 1}
         assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
 
 

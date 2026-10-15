@@ -1259,6 +1259,15 @@ request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It preserves the upstream copyright headers and marks
 each modified literal in the output.
 
+The replay compatibility rewrite in the same script adapts
+`lib/mocker/src/engine_adapter.rs` at that same immutable revision:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
+context parallelism to 1 in four replay descriptors, preserving the pinned
+adapter's topology. Its upstream copyright header is retained and each modified
+literal is marked in the generated output.
+
 ## SGLang simulator and HiSim feature definitions
 
 The per-request feature set of the learned forward-pass model
