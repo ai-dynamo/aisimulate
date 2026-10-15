@@ -70,7 +70,13 @@ _OPTIONS = {
 
 def _inputs(tmp_path, config=None, overrides=None):
     source = tmp_path / "config.json"
-    source.write_text(json.dumps(_SMALL if config is None else config))
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir(exist_ok=True)
+    payload = {**(_SMALL if config is None else config), "_name_or_path": str(checkpoint)}
+    source.write_text(json.dumps(payload))
+    # Intake inputs may be removed after saving the profile; collection still
+    # resolves the checkpoint's runtime geometry through its model identity.
+    (checkpoint / "config.json").write_text(json.dumps(payload))
     resources = tmp_path / "resources.yaml"
     resources.write_text(yaml.safe_dump(_PRECISION if overrides is None else overrides))
     return source, resources
