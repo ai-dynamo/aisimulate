@@ -125,9 +125,8 @@ pub struct TraceThroughputStats {
     /// `prefill_worker_seconds` at 0.0.
     pub prefill_worker_seconds: f64,
     pub decode_worker_seconds: f64,
-    /// GPUs per worker per role, derived from the mocker engine parallelism
-    /// (`MockEngineArgs::aic_gpus_per_worker` = tensor parallelism × materialized
-    /// DP topology); the runtime sets it on the collector. 0 when not set.
+    /// GPUs per worker per role: TP × attention DP × prefill CP, set by the
+    /// runtime. Decode CP partitions TP ranks and adds no GPUs. 0 when not set.
     pub prefill_gpus_per_worker: usize,
     pub decode_gpus_per_worker: usize,
     /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` — the
@@ -1361,8 +1360,13 @@ impl TraceCollector {
             return;
         }
         if let Some(stats) = self.requests.get_mut(&uuid) {
-            stats.authored_id = Some(context.authored_id.clone());
-            stats.session_id = context.session_id.clone().or(stats.session_id.take());
+            if !context.authored_id.is_empty() {
+                stats.authored_id = Some(context.authored_id.clone());
+            }
+            stats.session_id = context
+                .session_id()
+                .map(str::to_owned)
+                .or(stats.session_id.take());
             stats.turn_index = context.turn_index.or(stats.turn_index);
             stats.metadata = context.metadata.clone();
             stats.agentic = context.agentic.clone();

@@ -590,7 +590,15 @@ def _physical_views(
     return groups, accounting
 
 
-def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[str, Any]) -> dict[str, Any]:
+def _configuration(
+    root: Path,
+    label: str,
+    saved: dict[str, Any],
+    launch: dict[str, Any],
+    *,
+    phase: str | None = None,
+    attempt_id: str | None = None,
+) -> dict[str, Any]:
     _same(saved.get("launch"), launch, "reviewed configuration launch")
     ranks = expected_ranks(launch["topology"])
     attempts = saved.get("attempts")
@@ -602,6 +610,8 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
     active = saved.get("active_attempt_id")
     if active not in ids:
         raise ValueError("configuration requires an explicit active attempt identity")
+    if phase is not None:
+        _same(active, attempt_id, "selected phase attempt identity")
     attempt = attempts[ids.index(active)]
     bundle_path = contained_file(root, attempt["bundle"]["manifest"])
     identity = launch["identity"]
@@ -614,7 +624,11 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
         raise ValueError("runtime source mapping requires hashed source_notes and runtime.source_files")
     phases = attempt.get("phases", {})
     required_phases = collection_phases(launch.get("worker_type"))
-    if set(phases) != set(required_phases):
+    if phase is not None:
+        if phase not in required_phases or phase not in phases or set(phases) - set(required_phases):
+            raise ValueError("runtime evidence does not contain the selected serving-role phase")
+        required_phases = (phase,)
+    elif set(phases) != set(required_phases):
         raise ValueError("runtime evidence requires every phase of the selected serving role")
     canonical_settings, canonical_geometry, canonical_hardware, normalized = None, None, None, None
     capacities, artifacts, launch_artifacts, runtime_artifacts, import_bindings = [], [], [], [], []
@@ -751,6 +765,41 @@ def _configuration(root: Path, label: str, saved: dict[str, Any], launch: dict[s
     }
     FpmResourceProfile.model_validate(resources)
     return {"status": "complete", "resources": resources, "diagnostics": [], "provenance": provenance}
+
+
+def validate_observation_phase(
+    index_path: str | Path,
+    configuration: str,
+    launch: dict[str, Any],
+    *,
+    phase: str,
+    attempt_id: str,
+) -> dict[str, Any]:
+    """Validate one explicitly bound active phase; does not qualify a serving role.
+
+    The onboarding collection verifier binds this selection to its frozen plan
+    and passed native attempt, then requires complete role coverage separately.
+    """
+    index_path = Path(index_path).absolute()
+    if index_path.is_symlink():
+        raise ValueError("runtime observation index cannot be a symlink")
+    index = read_json(index_path)
+    if index.get("schema_version") != INDEX_SCHEMA or not isinstance(index.get("configurations"), dict):
+        raise ValueError("unsupported runtime observation index schema")
+    result = _configuration(
+        index_path.parent,
+        configuration,
+        index["configurations"][configuration],
+        launch,
+        phase=phase,
+        attempt_id=_text(attempt_id, "selected phase attempt identity"),
+    )
+    result["provenance"]["observations_index"] = {
+        "path": str(index_path),
+        "sha256": sha256_bytes(index_path.read_bytes()),
+    }
+    result["resources"]["runtime_memory"]["provenance"] = canonical_json(result["provenance"])
+    return result
 
 
 def validate_observations(

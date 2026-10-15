@@ -38,6 +38,12 @@ across versions or configurations.
 
 ## KV-cache capacity reservation
 
+For native SDK estimates, `estimate_kv_cache`, `estimate_num_gpu_blocks`, and
+`KVCacheEstimator.from_request` resolve an omitted `backend_version` (or `None`)
+through the backend's `current` data alias for the requested system and data
+roots. Explicit version selectors are preserved. FPM profile estimates still
+require the profile's literal backend version.
+
 For Mistral3's gated Pixtral encoder, the analytical activation estimate includes
 the replicated residual alongside the gate and up intermediates. Encoder tensor
 parallelism shards those intermediates; encoder data parallelism keeps a full

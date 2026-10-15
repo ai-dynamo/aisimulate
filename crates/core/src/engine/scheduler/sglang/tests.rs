@@ -1322,6 +1322,7 @@ mod core_behavior {
                 output_token_ids: Some(planned.clone()),
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
             });
             sequence.extend_from_slice(&planned);
 
@@ -1597,6 +1598,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: None,
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let pass = core.execute_pass_internal(None, 0.0);
@@ -1741,6 +1743,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1771,6 +1774,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1787,6 +1791,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         // Pass 2: SGLang runs the r2 prefill batch alone ("run prefill first if possible");
@@ -1822,6 +1827,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -1842,6 +1848,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
         assert_eq!(
@@ -1889,6 +1896,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1902,6 +1910,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
@@ -2112,6 +2121,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -2119,6 +2129,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2163,6 +2174,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(), // prompt_len = 12
@@ -2170,6 +2182,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2212,6 +2225,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2282,6 +2296,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
             });
         }
         // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
@@ -2295,6 +2310,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(fresh),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         let mut now = first.end_ms;
@@ -2370,6 +2386,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(id)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         for _ in 0..16 {
@@ -2399,6 +2416,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, now);
@@ -2431,6 +2449,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let available_before = core.kv_manager.cache().available_tokens();
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2467,6 +2486,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(id)),
                 arrival_timestamp_ms: None,
+                session_id: None,
             });
         }
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2493,6 +2513,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(7)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -2547,6 +2568,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                session_id: None,
             });
         }
         let available_before = core.kv_manager.cache().available_tokens();
@@ -2582,6 +2604,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -2651,6 +2674,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
         core.receive(DirectRequest {
             tokens: (100..104).collect(),
@@ -2658,6 +2682,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         // Run several passes to build up KV pressure
@@ -2672,6 +2697,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(3)),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
 
         // Run more passes — at some point retraction should occur

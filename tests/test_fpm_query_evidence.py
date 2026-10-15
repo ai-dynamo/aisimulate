@@ -74,6 +74,29 @@ def evidence_systems(timing_systems):
     return timing_systems
 
 
+@pytest.fixture
+def kv_first_systems(evidence_systems):
+    path = Path(evidence_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    original = pq.read_table(path).to_pylist()
+    templates = [row for row in original if row["workload_kind"] == "prefill" and row["total_prefill_tokens"] == 1]
+    rows = [row for row in original if row["workload_kind"] == "decode"]
+    # Replay caps inferred capacity at decode-table coverage, including for a
+    # prefill-only request. Supply enough batch-1 coverage for both chunks.
+    rows.extend(
+        {**row, "total_kv_read_tokens": 8192}
+        for row in original
+        if row["workload_kind"] == "decode" and row["batch_size"] == 1 and row["total_kv_read_tokens"] == 64
+    )
+    for template in templates:
+        for tokens, kv, latency in ((1024, 0, 10.0), (1024, 3584, 30.0), (2048, 0, 20.0), (2048, 7168, 60.0)):
+            rows.append({**template, "total_prefill_tokens": tokens, "total_kv_read_tokens": kv, "latency_ms": latency})
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    metadata = json.loads(path.with_suffix(".metadata.json").read_text())
+    metadata.update(row_count=len(rows), parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    path.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    return evidence_systems
+
+
 def canonical(profile, systems):
     return {
         "model": profile["model"],
@@ -265,6 +288,63 @@ def records(evidence):
         for operation in phase["operations"]
         for record in operation["fpm_estimates"]
     ]
+
+
+def test_kv_first_marker_survives_saved_config_and_chunked_replay(profile, kv_first_systems, tmp_path):
+    import jsonschema
+
+    raw = prediction(profile, kv_first_systems)
+    raw["engine"]["enable_chunked_prefill"] = True
+    raw["traffic"]["source"].update(input_tokens=3584, output_tokens=1)
+    raw["traffic"]["stop"]["requests"] = 1
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["scheduler"]["max_batched_tokens"] = 1792
+    worker["timing"]["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
+    saved = tmp_path / "prediction.json"
+    saved.write_text(CorePredictionConfig.model_validate(raw).model_dump_json())
+    reports = []
+    for _ in range(2):
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(saved.read_text()))
+        runner = EngineReplayRunnerFactory().create(0)
+        try:
+            reports.append(
+                runner.run(spec, output_requirements=ReplayOutputRequirements(capture_performance_diagnostics=True))
+            )
+        finally:
+            runner.close()
+    assert reports[0].metadata["fpm_query_evidence"] == reports[1].metadata["fpm_query_evidence"]
+    queries = [
+        query
+        for record in records(reports[0].metadata["fpm_query_evidence"])
+        for rank in record["estimate"]["ranks"]
+        for query in rank["queries"]
+    ]
+    assert reports[0].metrics["completed_requests"] == 1
+    # Two 1792-token chunks: the first interpolates at KV=0 to 17.5 ms.
+    # At KV=1792, the token=1024/2048 curves yield 20/30 ms. Token=1792
+    # lies 3/4 between them, giving 27.5 ms and leaf weights 1/8,1/8,9/16,3/16.
+    assert {(query["resolution"], query["latency_ms"]) for query in queries} == {
+        ("within_curve_interpolation", 17.5),
+        ("kv_first_interpolation", 27.5),
+    }
+    fallback = next(query for query in queries if query["resolution"] == "kv_first_interpolation")
+    assert [point["weight"] for point in fallback["support"]] == [0.125, 0.125, 0.5625, 0.1875]
+    native = reports[0].metadata["native_report"]
+    assert native["fpm_query_coverage"]["queries"] == {"measured": 0, "interpolated": 2, "unsupported": 0}
+    details = build_prediction_details(native, ("source", "time"))
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    jsonschema.validate(details, schema)
+    for section in (details["sections"]["source"], details["sections"]["time"]["diagnostics"]):
+        assert fallback in [
+            query
+            for phase in section["phases"]
+            for operation in phase["operations"]
+            for record in operation.get("fpm_estimates", [])
+            for rank in record["estimate"]["ranks"]
+            for query in rank["queries"]
+        ]
 
 
 @pytest.mark.parametrize("collect_coverage", [False, True])

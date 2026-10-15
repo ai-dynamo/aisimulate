@@ -31,6 +31,7 @@ pub(crate) struct RadixRequestLease {
     admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
     last_node: Option<NodeId>,
+    pub(crate) session_id: Option<String>,
 }
 
 /// Metadata used only with the matching KV-manager admission checkpoint.
@@ -144,6 +145,7 @@ impl RadixRequestLease {
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
             last_node: Some(last_node),
+            session_id: None,
         }
     }
 }
@@ -546,7 +548,13 @@ impl SglangKvManager {
         let allocated_tokens = available_before - self.cache.available_tokens();
 
         // Observer-visible KV events are complete-block only.
-        self.publish_stored_hashes(materialized_hashes, &pages, prefix_len, token_ids);
+        self.publish_stored_hashes(
+            materialized_hashes,
+            &pages,
+            prefix_len,
+            token_ids,
+            lease.session_id.as_deref(),
+        );
 
         self.log_trace("allocation", allocated_tokens);
 
@@ -616,6 +624,7 @@ impl SglangKvManager {
             &lease.pages,
             prefix_len,
             token_ids,
+            lease.session_id.as_deref(),
         );
         self.log_trace("allocation", allocated_tokens);
         Some(prefix_len)
@@ -651,6 +660,7 @@ impl SglangKvManager {
             last_node,
             lease.cached_tokens,
             token_ids,
+            lease.session_id.as_deref(),
         );
         lease.last_node = Some(new_last_node);
         lease.cached_tokens = complete_len;
@@ -706,6 +716,7 @@ impl SglangKvManager {
             last_node,
             lease.cached_tokens,
             token_ids,
+            lease.session_id.as_deref(),
         );
     }
 
@@ -733,9 +744,10 @@ impl SglangKvManager {
         last_node: NodeId,
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) {
         let complete_len = page_hashes.len() * self.cache.page_size();
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -758,6 +770,7 @@ impl SglangKvManager {
         last_node: NodeId,
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) -> NodeId {
         let block_size = self.cache.page_size();
         let complete_len = page_hashes.len() * block_size;
@@ -769,7 +782,7 @@ impl SglangKvManager {
             pages.len()
         );
 
-        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids);
+        self.publish_stored_hashes(page_hashes, pages, first_new_token, token_ids, session_id);
         let new_last_node =
             self.cache
                 .insert_page_hashes_from_node(last_node, first_new_token, page_hashes, pages);
@@ -862,6 +875,7 @@ impl SglangKvManager {
                     last_node,
                     prefix_len,
                     token_ids,
+                    lease.session_id.as_deref(),
                 ),
                 token_count / self.cache.page_size() * self.cache.page_size(),
             )
@@ -1152,6 +1166,7 @@ impl SglangKvManager {
         pages: &[KvPageId],
         first_new_token: usize,
         token_ids: &[u32],
+        session_id: Option<&str>,
     ) -> usize {
         if self.kv_event_publishers.is_empty() {
             return 0;
@@ -1243,6 +1258,7 @@ impl SglangKvManager {
                 parent_hash,
                 start_position: None,
                 blocks,
+                session_id: session_id.map(str::to_owned),
             }),
             dp_rank: self.dp_rank,
             tier: KvEventTier::Device,
@@ -1786,7 +1802,7 @@ mod tests {
         let tokens = [1, 2, 3, 4];
         let hashes = compute_block_hash_for_seq(&tokens, 4);
         let pages = mgr.cache_mut().page_pool.allocate_pages(1).unwrap();
-        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3]);
+        mgr.publish_stored_hashes(&hashes, &pages, 0, &tokens[..3], None);
     }
 
     #[test]
@@ -1899,13 +1915,13 @@ mod tests {
         let hashes = compute_block_hash_for_seq(&tokens, 2);
         let admission = mgr.begin_admission();
         mgr.checkpoint_admission();
-        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[]), 0);
+        assert_eq!(mgr.publish_stored_hashes(&[], &[], 0, &[], None), 0);
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 0, &tokens, None),
             0
         );
         assert_eq!(
-            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens),
+            mgr.publish_stored_hashes(&hashes, first.lease.pages(), 2, &tokens, None),
             0
         );
         mgr.publish_removed_pages(&[]);
@@ -1998,15 +2014,21 @@ mod tests {
         let lease = lease_with_hashes(&tokens, 4);
 
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(4, 4), &pages[..1], 0, &tokens),
+            mgr.publish_stored_hashes(
+                lease.page_hashes_through(4, 4),
+                &pages[..1],
+                0,
+                &tokens,
+                None
+            ),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
             1
         );
         assert_eq!(
-            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens),
+            mgr.publish_stored_hashes(lease.page_hashes_through(8, 4), &pages, 0, &tokens, None),
             0
         );
 
@@ -2111,7 +2133,14 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 2, &tokens)
+            mgr.cache_unfinished_hashes(
+                &page_hashes,
+                &mut alloc.lease.pages,
+                last_node,
+                2,
+                &tokens,
+                None,
+            )
         }));
 
         assert!(result.is_err());
@@ -2130,7 +2159,14 @@ mod tests {
         let page_hashes = alloc.lease.page_hashes().to_vec();
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mgr.cache_unfinished_hashes(&page_hashes, &mut alloc.lease.pages, last_node, 0, &tokens)
+            mgr.cache_unfinished_hashes(
+                &page_hashes,
+                &mut alloc.lease.pages,
+                last_node,
+                0,
+                &tokens,
+                None,
+            )
         }));
 
         assert!(result.is_err());

@@ -60,10 +60,20 @@ aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
 
-`ReplayEngineConfig` has the aggregated rank/DP/TP descriptor and optional
+`ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce
 feature combinations beyond the generic spec validator. Grouped-cache, G2/G3,
 Belady and AgentX restrictions are listed in [features](../features.md).
+
+`ReplayEngineConfig` and `ReplayRoleConfig` carry
+`prefill_context_parallel_size` for GPU accounting. It defaults to 1 when
+omitted from JSON; Rust struct literals should set it or use `..Default::default()`.
+It multiplies DP × TP for resource reports without creating additional attention-DP
+schedulers. Decode context parallelism does not add physical GPUs.
+
+The pinned Dynamo CI adapter is updated during its build to set this field to
+1, matching its existing topology. That adapter does not expose PCP controls;
+its performance comparison does not qualify nondefault PCP configurations.
 
 ## Reports and capture
 

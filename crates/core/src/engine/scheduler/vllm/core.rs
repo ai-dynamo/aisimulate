@@ -1402,6 +1402,7 @@ impl VllmCore {
             self.emit_token_ids,
             planned_output_ids,
         );
+        sequence.lease.session_id = request.session_id;
         if let (Some(unit), Some(tokens)) = (self.args.prefix_match_unit, prefix_tokens) {
             sequence.lease.configure_prefix_hashes(&tokens, unit);
         }

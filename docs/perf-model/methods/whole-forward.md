@@ -25,6 +25,10 @@ owns artifact validation, publication, checkpoints, and recovery.
   profile with verified but unregistered architecture metadata. Without a
   profile it retains SOL.
 
+Direct prefill first uses an exact measurement or interpolates new-token counts at fixed KV, then brackets KV using curves that cover the requested token count. If this cannot bracket the query, it interpolates KV at each fixed measured token count and then uses the nearest covered token counts on either side of the query. The second order can cover irregular collection boundaries where different prompt lengths have different maximum KV coordinates. It preserves every result and supporting measurement from the first order when that order succeeds.
+
+Both orders stay within measured bounds at the same batch size and selected cell. Neither uses SOL, synthetic `fake_fallback` rows, or extrapolation. The fallback is part of `method: direct` and needs no extra setting; decode interpolation is unchanged. Detailed evidence reports `cross_kv_interpolation` for the usual token-first order and `kv_first_interpolation` for the fallback, with weights flattened to original measurements. Additional query coverage does not establish interpolation accuracy or matching CUDA graph execution regimes.
+
 Readiness is phase-specific: prefill needs real prefill rows, decode needs real
 decode rows, and aggregated needs both. A ready table still can lack an individual
 query's measured domain. Missing timing and pending [resource memory](../memory.md)
@@ -139,6 +143,22 @@ The loader also accepts `per_row_single_sample_or_median_of_3` sidecars when
 every row declares a consistent `measurement_policy`/`measurement_repeats`
 pair: `dynamo_native_single_sample_v1`/1 or `kvwarm_median_of_3`/3. Values are
 already aggregated by the producer; the loader preserves their latency.
+
+For independent full-grid repetitions, use the existing
+`per_row_single_sample_or_full_grid_median_v1` sidecar policy. Every row must
+declare `dynamo_native_single_sample_v1`/1 or
+`independent_full_grid_median_of_3`/3. The latter records the producer's median
+of three independent full-grid measurements; it is a different procedure from
+`kvwarm_median_of_3`, and the two per-row sidecar policies cannot be exchanged.
+Other repetition counts and unknown row policies are rejected.
+
+Prediction needs only the aggregated Parquet table and its metadata sidecar.
+The loader preserves the stored latencies and checks the pair's digest, row
+count, identity, workload and duplicate coordinates, as well as the declared
+row policy/count pairs. It does not open raw campaign files, recompute medians
+or assess repeatability and serving accuracy. The publisher must validate
+aggregation and quality evidence before publication; successful loading does
+not qualify the dataset's accuracy.
 
 Schema 7 also accepts two backend-bound median policies, each tied to its own
 state protocol and timing boundary:
