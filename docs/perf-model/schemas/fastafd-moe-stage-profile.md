@@ -69,3 +69,13 @@ routing distribution the benchmark used; `cv_percent` is the dispersion of those
 iterations. `stable` is the benchmark's own stability gate and must be true;
 `correctness` is the matched-output check against a reference backend, `null` when
 the benchmark ran no reference.
+
+## Building a profile
+
+`python -m aisimulate.fastafd_profile <results_dir> --repository <url> --output <profile.json>`
+converts one directory of raw benchmark results (one benchmark, one commit) into a
+profile. Results with another routing distribution (`--routing`, default
+`balanced`), an unstable timing, or a failed correctness check are skipped and
+counted. Repeated measurements of one key are an error; keep one run per directory.
+The raw results, the benchmark revision, and the procedure stay with the profile so
+that every entry can be traced to its evidence.
