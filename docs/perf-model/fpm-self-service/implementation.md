@@ -455,6 +455,26 @@ For example, add `--gpu-memory-utilization 0.92 --prefill-cudagraph-policy runti
 
 ### Serving roles and CUDA graph settings
 
+DeepSeek V4.1 requires eager execution to avoid the graph-compilation startup
+timeout that motivated this collection policy; see the
+[historical startup evidence](../../../benchmarks/evidence/dsv41-eager-startup.md).
+Compiled and CUDA-graph execution still need separate qualification for this
+collection path.
+In vLLM, `--enforce-eager` disables both CUDA graphs and `torch.compile`;
+`cudagraph_mode=NONE` only disables CUDA graphs and may leave compilation enabled. See the
+[CLI flag comparison](../../reference/cli.md#eager-execution-and-cuda-graphs).
+
+For direct `collector --fpm` calls, pass `--fpm-enforce-eager`, or select
+`--fpm-prefill-cudagraph-policy runtime` without CUDA graph capture flags.
+
+The collector and runtime probe recognize `DeepseekV41ForCausalLM` from the
+resolved model config
+and automatically pass `--enforce-eager` to the worker. No extra onboarding flag
+is needed. Use the default `runtime` prefill policy, with graph mode omitted or
+`NONE` and no capture sizes. Explicit graph requests fail with a diagnostic;
+they are not silently overridden. This model-specific rule does not make `NONE`
+select eager execution for other models.
+
 Use `--worker-type prefill`, `decode` or `aggregated` to bind new collection and memory evidence to its serving role. `prefill` and `decode` requests collect only their own phase and use separate output roots. Their configured graph modes, capture limits and usable KV capacities need not agree with each other. Within each role, observed settings and rank-local cache evidence must match that role's accepted launch; an unexpected runtime change still fails validation. Aggregated requests exercise both phases with one shared serving configuration and combine compatible memory observations conservatively. A batch selecting PIECEWISE during prefill and FULL during decode is not itself a configuration mismatch.
 
 The following optional settings describe vLLM's configuration for the selected role. They require an explicit `--worker-type`, are included in saved request and collection identities, and remain editable during the review/accept/save step. Enter `clear` when editing a generic graph field to remove that override:

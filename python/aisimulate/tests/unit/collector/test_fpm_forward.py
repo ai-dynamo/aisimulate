@@ -2816,6 +2816,30 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
 
 
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "DeepseekV3ForCausalLM", None])
+def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_worker_type="aggregated", fpm_cudagraph_mode="NONE", fpm_prefill_cudagraph_policy="runtime")
+    )
+    assert options.resolve_model_execution(architecture).enforce_eager is False
+
+
+@pytest.mark.parametrize(
+    "graph_args",
+    [
+        {"fpm_cudagraph_mode": "FULL"},
+        {"fpm_cudagraph_capture_sizes": [1, 2]},
+        {"fpm_max_cudagraph_capture_size": 8},
+        {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},
+    ],
+)
+def test_v41_auto_eager_rejects_capture_requests(graph_args):
+    args = {"fpm_worker_type": "aggregated", "fpm_prefill_cudagraph_policy": "runtime", **graph_args}
+    options = FPMCollectionOptions.from_args(_args(**args))
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        options.resolve_model_execution("DeepseekV41ForCausalLM")
+
+
 @pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
 def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
     from collector.fpm_forward import planner

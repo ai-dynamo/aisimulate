@@ -297,6 +297,8 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
         slurm_cpus_per_task=deployment.get("cpus_per_task"),
         slurm_cpu_bind=deployment.get("cpu_bind"),
     )
+    options = options.resolve_model_execution(architecture)
+    collection["enforce_eager"] = options.enforce_eager
     admitted = enumerate_fpm_topologies(backend="vllm", is_moe=is_moe, options=options, allow_pure_tp=True)
     if topology not in admitted:
         raise ValueError(f"collector does not admit exact topology {topology.to_dict()}")

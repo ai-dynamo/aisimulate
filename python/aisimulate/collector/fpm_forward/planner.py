@@ -734,6 +734,7 @@ def build_collection_plan(
         ),
         checkpoint_native_dtypes=profile is not None,
     )
+    options = options.resolve_model_execution(capability.architecture)
     execution = execution_identity(
         capability.model_config.payload,
         decoder_replay=options.decoder_replay,
