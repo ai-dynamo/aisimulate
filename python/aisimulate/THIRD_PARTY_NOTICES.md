@@ -1259,6 +1259,23 @@ request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It preserves the upstream copyright headers and marks
 each modified literal in the output.
 
+## NVIDIA Dynamo CI speculation compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+and its regression fixture in `tests/test_ci_workflow_contracts.py` are adapted
+and modified from NVIDIA Dynamo's
+`lib/bindings/python/rust/llm/ais_callback.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/ais_callback.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation reads the serialized Ngram identity instead of the removed
+enum accessor, retaining legacy `nextn` and rejecting other replay schemes.
+It preserves the upstream copyright header and marks the modified conversion
+in the output.
+
 ## SGLang simulator and HiSim feature definitions
 
 The per-request feature set of the learned forward-pass model
