@@ -715,7 +715,7 @@ impl FpmForwardOp {
             cell,
             coords,
             latency,
-            FpmQueryResolution::CrossKvInterpolation,
+            FpmQueryResolution::KvFirstInterpolation,
             support,
             false,
         )
@@ -1390,7 +1390,12 @@ mod tests {
         // KV-first could use the 999 ms points at KV=80/112. Keep both the
         // old answer and original support when token-first already succeeds.
         let result = direct.query_totals(&db, &[1.0, 150.0, 96.0]).unwrap();
-        let support = &result.fpm_queries.as_ref().unwrap()[0].support;
+        let evidence = &result.fpm_queries.as_ref().unwrap()[0];
+        assert_eq!(
+            evidence.resolution,
+            FpmQueryResolution::CrossKvInterpolation
+        );
+        let support = &evidence.support;
         assert_eq!(
             support
                 .iter()
@@ -1444,7 +1449,7 @@ mod tests {
         let evidence = &result.fpm_queries.as_ref().unwrap()[0];
         assert_eq!(
             evidence.resolution,
-            FpmQueryResolution::CrossKvInterpolation
+            FpmQueryResolution::KvFirstInterpolation
         );
         assert_eq!(
             evidence

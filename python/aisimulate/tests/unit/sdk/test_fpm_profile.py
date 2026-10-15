@@ -1366,7 +1366,7 @@ def test_direct_prefill_kv_first_preserves_public_evidence_and_saved_config(prof
         detailed = model.estimate_forward_pass_detailed(metrics)
         assert detailed["latency_ms"] == pytest.approx(28.5)
         query = detailed["ranks"][0]["queries"][0]
-        assert query["resolution"] == "cross_kv_interpolation"
+        assert query["resolution"] == "kv_first_interpolation"
         assert query["query"] == {
             "batch_size": 1.0,
             "total_prefill_tokens": 2688.0,

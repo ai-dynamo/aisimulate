@@ -237,7 +237,7 @@ def assess_readiness(
     from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
 
     from .runtime import runtime_probe_manifest, verify_collection_runtime_bindings
-    from .runtime_collection import _checkpoint_observation_index
+    from .runtime_collection import checkpoint_observation_index
 
     if runtime_bindings is not None:
         if expected_plan is not None:
@@ -303,7 +303,7 @@ def assess_readiness(
                 cell.cell_id not in selected or cell.cell_id in checkpoint["cells"] for cell in plan.cells
             ):
                 try:
-                    index = _checkpoint_observation_index(checkpoint_path, checkpoint)
+                    index = checkpoint_observation_index(checkpoint_path, checkpoint)
                     evidence = file_evidence(index)
                     runtime_binding = {
                         "plan": {"path": str(campaign / "collection-plan.json"), "sha256": plan.sha256},

@@ -161,6 +161,7 @@ def archived_controls(split_collection, request):
                 {"name": "DYN_BENCH_GIANT_KV_REPEATS", "value": "3"},
                 {"name": "DYN_FORWARDPASS_METRIC_PORT", "value": "7020"},
                 {"name": "FPM_RESULT_WAIT_TIMEOUT_SECONDS", "value": "14100"},
+                {"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": "600"},
             ],
         },
     )
@@ -225,6 +226,7 @@ def test_archived_collection_controls_require_exact_review_and_preserve_plan(arc
                 "DYN_BENCH_GIANT_KV_REPEATS": "3",
                 "DYN_FORWARDPASS_METRIC_PORT": "7020",
                 "FPM_RESULT_WAIT_TIMEOUT_SECONDS": "14100",
+                "FPM_FINALIZATION_TIMEOUT_SECONDS": "600",
             }.items()
         ],
     ]
@@ -252,6 +254,45 @@ def test_archived_collection_controls_require_exact_review_and_preserve_plan(arc
     assert all(path.read_bytes() == contents for path, contents in archived.items())
     assert request.model_dump(mode="json") == original_request
     assert runtime.verify_runtime_profile(request) == original_source
+
+
+@pytest.mark.parametrize(
+    "archived_controls",
+    [
+        {
+            "extra_cli_args": [],
+            "extra_env": [{"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": value}],
+        }
+        for value in ("1", "600", "3600")
+    ],
+    indirect=True,
+)
+def test_archived_finalization_budget_requires_review_before_memory_binding(archived_controls):
+    request, bindings = archived_controls
+    originals = {
+        path: path.read_bytes()
+        for binding in bindings
+        for path in Path(binding["plan"]["path"]).parent.rglob("*")
+        if path.is_file()
+    }
+    deployment = json.loads((Path(bindings[0]["plan"]["path"]).parent / "generator-overrides.json").read_text())
+    budget = next(
+        item["value"]
+        for item in deployment["K8sConfig"]["extra_env"]
+        if item["name"] == "FPM_FINALIZATION_TIMEOUT_SECONDS"
+    )
+    review = runtime.collection_runtime_review(request, bindings[0])
+    assert {
+        "field": "/collection_controls/environment/FPM_FINALIZATION_TIMEOUT_SECONDS",
+        "accepted": {"missing": True},
+        "collection": budget,
+    } in review["changes"]
+    with pytest.raises(ValueError, match="exact runtime change review required"):
+        runtime.verify_collection_runtime_bindings(request, bindings)
+    _review(request, bindings)
+    assert runtime.verify_collection_runtime_plans(request, bindings)["status"] == "verified"
+    assert runtime.verify_collection_runtime_bindings(request, bindings)["compatibility"]["status"] == "compatible"
+    assert all(path.read_bytes() == contents for path, contents in originals.items())
 
 
 @pytest.mark.parametrize(
@@ -284,6 +325,49 @@ def test_archived_empty_policy_and_equals_deadline_are_explicitly_verified(archi
             ["--benchmark-timeout", "12600", "--enforce-eager"],
             ["--benchmark-timeout", "12600", "--kv-cache-dtype", "fp8"],
         )
+    ]
+    + [
+        {
+            "extra_cli_args": [],
+            "extra_env": [{"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": value}],
+        }
+        for value in (
+            None,
+            600,
+            True,
+            "",
+            "0",
+            "3601",
+            "1.5",
+            "-1",
+            "+1",
+            "01",
+            " 600",
+            "600 ",
+            "600\n",
+            "600\x00",
+            "٦٠٠",
+            "\uff16\uff10\uff10",
+            "${TIMEOUT}",
+            "9" * 5000,
+        )
+    ]
+    + [
+        {
+            "extra_cli_args": [],
+            "extra_env": [
+                {"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": "600"},
+                {"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": value},
+            ],
+        }
+        for value in ("600", "1200")
+    ]
+    + [
+        {
+            "extra_cli_args": [],
+            "extra_env": [{"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", **value}],
+        }
+        for value in ({"valueFrom": {"fieldRef": {"fieldPath": "metadata.name"}}}, {"value": "600", "valueFrom": {}})
     ]
     + [
         {

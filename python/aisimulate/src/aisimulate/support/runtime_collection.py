@@ -13,6 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from aisimulate.fpm_contract import FPM_FINALIZATION_TIMEOUT_ENV
+
 from .schema import SupportRequest
 
 
@@ -38,7 +40,12 @@ def _read(reference: dict[str, str], *, plan: bool = False) -> tuple[Path, dict[
     return path, document
 
 
-def _checkpoint_observation_index(checkpoint_path: Path, checkpoint: dict[str, Any]) -> Path:
+def checkpoint_observation_index(checkpoint_path: Path, checkpoint: dict[str, Any]) -> Path:
+    """Resolve a checkpoint's recorded observation index to a regular file.
+
+    Relative paths are anchored to the checkpoint directory. Reject a symlink
+    at the index itself; callers separately verify containment and byte hashes.
+    """
     recorded = checkpoint.get("runtime_observations")
     if not isinstance(recorded, str) or not recorded.strip():
         raise ValueError("collector checkpoint records no runtime observation index")
@@ -124,6 +131,7 @@ def _collection_controls(cells, deployment):
         "DYN_BENCH_GIANT_KV_REPEATS",
         "DYN_FORWARDPASS_METRIC_PORT",
         "FPM_RESULT_WAIT_TIMEOUT_SECONDS",
+        FPM_FINALIZATION_TIMEOUT_ENV,
     }
     retained, seen = [], set()
     if not isinstance(environment, list):
@@ -150,9 +158,13 @@ def _collection_controls(cells, deployment):
             r"0|[1-9][0-9]*", value
         ):
             raise ValueError(f"collection control {name} must be a nonnegative integer")
-        if name in {"DYN_FORWARDPASS_METRIC_PORT", "FPM_RESULT_WAIT_TIMEOUT_SECONDS"}:
-            maximum = 65535 if name == "DYN_FORWARDPASS_METRIC_PORT" else 43200
-            if not re.fullmatch(r"[1-9][0-9]*", value) or int(value) > maximum:
+        if name in {"DYN_FORWARDPASS_METRIC_PORT", "FPM_RESULT_WAIT_TIMEOUT_SECONDS", FPM_FINALIZATION_TIMEOUT_ENV}:
+            maximum = {
+                "DYN_FORWARDPASS_METRIC_PORT": 65535,
+                "FPM_RESULT_WAIT_TIMEOUT_SECONDS": 43200,
+                FPM_FINALIZATION_TIMEOUT_ENV: 3600,
+            }[name]
+            if not re.fullmatch(r"[1-9][0-9]*", value) or len(value) > len(str(maximum)) or int(value) > maximum:
                 raise ValueError(f"collection control {name} must be an integer from 1 through {maximum}")
         changes.extend(_differences({"missing": True}, value, "/collection_controls/environment/" + name))
     if "extra_env" in k8s:
@@ -334,7 +346,7 @@ def verify_collection_runtime_bindings(request: SupportRequest, bindings: list[d
             if (
                 checkpoint.get("schema") != CHECKPOINT_SCHEMA
                 or checkpoint.get("plan_sha256") != plan.sha256
-                or _checkpoint_observation_index(checkpoint_path, checkpoint) != index.resolve()
+                or checkpoint_observation_index(checkpoint_path, checkpoint) != index.resolve()
                 or checkpoint.get("runtime_observation_attempt_id") != binding["attempt_id"]
                 or set(checkpoint.get("cells", {})) - {value.cell_id for value in plan.cells}
             ):

@@ -1287,6 +1287,7 @@ Explicit bindings also review these archived collection controls under `/collect
 | --- | --- |
 | Backend-policy `params.agg.extra_cli_args` option `--benchmark-timeout` | One positive integer deadline, in split or `=value` form. The exact argument tokens are recorded; `[]` means the probe declared no override. Duplicate, conflicting or malformed options fail. An explicitly empty argument list is equivalent to no policy override for comparison. |
 | `K8sConfig.extra_env.FPM_RESULT_WAIT_TIMEOUT_SECONDS` | One literal integer from 1 through 43,200 seconds for the outer result wait. This checks an archived control; it does not change current rendering or transport limits. |
+| `K8sConfig.extra_env.FPM_FINALIZATION_TIMEOUT_SECONDS` | One literal ASCII integer from 1 through 3,600 seconds for artifact finalization after local rank outputs complete. Leading zeros, signs and whitespace are invalid, matching the execution harness. The collection deadline still applies. |
 | `DYN_BENCH_CONTENT_SEED`, `DYN_BENCH_POOL_TAG` | Literal strings, including an empty pool tag. |
 | `DYN_BENCH_PREFILL_CONTENT` | `random`, `sharegpt`, `sharegpt_chain` or `zeros`. |
 | `DYN_BENCH_GIANT_KV_THRESHOLD`, `DYN_BENCH_GIANT_KV_REPEATS` | Literal nonnegative integers. |
