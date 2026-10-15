@@ -1002,7 +1002,12 @@ mod tests {
             "V41 appended indices moved"
         );
         // GLM-5.3-Flash variants append after the V41 variants.
-        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).take(5).map(index_of).collect();
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(41)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             glm_appended,
             vec![41, 42, 43, 44, 45],

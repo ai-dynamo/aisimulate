@@ -499,7 +499,7 @@ impl Op {
             | Op::Glm53Mhc(_)
             | Op::Glm53Router(_)
             | Op::Glm53Ffn(_)
-            | Op::Glm53Primitive(_) => {}
+            | Op::Glm53Primitive(_)
             | Op::FastAfdMoeStage(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
