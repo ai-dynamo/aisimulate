@@ -201,7 +201,8 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             .get(&node.request_id)
             .map(|&start| (start, None));
     }
-    graph.graph_digest = canonical_agentic_graph_digest(graph.block_size, &mut graph.nodes)?;
+    graph.graph_digest =
+        canonical_agentic_graph_digest(graph.block_size, &mut graph.nodes, &graph.hash_values)?;
     Ok(graph)
 }
 
@@ -1884,6 +1885,8 @@ fn canonical_agentic_graph_digest(
         #[serde(skip_serializing_if = "Option::is_none")]
         source_play_ordinal: Option<usize>,
         session_id: &'a str,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        synthetic_session_id: bool,
         model: &'a str,
         input_length: usize,
         max_output_tokens: usize,
@@ -1907,6 +1910,7 @@ fn canonical_agentic_graph_digest(
                 play_id,
                 source_play_ordinal,
                 session_id,
+                synthetic_session_id,
                 model,
                 input_length,
                 max_output_tokens,
@@ -1926,6 +1930,7 @@ fn canonical_agentic_graph_digest(
                 play_id,
                 source_play_ordinal: *source_play_ordinal,
                 session_id,
+                synthetic_session_id: *synthetic_session_id,
                 model,
                 input_length: *input_length,
                 max_output_tokens: *max_output_tokens,
