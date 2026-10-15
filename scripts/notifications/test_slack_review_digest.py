@@ -26,7 +26,7 @@ class DigestTests(unittest.TestCase):
     pic_ids = "U00000001,U00000002,U00000003,U00000004,U00000005,U00000006"
 
     def test_pic_rotation_same_on_monday_and_thursday_and_wraps(self):
-        monday = datetime(2026, 10, 19, 17, 7, tzinfo=PACIFIC)
+        monday = datetime(2026, 10, 19, 9, 0, tzinfo=PACIFIC)
         expected = [
             "Simone Chen",
             "Harry Lee",
@@ -63,7 +63,7 @@ class DigestTests(unittest.TestCase):
         ):
             with self.subTest(day=day):
                 self.assertEqual(
-                    review_pic(datetime(2026, 11, day, 17, 7, tzinfo=PACIFIC), self.pic_ids, overrides),
+                    review_pic(datetime(2026, 11, day, 9, 0, tzinfo=PACIFIC), self.pic_ids, overrides),
                     (name, user_id),
                 )
 
@@ -95,7 +95,7 @@ class DigestTests(unittest.TestCase):
             patch.object(sys, "argv", ["slack_review_digest.py"]),
             patch("scripts.notifications.slack_review_digest.datetime") as clock,
         ):
-            clock.now.return_value = datetime(2026, 11, 5, 17, 7, tzinfo=PACIFIC)
+            clock.now.return_value = datetime(2026, 11, 5, 9, 0, tzinfo=PACIFIC)
             main()
         payload = send_message.call_args.args[1]
         self.assertEqual(set(payload), {"message", "pr_details", "review_pic"})

@@ -5,7 +5,7 @@ name: Slack review digest
 
 on:
   schedule:
-    - cron: '7 17 * * 1,4'
+    - cron: '0 9 * * 1,4'
       timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:

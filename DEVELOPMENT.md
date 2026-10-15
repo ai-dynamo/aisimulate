@@ -179,7 +179,7 @@ This project is licensed under Apache 2.0. All contributions must include SPDX l
 
 ## Slack review digest and weekly PIC
 
-The `Slack review digest` workflow runs every Monday and Thursday at 17:07
+The `Slack review digest` workflow runs every Monday and Thursday at 09:00
 `America/Los_Angeles` (including daylight saving changes). It reports:
 
 - Open non-draft PRs, including approved PRs.
