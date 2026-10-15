@@ -584,6 +584,29 @@ The saved request embeds the complete profile and its provenance. The original m
 
 ### Review grouped cache resources
 
+GLM mixed-attention support in the generic `onboard` workflow is work in
+progress (WIP), planned for an upcoming update. The remaining work is to connect
+existing model-specific collection and replay/cache capabilities through profile
+generation, collection, import and validation.
+
+Until that integration is complete, generic onboarding rejects GLM Flash's
+linear-attention and sparse-attention combination before checking ordinary head
+dimensions. Generic MLA/GQA templates do not capture its full cache/state layout,
+even when the config includes MLA rank fields or the architecture is registered.
+Use a qualified model-specific collection path and verified cache profile.
+Sparse-attention layer declarations are accepted only for the collector's
+supported DSA architectures; the layer name alone does not establish support.
+Unknown architectures can still use generic MLA/GQA planning when their
+declared layer layout is supported.
+The direct `collector --fpm` path also rejects Qwen3.5-family Gated DeltaNet
+hybrids, including Qwen3.6/3.8 checkpoints with that layout, in native and
+op-level modes. Registered model cases do not make the dense-attention FPM
+template represent recurrent state. Generic onboarding intake already rejects
+these layouts; complete mixed-attention onboarding remains WIP.
+An explicit `layer_types` list must have one entry per declared model layer.
+The declared `num_hidden_layers` must be a positive integer; fractional counts
+are rejected rather than rounded or truncated.
+
 Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
 
 After selecting precision and topology, investigate the pinned cache/backend implementation and available allocation metadata for block sizes after page unification; ask only for values that remain unresolved. The model config's omission does not imply that the user must supply them. Supply `cache_block_sizes` using the generated group names listed by intake. For example, a mixed full/sliding model might require this JSON answer, or the equivalent mapping in a `--resource-overrides` file:
