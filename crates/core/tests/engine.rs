@@ -1636,6 +1636,40 @@ fn disaggregated_resource_accounting_includes_role_prefill_context_parallelism()
     assert!((report.throughput.gpu_hours - expected).abs() < 1e-12);
 }
 
+#[test]
+fn disaggregated_gpu_accounting_inherits_topology_unless_role_is_explicit() {
+    for explicit_decode in [false, true] {
+        let mut config = engine_config(TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        });
+        config.tensor_parallel_size = 2;
+        config.prefill_context_parallel_size = 4;
+        if explicit_decode {
+            config.decode = Some(ReplayRoleConfig {
+                tensor_parallel_size: 2,
+                rank: config.rank.clone(),
+                ..Default::default()
+            });
+        }
+        let mut replay = spec(config);
+        replay.topology = ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec::default(),
+            decode: WorkerPoolSpec::default(),
+            handoff_latency_ms: 1.0,
+        };
+        let report = run_engine_replay(replay).unwrap();
+        let decode_gpus = if explicit_decode { 2 } else { 8 };
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.prefill_gpus_per_worker, 8);
+        assert_eq!(report.throughput.decode_gpus_per_worker, decode_gpus);
+        let expected = (report.throughput.prefill_worker_seconds * 8.0
+            + report.throughput.decode_worker_seconds * decode_gpus as f64)
+            / 3600.0;
+        assert!((report.throughput.gpu_hours - expected).abs() < 1e-12);
+    }
+}
+
 struct FixedExternalTiming {
     prefill_ms: f64,
     decode_ms: f64,

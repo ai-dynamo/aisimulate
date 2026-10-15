@@ -71,6 +71,18 @@ omitted from JSON; Rust struct literals should set it or use `..Default::default
 It multiplies DP × TP for resource reports without creating additional attention-DP
 schedulers. Decode context parallelism does not add physical GPUs.
 
+In P/D replay, omitting a role descriptor inherits the complete top-level
+rank/DP/TP/PCP descriptor for that role. To use PCP only on prefill, supply a
+prefill role with PCP > 1 and a decode role with PCP = 1 (or leave the top-level
+PCP at 1 and override only prefill).
+
+Dynamo consumers must update their `ReplayEngineConfig` and `ReplayRoleConfig`
+struct literals together with the `aisimulate-core` dependency pin when adopting
+this release. Set PCP to 1 for existing non-PCP deployments, or propagate the
+actual role topology. The AISimulate main-branch CI compatibility adapter does
+not update Dynamo's production constructors; a dependency bump alone is not
+sufficient. Validate the updated Dynamo build before releasing that integration.
+
 ## Reports and capture
 
 `ReplayReport` is the native report with request counts, latency/throughput,
