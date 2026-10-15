@@ -28,6 +28,125 @@ def _engine() -> dict:
     }
 
 
+def _program_admission_prediction() -> dict:
+    return {
+        "engine": {
+            **_engine(),
+            "context_length": 4096,
+            "workers": {
+                "aggregated": {
+                    "timing": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+                    "kv_cache": {"block_size": 16, "capacity": {"type": "fixed", "blocks": 4096}},
+                }
+            },
+        },
+        "traffic": {
+            "source": {"type": "synthetic-session", "session": {"turns": 2}},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"sessions": 2},
+        },
+        "program_admission": {"capacity_tokens_per_worker": 100000},
+    }
+
+
+def test_program_admission_is_a_core_prediction_section_and_reaches_native_spec():
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.runner import _materialize_engine_execution_spec
+
+    data = _program_admission_prediction()
+    core, adapters = split_config_sections(data, command="predict")
+    assert not adapters
+    config = CorePredictionConfig.model_validate(core)
+    spec = prediction_to_replay_spec(config)
+    lowered = _materialize_engine_execution_spec(spec, trace_block_size=512, record_per_request=True)
+    assert lowered["spec"]["adapters"]["placement"]["provider"] == "program_admission"
+    assert lowered["spec"]["adapters"]["placement"]["config"]["resume_timeout_seconds"] == 1800
+    assert lowered["spec"]["adapters"]["placement"]["config"]["capacity_tokens_per_worker"] == 100000
+
+
+def test_program_admission_saved_config_preserves_affinity_and_policy_choices():
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.runner import _materialize_engine_execution_spec
+
+    data = _program_admission_prediction()
+    data["program_admission"].update(admission_control=False, acting_token_weight=0.5, resume_timeout_seconds=300)
+    config = CorePredictionConfig.model_validate(data)
+    restored = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    spec = prediction_to_replay_spec(restored)
+    lowered = _materialize_engine_execution_spec(spec, trace_block_size=512, record_per_request=True)
+    policy = lowered["spec"]["adapters"]["placement"]["config"]
+    assert policy["admission_control"] is False
+    assert policy["acting_token_weight"] == 0.5
+    assert policy["resume_timeout_seconds"] == 300
+
+
+def test_program_admission_supervised_preflight_is_prediction_only(monkeypatch):
+    from aisimulate import supervision
+
+    monkeypatch.setattr(supervision, "_installed_names", lambda _: [])
+    data = _program_admission_prediction()
+    supervision._require_known_sections(data, command="predict", stack="engine")
+    with pytest.raises(ValueError, match="unknown top-level section 'program_admission'"):
+        supervision._require_known_sections(data, command="recommend", stack="engine")
+
+
+@pytest.mark.parametrize("unsupported", ["pd", "speculation", "host_offload", "attention_dp", "startup"])
+def test_program_admission_rejects_unsupported_worker_combinations(unsupported):
+    data = _program_admission_prediction()
+    worker = data["engine"]["workers"]["aggregated"]
+    if unsupported == "pd":
+        data["engine"]["mode"] = "disaggregated"
+        data["engine"]["workers"] = {"prefill": worker, "decode": worker}
+    elif unsupported == "speculation":
+        data["engine"]["speculation"] = {
+            "kind": "ngram",
+            "num_speculative_tokens": 1,
+            "acceptance_rates": [0.5],
+        }
+    elif unsupported == "host_offload":
+        worker["kv_cache"]["host_offload"] = {"num_host_blocks": 4096}
+    elif unsupported == "attention_dp":
+        worker["parallelism"] = {"tensor": 2, "attention_data": 2}
+    else:
+        worker["startup_seconds"] = 1
+    with pytest.raises(ValidationError, match="program_admission"):
+        CorePredictionConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("mode", ["online", "adapter"])
+def test_program_admission_rejects_external_execution_paths(mode):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    config = CorePredictionConfig.model_validate(_program_admission_prediction())
+    kwargs = {"execution_mode": "online"} if mode == "online" else {"adapter_specs": {"router": {}}}
+    with pytest.raises(ValueError, match="offline engine stack without external adapters"):
+        prediction_to_replay_spec(config, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"capacity_tokens_per_worker": 0},
+        {"capacity_tokens_per_worker": 100, "pause_target": 0.98},
+        {"capacity_tokens_per_worker": 100, "resume_hysteresis": 0.95},
+        {"capacity_tokens_per_worker": 100, "scheduler_interval_seconds": 0},
+        {"capacity_tokens_per_worker": 100, "acting_token_weight": float("nan")},
+    ],
+)
+def test_program_admission_rejects_invalid_policy_parameters(options):
+    from aisimulate.config.program_admission import ProgramAdmissionConfig
+
+    with pytest.raises(ValidationError):
+        ProgramAdmissionConfig.model_validate(options)
+
+
+def test_program_admission_rejects_request_only_traffic():
+    with pytest.raises(ValidationError, match="requires session or agentic"):
+        CorePredictionConfig.model_validate(
+            {"engine": _engine(), "program_admission": {"capacity_tokens_per_worker": 100}}
+        )
+
+
 @pytest.mark.parametrize(
     "load",
     [

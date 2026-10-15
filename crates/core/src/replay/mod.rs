@@ -159,6 +159,10 @@ pub use protocol::{
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
+mod program_admission;
+pub use program_admission::{
+    ProgramAdmissionComposition, ProgramAdmissionConfig, ProgramAdmissionPlacement,
+};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{

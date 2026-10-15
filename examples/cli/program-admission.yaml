@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Functional example; fixed timing is not a measured GPU performance model.
+traffic:
+  source:
+    type: synthetic-session
+    new_input_tokens_per_turn: 1024
+    output_tokens_per_turn: 32
+    session:
+      turns: 4
+      inter_turn_delay_ms: 100.0
+  load: {type: concurrency, concurrency: 16}
+  stop: {sessions: 32}
+engine:
+  model: Qwen/Qwen3-8B
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 65536
+  mode: aggregated
+  workers:
+    aggregated:
+      parallelism: {tensor: 1, replicas: 2}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 16}
+      kv_cache:
+        block_size: 16
+        prefix_caching: true
+        capacity: {type: fixed, blocks: 4096}
+      timing: {type: fixed, prefill_ms: 2, decode_ms: 1}
+program_admission:
+  capacity_tokens_per_worker: 24000
+  buffer_per_program: 100
+  scheduler_interval_seconds: 0.1
+  resume_timeout_seconds: 2

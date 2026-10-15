@@ -115,7 +115,7 @@ where
 {
     pub(crate) fn new_composed(
         factory: ReplayRoleFactory,
-        admission: AdmissionQueue<Metadata>,
+        mut admission: AdmissionQueue<Metadata>,
         num_workers: usize,
         startup_time_ms: Option<f64>,
         create_placement: impl FnOnce(u32, Vec<WorkerTopology>) -> anyhow::Result<PlacementPolicyImpl>,
@@ -134,6 +134,9 @@ where
             startup_time_ms,
         )?;
         let placement = create_placement(dp_size, engine.active_topology())?;
+        if placement.tracks_program_completion() {
+            admission.enable_program_completion_feedback()?;
+        }
 
         // Aggregated replay has a single (decode) pool; record its GPUs/worker
         // so the report can express GPU-hours from the mocker's own parallelism.
@@ -312,13 +315,16 @@ where
                 placement.cache_sample,
                 placement.placement_replica_id,
             );
-            let request = self
+            let mut request = self
                 .requests
                 .get_mut(&uuid)
                 .ok_or_else(|| {
                     anyhow::anyhow!("offline replay missing queued request state for {uuid}")
                 })?
                 .take_queued_request(uuid, placement.scheduler_id)?;
+            request.priority = request
+                .priority
+                .saturating_add(self.placement.priority_adjustment(uuid, self.now_ms));
             self.dispatch_to_worker(request, uuid, placement.scheduler_id)?;
         }
         Ok(())
@@ -359,6 +365,10 @@ where
         self.traffic.on_arrival();
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
+                request.metadata_mut().priority = request
+                    .metadata()
+                    .priority
+                    .saturating_add(self.placement.priority_adjustment(uuid, self.now_ms));
                 self.record_placement(placement);
                 let (logical_worker_id, dp_rank) = self
                     .engine
@@ -477,7 +487,10 @@ where
         } else {
             next_event_ms
         };
-        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.engine.next_internal_deadline_ms(),
+            self.placement.next_wakeup_ms(),
+        );
         (
             choose_next_timestamp(
                 choose_next_timestamp(next_arrival_ms, next_event_ms),
@@ -519,6 +532,7 @@ where
             return Ok(());
         }
         if let Some(token_id) = signal.token_id {
+            self.placement.output_token(signal.uuid);
             self.admission.defer_output_token(signal.uuid, token_id)?;
             self.collector.on_token(signal.uuid, self.now_ms);
             if self.defer_drive {
@@ -875,6 +889,13 @@ where
             }
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            if self.placement.tracks_program_completion() {
+                for program_id in self.admission.take_finished_programs() {
+                    let placements = self.placement.program_finished(&program_id, self.now_ms)?;
+                    self.dispatch_placements(placements)?;
+                    changed = true;
+                }
+            }
             changed |= self.finish_agentic_preparation()?;
             changed |= self.admission.advance_agentic_profile(self.now_ms)?;
             changed |= self.cancel_expired_agentic_profile()?;
@@ -883,6 +904,25 @@ where
                 return Ok(());
             }
             changed |= self.release_ready_arrivals()?;
+            if let Some(deadline) = self.placement.next_wakeup_ms() {
+                if !deadline.is_finite() || deadline < self.now_ms {
+                    bail!(
+                        "placement policy returned an invalid or past wakeup deadline: {deadline}"
+                    );
+                }
+                if deadline <= self.now_ms {
+                    let placements = self.placement.on_wakeup(self.now_ms)?;
+                    if self
+                        .placement
+                        .next_wakeup_ms()
+                        .is_some_and(|next| next <= self.now_ms)
+                    {
+                        bail!("placement wakeup did not advance its deadline");
+                    }
+                    self.dispatch_placements(placements)?;
+                    changed = true;
+                }
+            }
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
                 return Ok(());
@@ -1599,6 +1639,7 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        self.collector.placement_diagnostics = self.placement.diagnostics();
         self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }

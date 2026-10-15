@@ -157,6 +157,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if config.program_admission is not None and (args.stack != "engine" or args.online or adapter_raw):
+        raise ValueError("program_admission requires offline --stack engine without external adapters")
     if config.engine.speculation is not None and (args.stack != "engine" or args.online or adapter_raw):
         raise ValueError("ngram speculation requires offline --stack engine without adapters")
     plan = _resource_plan(args, config, factory)

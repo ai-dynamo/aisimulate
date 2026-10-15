@@ -216,8 +216,10 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 
 CONFIG_ADAPTER_ENTRY_POINT_GROUP = "aisimulate.config_adapters"
-PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation", "execution"})
-RECOMMENDATION_CORE_SECTIONS = frozenset({*PREDICTION_CORE_SECTIONS, "optimization", "optimizer"})
+PREDICTION_CORE_SECTIONS = frozenset({"traffic", "engine", "evaluation", "execution", "program_admission"})
+RECOMMENDATION_CORE_SECTIONS = frozenset(
+    {*(PREDICTION_CORE_SECTIONS - {"program_admission"}), "optimization", "optimizer"}
+)
 
 
 def split_config_sections(

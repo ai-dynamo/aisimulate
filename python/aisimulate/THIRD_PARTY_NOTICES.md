@@ -5,6 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # Third-Party Notices
 
+## Dynamo ThunderAgent behavioral prediction model
+
+`crates/core/src/replay/program_admission.rs` and
+`python/aisimulate/src/aisimulate/config/program_admission.py` contain modified
+behavioral models and configuration defaults derived from
+`components/src/dynamo/thunderagent_router/router.py` and `program_state.py` in
+ai-dynamo/dynamo at immutable commit
+`65a27b73b1aa35c0655e3eb0fbc50e327e2aa5d9`.
+The descriptions of those behaviors and defaults in
+`docs/program-admission.md`, `docs/program-admission-validation.zh-CN.md`, and
+`examples/cli/program-admission.yaml` document the modified model and share
+this attribution. Validation results and experiment construction are original
+AISimulate work.
+
+Source: https://github.com/ai-dynamo/dynamo/tree/65a27b73b1aa35c0655e3eb0fbc50e327e2aa5d9/components/src/dynamo/thunderagent_router
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0. Upstream license:
+https://github.com/ai-dynamo/dynamo/blob/65a27b73b1aa35c0655e3eb0fbc50e327e2aa5d9/LICENSE
+This offline implementation is modified for deterministic virtual time,
+incremental budget accounting, native replay integration and bounded cleanup.
+It does not include a live Dynamo Router implementation.
+
 AISimulate contains source material derived from the projects identified below.
 These notices apply only to the identified third-party material. Dependencies
 installed separately by package managers are governed by the license material

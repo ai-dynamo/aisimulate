@@ -1769,6 +1769,33 @@ fn run_with_input(
     capture_artifacts: bool,
     determinism: ReplayDeterminism,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
+    if spec.adapters.placement.provider == "program_admission" {
+        if capture_artifacts {
+            return Err(crate::replay::ReplayError::InvalidSpec("program admission currently returns the normal multi-worker report, without single-worker artifacts".into()));
+        }
+        let config = serde_json::from_value::<crate::replay::ProgramAdmissionConfig>(
+            spec.adapters.placement.config.clone(),
+        )
+        .map_err(|e| {
+            crate::replay::ReplayError::InvalidSpec(format!(
+                "invalid program admission config: {e}"
+            ))
+        })?;
+        let replayer = Replayer::with_composition(
+            spec,
+            factory,
+            crate::replay::ProgramAdmissionComposition(config),
+        )?;
+        let replayer = match input {
+            Some(input) => replayer.with_runtime_input(input),
+            None => replayer,
+        }
+        .with_capture_options(ReplayCaptureOptions {
+            determinism,
+            ..ReplayCaptureOptions::default()
+        });
+        return Ok((replayer.run()?, None));
+    }
     let replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
         None => Replayer::new(spec, factory)?,

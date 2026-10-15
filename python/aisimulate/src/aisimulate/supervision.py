@@ -371,7 +371,7 @@ def _require_known_sections(raw: dict[str, Any], *, command: str, stack: str) ->
         # split_config_sections reports malformed keys and predict-only restrictions.
         if not isinstance(section, str) or not section or "." in section:
             continue
-        if section in RECOMMENDATION_CORE_SECTIONS:
+        if section in core or section in RECOMMENDATION_CORE_SECTIONS:
             continue
         name = f"{stack}.{section}"
         if installed.count(name) > 1:

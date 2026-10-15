@@ -20,6 +20,7 @@ from .common import (
     load_yaml,
 )
 from .engine import EnginePredictionConfig, EngineRecommendationConfig
+from .program_admission import ProgramAdmissionConfig
 from .traffic import (
     SyntheticSource,
     TraceSource,
@@ -33,11 +34,32 @@ class CorePredictionConfig(StrictModel):
     engine: EnginePredictionConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    program_admission: ProgramAdmissionConfig | None = None
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CorePredictionConfig:
         _validate_epd(self.traffic, self.engine)
         source = self.traffic.source
+        if self.program_admission is not None:
+            if self.engine.mode != "aggregated" or self.engine.workers.encoder is not None:
+                raise ValueError("program_admission requires aggregated engine workers without an encoder")
+            worker = self.engine.workers.aggregated
+            assert worker is not None
+            if worker.parallelism.attention_data != 1 or worker.startup_seconds != 0:
+                raise ValueError("program_admission requires static ready workers with attention DP=1")
+            if self.engine.speculation is not None or worker.kv_cache.host_offload is not None:
+                raise ValueError("program_admission does not yet support speculation or host offload")
+            if isinstance(source, SyntheticSource):
+                raise ValueError("program_admission requires session or agentic workload traffic")
+            if isinstance(source, TraceSource) and source.format not in {
+                "agentic_mooncake",
+                "applied_compute_agentic",
+                "dynamo",
+                "weka",
+            }:
+                raise ValueError("program_admission requires an agentic trace or synthetic-session traffic")
+            if self.traffic.load.agentic_warmup or self.traffic.load.agentic_snapshot is not None:
+                raise ValueError("program_admission does not yet support agentic snapshot preparation or warmup")
         if self.engine.mode == "afd" and isinstance(source, SyntheticSource) and source.cached_prefix_tokens:
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if self.engine.mode == "afd" and not isinstance(source, SyntheticSource):

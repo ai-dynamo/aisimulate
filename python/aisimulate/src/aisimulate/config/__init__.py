@@ -11,6 +11,7 @@ from .engine import (
     EnginePredictionConfig,
     EngineRecommendationConfig,
 )
+from .program_admission import ProgramAdmissionConfig
 from .traffic import AgenticProfileOptions, AgenticSnapshotOptions, TrafficPredictionConfig, TrafficRecommendationConfig
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "EnginePredictionConfig",
     "EngineRecommendationConfig",
     "ExecutionConfig",
+    "ProgramAdmissionConfig",
     "ResourceConfig",
     "TrafficPredictionConfig",
     "TrafficRecommendationConfig",

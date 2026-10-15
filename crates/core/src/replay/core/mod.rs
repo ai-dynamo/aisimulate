@@ -112,6 +112,27 @@ pub trait PlacementPolicy<Request> {
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn pending_count(&self) -> usize;
+    /// A modeled policy deadline, distinct from observational telemetry.
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        None
+    }
+    fn on_wakeup(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn tracks_program_completion(&self) -> bool {
+        false
+    }
+    fn program_finished(&mut self, _program_id: &str, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn output_token(&mut self, _request_id: Uuid) {}
+    /// Applied once at dispatch, including a queued request's release.
+    fn priority_adjustment(&self, _request_id: Uuid, _now_ms: f64) -> i32 {
+        0
+    }
+    fn diagnostics(&self) -> Option<serde_json::Value> {
+        None
+    }
     fn worker_ready(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>>;
     fn worker_draining(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>>;
     fn worker_removed(&mut self, worker: WorkerTopology, now_ms: f64) -> Result<Vec<Placement>>;

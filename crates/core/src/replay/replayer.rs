@@ -57,6 +57,10 @@ pub trait ReplayComposition {
         Ok(())
     }
 
+    fn requires_workload_driver(&self) -> bool {
+        false
+    }
+
     fn create_aggregated_placement(
         &mut self,
         dp_size: u32,
@@ -143,6 +147,34 @@ where
 
     fn pending_count(&self) -> usize {
         self.0.pending_count()
+    }
+
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        self.0.next_wakeup_ms()
+    }
+    fn on_wakeup(&mut self, now_ms: f64) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0.on_wakeup(now_ms).map_err(placement_boundary)
+    }
+    fn tracks_program_completion(&self) -> bool {
+        self.0.tracks_program_completion()
+    }
+    fn program_finished(
+        &mut self,
+        program_id: &str,
+        now_ms: f64,
+    ) -> AnyResult<Vec<crate::replay::core::Placement>> {
+        self.0
+            .program_finished(program_id, now_ms)
+            .map_err(placement_boundary)
+    }
+    fn output_token(&mut self, request_id: Uuid) {
+        self.0.output_token(request_id)
+    }
+    fn priority_adjustment(&self, request_id: Uuid, now_ms: f64) -> i32 {
+        self.0.priority_adjustment(request_id, now_ms)
+    }
+    fn diagnostics(&self) -> Option<serde_json::Value> {
+        self.0.diagnostics()
     }
 
     fn worker_ready(
@@ -385,6 +417,14 @@ impl<C: ReplayComposition> Replayer<C> {
             .map_or(ReplayMode::Trace, |max_in_flight| ReplayMode::Concurrency {
                 max_in_flight,
             });
+        if self.composition.requires_workload_driver()
+            && !matches!(runtime_input, ReplayRuntimeInput::Workload(_))
+        {
+            return Err(ReplayError::InvalidSpec(
+                "program admission requires a workload driver with program completion feedback"
+                    .into(),
+            ));
+        }
         let scaling = self
             .composition
             .take_scaling_policy()

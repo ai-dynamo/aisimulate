@@ -863,6 +863,7 @@ pub struct WorkloadDriver {
     in_flight: FxHashMap<Uuid, InFlightTurn>,
     agentic_settling: FxHashMap<Uuid, usize>,
     ready_sessions: BinaryHeap<ReadySession>,
+    finished_programs: Option<Vec<String>>,
 }
 
 impl WorkloadDriver {
@@ -1311,6 +1312,15 @@ impl WorkloadDriver {
         Some(next)
     }
 
+    pub(crate) fn enable_program_completion_feedback(&mut self) {
+        self.finished_programs = Some(Vec::new());
+    }
+
+    pub(crate) fn take_finished_programs(&mut self) -> Vec<String> {
+        self.finished_programs
+            .as_mut()
+            .map_or_else(Vec::new, std::mem::take)
+    }
     /// Warm full snapshot prefixes without advancing the saved request graph.
     /// Each lane runs its primers then ten one-output-token prefix requests.
     /// The runtime must call [`Self::finish_agentic_preparation`] at its settled
@@ -2020,6 +2030,7 @@ impl WorkloadDriver {
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
             ready_sessions,
+            finished_programs: None,
         })
     }
 
@@ -2136,6 +2147,7 @@ impl WorkloadDriver {
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
             ready_sessions,
+            finished_programs: None,
         };
         if let SchedulingPolicy::Concurrency(state) = &mut driver.policy {
             state.activate_pending(&mut driver.sessions, &mut driver.ready_sessions, 0.0);
@@ -2894,6 +2906,14 @@ impl WorkloadDriver {
     }
 
     fn apply_resolution(&mut self, resolution: TurnResolution, now_ms: f64) {
+        let was_finished = match &self.policy {
+            SchedulingPolicy::Agentic(state) if self.finished_programs.is_some() => {
+                state.plays[state.node_to_play[resolution.session_index]].client_finished
+            }
+            _ => false,
+        };
+        let session_index = resolution.session_index;
+        let session_ended = resolution.session_ended;
         match &mut self.policy {
             SchedulingPolicy::Trace => {}
             SchedulingPolicy::Concurrency(state) => {
@@ -2909,6 +2929,20 @@ impl WorkloadDriver {
                     now_ms,
                     resolution.outcome,
                 );
+            }
+        }
+        if let Some(finished) = &mut self.finished_programs {
+            match &self.policy {
+                SchedulingPolicy::Agentic(state) => {
+                    let play = &state.plays[state.node_to_play[session_index]];
+                    if !was_finished && play.client_finished {
+                        finished.push(play.play_id.clone());
+                    }
+                }
+                _ if session_ended => {
+                    finished.push(self.sessions[session_index].session_id.clone())
+                }
+                _ => {}
             }
         }
     }

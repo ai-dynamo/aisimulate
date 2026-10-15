@@ -44,6 +44,10 @@ def prediction_to_replay_spec(
     if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
         raise ValueError("ngram speculation requires the offline engine stack without adapters")
     workload, concurrency = _traffic(config)
+    if config.program_admission is not None:
+        if adapter_specs or execution_mode != "offline":
+            raise ValueError("program_admission requires the offline engine stack without external adapters")
+        workload["program_admission"] = config.program_admission.model_dump(mode="json")
     deployment = _deployment(
         config.engine,
         workload=workload,

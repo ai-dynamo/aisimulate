@@ -1117,6 +1117,13 @@ def _materialize_engine_execution_spec(
         "sla": sla,
         "requests": requests,
     }
+    if spec.workload.get("program_admission") is not None:
+        if deployment_mode != "agg" or not use_workload_driver:
+            raise ValueError("program_admission requires an aggregated workload driver")
+        execution_spec["adapters"]["placement"] = {
+            "provider": "program_admission",
+            "config": spec.workload["program_admission"],
+        }
     if use_workload_driver:
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
@@ -2107,6 +2114,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
         for key in (
             "prediction_provenance",
             "state_cache",
+            "placement_diagnostics",
             "agentic_qualification",
             "agentic_input_format",
             "agentic_lanes",

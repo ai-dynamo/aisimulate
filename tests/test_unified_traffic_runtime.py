@@ -1283,6 +1283,7 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
         ("vllm", "aggregated", "synthetic"),
         ("vllm", "aggregated", "multiworker"),
         ("sglang", "disaggregated", "synthetic"),
+        ("vllm", "aggregated", "program_admission"),
         ("vllm", "aggregated", "weka"),
         ("sglang", "disaggregated", "weka"),
     ],
@@ -1308,7 +1309,20 @@ def test_engine_runner_canonical_determinism(backend, mode, traffic_kind):
             },
             "load": {"type": "trace_timestamps", "agentic_lanes": 1},
         }
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine, "traffic": traffic}))
+    config = {"engine": engine, "traffic": traffic}
+    if traffic_kind == "program_admission":
+        traffic["source"] = {
+            "type": "synthetic-session",
+            "new_input_tokens_per_turn": 8,
+            "output_tokens_per_turn": 4,
+            "session": {"turns": 2, "inter_turn_delay_ms": 10},
+        }
+        traffic["stop"] = {"sessions": 4}
+        config["program_admission"] = {
+            "capacity_tokens_per_worker": 1000,
+            "scheduler_interval_seconds": 0.01,
+        }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
     records = []
     for _ in range(2):
         runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)

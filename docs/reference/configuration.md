@@ -46,6 +46,7 @@ The command determines the document type. There is no top-level `kind` or stack 
 | `engine` | Required | Required | Model, hardware, backend, topology, and worker roles. |
 | `router` | Optional adapter | Optional adapter | Dynamo routing policy; round robin when omitted. Requires the integration when configured. |
 | `planner` | Optional adapter | Optional adapter | Dynamo runtime scaling; disabled when omitted. Requires the integration when configured. |
+| `program_admission` | Optional, Engine only | Rejected | Experimental offline program affinity and logical-budget admission for sequential session/agentic programs. Round-robin placement when omitted. |
 | `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
 | `execution` | Optional | Optional | Host RAM/CPU budgets and supervisor deadlines; automatic defaults apply when omitted. See [local resources](local-resources.md). |
 | `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
@@ -77,6 +78,7 @@ apply. See [override semantics](cli.md#override-semantics).
 | `engine` deployment fields, worker roles, parallelism, scheduler, KV cache, P/D transfer, speculation | [Replay engine](../replay/engine/README.md) |
 | `engine.workers.<role>.timing`, estimator policy, precision and kernel selectors | [Performance-model configuration](../perf-model/configuration.md) |
 | `router`, `planner` | [Dynamo integration](../replay/dynamo.md) |
+| `program_admission` | [Program admission fields](#program-admission) and [behavioral model](../program-admission.md) |
 | `execution.resources` | [Local execution resources](local-resources.md) |
 | `optimization` | [Optimization goals](../sweeper/optimization-goals.md) |
 | `optimizer`, domains and presets | [Search space](../sweeper/search-space.md) |
@@ -88,6 +90,55 @@ non-sweepable field; `-` marks a singleton default domain. A **Preset** column
 identifies the smallest object that owns the complete atomic mapping. `auto`
 in the parallelism preset asks Sweeper to generate feasible shapes; it is not
 a free-form value accepted by every field.
+
+<a id="program-admission"></a>
+
+## Program admission
+
+This optional top-level block is accepted only by `predict --stack engine`.
+It selects offline program placement; it does not require Dynamo's live Router.
+It supports static, ready aggregated workers with attention DP=1 and sequential
+session or agentic programs. Request-only traffic, concurrent requests within
+one program, PD, scaling/startup, speculation, host offload, snapshot/warmup and
+single-worker artifact capture are rejected. Recommendation does not accept
+this block; parameter studies must run separate concrete predictions.
+
+```yaml
+program_admission:
+  capacity_tokens_per_worker: 10000
+  pause_threshold: 0.95
+  pause_target: 0.80
+  resume_hysteresis: 0.10
+  scheduler_interval_seconds: 5
+```
+
+| Field within `program_admission` | Default | Rules and behavior |
+|---|---:|---|
+| `capacity_tokens_per_worker` | Required | Positive integer logical token capacity per complete replica, independently of TP and physical KV capacity. |
+| `admission_control` | `true` | Set to `false` for program affinity without budget admission or pause/resume control. |
+| `pause_threshold` | `0.95` | In (0, 1]; occupancy above this fraction triggers capacity pauses. |
+| `pause_target` | `0.80` | In [0, `pause_threshold`]; target occupancy for selecting pauses. |
+| `resume_hysteresis` | `0.10` | Nonnegative and below `pause_threshold`; normal resume ceiling is capacity times (`pause_threshold` minus this value). |
+| `resume_timeout_seconds` | `1800` | Positive finite forced-resume timeout for waiting requests. Forced admission may exceed the logical capacity. |
+| `scheduler_interval_seconds` | `5` | Positive finite virtual-time controller interval. |
+| `acting_token_weight` | `1` | In [0, 1]; token contribution while a program is waiting for its next model request. |
+| `acting_decay_tau_seconds` | `1` | Positive finite ACTING-load half-life used by forced-resume worker selection. |
+| `buffer_per_program` | `100` | Nonnegative integer token reserve added to each active program's logical contribution. |
+| `soft_demote_threshold` | `0.80` | In [0, `pause_threshold`]; threshold for priority-demotion metadata. |
+| `soft_demote_priority_jump` | `-2` | Signed 32-bit integer priority adjustment; metadata only with the FCFS backend. |
+| `resume_priority_boost` | `1` | Signed 32-bit integer priority adjustment; metadata only with the FCFS backend. |
+
+Logical occupancy counts each program's prompt plus generated tokens without
+shared-prefix deduplication. A controller tick resumes existing paused programs
+before selecting new pauses; newly paused programs stay paused until a later
+decision or an independent forced-resume deadline. Physical KV admission,
+eviction and preemption remain engine responsibilities. Priority adjustments
+do not change backend queue ordering in this version.
+
+See the [design and coverage explanation](../program-admission.md) for lifecycle,
+diagnostics, source attribution and experimental accuracy boundaries, and
+[the runnable fixed-timing example](../../examples/cli/program-admission.yaml)
+for a complete configuration.
 
 <a id="evaluation"></a>
 

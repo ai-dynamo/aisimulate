@@ -39,6 +39,7 @@ pub struct G2DomainStats {
 /// Canonical replay result returned by [`crate::replay::Replayer`].
 #[derive(Debug, Clone)]
 pub struct ReplayReport {
+    pub placement_diagnostics: Option<Value>,
     pub kv_eviction_policy: crate::engine::KvEvictionPolicy,
     /// Versioned forecast contract, present only for a lookahead eviction policy.
     pub kv_eviction_assumption: Option<&'static str>,
@@ -420,6 +421,9 @@ impl Serialize for ReplayReport {
             power.validate().map_err(serde::ser::Error::custom)?;
         }
         let mut map = serializer.serialize_map(None)?;
+        if let Some(diagnostics) = &self.placement_diagnostics {
+            map.serialize_entry("placement_diagnostics", diagnostics)?;
+        }
         map.serialize_entry("kv_eviction_policy", &self.kv_eviction_policy)?;
         if let Some(assumption) = self.kv_eviction_assumption {
             map.serialize_entry("kv_eviction_assumption", assumption)?;
@@ -982,6 +986,7 @@ impl SlaThresholds {
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct TraceCollector {
+    pub(crate) placement_diagnostics: Option<Value>,
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
     pub(crate) g2_domains: Vec<G2DomainStats>,
     committed_prefill_tokens: u64,
@@ -1944,6 +1949,7 @@ impl TraceCollector {
             output_throughput_tok_s: goodput_output_tokens as f64 / duration_s,
         });
         ReplayReport {
+            placement_diagnostics: self.placement_diagnostics,
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             kv_eviction_assumption: None,
             committed_prefill_tokens: self.committed_prefill_tokens,

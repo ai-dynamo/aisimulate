@@ -121,6 +121,24 @@ pub(crate) struct AdmissionQueue<Metadata = NoReplayMetadata> {
 }
 
 impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
+    pub(crate) fn enable_program_completion_feedback(&mut self) -> Result<()> {
+        let AdmissionSource::Workload { driver, .. } = &mut self.source else {
+            anyhow::bail!("program admission requires a workload driver");
+        };
+        anyhow::ensure!(
+            !driver.is_agentic_preparing() && driver.agentic_snapshot_evidence().is_none(),
+            "program admission does not support snapshot preparation or warmup"
+        );
+        driver.enable_program_completion_feedback();
+        Ok(())
+    }
+
+    pub(crate) fn take_finished_programs(&mut self) -> Vec<String> {
+        match &mut self.source {
+            AdmissionSource::Workload { driver, .. } => driver.take_finished_programs(),
+            _ => Vec::new(),
+        }
+    }
     pub(crate) fn new_requests(source: VecDeque<DirectRequest>, mode: ReplayMode) -> Self {
         Self {
             source: AdmissionSource::Requests(source),
