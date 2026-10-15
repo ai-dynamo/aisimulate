@@ -79,8 +79,9 @@ impl OpListPlan {
 
 /// Pricing key of a GLM-5.3-Flash boundary without its per-layer display
 /// names. These names, including those of generic children, never select
-/// data, so identical layers price identically. Other families return `None`
-/// and are always queried.
+/// data, so identical layers price identically; debug builds re-price every
+/// shared query to check this ([`QueryMemo::query`]). Other families return
+/// `None` and are always queried.
 fn pricing_identity(op: &Op) -> Option<String> {
     if !matches!(
         op,
@@ -144,6 +145,14 @@ impl<'p> QueryMemo<'p> {
             return query();
         };
         if let Some(result) = &self.results[slot] {
+            #[cfg(debug_assertions)]
+            {
+                let repriced = query();
+                assert!(
+                    repriced.as_ref().is_ok_and(|repriced| repriced == result),
+                    "op {index} shares query slot {slot} but prices as {repriced:?}, not {result:?}"
+                );
+            }
             return Ok(result.clone());
         }
         let result = query()?;

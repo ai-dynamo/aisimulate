@@ -2809,6 +2809,22 @@ mod tests {
         }
     }
 
+    /// A shared GLM query must price every op in its slot alike; a name-keyed
+    /// price that differs fails debug builds instead of being masked.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "shares query slot")]
+    fn debug_builds_reject_a_shared_query_that_prices_differently() {
+        use crate::operators::base::Source;
+        let ops = glm_layer_ops(false);
+        let plan = OpListPlan::new(&ops);
+        let mut memo = QueryMemo::new(Some(&plan), &ops);
+        // KDA attention of layers 0 and 1 (indices 1 and 4) share a slot.
+        memo.query(1, || Ok(PerformanceResult::new(1.0, Source::Silicon)))
+            .unwrap();
+        let _ = memo.query(4, || Ok(PerformanceResult::new(2.0, Source::Silicon)));
+    }
+
     #[test]
     fn per_op_fold_attaches_the_inference_phase_only_to_executed_fallbacks() {
         use crate::operators::base::{MoeCommFallback, Source};
