@@ -181,7 +181,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 
 
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
-def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
+def test_canonical_prompt_lookup_rejects_unsupported_estimators_without_fallback(mode):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
@@ -193,7 +193,7 @@ def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
                 worker_type="aggregated",
                 speculation=deepcopy(_COST),
                 estimation_mode=mode,
-                fallback_policy="allow",
+                fallback_policy="deny",
             )
         )
 

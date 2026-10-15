@@ -397,6 +397,10 @@ impl AicTimingConfig {
             return Ok(self.nextn);
         };
         ensure!(
+            speculation.kind == "ngram",
+            "generic speculation is supported by the cost-model API only; replay requires ngram or legacy nextn"
+        );
+        ensure!(
             self.nextn == 0,
             "ngram speculation cannot be combined with nextn"
         );
@@ -408,12 +412,7 @@ impl AicTimingConfig {
             self.forward_model.as_deref().unwrap_or("op_level") == "op_level",
             "ngram speculation requires op_level timing"
         );
-        let depth = speculation.num_speculative_tokens();
-        ensure!(
-            (1..=5).contains(&depth),
-            "ngram num_speculative_tokens must be in 1..=5"
-        );
-        Ok(depth)
+        Ok(speculation.ngram_depth()?)
     }
 
     fn resolved_backend_version(&self) -> &str {
@@ -3930,9 +3929,12 @@ mod tests {
     #[test]
     fn ngram_timing_requires_matching_scheduler_depth_and_no_mtp() {
         let mut config = aic_config();
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 2,
-        });
+        config.speculation = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 2}
+            }))
+            .unwrap(),
+        );
         let mut role = aggregated_role(&ReplayEngineConfig::default());
         assert!(materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).is_err());
         role.rank.aic_nextn = Some(2);
@@ -3940,21 +3942,24 @@ mod tests {
         config.nextn = 2;
         assert!(config.validate_parallel_shape().is_err());
         config.nextn = 0;
-        config.speculation = Some(crate::ForwardPassSpeculationConfig::Ngram {
-            num_speculative_tokens: 6,
-        });
+        config.speculation = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 6}
+            }))
+            .unwrap(),
+        );
         assert!(config.validate_parallel_shape().is_err());
     }
 
     #[test]
-    fn ngram_timing_rejects_unmodeled_trigger_rate_and_unknown_schemes() {
+    fn replay_rejects_generic_schemes_and_unmodeled_ngram_parameters() {
         for payload in [
-            serde_json::json!({"kind": "mtp", "params": {"num_speculative_tokens": 2}}),
+            serde_json::json!({"kind": "mtp", "params": {"depth": 2}}),
             serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2, "trigger_rate": 0.5}}),
         ] {
-            assert!(
-                serde_json::from_value::<crate::ForwardPassSpeculationConfig>(payload).is_err()
-            );
+            let mut config = aic_config();
+            config.speculation = Some(serde_json::from_value(payload).unwrap());
+            assert!(config.validate_parallel_shape().is_err());
         }
     }
 

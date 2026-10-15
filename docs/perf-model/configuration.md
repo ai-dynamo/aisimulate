@@ -87,14 +87,82 @@ selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
 
-Prompt-lookup verification uses the same constructor: set `speculation` to
-`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}` in Python/JSON, or
-`ForwardPassSpeculationConfig::Ngram { num_speculative_tokens: 2 }` in Rust.
-It supports vLLM op-level timing with 1–5 draft tokens and `nextn: 0`; auto can
-select op-level but cannot fall back to an unsupported speculative estimator.
-The cost configuration is retained in provenance and saved recommendations.
-Acceptance rates and the scheduler seed stay in the CLI/Replay speculation
-configuration; they do not change the model's target-verification graph.
+### Speculative decoding configuration
+
+Use the same `best_available(config)` constructor and returned model for
+speculative iteration costs. The canonical `speculation` field carries the
+existing SDK scheme identity:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `speculation` | `null` | Optional speculative scheme; omit it for the existing autoregressive or legacy `nextn` configuration. |
+| `speculation.kind` | Required | Registered scheme name: `none`, `mtp`, `ngram`, `eagle3`, `dflash`, `dspark`, or `draft_model`. A valid `none` configuration normalizes to disabled speculation. Scheme, model, and backend capability checks still apply. |
+| `speculation.params` | `{}` | Scheme-specific parameters, validated by the existing scheme implementation. Unknown parameters are rejected. |
+| `speculation.draft_model_path` | `null` | Draft checkpoint path or model ID. Required and verified for standalone `draft_model`, which builds its graph from that checkpoint. |
+| `speculation.draft_config` | `null` | Parsed draft checkpoint configuration retained as identity evidence. Learned schemes can reuse resolved geometry; this field does not replace `draft_model_path` for standalone `draft_model`. |
+
+For example, Python/JSON prompt lookup retains its existing shape:
+`{"kind": "ngram", "params": {"num_speculative_tokens": 2}}`. MTP uses
+`{"kind": "mtp", "params": {"depth": 2}}`. Legacy `nextn` input remains
+supported; do not combine a nonzero `nextn` with `speculation`. The generic cost
+API uses each scheme's parameter validation rather than a shared 1–5 draft-token
+limit. The existing n-gram contract retains vLLM and 1–5 draft tokens. Replay's
+backend, scheme, and scheduling limits remain separate.
+
+Rust callers now construct the public struct instead of the former
+`ForwardPassSpeculationConfig::Ngram` enum variant:
+
+```rust
+use aisimulate_core::{
+    BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModel,
+    ForwardPassPerfModelConfig, ForwardPassSpeculationConfig, ForwardPassWorkerType,
+};
+
+let mut config = ForwardPassPerfModelConfig::new(
+    "Qwen/Qwen3-8B", "h200_sxm", BackendKind::Vllm, ForwardPassWorkerType::Decode,
+);
+config.estimation_mode = EstimationMode::OpLevel;
+config.database_mode = DatabaseMode::Sol;
+config.speculation = Some(ForwardPassSpeculationConfig {
+    kind: "ngram".into(),
+    params: [("num_speculative_tokens".into(), 2.into())].into_iter().collect(),
+    draft_model_path: None,
+    draft_config: None,
+});
+let model = ForwardPassPerfModel::best_available(config)?;
+```
+
+This is a Rust source migration; existing n-gram JSON and legacy `nextn`
+configuration remain readable. OP timing and analytical SOL reuse the same
+speculative graph: choose `estimation_mode="op_level"` and set `database_mode`
+to the desired database policy, or `"SOL"` for analytical timing. SOL is not a
+new estimator mode, and individual operations may lack SOL support. FPM's
+`estimator_config.fpm_interpolation.method="sol"` instead controls interpolation
+of measured whole-forward data; it does not select analytical-only timing.
+
+Query conventions remain unchanged. For OP/SOL,
+`estimate_forward_pass_time_ms()` consumes already-packed `ForwardPassMetrics`
+decode counters: for `B` real requests, verification width `v`, and per-request
+KV length `s`, use `num_decode_requests = B*v` and
+`sum_decode_kv_tokens = B*v*s`. Their ratio remains `s`; the query does not apply
+the width again. `predict_decode_latency_total()` wraps the same counters.
+`static_phase_latency()` instead takes the real request batch and applies the
+configured verification width internally. This OP telemetry convention is
+distinct from the proposed speculative FPM mapping, which remains unsupported.
+
+The canonical constructor currently supports explicit speculative schemes with
+OP/SOL timing. FPM interpolation and regression are unsupported candidates for
+these schemes. An explicit FPM request with `fallback_policy="deny"` fails;
+`auto` or an explicit mode with `fallback_policy="allow"` can select a supported
+OP candidate while preserving the complete speculative identity. They do not
+drop speculation to obtain an autoregressive estimate. FPM profiles remain
+autoregressive-only. Lower-level FPM hybrid code does not imply support through
+the canonical ForwardPassMetrics query API.
+
+Acceptance assumptions and scheduler seeds belong to the prediction/Replay
+layer, not this cost configuration. The returned model continues to estimate
+iteration latency; its constructor and query signatures are unchanged. This
+configuration extension does not enable additional schemes in Replay or AgentX.
 
 ### Estimator controls
 
