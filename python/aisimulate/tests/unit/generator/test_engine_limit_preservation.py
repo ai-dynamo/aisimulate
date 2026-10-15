@@ -122,7 +122,26 @@ def test_module_bridge_propagates_preserve_engine_limits(value: bool):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("version", [None, "current", "0.20.1", "0.26.0", "0.27.0", "0.27.0+cu128", "0.28.0"])
+@pytest.mark.parametrize(
+    "version",
+    [
+        None,
+        "current",
+        "0.10.2",
+        "0.11.0",
+        "0.12.0",
+        "0.14.1",
+        "0.16.0",
+        "0.19.0",
+        "0.20.1",
+        "0.24.0",
+        "0.25.1",
+        "0.26.0",
+        "0.27.0",
+        "0.27.0+cu128",
+        "0.28.0",
+    ],
+)
 @pytest.mark.parametrize("rule", [None, "benchmark"])
 @pytest.mark.parametrize("dtype", ["bfloat16", "fp8", "auto"])
 def test_vllm_cache_dtype_preserves_explicit_selection(version, rule, dtype):
@@ -131,7 +150,7 @@ def test_vllm_cache_dtype_preserves_explicit_selection(version, rule, dtype):
     for role in ("prefill", "decode"):
         params["params"][role]["kv_cache_dtype"] = dtype
     artifacts = render_backend_templates(params, "vllm", version=version)
-    expected = "auto" if dtype == "bfloat16" and version in {"0.20.1", "0.26.0"} else dtype
+    expected = "auto" if dtype == "bfloat16" and version == "0.10.2" else dtype
     for role in ("prefill", "decode"):
         tokens = shlex.split(artifacts[f"cli_args_{role}"])
         assert tokens[tokens.index("--kv-cache-dtype") + 1] == expected

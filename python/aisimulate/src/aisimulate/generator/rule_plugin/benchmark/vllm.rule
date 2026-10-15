@@ -28,4 +28,4 @@ when (ModelConfig.nextn or 0) > 0:
     num_nextn_predict_layers = ModelConfig.nextn
 
 # Keep the requested cache dtype until the versioned template renders it.
-# Older templates still use the compatibility mapping to auto.
+# Only the pre-0.11 template needs the compatibility mapping to auto.
