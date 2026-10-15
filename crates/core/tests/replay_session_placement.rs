@@ -24,7 +24,7 @@ struct SessionRecordingPlacement<P> {
     stage: &'static str,
     inner: P,
     seen: SeenSessions,
-    events: Rc<RefCell<Vec<KvEvent>>>,
+    events: Rc<RefCell<Vec<(WorkerStage, KvEvent)>>>,
 }
 
 impl<P> PlacementPolicy<ReplayRequestPayload> for SessionRecordingPlacement<P>
@@ -109,7 +109,7 @@ where
 
 struct SessionRecordingComposition {
     seen: SeenSessions,
-    events: Rc<RefCell<Vec<KvEvent>>>,
+    events: Rc<RefCell<Vec<(WorkerStage, KvEvent)>>>,
 }
 
 impl SessionRecordingComposition {
@@ -274,7 +274,7 @@ fn placement_sees_only_authored_session_ids_in_open_and_closed_loop() {
             let stores = events.borrow();
             let sessions: std::collections::BTreeSet<_> = stores
                 .iter()
-                .filter_map(|event| match &event.data {
+                .filter_map(|(_, event)| match &event.data {
                     KvEventData::Stored(stored) => Some(stored.session_id.as_deref()),
                     _ => None,
                 })
@@ -344,7 +344,7 @@ fn session_only_replay_context_reaches_placement_reporting_and_stores() {
                 let events = events.borrow();
                 let stores: Vec<_> = events
                     .iter()
-                    .filter_map(|event| match &event.data {
+                    .filter_map(|(_, event)| match &event.data {
                         KvEventData::Stored(stored) => Some(stored),
                         _ => None,
                     })
@@ -361,7 +361,7 @@ fn session_only_replay_context_reaches_placement_reporting_and_stores() {
 }
 
 #[derive(Debug, Default)]
-struct KvBatch(Vec<KvEvent>);
+struct KvBatch(Vec<(WorkerStage, KvEvent)>);
 
 impl EngineEventBatch for KvBatch {
     fn is_empty(&self) -> bool {
@@ -377,12 +377,12 @@ impl ReplayEngineObservation for KvObservation {
     type Batch = KvBatch;
     const CAPTURE_ENGINE_KV_EVENTS: bool = true;
     fn observe_engine_events(
-        _stage: WorkerStage,
+        stage: WorkerStage,
         _worker: usize,
         _rank: u32,
         events: Vec<KvEvent>,
     ) -> KvBatch {
-        KvBatch(events)
+        KvBatch(events.into_iter().map(|event| (stage, event)).collect())
     }
 }
 
@@ -439,21 +439,29 @@ fn session_metadata_reaches_stores_without_changing_execution() {
             };
             let (mut attributed, timings) = run(true);
             let (plain, plain_timings) = run(false);
-            let sessions: std::collections::BTreeSet<_> = attributed
-                .iter()
-                .filter_map(|event| match &event.data {
-                    KvEventData::Stored(store) => Some(store.session_id.clone()),
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(
-                sessions,
-                [None, Some("session-0".into()), Some("session-1".into())]
-                    .into_iter()
-                    .collect(),
-                "{backend:?} disagg={disagg}"
-            );
-            for event in &mut attributed {
+            let stages: &[_] = if disagg {
+                &[WorkerStage::Prefill, WorkerStage::Decode]
+            } else {
+                &[WorkerStage::Aggregated]
+            };
+            for stage in stages {
+                let sessions: std::collections::BTreeSet<_> = attributed
+                    .iter()
+                    .filter(|(seen_stage, _)| seen_stage == stage)
+                    .filter_map(|(_, event)| match &event.data {
+                        KvEventData::Stored(store) => Some(store.session_id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    sessions,
+                    [None, Some("session-0".into()), Some("session-1".into())]
+                        .into_iter()
+                        .collect(),
+                    "{backend:?} stage={stage:?}"
+                );
+            }
+            for (_, event) in &mut attributed {
                 if let KvEventData::Stored(store) = &mut event.data {
                     for block in &store.blocks {
                         let tokens = block.token_ids.as_ref().expect("token capture enabled");
@@ -534,7 +542,7 @@ fn session_identity_survives_disabled_reporting_without_fabricating_anonymous_id
                 let events = events.borrow();
                 let stores: Vec<_> = events
                     .iter()
-                    .filter_map(|event| match &event.data {
+                    .filter_map(|(_, event)| match &event.data {
                         KvEventData::Stored(stored) => Some(stored),
                         _ => None,
                     })
