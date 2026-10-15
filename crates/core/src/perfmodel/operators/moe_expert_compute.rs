@@ -202,6 +202,7 @@ impl MoeExpertComputeOp {
                     workload_distribution: self.workload_distribution.clone(),
                     is_gated: self.is_gated,
                     moe_backend: None,
+                    moe_kernel_source: None,
                     enable_eplb: false,
                     is_context: self.inference_phase == "context",
                 };

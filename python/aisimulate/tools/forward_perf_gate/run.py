@@ -48,95 +48,6 @@ def _cpu_model() -> str:
     return platform.processor()
 
 
-def _worker_error(case: dict, revision: str, status: str, message: str) -> dict:
-    return {
-        "protocol_version": PROTOCOL_VERSION,
-        "revision": revision,
-        "case_id": case["case_id"],
-        "case_hash": "",
-        "status": status,
-        "error": {"type": status, "message": message[:2_000]},
-    }
-
-
-def _invoke_worker(
-    *,
-    python: Path,
-    worker: Path,
-    request: dict,
-    cpu: int,
-    timeout: float,
-) -> tuple[object | None, str | None, str | None, str]:
-    command = ["taskset", "--cpu-list", str(cpu), str(python), str(worker)]
-    try:
-        completed = subprocess.run(
-            command,
-            input=json.dumps(request),
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-            env={**os.environ, **WORKER_ENV},
-        )
-    except subprocess.TimeoutExpired:
-        return None, "TIMEOUT", f"worker exceeded {timeout:.0f}s", ""
-    if completed.returncode:
-        return (
-            None,
-            "WORKER_ERROR",
-            f"exit {completed.returncode}: {completed.stderr.strip()}",
-            completed.stderr[-2_000:],
-        )
-    try:
-        response = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        return (
-            None,
-            "WORKER_ERROR",
-            f"invalid JSON: {exc}: {completed.stdout[:1000]}",
-            completed.stderr[-2_000:],
-        )
-    return response, None, None, completed.stderr[-2_000:]
-
-
-def run_worker(
-    *,
-    python: Path,
-    worker: Path,
-    revision: str,
-    case: dict,
-    warmup: int,
-    iterations: int,
-    cpu: int,
-    timeout: float,
-) -> dict:
-    response, error_status, error, worker_stderr = _invoke_worker(
-        python=python,
-        worker=worker,
-        request={
-            "protocol_version": PROTOCOL_VERSION,
-            "revision": revision,
-            "case": case,
-            "warmup": warmup,
-            "iterations": iterations,
-        },
-        cpu=cpu,
-        timeout=timeout,
-    )
-    if error_status:
-        return _worker_error(case, revision, error_status, error or "worker failed")
-    if not isinstance(response, dict):
-        return _worker_error(
-            case,
-            revision,
-            "WORKER_ERROR",
-            f"worker JSON must be an object, got {type(response).__name__}",
-        )
-    if worker_stderr.strip():
-        response["worker_stderr"] = worker_stderr
-    return response
-
-
 def run_worker_batch(
     *,
     python: Path,
@@ -148,21 +59,32 @@ def run_worker_batch(
     cpu: int,
     timeout: float,
 ) -> tuple[list[dict], str | None]:
-    response, error_status, error, worker_stderr = _invoke_worker(
-        python=python,
-        worker=worker,
-        request={
-            "protocol_version": PROTOCOL_VERSION,
-            "revision": revision,
-            "cases": cases,
-            "warmup": warmup,
-            "iterations": iterations,
-        },
-        cpu=cpu,
-        timeout=timeout,
-    )
-    if error_status:
-        return [], f"{error_status}: {error}"
+    command = ["taskset", "--cpu-list", str(cpu), str(python), str(worker)]
+    request = {
+        "protocol_version": PROTOCOL_VERSION,
+        "revision": revision,
+        "cases": cases,
+        "warmup": warmup,
+        "iterations": iterations,
+    }
+    try:
+        completed = subprocess.run(
+            command,
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            env={**os.environ, **WORKER_ENV},
+        )
+    except subprocess.TimeoutExpired:
+        return [], f"TIMEOUT: worker exceeded {timeout:.0f}s"
+    if completed.returncode:
+        return [], f"WORKER_ERROR: exit {completed.returncode}: {completed.stderr.strip()[-2_000:]}"
+    try:
+        response = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        return [], f"WORKER_ERROR: invalid JSON: {exc}: {completed.stdout[:1000]}"
     if not isinstance(response, dict):
         return [], f"worker JSON must be an object, got {type(response).__name__}"
     if response.get("protocol_version") != PROTOCOL_VERSION:
@@ -188,6 +110,7 @@ def run_worker_batch(
             "worker result case IDs do not match the request: "
             f"missing={missing}, duplicate={duplicates}, unexpected={unexpected}, ordered={actual_ids}",
         )
+    worker_stderr = completed.stderr[-2_000:]
     if worker_stderr.strip():
         for result in results:
             result["worker_stderr"] = worker_stderr
@@ -291,7 +214,6 @@ def main() -> int:
         "base": (args.base_python, args.base_worker, args.base_revision),
         "head": (args.head_python, args.head_worker, args.head_revision),
     }
-    skipped_cases: dict[str, str] = {}
     if not args.skip_prewarm and not args.smoke:
         prewarm_responses = {}
         for side in ("base", "head"):
@@ -332,35 +254,19 @@ def main() -> int:
                     "reason": reason,
                 }
             )
-            if disposition == "SKIP":
-                skipped_cases[case["case_id"]] = reason or "no timing baseline"
-            elif disposition == "INVALID":
+            if disposition == "INVALID":
                 raw["run_errors"].append(f"prewarm failed for {case['case_id']}: {reason}")
-                _checkpoint(raw, args.output_dir)
                 return _finish(raw, args.output_dir)
         _checkpoint(raw, args.output_dir)
 
     entries = {}
-    measured_cases = []
     for case in selected_cases:
-        if case["case_id"] in skipped_cases:
-            raw["cases"].append(
-                {
-                    "case": case,
-                    "rounds": [],
-                    "skip_reason": skipped_cases[case["case_id"]],
-                }
-            )
-            continue
         entry = {"case": case, "rounds": []}
         raw["cases"].append(entry)
         entries[case["case_id"]] = entry
-        measured_cases.append(case)
 
     for round_index in range(rounds):
-        if not measured_cases:
-            break
-        ordered_cases = measured_cases if round_index % 2 == 0 else list(reversed(measured_cases))
+        ordered_cases = selected_cases if round_index % 2 == 0 else list(reversed(selected_cases))
         case_order = "forward" if round_index % 2 == 0 else "reverse"
         side_order = ("base", "head") if round_index % 2 == 0 else ("head", "base")
         round_responses = {}
@@ -387,7 +293,7 @@ def main() -> int:
                 return _finish(raw, args.output_dir)
             round_responses[side] = {result["case_id"]: result for result in results}
 
-        for case in measured_cases:
+        for case in selected_cases:
             case_id = case["case_id"]
             entries[case_id]["rounds"].append(
                 {

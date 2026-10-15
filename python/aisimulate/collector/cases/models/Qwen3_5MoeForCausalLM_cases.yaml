@@ -166,7 +166,7 @@ model_case_values:
       # attention override above, so it applies verbatim regardless of that
       # gap.
       #
-      # No sglang_moe_backends override is declared: the SM100
+      # Without the deployment pin, the SM100
       # flashinfer_trtllm moe-runner-backend forcer
       # (`_qwen3_moe_family_overrides`, arg_groups/overrides.py:1283-1290,
       # decorating :1291) is gated by the SAME kind of architecture-string
@@ -184,10 +184,13 @@ model_case_values:
       # and Fp8MoEMethod.create_moe_runner (layers/quantization/fp8.py:2265-2294,
       # `is_deepgemm_moe_runner_backend_enabled()` requires a non-none a2a
       # backend so falls to `else: moe_runner_backend = MoeRunnerBackend.TRITON`
-      # at :2281) for fp8_block. That is exactly the
-      # base_ops/moe.yaml:79-81 default ({default: triton} for both
-      # bfloat16 and fp8_block already), so redeclaring it here would just
-      # duplicate the base value -- omitted instead.
+      # at :2281) for fp8_block. Keep that base Triton default for bfloat16.
+      # The FP8 deployment pins the runner instead: ai-dynamo/dynamo
+      # 5fc15ee, recipes/qwen3.8-2.4t-a95b/sglang/agg-gb200-chat/deploy.yaml:
+      # 101-112 (SM100) and agg-gb300-chat/deploy.yaml:12-30 (SM103) set
+      # fp8 quantization and moe-runner-backend: flashinfer_trtllm.
+      sglang_moe_backends:
+        fp8_block: {100: flashinfer_trtllm, 103: flashinfer_trtllm}
       #
       # vLLM has no schema field analogous to sglang_moe_backends:
       # collect_moe.py (collector/vllm/collect_moe.py) constructs FusedMoE

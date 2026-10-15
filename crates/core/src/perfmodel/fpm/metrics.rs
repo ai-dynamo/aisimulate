@@ -23,6 +23,15 @@ pub const FPM_VERSION: u32 = 1;
 /// AIC owns this Rust copy so AIC does not depend on Dynamo crates.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct ScheduledRequestMetrics {
+    /// Optional regression features: freshly computed tokens for each scheduled
+    /// request (one for ordinary decode), aligned with `past_kv_lengths`.
+    /// These additive fields are unnecessary for the default attention/MoE fit.
+    /// Their sums may differ from the backend's aggregate token counters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_lengths: Option<Vec<u64>>,
+    /// Past KV lengths before this iteration, in the same request order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub past_kv_lengths: Option<Vec<u64>>,
     /// Number of prefill requests, including new requests and chunked-prefill
     /// continuations.
     #[serde(default)]
@@ -128,6 +137,25 @@ pub(crate) fn validate_forward_pass_metrics(metrics: &ForwardPassMetrics) -> Res
         return Err(AicError::InvalidForwardPassMetrics(
             "decode KV token sum requires num_decode_requests > 0".to_string(),
         ));
+    }
+    match (&scheduled.extend_lengths, &scheduled.past_kv_lengths) {
+        (None, None) => {}
+        (Some(extend), Some(past)) => {
+            let count = u64::from(scheduled.num_prefill_requests)
+                + u64::from(scheduled.num_decode_requests);
+            // Request-level lengths and aggregate counters can use different
+            // backend conventions (for example padded prefill token counts).
+            if extend.len() as u64 != count || past.len() as u64 != count {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "request feature lists must match scheduled request counts".into(),
+                ));
+            }
+        }
+        _ => {
+            return Err(AicError::InvalidForwardPassMetrics(
+                "extend_lengths and past_kv_lengths must be supplied together".into(),
+            ));
+        }
     }
     Ok(())
 }

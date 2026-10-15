@@ -8,6 +8,7 @@ gpu:
   mem_empirical_constant_latency: 0.000003 # 3us some nonofficial correction based on observations, you should try to modify based on your own observations
   mem_capacity: 85899345920 # 80GiB
   bfloat16_tc_flops: 989000000000000 # 989TFLOPS
+  fp32_flops: 67000000000000 # 67 TFLOPS scalar FP32, https://www.nvidia.com/en-us/data-center/h100/
   int8_tc_flops: 1978000000000000 # 1978TFLOPS
   fp8_tc_flops: 1978000000000000 # 1978TFLOPS
   power: 700  # Watt

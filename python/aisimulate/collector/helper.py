@@ -217,8 +217,9 @@ def benchmark_with_power(
     measure_power: bool | None = None,  # Auto-detect from environment if None
     power_min_duration: float | None = None,  # Auto-detect from environment if None
     allow_graph_fail: bool = False,  # Enable graceful fallback on graph capture failure
-    use_cuda_graph: bool = True,  # set False to force eager execution (ops whose captured
-    # private pools retain memory across tasks — see collect_mla_module DSA context).
+    use_cuda_graph: bool = True,  # Set False only for explicitly eager measurements.
+    *,
+    explicit_graph_cleanup: bool = False,
 ):
     """
     Context manager that handles warmup, graph capture, timing, and power monitoring.
@@ -236,9 +237,12 @@ def benchmark_with_power(
                          to work in both paths. Default False for backward compatibility.
         use_cuda_graph: If False, skip CUDA graph capture entirely and run every
                          iteration eagerly. Defaults to True so all existing callers
-                         (~30 collectors) keep graph-mode measurement. Callers whose
-                         captured forward pass retains GiB-scale memory in the graph's
-                         private pool across tasks should pass False.
+                         keep graph-mode measurement. The caller must release any
+                         framework-owned tensors that outlive the captured graph.
+        explicit_graph_cleanup: Restore the caller stream and reset the graph even
+                         when capture fails or a traceback retains it. Opted into
+                         by the vLLM MLA/DSA collector; other callers retain their
+                         existing graph lifetime and synchronization behavior.
 
     Yields:
         dict with keys:
@@ -293,33 +297,43 @@ def benchmark_with_power(
     # ═══════════════════════════════════════════════════════════════════
     # CUDA Graph Capture with Optional Fallback
     # ═══════════════════════════════════════════════════════════════════
-    g = None  # kept in scope so the finally block below can tear it down
-    if torch.cuda.is_available() and use_cuda_graph:
-        use_graph = True
-        g = torch.cuda.CUDAGraph()
-
-        try:
-            with torch.cuda.graph(g):
-                for _ in range(repeat_n):
-                    kernel_func()
-            torch.cuda.synchronize()
-        except Exception as e:
-            if allow_graph_fail:
+    g = None
+    capture_phase_completed = False
+    # Explicit cleanup also covers capture: a traceback can retain the graph.
+    # The default preserves the pre-existing lifetime on capture failure.
+    # Neither mode guarantees CUDA recovery after an interrupted capture.
+    try:
+        use_graph = torch.cuda.is_available() and use_cuda_graph
+        if use_graph:
+            g = torch.cuda.CUDAGraph()
+            if explicit_graph_cleanup:
+                original_stream = torch.cuda.current_stream()
+            try:
+                if explicit_graph_cleanup:
+                    try:
+                        with torch.cuda.graph(g):
+                            for _ in range(repeat_n):
+                                kernel_func()
+                    finally:
+                        # capture_begin/end may raise before torch's stream
+                        # context restores the caller's current stream.
+                        torch.cuda.set_stream(original_stream)
+                else:
+                    with torch.cuda.graph(g):
+                        for _ in range(repeat_n):
+                            kernel_func()
+                torch.cuda.synchronize()
+            except Exception as e:
+                if not allow_graph_fail:
+                    raise
                 logging.getLogger(__name__).warning(f"CUDA graph capture failed: {e}. Falling back to eager execution.")
-                g = None  # drop the partial capture so empty_cache can reclaim its private pool
+                if explicit_graph_cleanup:
+                    g.reset()
+                g = None
                 torch.cuda.empty_cache()
                 use_graph = False
-            else:
-                # Standard behavior: re-raise exception
-                raise
-    else:
-        use_graph = False
 
-    # Everything from here to the yield holds live references to the captured
-    # graph's private pool. A try/finally guarantees the graph (and therefore
-    # its pool) is released before we return to the caller, regardless of
-    # whether warmup raises, the yield body raises, or we finish cleanly.
-    try:
+        capture_phase_completed = True
         # ═══════════════════════════════════════════════════════════════
         # Warmup the ACTUAL execution path (after graph capture)
         # ═══════════════════════════════════════════════════════════════
@@ -403,17 +417,16 @@ def benchmark_with_power(
             "used_cuda_graph": use_graph,  # NEW: Inform caller which path was used
         }
     finally:
-        # Drop the CUDA graph and reclaim its private memory pool. CUDA graph
-        # captures sequester intermediate tensors into a private pool that
-        # outlives Python-level GC of the CUDAGraph object in some PyTorch
-        # versions — if we skip this explicit teardown, leaky ops (e.g. DSA
-        # context via flashmla-sparse, which captures ~18 GiB of scratch)
-        # accumulate pool memory across tasks until the worker saturates at
-        # ~146 GiB pinned and subsequent tasks OOM at _ensure_workspace_size.
-        if g is not None:
+        # Preserve default cleanup after timing starts. Explicit cleanup also
+        # resets graphs retained by capture tracebacks; framework-owned tensors
+        # must still be released by the collector to reclaim their pool memory.
+        if g is not None and (explicit_graph_cleanup or capture_phase_completed):
+            if explicit_graph_cleanup:
+                g.reset()
             g = None
             if torch.cuda.is_available():
-                torch.cuda.synchronize()
+                if not explicit_graph_cleanup:
+                    torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
 
@@ -962,7 +975,7 @@ def convert_perf_csv_to_parquet(
     When ``merge_existing`` is True and a parquet already exists at the target,
     the new rows are merged into it instead of overwriting: the existing and new
     rows are concatenated (new last) and deduplicated on their identity key —
-    every column except the measured metrics (``PERF_METRIC_COLUMNS``) — keeping
+    every column except measured metrics and MoE selection metadata — keeping
     the newest row per key. This makes finalization idempotent and accumulative:
     a resumed / ``--resume-retry-failed`` / batched collection extends the
     parquet instead of clobbering it with only the current run's subset.
@@ -1885,6 +1898,7 @@ def _prepare_perf_file(
             raise RuntimeError(f"Collector staging file changed after preflight: {csv_path}")
         snapshot_file.seek(0)
         table = pc_csv.read_csv(snapshot_file)
+    _validate_moe_default_eligibility(table, parquet_path, pa=pa)
     new_rows = table.num_rows
     merged_existing = False
     merge_target = None
@@ -2523,6 +2537,23 @@ def cleanup_unjournaled_perf_preparations(
     return True
 
 
+def _validate_moe_default_eligibility(table, parquet_path: Path, *, pa):
+    if parquet_path.name != "moe_perf.parquet" or "default_eligible" not in table.column_names:
+        return
+    flags = table.column("default_eligible")
+    if not pa.types.is_boolean(flags.type) or flags.null_count:
+        raise ValueError(f"{parquet_path}: default_eligible must contain only non-null Boolean values")
+    if "kernel_source" in table.column_names:
+        sources = table.column("kernel_source").to_pylist()
+    else:
+        sources = [None] * table.num_rows
+    if any(
+        not eligible and (not isinstance(source, str) or not source.strip())
+        for eligible, source in zip(flags.to_pylist(), sources, strict=True)
+    ):
+        raise ValueError(f"{parquet_path}: default_eligible=false requires a nonblank string kernel_source")
+
+
 def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     """Merge freshly-collected rows into an existing perf parquet, keeping the
     newest row per identity key. Returns ``(table, merged_existing,
@@ -2531,6 +2562,25 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     import pandas as pd
 
     log = logging.getLogger(__name__)
+    _validate_moe_default_eligibility(old_table, parquet_path, pa=pa)
+
+    # Eligibility annotates a measurement; it does not create a new identity.
+    # Legacy rows are eligible, but a legacy recollection must not erase an
+    # existing annotation on the same physical key.
+    metadata_columns = {"default_eligible"} if parquet_path.name == "moe_perf.parquet" else set()
+    inherit_eligibility = False
+    if metadata_columns:
+        old_has_flag = "default_eligible" in old_table.column_names
+        new_has_flag = "default_eligible" in new_table.column_names
+        inherit_eligibility = old_has_flag and not new_has_flag
+        if old_has_flag and not new_has_flag:
+            new_table = new_table.append_column(
+                "default_eligible", pa.array([True] * new_table.num_rows, type=pa.bool_())
+            )
+        elif new_has_flag and not old_has_flag:
+            old_table = old_table.append_column(
+                "default_eligible", pa.array([True] * old_table.num_rows, type=pa.bool_())
+            )
 
     # Compare (name, type) pairs for IDENTITY columns only: matching names
     # with drifted types would otherwise round-trip through pandas and
@@ -2586,7 +2636,13 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     old_df = old_table.to_pandas()
 
     new_df = new_df[old_df.columns.tolist()]  # align column order
-    identity = [c for c in old_df.columns if c not in PERF_METRIC_COLUMNS]
+    identity = [c for c in old_df.columns if c not in PERF_METRIC_COLUMNS and c not in metadata_columns]
+    if inherit_eligibility:
+        annotations = old_df.drop_duplicates(subset=identity, keep="last")[identity + ["default_eligible"]]
+        new_df = new_df.drop(columns="default_eligible").merge(annotations, on=identity, how="left", sort=False)
+        flags = new_df["default_eligible"]
+        new_df["default_eligible"] = flags.where(flags.notna(), True).astype(bool)
+        new_df = new_df[old_df.columns.tolist()]
     current_event_rows = len(new_df.drop_duplicates(subset=identity, keep="last"))
     combined = pd.concat([old_df, new_df], ignore_index=True)
     deduped = combined.drop_duplicates(subset=identity, keep="last").reset_index(drop=True)

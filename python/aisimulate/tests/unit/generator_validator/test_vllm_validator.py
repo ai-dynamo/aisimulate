@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 
 import pytest
@@ -100,6 +101,39 @@ def test_vllm_directory_mode_uses_vllm_worker_for_agg(tmp_path, monkeypatch, cap
 
     assert result == 0
     assert "Result" in capsys.readouterr().out
+
+
+def test_documented_validator_accepts_single_candidate_manifest(tmp_path, monkeypatch, capsys):
+    root = Path(__file__).resolve().parents[5]
+    guide = (root / "docs/sweeper/deployment-generation.md").read_text()
+    section = guide.split("## Validate generated arguments", 1)[1]
+    command = section.split("```bash\n", 1)[1].split("\n```", 1)[0]
+    args = shlex.split(command.replace("\\\n", " "))[2:]
+    manifest = tmp_path / "deployment-study/generated/k8s_deploy.yaml"
+    _write_k8s_manifest(manifest, {"VllmWorker": _base_vllm_args()})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vllm_backend, "_import_vllm_engine_args", _fake_vllm_import)
+
+    assert validator.main(args) == 0
+    output = capsys.readouterr().out
+    assert str(manifest) in output
+    assert "PASS" in output
+
+
+def test_single_file_mode_preserves_decode_worker_precedence(tmp_path, monkeypatch):
+    manifest = tmp_path / "k8s_deploy.yaml"
+    _write_k8s_manifest(
+        manifest,
+        {
+            "VllmWorker": ["--model", "aggregate/model"],
+            "VllmDecodeWorker": ["--model", "decode/model"],
+        },
+    )
+    monkeypatch.setattr(vllm_backend, "_import_vllm_engine_args", _fake_vllm_import)
+
+    config, _ = vllm_backend.validate_vllm_engine_config_file(str(manifest), model_path=None)
+
+    assert config["model"] == "decode/model"
 
 
 def test_missing_explicit_vllm_service_does_not_fallback_to_manifest(tmp_path):

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use super::super::AdmissionEvent;
 use super::config::{SglangConfig, ceil_to_block};
-use super::request::SglangRequest;
+use super::request::{SglangRequest, WaitingQueue};
 use crate::engine::kv_manager::SglangKvManager;
 
 /// Per-request prefill data needed for FPM snapshot construction.
@@ -35,7 +35,7 @@ pub(super) struct AdmitResult {
 /// sgl-project/sglang v0.5.6.post2 (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`,
 /// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied.
 pub(super) fn get_new_batch_prefill(
-    waiting: &mut VecDeque<SglangRequest>,
+    waiting: &mut WaitingQueue,
     kv_manager: &mut SglangKvManager,
     config: &SglangConfig,
     new_token_ratio: f64,

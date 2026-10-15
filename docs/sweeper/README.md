@@ -1,0 +1,84 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Sweeper
+
+Sweeper searches deployment configurations by repeatedly running Replay with a
+concrete candidate and scoring its report. The performance model supplies
+forward-pass timings and memory estimates to those simulations. See the
+[three-layer architecture](../README.md).
+
+Replay and Sweeper are experimental: schemas, APIs and search behavior can
+change between releases. A finite search identifies candidates for validation
+on the target hardware, not a proof of serving accuracy or global optimality.
+
+## Choose an interface
+
+- Start with [`aisimulate recommend`](quickstart.md) for a runnable search.
+- Use the [Python SDK](sdk.md) for direct `Sweeper` calls and `SmartSearchConfig`.
+  Its YAML has `search_space`, `workload`, `goal` and `sweep`; it is different
+  from the public CLI's `engine`, `traffic`, `optimization` and `optimizer`.
+- Read [search space](search-space.md), [optimization goals](optimization-goals.md)
+  and [results](results.md) to control and interpret a run.
+- Render a selected candidate with [deployment generation](deployment-generation.md).
+- Existing AIC callers should use the [migration mapping](../aic-backward-compatibility/migration.md).
+
+## Ownership
+
+| Layer | Owns | Does not own |
+|---|---|---|
+| Sweeper core | backend search, parallel enumeration, optimizer orchestration, scoring, cache, worker lifecycle | feature-specific policy semantics or a concrete replay runtime |
+| `SweepConfigProvider` | feature-specific search-space generation and per-candidate replay materialization | optimizer execution, scoring, or process pools |
+| Replay runner | execution of a complete `ReplaySpec` and declaration of supported backends and hooks | optimizer suggestions or provider search-space generation |
+
+## Sweep Flow
+
+```mermaid
+flowchart TD
+    A["Validate SmartSearchConfig"] --> B["Preflight Runner capabilities"]
+    B --> C["Enumerate backend branches"]
+    C --> D["Resolve configured providers"]
+    D --> E["Generate namespaced search dimensions"]
+    E --> F["Ask sampler for suggestions"]
+    F --> R["Resolve exact per-role estimator identities through Core"]
+    R --> G["Materialize backend and adapter config"]
+    G --> H["Build ReplaySpec"]
+    H --> I["Worker-local Runner executes replay"]
+    I --> J["Score and tell sampler"]
+    J --> F
+    J --> K["Rank candidates or compute Pareto front"]
+```
+
+Provider code runs in the main process. Worker tasks receive only a serializable `ReplaySpec`; they
+do not import or pickle provider objects. Each worker creates one runner and reuses it for candidate
+replays.
+
+## Replay and Failure Semantics
+
+Before execution, `RunnerCapabilities` verifies the replay-spec version, execution mode,
+backend/topology pair, and every runtime hook. Unsupported coarse capabilities fail before the
+optimizer spends trials on them. Runner implementations validate finer stack-specific combinations
+when they execute a replay.
+
+When all configured backend/topology pairs are rejected during this preflight,
+`aisimulate.sweeper.RunnerIncompatibleError` is raised with the deployment modes and rejected
+backends. It subclasses `NoViableParallelConfig`, so callers that already handle that base error
+remain compatible. Mixed runner incompatibility and model, KV-capacity, or performance-data failure
+continues to raise `NoViableParallelConfig`, with the known runner-incompatible backends appended to
+the diagnostic. These preflight failures happen before candidate execution and therefore produce no
+serialized `SweepResult`; the unified CLI reports them as configuration errors with exit status 2.
+
+Optimizer ask/tell stays in the main process. Exact repeated suggestions use a run-local result
+cache. Candidate build failures, replay failures, GPU-budget violations, and timeouts become
+infeasible trials. Parallel evaluation uses spawned worker processes and worker-sized waves; a
+timed-out pool is terminated and replaced.
+
+## Extension contracts
+
+Runner, public configuration adapter, legacy SDK provider, and output adapter
+contracts are described under [adapters](../adapters/README.md). Providers run
+in the coordinator; workers receive serializable replay specifications and
+create worker-local runners. Each `Sweeper.run` owns fresh studies, caches and
+workers. Optional providers load only when named in the configuration.

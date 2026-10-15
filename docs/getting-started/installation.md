@@ -1,0 +1,155 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Install AISimulate
+
+Use Python **3.11–3.13** in an isolated environment. Simulation runs on the
+host CPU; `engine.hardware` selects the GPU being modeled. A GPU serving
+environment is required for collection and deployment benchmarks.
+
+## Choose a package and matching documentation
+
+Documentation on `main` describes the current source. A published wheel may
+predate a documented feature. Record your installed version before comparing
+results or reporting a problem:
+
+```bash
+python -c 'from importlib.metadata import version; print(version("aisimulate"))'
+python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); print(aisimulate._runtime.__file__)'
+```
+
+### Published packages
+
+The following example pins release `0.12.1`. Use its
+[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
+[PyPI release files](https://pypi.org/project/aisimulate/#files) and
+[GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
+artifacts and use the documentation associated with the selected release.
+
+```bash
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install 'aisimulate==0.12.1'
+aisimulate --help
+```
+
+An exact version pin makes the choice explicit. To discover newer published
+prereleases, use `python -m pip index versions --pre aisimulate`.
+`python -m pip install aisimulate` normally selects a stable release; `--pre`
+allows prereleases. Neither command requests the latest repository source or
+an internal nightly automatically.
+
+When replacing standalone AIConfigurator, first follow the
+[package migration instructions](../../README.md#upgrade-from-standalone-aiconfigurator)
+in the environment you intend to use. The `aisimulate` wheel owns both console
+commands. Python imports use `aisimulate` and `aisimulate_core`; see
+[Python source migration](../aic-backward-compatibility/migration.md#python-imports-and-resources) for the breaking import change.
+
+## Platform matrix
+
+| Host | Current source wheel-build target |
+|---|---|
+| Linux x86-64 | `manylinux_2_28_x86_64`: glibc 2.28 or newer |
+| Linux ARM64 | `manylinux_2_28_aarch64`: glibc 2.28 or newer |
+| macOS Apple Silicon | macOS ARM64, deployment target 11.0 |
+| macOS Intel, native Windows, musl-based Linux | No corresponding platform-wheel job |
+
+The native wheels use `cp311-abi3`; the complete package still requires
+Python 3.11–3.13 and compatible dependency wheels. A source build target does
+not establish which artifacts were published or which dependency combinations
+were tested. The [platform-wheel workflow](../../.github/workflows/validate-platform-wheels.yml)
+defines build validation. Check the filenames of the release you select;
+source build changes do not alter previously published wheels.
+
+On Linux, check `uname -m` and `ldd --version`; on macOS, check `uname -m` and
+`sw_vers`. To check wheel availability without compiling AISimulate:
+
+```bash
+python -m pip download --no-deps --only-binary=:all: \
+  'aisimulate==0.12.1' --dest wheel-check
+```
+
+This checks only AISimulate's wheel, not all transitive dependencies. A missing
+wheel on an unlisted host does not establish source-build support there.
+
+## Use current source
+
+For features documented on `main`, use a source checkout and record its commit:
+
+```bash
+git clone https://github.com/ai-dynamo/aisimulate.git
+cd aisimulate
+git rev-parse HEAD
+uv sync --project python/aisimulate --extra dev
+source python/aisimulate/.venv/bin/activate
+aisimulate --help
+```
+
+Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
+linker before syncing: Maturin compiles the native extension. On macOS, install
+the Xcode Command Line Tools (`xcode-select --install`); Linux builds need
+the equivalent compiler and linker tools. The workspace uses Rust edition
+2024; the current macOS wheel job pins Rust 1.96.0. See the
+[build action](../../.github/actions/build-platform-wheel/action.yml) for CI's
+toolchain choices and [DEVELOPMENT.md](../../DEVELOPMENT.md) for validation.
+
+Current performance data is checked-in Parquet. Git LFS is needed only for
+retained legacy text assets and tests that use them. Re-run `uv sync` after
+changes to Rust or packaging, and verify the imported paths shown above point
+to the intended environment.
+
+## Use an internal nightly
+
+The [nightly workflow](../../.github/workflows/nightly-ci.yml) produces a wheel
+version such as `0.13.0.devYYYYMMDD`, then stages artifacts to access-controlled
+Artifactory through the protected release environment. The run subsequently
+checks the downloaded wheel and qualifies its FPE support matrix. Use a
+successful completed nightly: a successful build, staging step, or dev suffix
+alone does not establish that validation completed. The nightly path is
+`nightly/<run_id>/`, not a public PyPI release channel.
+
+Obtain the wheel for your platform from Artifactory using your organization's
+authenticated artifact access. Obtain `provenance.json` and `SHA256SUMS.txt`
+from the same run's `nightly-dist-amd64` or `nightly-dist-arm64` GitHub artifact.
+Verify the recorded source revision and wheel SHA-256, then install that exact
+downloaded file:
+
+```bash
+python -m pip install /absolute/path/to/downloaded/aisimulate-VERSION-PLATFORM.whl
+```
+
+Replace that illustrative filename with the actual wheel filename. Retain the
+source SHA, workflow run URL, wheel filename and SHA-256 with your results.
+The [artifact contract](../ci/release.md) describes wheel/crate versioning.
+
+## Optional Dynamo integration
+
+The engine stack does not require Dynamo. For `--stack dynamo`, install a
+Dynamo distribution that supplies the required runner and adapters into the
+same environment. The root [README](../../README.md#with-dynamo) records a validated pair: `ai-dynamo==1.6.0.dev20260930` and
+`aisimulate==0.13.0.dev202609270000000058`, from the NVIDIA prerelease index.
+Installation, `pip check`, CPU prediction, an eight-trial recommendation, and
+prediction of the best candidate pass with Python 3.12 on Linux.
+
+The AISimulate wheel corresponds to source
+[`9f140b71b75e43147e88ac76a8c72371077c2bee`](https://github.com/ai-dynamo/aisimulate/commit/9f140b71b75e43147e88ac76a8c72371077c2bee)
+and [nightly run 36305697606](https://github.com/ai-dynamo/aisimulate/actions/runs/36305697606).
+Dynamo's September 30 build source is
+[`777977d5ee0e70128c3dbe83c27fd22a74120874`](https://github.com/ai-dynamo/dynamo/commit/777977d5ee0e70128c3dbe83c27fd22a74120874).
+This is a README simulation qualification, not a claim that Dynamo's entire
+nightly pipeline passed. Full CI README checks retest the installed artifacts
+when relevant files change.
+
+Keep this environment separate from a current AISimulate source checkout.
+Dynamo pins an exact AISimulate nightly; substituting TOT violates that package
+contract. Public Dynamo 1.4.2 lacks the modern stack registration, and 1.5.0 uses
+removed AISimulate imports when forced alongside TOT. Do not bypass dependency
+resolution with `--no-deps` or independently upgrade AISimulate in this pair.
+
+The [Dynamo deployment guide](../sweeper/deployment-generation.md)
+separately explains generated serving artifacts and runtime version pins.
+Installing a Dynamo adapter for simulation and launching a GPU serving
+container are different steps in that workflow.

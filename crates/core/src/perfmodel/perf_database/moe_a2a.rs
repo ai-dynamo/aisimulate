@@ -320,7 +320,7 @@ impl DeepepLlCalibrationSource {
 }
 
 /// Calibration and token-axis prediction selected for one DeepEP-LL phase.
-/// See `python/aisimulate/docs/DEEPEP_LL_MODELING.md`, sections 5-7. Multi-point OLS uses every
+/// See `docs/perf-model/methods/deepep-ll.md`, sections 5-7. Multi-point OLS uses every
 /// point of the selected curve; one-shot calibration borrows the system
 /// median startup and derives the variable slope from the selected point.
 #[derive(Clone, Copy, Debug, PartialEq)]

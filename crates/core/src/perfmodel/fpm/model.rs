@@ -18,28 +18,36 @@ use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
 use super::correction::CorrectionBuckets;
+use super::coverage::{FpmCoverageState, FpmQueryCoverage};
+use super::estimator::{RegressionFitConfig, RegressionSamplingConfig};
+use super::learned::{IterationFeatureVector, LearnedForwardPassModel, load_learned};
 use super::metrics::validate_forward_pass_metrics;
-use super::options::{ForwardPassPerfOptions, validate_regression_options};
-use super::regression::BucketedRegression;
+use super::options::{ForwardPassPerfOptions, validate_options, validate_regression_options};
+use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
 
 /// Current readiness and tuning state for a `ForwardPassPerfModel`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ForwardPassPerfDiagnostics {
     /// Active prediction source. Native models become `aic_with_correction`
-    /// after at least one inferred workload kind has enough correction samples.
+    /// and learned models `learned_with_correction` after at least one
+    /// inferred workload kind has enough correction samples.
     pub source: ForwardPassPerfSource,
     /// Whether the active model can currently produce estimates, or why it
-    /// cannot. Native models are immediately ready; regression is ready when
-    /// any logical store has a fit. A query for another store can still return
-    /// `None`; see `regression_store_diagnostics` for individual readiness.
+    /// cannot. Native and learned models are immediately ready; regression is
+    /// ready when any logical store has a usable linear fit, including when
+    /// spline fitting is selected. Readiness does not guarantee query coverage:
+    /// another store may be cold, and a query whose linear prediction is
+    /// unavailable returns `None` even if the spline component can evaluate it.
+    /// See `regression_store_diagnostics` for individual readiness.
     pub readiness: ForwardPassPerfReadiness,
     /// Number of retained tuning observations. This is the total across the
-    /// three inferred workload kinds for Native and all logical stores for
-    /// Regression.
+    /// inferred workload kinds for Native and Learned (their correction grids
+    /// share the same layout) and across all logical stores for Regression.
     pub retained_observations: usize,
-    /// Number of populated native-correction regions whose workload kind has at least
-    /// `min_observations` total retained samples.
+    /// Number of populated correction regions (Native and Learned) whose
+    /// workload kind has at least `min_observations` total retained samples.
+    /// Always 0 for Regression.
     pub correction_ready_buckets: usize,
     /// Fallback reason when `best_available` had to use regression instead of native AIC.
     pub last_warning: Option<String>,
@@ -69,6 +77,11 @@ pub enum ForwardPassPerfSource {
     FallbackRegression,
     /// Native AIC estimator with at least one learned correction workload kind.
     AicWithCorrection,
+    /// Offline-trained learned model (tree ensemble over FPM features) with no
+    /// correction workload kind ready yet.
+    Learned,
+    /// Learned model with at least one ready online-correction workload kind.
+    LearnedWithCorrection,
 }
 
 /// Readiness state reported by `ForwardPassPerfDiagnostics`.
@@ -104,7 +117,7 @@ pub enum ForwardPassWorkerType {
 /// Full-iteration workload used to select an independent regression store.
 /// Idle ranks do not contribute, and any locally mixed rank takes precedence
 /// over separate prefill-only and decode-only ranks.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ForwardPassRegressionWorkloadKind {
     PureDecode,
@@ -117,38 +130,57 @@ pub enum ForwardPassRegressionWorkloadKind {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForwardPassRegressionStoreDiagnostics {
     pub workload_kind: ForwardPassRegressionWorkloadKind,
-    /// Whether this store has a usable fit, not merely enough samples.
+    /// Whether this store has a usable linear fit, not merely enough samples.
+    /// Spline predictions also require an available linear prediction for the
+    /// query; a usable spline component alone does not make the store ready.
     pub ready: bool,
     pub retained_observations: usize,
+    /// Spline component state, independent of the shared linear readiness guard.
+    /// Its `ready` flag can be true while the enclosing store is not ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spline: Option<ForwardPassSplineDiagnostics>,
 }
 
 #[derive(Clone, Debug)]
 struct RegressionStores {
-    stores: Vec<(ForwardPassRegressionWorkloadKind, BucketedRegression)>,
+    stores: Vec<(ForwardPassRegressionWorkloadKind, RegressionStore)>,
+}
+
+/// Logical workload stores a worker role can produce (shared by the
+/// regression stores and the learned artifact validator).
+pub(crate) fn workload_kinds_for(
+    worker_type: ForwardPassWorkerType,
+) -> &'static [ForwardPassRegressionWorkloadKind] {
+    use ForwardPassRegressionWorkloadKind::*;
+    match worker_type {
+        ForwardPassWorkerType::Prefill => &[PurePrefill],
+        ForwardPassWorkerType::Decode => &[PureDecode],
+        ForwardPassWorkerType::Aggregated => &[
+            PureDecode,
+            ContainsLocallyMixed,
+            CrossRankAggregated,
+            PurePrefill,
+        ],
+    }
 }
 
 impl RegressionStores {
-    fn new(worker_type: ForwardPassWorkerType, options: &ForwardPassPerfOptions) -> Self {
-        use ForwardPassRegressionWorkloadKind::*;
-        let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
-            ForwardPassWorkerType::Prefill => &[PurePrefill],
-            ForwardPassWorkerType::Decode => &[PureDecode],
-            ForwardPassWorkerType::Aggregated => &[
-                PureDecode,
-                ContainsLocallyMixed,
-                CrossRankAggregated,
-                PurePrefill,
-            ],
-        };
+    fn new(
+        worker_type: ForwardPassWorkerType,
+        options: &ForwardPassPerfOptions,
+        fit: &RegressionFitConfig,
+        sampling: &RegressionSamplingConfig,
+    ) -> Self {
+        let kinds = workload_kinds_for(worker_type);
         Self {
             stores: kinds
                 .iter()
-                .map(|kind| (*kind, BucketedRegression::new(options)))
+                .map(|kind| (*kind, RegressionStore::new(options, fit, sampling)))
                 .collect(),
         }
     }
 
-    fn store(&self, workload_kind: ForwardPassRegressionWorkloadKind) -> &BucketedRegression {
+    fn store(&self, workload_kind: ForwardPassRegressionWorkloadKind) -> &RegressionStore {
         &self
             .stores
             .iter()
@@ -160,7 +192,7 @@ impl RegressionStores {
     fn store_mut(
         &mut self,
         workload_kind: ForwardPassRegressionWorkloadKind,
-    ) -> &mut BucketedRegression {
+    ) -> &mut RegressionStore {
         &mut self
             .stores
             .iter_mut()
@@ -187,6 +219,7 @@ impl RegressionStores {
                 workload_kind: *kind,
                 ready: store.is_ready(),
                 retained_observations: store.observation_count(),
+                spline: store.spline_diagnostics(),
             })
             .collect()
     }
@@ -244,6 +277,7 @@ pub struct ForwardPassPerfModel {
     last_warning: Option<String>,
     provenance: Option<ForwardPassPerfProvenance>,
     is_correction_enabled: bool,
+    pub(super) query_coverage: Option<FpmCoverageState>,
 }
 
 #[derive(Clone, Debug)]
@@ -258,6 +292,12 @@ enum ForwardPassPerfMode {
     Regression {
         worker_type: ForwardPassWorkerType,
         regression: RegressionStores,
+    },
+    /// Offline-trained learned model (see [`super::learned`]) used as the base
+    /// estimate, with the same online-correction grid as `Native` on top.
+    Learned {
+        learned: LearnedForwardPassModel,
+        corrections: WorkloadStores<CorrectionBuckets>,
     },
 }
 
@@ -278,41 +318,92 @@ impl ForwardPassPerfModel {
             last_warning: None,
             provenance: None,
             is_correction_enabled: true,
+            query_coverage: None,
         }
     }
 
     /// API:
-    /// `ForwardPassPerfModel::from_regression(worker_type, options) -> Result<Self, AicError>`
+    /// `ForwardPassPerfModel::from_learned(source, options) -> Result<Self, AicError>`
     ///
-    /// Description: create a regression-only forward-pass model.
+    /// Description: create a forward-pass model from an offline-trained learned
+    /// artifact (`aic_fpm_learned_forward_perf` JSON written by the Python
+    /// `aisimulate_core.sdk.fpm_learned` trainer).
+    ///
+    /// `source` is either a filesystem path or the artifact JSON text itself
+    /// (detected by a leading `{`). The artifact binds the worker type and the
+    /// ordered feature ABI. Estimation is the learned prediction multiplied by
+    /// the native-style online correction factor learned through
+    /// `tune_with_fpms`; iterations whose regression workload kind has no
+    /// trained store return `Ok(None)`.
+    pub fn from_learned(source: &str, options: ForwardPassPerfOptions) -> Result<Self, AicError> {
+        validate_options(&options)?;
+        let learned = load_learned(source)?;
+        Ok(Self {
+            mode: ForwardPassPerfMode::Learned {
+                learned,
+                corrections: WorkloadStores::with_options(&options),
+            },
+            options,
+            last_warning: None,
+            provenance: None,
+            is_correction_enabled: true,
+            query_coverage: None,
+        })
+    }
+
+    /// Create a regression-only forward-pass model after resolving configuration.
     ///
     /// This mode is for native-AIC-unsupported models. It returns `None` from
     /// `estimate_forward_pass_time_ms` for non-empty iterations until the
     /// selected logical store has a usable fit from at least
     /// `options.min_observations` tuning samples.
     /// Correction factor getters always return `None` in this mode.
+    #[cfg(test)]
     pub(crate) fn from_regression(
         worker_type: ForwardPassWorkerType,
         options: ForwardPassPerfOptions,
+        fit: &RegressionFitConfig,
+    ) -> Result<Self, AicError> {
+        let sampling = RegressionSamplingConfig {
+            bins_per_axis: options
+                .bucket_shape
+                .unwrap_or_else(|| {
+                    let side = super::samples::integer_sqrt(options.bucket_count);
+                    [side, side]
+                })
+                .to_vec(),
+            max_observations: options.max_observations,
+            ..Default::default()
+        };
+        Self::from_regression_config(worker_type, options, fit, &sampling)
+    }
+
+    fn from_regression_config(
+        worker_type: ForwardPassWorkerType,
+        options: ForwardPassPerfOptions,
+        fit: &RegressionFitConfig,
+        sampling: &RegressionSamplingConfig,
     ) -> Result<Self, AicError> {
         validate_regression_options(&options)?;
+        super::estimator::validate_rebuild_interval(fit.rebuild_interval)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Regression {
                 worker_type,
-                regression: RegressionStores::new(worker_type, &options),
+                regression: RegressionStores::new(worker_type, &options, fit, sampling),
             },
             options,
             last_warning: None,
             provenance: None,
             is_correction_enabled: true,
+            query_coverage: None,
         })
     }
 
     /// Construct and pin one estimator. Auto searches all modes even when
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
-    pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
-        config.validate()?;
+    pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        let (mut config, registered) = config.resolve_with_registration()?;
         if let Some(path) = config
             .estimator_config
             .fpm_interpolation
@@ -327,6 +418,30 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if mode == EstimationMode::OpLevel && registered == Some(false) {
+                let error = AicError::UnsupportedModel(format!(
+                    "op-level timing requires a registered architecture for {:?}",
+                    config.model,
+                ));
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
+            // Op-level DCP is priced by the sharded attention ops and their
+            // collectives; the whole-forward paths need a measured vLLM cell
+            // (the regression tables carry no DCP column).
+            if config.dcp.is_some_and(|dcp| dcp > 1)
+                && (mode == EstimationMode::FpmRegression
+                    || (mode == EstimationMode::FpmInterpolation
+                        && config.backend != crate::BackendKind::Vllm))
+            {
+                let error = AicError::UnsupportedModel(
+                    "DCP timing requires measured vLLM FPM interpolation".into(),
+                );
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
                 let error =
                     AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
@@ -336,7 +451,12 @@ impl ForwardPassPerfModel {
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
-                let mut model = Self::from_regression(config.worker_type, options)?;
+                let mut model = Self::from_regression_config(
+                    config.worker_type,
+                    options,
+                    &config.estimator_config.fpm_regression.fit,
+                    &config.estimator_config.fpm_regression.sampling,
+                )?;
                 let mut resolved = config.clone();
                 resolved.estimation_mode = mode;
                 resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
@@ -365,6 +485,11 @@ impl ForwardPassPerfModel {
                         candidate.estimator_config.correction_options(),
                     );
                     model.is_correction_enabled = candidate.estimator_config.correction.enabled;
+                    model.query_coverage = candidate
+                        .estimator_config
+                        .fpm_interpolation
+                        .collect_coverage
+                        .then(FpmCoverageState::default);
                     model.last_warning = (!failures.is_empty()).then(|| failures.join("; "));
                     model.provenance = Some(ForwardPassPerfProvenance {
                         config: candidate,
@@ -382,8 +507,17 @@ impl ForwardPassPerfModel {
                 Err(err) => return Err(err),
             }
         }
-        Err(last_error
-            .unwrap_or_else(|| AicError::UnsupportedModel("no estimator candidates".into())))
+        // Every candidate mode failed. Surface all of them: the last one is
+        // usually a whole-forward gate (for instance the DCP FPM rule) that
+        // would otherwise mask the op-level reason the user actually hit.
+        Err(match failures.len() {
+            0 => AicError::UnsupportedModel("no estimator candidates".into()),
+            1 => last_error.expect("one recorded failure"),
+            _ => AicError::UnsupportedModel(format!(
+                "no estimator mode accepted this configuration: {}",
+                failures.join("; ")
+            )),
+        })
     }
 
     /// API:
@@ -403,7 +537,9 @@ impl ForwardPassPerfModel {
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
     /// `ForwardPassPerfOptions`. Regression models return `Ok(None)` until
-    /// the selected logical store has a ready fit. Empty scheduled work
+    /// the selected logical store has a ready linear fit. Spline predictions
+    /// also require an available linear prediction for the query; otherwise
+    /// they return `Ok(None)` even inside retained bounds. Empty scheduled work
     /// returns `Ok(Some(0.0))`.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
@@ -419,15 +555,14 @@ impl ForwardPassPerfModel {
                 let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
                     return Ok(Some(0.0));
                 };
-                let native = engine.forward_pass_time_ms(metrics_by_rank)?;
-                let corrected = native
-                    * if self.is_correction_enabled {
-                        corrections
-                            .store(feature.workload_kind)
-                            .correction_factor_for(&feature.x)
-                    } else {
-                        1.0
-                    };
+                let mut coverage = self
+                    .query_coverage
+                    .as_ref()
+                    .map(FpmCoverageState::lock)
+                    .transpose()?;
+                let native = engine
+                    .forward_pass_time_ms_with_coverage(metrics_by_rank, coverage.as_deref_mut())?;
+                let corrected = native * self.correction_factor(corrections, &feature);
                 Ok(Some(corrected))
             }
             ForwardPassPerfMode::Regression {
@@ -442,8 +577,75 @@ impl ForwardPassPerfModel {
                 else {
                     return Ok(Some(0.0));
                 };
-                Ok(regression.store(feature.workload_kind).predict(&feature.x))
+                regression
+                    .store(feature.workload_kind)
+                    .predict_metrics(feature.x, metrics_by_rank)
             }
+            ForwardPassPerfMode::Learned {
+                learned,
+                corrections,
+            } => {
+                let Some(base) = learned_base_ms(learned, metrics_by_rank)? else {
+                    return Ok(None);
+                };
+                if base == 0.0 {
+                    return Ok(Some(0.0));
+                }
+                // A non-zero base implies scheduled work, so the correction
+                // features exist; fall back to no correction defensively.
+                let factor = IterationFeatures::from_metrics(metrics_by_rank)?
+                    .map(|feature| {
+                        corrections
+                            .store(feature.workload_kind)
+                            .correction_factor_for(&feature.x)
+                    })
+                    .unwrap_or(1.0);
+                Ok(Some(base * factor))
+            }
+        }
+    }
+
+    /// Estimate the same iteration with executed direct-FPM support. The
+    /// native rank maximum and online correction are explicit; measurement
+    /// weights describe raw lookup values only. Detailed query state is returned;
+    /// bounded coverage is retained only when explicitly enabled.
+    pub fn estimate_forward_pass_detailed(
+        &self,
+        metrics_by_rank: &[ForwardPassMetrics],
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        if let ForwardPassPerfMode::Native {
+            engine,
+            corrections,
+        } = &self.mode
+        {
+            let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
+                return Ok(crate::ForwardPassEstimate {
+                    latency_ms: Some(0.0),
+                    native_latency_ms: Some(0.0),
+                    correction_factor: Some(1.0),
+                    max_rank: None,
+                    ranks: Vec::new(),
+                });
+            };
+            let mut coverage = self
+                .query_coverage
+                .as_ref()
+                .map(FpmCoverageState::lock)
+                .transpose()?;
+            let mut estimate =
+                engine.forward_pass_estimate(metrics_by_rank, true, coverage.as_deref_mut())?;
+            let factor = self.correction_factor(corrections, &feature);
+            estimate.correction_factor = Some(factor);
+            estimate.latency_ms = estimate.native_latency_ms.map(|native| native * factor);
+            Ok(estimate)
+        } else {
+            Ok(crate::ForwardPassEstimate {
+                latency_ms: self.estimate_forward_pass_time_ms(metrics_by_rank)?,
+                native_latency_ms: None,
+                correction_factor: None,
+                max_rank: None,
+                ranks: Vec::new(),
+            })
         }
     }
 
@@ -470,7 +672,7 @@ impl ForwardPassPerfModel {
     /// configured correction-grid workload ranges are ignored by native
     /// correction models. Regression models validate compatibility with their
     /// fixed worker type and update the selected logical store's
-    /// two-dimensional constrained linear fit.
+    /// configured regression fit.
     ///
     /// Pure Rust over the `Engine` — no Python re-entry.
     pub fn tune_with_fpms(
@@ -481,6 +683,7 @@ impl ForwardPassPerfModel {
             mode,
             options,
             is_correction_enabled,
+            query_coverage,
             ..
         } = self;
         for metrics_by_rank in iterations {
@@ -497,7 +700,14 @@ impl ForwardPassPerfModel {
                     else {
                         continue;
                     };
-                    let native = engine.forward_pass_time_ms(metrics_by_rank)?;
+                    let mut coverage = query_coverage
+                        .as_ref()
+                        .map(FpmCoverageState::lock)
+                        .transpose()?;
+                    let native = engine.forward_pass_time_ms_with_coverage(
+                        metrics_by_rank,
+                        coverage.as_deref_mut(),
+                    )?;
                     corrections
                         .store_mut(observation.feature.workload_kind)
                         .add_observation(observation.feature.x, observation.wall_time_ms, native);
@@ -516,7 +726,26 @@ impl ForwardPassPerfModel {
                     };
                     regression
                         .store_mut(observation.feature.workload_kind)
-                        .add_observation(observation.feature.x, observation.wall_time_ms);
+                        .add_metrics(
+                            observation.feature.x,
+                            observation.wall_time_ms,
+                            metrics_by_rank,
+                        )?;
+                }
+                ForwardPassPerfMode::Learned {
+                    learned,
+                    corrections,
+                } => {
+                    let Some(observation) = IterationObservation::from_metrics(metrics_by_rank)?
+                    else {
+                        continue;
+                    };
+                    let Some(base) = learned_base_ms(learned, metrics_by_rank)? else {
+                        continue;
+                    };
+                    corrections
+                        .store_mut(observation.feature.workload_kind)
+                        .add_observation(observation.feature.x, observation.wall_time_ms, base);
                 }
             }
         }
@@ -562,6 +791,21 @@ impl ForwardPassPerfModel {
                     provenance: self.provenance.clone(),
                 }
             }
+            ForwardPassPerfMode::Learned { corrections, .. } => {
+                let ready_buckets = corrections.ready_bucket_count();
+                ForwardPassPerfDiagnostics {
+                    source: if ready_buckets > 0 {
+                        ForwardPassPerfSource::LearnedWithCorrection
+                    } else {
+                        ForwardPassPerfSource::Learned
+                    },
+                    readiness: ForwardPassPerfReadiness::Ready,
+                    retained_observations: corrections.observation_count(),
+                    correction_ready_buckets: ready_buckets,
+                    last_warning: self.last_warning.clone(),
+                    provenance: self.provenance.clone(),
+                }
+            }
         }
     }
 
@@ -569,23 +813,60 @@ impl ForwardPassPerfModel {
     ///
     /// Dedicated roles return one entry. Aggregated returns four entries in
     /// pure-decode, locally-mixed, cross-rank, pure-prefill order, including
-    /// empty stores. Native models return an empty list. Readiness of the
-    /// selected store determines whether a non-empty query has an estimate.
+    /// empty stores. Native models return an empty list. Readiness means a
+    /// usable linear fit exists, including when spline fitting is selected.
+    /// Spline component readiness alone does not make the store ready.
     pub fn regression_store_diagnostics(&self) -> Vec<ForwardPassRegressionStoreDiagnostics> {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),
             ForwardPassPerfMode::Regression { regression, .. } => regression.diagnostics(),
+            // Learned stores are fixed at load time: every trained store is
+            // ready and holds no retained tuning observations of its own.
+            ForwardPassPerfMode::Learned { learned, .. } => learned
+                .store_kinds()
+                .into_iter()
+                .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
+                    workload_kind,
+                    ready: true,
+                    retained_observations: 0,
+                    spline: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// API:
+    /// `model.learned_feature_names() -> Option<&[String]>`
+    ///
+    /// Description: the ordered feature ABI of a learned model; `None` for
+    /// native and regression models.
+    pub fn learned_feature_names(&self) -> Option<&[String]> {
+        match &self.mode {
+            ForwardPassPerfMode::Learned { learned, .. } => Some(learned.feature_names()),
+            _ => None,
+        }
+    }
+
+    /// API:
+    /// `model.learned_metadata() -> Option<&serde_json::Value>`
+    ///
+    /// Description: free-form trainer metadata embedded in a learned artifact.
+    pub fn learned_metadata(&self) -> Option<&serde_json::Value> {
+        match &self.mode {
+            ForwardPassPerfMode::Learned { learned, .. } => Some(learned.metadata()),
+            _ => None,
         }
     }
 
     /// API:
     /// `model.min_correction_factor() -> Option<f64>`
     ///
-    /// Description: return the smallest ready native correction factor across
-    /// all workload kinds.
+    /// Description: return the smallest ready correction factor across all
+    /// workload kinds. Native and Learned models both carry the online
+    /// correction grid; the factor multiplies their base estimate.
     ///
-    /// Returns `None` before any native correction workload kind has enough samples.
-    /// Regression-only models also return `None`.
+    /// Returns `None` before any correction workload kind has enough samples.
+    /// Regression-only models have no correction grid and always return `None`.
     pub fn min_correction_factor(&self) -> Option<f64> {
         self.correction_factors()
             .into_iter()
@@ -595,11 +876,12 @@ impl ForwardPassPerfModel {
     /// API:
     /// `model.max_correction_factor() -> Option<f64>`
     ///
-    /// Description: return the largest ready native correction factor across
-    /// all workload kinds.
+    /// Description: return the largest ready correction factor across all
+    /// workload kinds. Native and Learned models both carry the online
+    /// correction grid; the factor multiplies their base estimate.
     ///
-    /// Returns `None` before any native correction workload kind has enough samples.
-    /// Regression-only models also return `None`.
+    /// Returns `None` before any correction workload kind has enough samples.
+    /// Regression-only models have no correction grid and always return `None`.
     pub fn max_correction_factor(&self) -> Option<f64> {
         self.correction_factors()
             .into_iter()
@@ -609,11 +891,11 @@ impl ForwardPassPerfModel {
     /// API:
     /// `model.avg_correction_factor() -> Option<f64>`
     ///
-    /// Description: return the arithmetic mean of ready native correction
-    /// factors across all workload kinds.
+    /// Description: return the arithmetic mean of ready correction factors
+    /// across all workload kinds (Native and Learned models alike).
     ///
-    /// Returns `None` before any native correction workload kind has enough samples.
-    /// Regression-only models also return `None`.
+    /// Returns `None` before any correction workload kind has enough samples.
+    /// Regression-only models have no correction grid and always return `None`.
     pub fn avg_correction_factor(&self) -> Option<f64> {
         let factors = self.correction_factors();
         if factors.is_empty() {
@@ -629,6 +911,75 @@ impl ForwardPassPerfModel {
     /// Description: return the immutable tuning options used by this model.
     pub fn options(&self) -> &ForwardPassPerfOptions {
         &self.options
+    }
+
+    /// Uncorrected static prefill latency, preserving the compiled engine's
+    /// existing `(batch, full input length, cached prefix)` contract. Unlike
+    /// telemetry estimation this does not apply learned online correction.
+    /// Enabled coverage records the actual native lookup on this model.
+    pub fn predict_prefill_latency(
+        &self,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_latency_with_coverage(
+            batch_size,
+            isl,
+            prefix,
+            coverage.as_deref_mut(),
+        )
+    }
+
+    /// Uncorrected decode latency using exact past-KV totals, excluding the
+    /// current input token per request. Shares the existing engine contract.
+    pub fn predict_decode_latency_total(
+        &self,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_decode_latency_total_with_coverage(
+            batch_size,
+            total_past_kv_tokens,
+            coverage.as_deref_mut(),
+        )
+    }
+
+    /// Largest collected decode KV total for the selected FPM cell. Reading
+    /// this bound is not a timing lookup and does not add coverage evidence.
+    pub fn fpm_decode_kv_ceiling(&self) -> Result<Option<u32>, AicError> {
+        self.require_native_engine()?.fpm_decode_kv_ceiling()
+    }
+
+    /// Snapshot of actual native direct-FPM lookup resolutions, including
+    /// failed lookups. `None` means collection was disabled. Counts do not
+    /// include timings reused by an external cache, or calls on a separate
+    /// low-level engine handle. Replay completion must be checked separately.
+    pub fn fpm_query_coverage(&self) -> Result<Option<FpmQueryCoverage>, AicError> {
+        self.query_coverage
+            .as_ref()
+            .map(|state| state.lock().map(|value| value.clone()))
+            .transpose()
+    }
+
+    fn require_native_engine(&self) -> Result<Arc<Engine>, AicError> {
+        self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig(
+                "static timing requires a native forward-pass estimator".into(),
+            )
+        })
     }
 
     /// Static phase latency before online correction, using the native engine's
@@ -648,6 +999,23 @@ impl ForwardPassPerfModel {
         } else {
             engine.predict_decode_latency(batch_size, input_tokens, output_tokens)
         }
+    }
+
+    pub(crate) fn static_prefill_detailed(
+        &self,
+        batch_size: u32,
+        input_tokens: u32,
+        prefix: u32,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
+        })?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_detailed(batch_size, input_tokens, prefix, coverage.as_deref_mut())
     }
 
     /// Native operation evidence for one static prefill or decode step. Values
@@ -682,7 +1050,7 @@ impl ForwardPassPerfModel {
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
-            ForwardPassPerfMode::Regression { .. } => None,
+            ForwardPassPerfMode::Regression { .. } | ForwardPassPerfMode::Learned { .. } => None,
         }
     }
 
@@ -691,10 +1059,25 @@ impl ForwardPassPerfModel {
         self.provenance.as_ref()
     }
 
+    fn correction_factor(
+        &self,
+        corrections: &WorkloadStores<CorrectionBuckets>,
+        feature: &IterationFeatures,
+    ) -> f64 {
+        if self.is_correction_enabled {
+            corrections
+                .store(feature.workload_kind)
+                .correction_factor_for(&feature.x)
+        } else {
+            1.0
+        }
+    }
+
     fn correction_factors(&self) -> Vec<f64> {
         match &self.mode {
             ForwardPassPerfMode::Native { corrections, .. } => corrections.correction_factors(),
             ForwardPassPerfMode::Regression { .. } => Vec::new(),
+            ForwardPassPerfMode::Learned { corrections, .. } => corrections.correction_factors(),
         }
     }
 }
@@ -705,6 +1088,7 @@ fn build_native_candidate(
 ) -> Result<(Engine, PathBuf), AicError> {
     if config.estimation_mode == EstimationMode::FpmInterpolation
         && (config.enable_eplb
+            || config.moe_kernel_source.is_some()
             || config.wideep_num_slots.is_some()
             || config
                 .moe_backend
@@ -712,7 +1096,7 @@ fn build_native_candidate(
                 .is_some_and(|value| value != "default"))
     {
         return Err(AicError::UnsupportedModel(
-            "FPM interpolation does not support EPLB, slots or moe_backend overrides".into(),
+            "FPM interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides".into(),
         ));
     }
     if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
@@ -723,7 +1107,7 @@ fn build_native_candidate(
     let mut last_error = None;
     for root in resolve_systems_roots(config)? {
         match build_engine_via_python(config, &root).and_then(|engine| {
-            engine.validate_forward_pass_readiness()?;
+            engine.validate_forward_pass_readiness(config.worker_type)?;
             Ok(engine)
         }) {
             Ok(engine) => return Ok((engine, root)),
@@ -741,6 +1125,39 @@ fn build_native_candidate(
     Err(AicError::UnsupportedModel(
         "native engine construction requires the python feature".into(),
     ))
+}
+
+/// Learned-mode base estimate: classify the iteration with the regression
+/// workload rule bound to the artifact's worker type, then query the matching
+/// trained store. `Ok(Some(0.0))` for empty iterations, `Ok(None)` when the
+/// kind has no store.
+fn learned_base_ms(
+    learned: &LearnedForwardPassModel,
+    metrics_by_rank: &[ForwardPassMetrics],
+) -> Result<Option<f64>, AicError> {
+    // Routing only depends on the batch composition, never on the regression
+    // tuning weights, so an invalid regression-only option cannot reject a
+    // learned prediction.
+    let Some(workload_kind) = classify_regression_workload(metrics_by_rank, learned.worker_type())?
+    else {
+        return Ok(Some(0.0));
+    };
+    if !learned.has_store(workload_kind) {
+        return Ok(None);
+    }
+    let vector =
+        IterationFeatureVector::from_metrics_with(metrics_by_rank, learned.needs_slot_features());
+    if learned.needs_request_features() && !vector.request_lists {
+        // Without the lists every req_*/slot feature is NaN and the trees
+        // would return one constant for every batch. Refuse loudly instead.
+        return Err(AicError::InvalidForwardPassMetrics(
+            "learned artifact uses per-request features but the iteration carries no aligned, \
+             consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
+             per-request FPM hooks (aisimulate_core.fpm_hooks) or train with --features v1"
+                .to_string(),
+        ));
+    }
+    learned.predict_ms(workload_kind, &vector)
 }
 
 #[cfg(feature = "python")]
@@ -877,50 +1294,65 @@ pub(crate) struct RegressionIterationFeatures {
     pub(crate) workload_kind: ForwardPassRegressionWorkloadKind,
 }
 
+/// Validate one iteration's per-rank metrics against the worker role and
+/// classify its regression workload kind. Independent of any tuning weights,
+/// so the learned model (which has no regression features) shares it.
+///
+/// Returns `Ok(None)` for an idle iteration.
+pub(crate) fn classify_regression_workload(
+    metrics_by_rank: &[ForwardPassMetrics],
+    worker_type: ForwardPassWorkerType,
+) -> Result<Option<ForwardPassRegressionWorkloadKind>, AicError> {
+    if metrics_by_rank.is_empty() {
+        return Err(AicError::InvalidForwardPassMetrics(
+            "at least one attention-DP rank metric is required".to_string(),
+        ));
+    }
+    let mut has_prefill = false;
+    let mut has_decode = false;
+    let mut has_locally_mixed = false;
+    for metrics in metrics_by_rank {
+        validate_forward_pass_metrics(metrics)?;
+        let scheduled = &metrics.scheduled_requests;
+        match worker_type {
+            ForwardPassWorkerType::Prefill if scheduled.num_decode_requests > 0 => {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "prefill regression worker received scheduled decode work".to_string(),
+                ));
+            }
+            ForwardPassWorkerType::Decode if scheduled.sum_prefill_tokens > 0 => {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "decode regression worker received scheduled prefill work".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        let rank_has_prefill = scheduled.sum_prefill_tokens > 0;
+        let rank_has_decode = scheduled.num_decode_requests > 0;
+        has_prefill |= rank_has_prefill;
+        has_decode |= rank_has_decode;
+        has_locally_mixed |= rank_has_prefill && rank_has_decode;
+    }
+
+    use ForwardPassRegressionWorkloadKind::*;
+    Ok(Some(match (has_prefill, has_decode) {
+        (false, false) => return Ok(None),
+        (false, true) => PureDecode,
+        (true, false) => PurePrefill,
+        (true, true) if has_locally_mixed => ContainsLocallyMixed,
+        (true, true) => CrossRankAggregated,
+    }))
+}
+
 impl RegressionIterationFeatures {
     pub(crate) fn from_metrics(
         metrics_by_rank: &[ForwardPassMetrics],
         worker_type: ForwardPassWorkerType,
         options: &ForwardPassPerfOptions,
     ) -> Result<Option<Self>, AicError> {
-        if metrics_by_rank.is_empty() {
-            return Err(AicError::InvalidForwardPassMetrics(
-                "at least one attention-DP rank metric is required".to_string(),
-            ));
-        }
-        let mut has_prefill = false;
-        let mut has_decode = false;
-        let mut has_locally_mixed = false;
-        for metrics in metrics_by_rank {
-            validate_forward_pass_metrics(metrics)?;
-            let scheduled = &metrics.scheduled_requests;
-            match worker_type {
-                ForwardPassWorkerType::Prefill if scheduled.num_decode_requests > 0 => {
-                    return Err(AicError::InvalidForwardPassMetrics(
-                        "prefill regression worker received scheduled decode work".to_string(),
-                    ));
-                }
-                ForwardPassWorkerType::Decode if scheduled.sum_prefill_tokens > 0 => {
-                    return Err(AicError::InvalidForwardPassMetrics(
-                        "decode regression worker received scheduled prefill work".to_string(),
-                    ));
-                }
-                _ => {}
-            }
-            let rank_has_prefill = scheduled.sum_prefill_tokens > 0;
-            let rank_has_decode = scheduled.num_decode_requests > 0;
-            has_prefill |= rank_has_prefill;
-            has_decode |= rank_has_decode;
-            has_locally_mixed |= rank_has_prefill && rank_has_decode;
-        }
-
-        use ForwardPassRegressionWorkloadKind::*;
-        let workload_kind = match (has_prefill, has_decode) {
-            (false, false) => return Ok(None),
-            (false, true) => PureDecode,
-            (true, false) => PurePrefill,
-            (true, true) if has_locally_mixed => ContainsLocallyMixed,
-            (true, true) => CrossRankAggregated,
+        let Some(workload_kind) = classify_regression_workload(metrics_by_rank, worker_type)?
+        else {
+            return Ok(None);
         };
 
         let alpha = options.regression_attention_kv_weight;
@@ -1112,8 +1544,164 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
 }
 
 #[cfg(test)]
+mod rebuild_tests {
+    use super::*;
+    use ForwardPassRegressionWorkloadKind::*;
+
+    #[test]
+    fn spline_workload_stores_and_clones_have_independent_search_clocks() {
+        use super::super::estimator::{RegressionFitKind, SplineFitConfig, SplineSearchConfig};
+        let fit = RegressionFitConfig {
+            kind: RegressionFitKind::Spline,
+            spline: Some(SplineFitConfig {
+                search: SplineSearchConfig::Periodic { step: 64 },
+                ..SplineFitConfig::default()
+            }),
+            ..RegressionFitConfig::default()
+        };
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &ForwardPassPerfOptions::default(),
+            &fit,
+            &RegressionSamplingConfig::default(),
+        );
+        // Analytic one-axis plane: y=3+2*x. Other workload stores remain cold.
+        for i in 1..=32 {
+            assert!(
+                stores
+                    .store_mut(PurePrefill)
+                    .add_observation([i as f64, 1.0], 3.0 + 2.0 * i as f64)
+            );
+        }
+        let mut cloned = stores.clone();
+        for i in 33..=64 {
+            assert!(
+                stores
+                    .store_mut(PurePrefill)
+                    .add_observation([i as f64, 1.0], 3.0 + 2.0 * i as f64)
+            );
+        }
+        assert!(
+            cloned
+                .store_mut(PureDecode)
+                .add_observation([1.0, 1.0], 5.0)
+        );
+        let original = stores.diagnostics();
+        let copy = cloned.diagnostics();
+        let find = |items: &[ForwardPassRegressionStoreDiagnostics], kind| {
+            items
+                .iter()
+                .find(|store| store.workload_kind == kind)
+                .unwrap()
+                .spline
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(
+            find(&original, PurePrefill).last_search_observation,
+            Some(64)
+        );
+        assert_eq!(find(&original, PurePrefill).knot_searches, 2);
+        assert_eq!(find(&copy, PurePrefill).last_search_observation, Some(32));
+        assert_eq!(find(&copy, PurePrefill).knot_searches, 1);
+        assert_eq!(find(&original, PureDecode).accepted_observations, 0);
+        assert_eq!(find(&copy, PureDecode).accepted_observations, 1);
+        assert!(
+            !original
+                .iter()
+                .find(|store| store.workload_kind == CrossRankAggregated)
+                .unwrap()
+                .ready
+        );
+    }
+
+    #[test]
+    fn workload_stores_and_clones_have_independent_rebuild_clocks() {
+        let options = ForwardPassPerfOptions::default();
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &options,
+            &RegressionFitConfig {
+                rebuild_interval: Some(3),
+                ..RegressionFitConfig::default()
+            },
+            &RegressionSamplingConfig::default(),
+        );
+        assert!(
+            stores
+                .store_mut(PurePrefill)
+                .add_observation([1.0, 2.0], 3.0)
+        );
+        for i in 1..=2 {
+            assert!(
+                stores
+                    .store_mut(PureDecode)
+                    .add_observation([i as f64, 1.0], 4.0)
+            );
+        }
+        let mut cloned = stores.clone();
+        assert!(
+            stores
+                .store_mut(PureDecode)
+                .add_observation([3.0, 4.0], 5.0)
+        );
+        assert_eq!(stores.store(PureDecode).mutations_since_rebuild(), 0);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+        assert_eq!(
+            stores.store(ContainsLocallyMixed).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(
+            stores.store(CrossRankAggregated).mutations_since_rebuild(),
+            0
+        );
+        assert_eq!(cloned.store(PureDecode).mutations_since_rebuild(), 2);
+        assert!(
+            cloned
+                .store_mut(PurePrefill)
+                .add_observation([2.0, 3.0], 4.0)
+        );
+        assert_eq!(cloned.store(PurePrefill).mutations_since_rebuild(), 2);
+        assert_eq!(stores.store(PurePrefill).mutations_since_rebuild(), 1);
+    }
+
+    #[test]
+    fn default_rebuild_interval_disables_periodic_refresh_for_every_workload_store() {
+        let mut stores = RegressionStores::new(
+            ForwardPassWorkerType::Aggregated,
+            &ForwardPassPerfOptions::default(),
+            &RegressionFitConfig::default(),
+            &RegressionSamplingConfig::default(),
+        );
+        // Constant features avoid fit work without numerical damage. A change
+        // back to a 4096-operation default would reset each clock at 4096.
+        for (_, store) in &mut stores.stores {
+            for _ in 0..2081 {
+                assert!(store.add_observation([1.0, 2.0], 3.0));
+            }
+            assert_eq!(store.mutations_since_rebuild(), 4098);
+        }
+    }
+}
+
+#[cfg(test)]
 mod fallback_errors {
     use super::*;
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn interpolation_candidate_does_not_discard_exact_moe_source() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "model",
+            "system",
+            crate::BackendKind::Sglang,
+            crate::ForwardPassWorkerType::Decode,
+        );
+        config.moe_kernel_source = Some("source_that_does_not_exist".into());
+        config.estimation_mode = EstimationMode::FpmInterpolation;
+        let error = build_native_candidate(&config).err().unwrap();
+        assert!(error.to_string().contains("moe_kernel_source overrides"));
+    }
 
     #[test]
     fn corruption_is_not_a_coverage_gap() {

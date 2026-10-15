@@ -6,10 +6,12 @@
 
 use crate::engine::config::{G3OffloadConfig, G3Scope};
 use crate::engine::host_offload::HostBlockKey;
+pub(crate) use crate::engine::offload_transfer::Direction;
+use crate::engine::offload_transfer::{self, FairTransfers};
 use anyhow::{Result, ensure};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use serde::Serialize;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
@@ -33,6 +35,14 @@ pub struct G3Stats {
     pub cross_worker_read_blocks: u64,
     pub resident_blocks: usize,
     pub pending_blocks: usize,
+    /// Times a request stopped restoring from G3 after too many restore
+    /// rounds while its DP rank made no progress. Omitted when zero.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bypassed_restores: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,12 +50,6 @@ pub(crate) enum Probe {
     Miss,
     Pending,
     Resident,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Direction {
-    Read,
-    Write,
 }
 
 #[derive(Clone, Copy)]
@@ -57,69 +61,10 @@ struct Entry {
 }
 
 struct Job {
-    id: u64,
     worker: usize,
     direction: Direction,
     keys: Vec<HostBlockKey>,
     submitted: f64,
-    ready: f64,
-    remaining: f64,
-}
-
-// Ephemeral counts for one queue/time snapshot; never retained across events.
-#[derive(Default)]
-struct ReadyCounts {
-    total: [usize; 2],
-    workers: FxHashMap<usize, [usize; 2]>,
-}
-
-impl ReadyCounts {
-    fn new<'a>(jobs: impl Iterator<Item = &'a Job>, now: f64) -> Self {
-        let mut counts = Self::default();
-        for job in jobs {
-            if job.ready <= now {
-                let direction = job.direction as usize;
-                counts.total[direction] += 1;
-                counts.workers.entry(job.worker).or_default()[direction] += 1;
-            }
-        }
-        counts
-    }
-
-    // Equal bandwidth shares among data-moving jobs, capped independently by
-    // worker bandwidth and, only for shared storage, shared backend bandwidth.
-    // Reads and writes use separate full-duplex
-    // budgets. Jobs waiting for first-byte latency do not consume bandwidth.
-    fn rate(&self, config: &G3OffloadConfig, job: &Job) -> f64 {
-        let direction = job.direction as usize;
-        let total = self.total[direction];
-        let local = self
-            .workers
-            .get(&job.worker)
-            .map_or(0, |counts| counts[direction]);
-        let (worker, shared) = match job.direction {
-            Direction::Read => (
-                config.read_bandwidth_gbps,
-                config.shared_read_bandwidth_gbps,
-            ),
-            Direction::Write => (
-                config.write_bandwidth_gbps,
-                config.shared_write_bandwidth_gbps,
-            ),
-        };
-        let rate = |bw: f64, n: usize| {
-            if bw == 0.0 {
-                f64::INFINITY
-            } else {
-                bw * 1e6 / n.max(1) as f64
-            }
-        };
-        let worker_rate = rate(worker, local);
-        match config.scope {
-            G3Scope::WorkerLocal => worker_rate,
-            G3Scope::ClusterShared => worker_rate.min(rate(shared, total)),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -137,9 +82,9 @@ pub(crate) struct G3Tier {
     next_worker_id: usize,
     block_bytes: usize,
     entries: BTreeMap<(usize, HostBlockKey), Entry>,
-    jobs: VecDeque<Job>,
+    jobs: BTreeMap<u64, Job>,
+    transfers: FairTransfers,
     completed: BTreeMap<usize, Vec<Completion>>,
-    now: f64,
     ordinal: u64,
     pub(crate) completion_epoch: u64,
     pub stats: G3Stats,
@@ -179,9 +124,9 @@ impl G3Tier {
             next_worker_id: workers,
             block_bytes,
             entries: BTreeMap::new(),
-            jobs: VecDeque::new(),
+            jobs: BTreeMap::new(),
+            transfers: FairTransfers::default(),
             completed: (0..workers).map(|worker| (worker, Vec::new())).collect(),
-            now: 0.0,
             ordinal: 0,
             completion_epoch: 0,
             stats: G3Stats::default(),
@@ -189,7 +134,7 @@ impl G3Tier {
     }
 
     pub(crate) fn current_time_ms(&self) -> f64 {
-        self.now
+        self.transfers.now()
     }
 
     pub(crate) fn register_worker(&mut self, worker: usize) -> Result<()> {
@@ -205,7 +150,7 @@ impl G3Tier {
     }
 
     pub(crate) fn has_work(&self, worker: usize) -> bool {
-        !self.completed[&worker].is_empty() || self.jobs.iter().any(|job| job.worker == worker)
+        !self.completed[&worker].is_empty() || self.transfers.has_client_jobs(worker as u64)
     }
 
     pub(crate) fn unregister_worker(&mut self, worker: usize) -> Result<()> {
@@ -266,7 +211,7 @@ impl G3Tier {
         now: f64,
     ) -> Option<u64> {
         // Commands from a lagging rank can never schedule work in the past.
-        self.advance(now.max(self.now));
+        self.advance(now);
         let pool = self.pool(worker);
         let protected: FxHashSet<_> = keys.iter().copied().collect();
         let mut keys = match direction {
@@ -329,20 +274,43 @@ impl G3Tier {
         self.ordinal += 1;
         let id = self.ordinal;
         self.io_mut(direction).submitted_jobs += 1;
-        self.jobs.push_back(Job {
+        let now = self.transfers.now();
+        let (worker_gbps, shared_gbps) = match direction {
+            Direction::Read => (
+                self.config.read_bandwidth_gbps,
+                self.config.shared_read_bandwidth_gbps,
+            ),
+            Direction::Write => (
+                self.config.write_bandwidth_gbps,
+                self.config.shared_write_bandwidth_gbps,
+            ),
+        };
+        self.transfers.submit(offload_transfer::Job {
             id,
-            worker,
+            client: worker as u64,
             direction,
-            remaining: (keys.len() * self.block_bytes) as f64,
-            keys,
-            submitted: self.now,
-            ready: self.now + self.config.latency_to_first_byte_ms,
+            ready: now + self.config.latency_to_first_byte_ms,
+            bytes: (keys.len() * self.block_bytes) as f64,
+            client_rate: offload_transfer::bytes_per_ms(worker_gbps),
+            shared_rate: match self.config.scope {
+                G3Scope::WorkerLocal => f64::INFINITY,
+                G3Scope::ClusterShared => offload_transfer::bytes_per_ms(shared_gbps),
+            },
         });
+        self.jobs.insert(
+            id,
+            Job {
+                worker,
+                direction,
+                keys,
+                submitted: now,
+            },
+        );
         Some(id)
     }
 
     pub(crate) fn job_keys(&self, id: u64) -> Vec<HostBlockKey> {
-        self.jobs.iter().find(|j| j.id == id).unwrap().keys.clone()
+        self.jobs[&id].keys.clone()
     }
 
     fn io_mut(&mut self, direction: Direction) -> &mut G3IoStats {
@@ -352,88 +320,25 @@ impl G3Tier {
         }
     }
 
-    fn event_time(&self, job: &Job, counts: &ReadyCounts) -> f64 {
-        if job.ready > self.now {
-            job.ready
-        } else {
-            self.now + job.remaining / counts.rate(&self.config, job)
-        }
-    }
-
     pub(crate) fn next_deadline(&self, worker: usize) -> Option<f64> {
-        let counts = ReadyCounts::new(self.jobs.iter(), self.now);
-        self.jobs
-            .iter()
-            .map(|job| self.event_time(job, &counts))
+        self.transfers
+            .next_event()
+            .into_iter()
             .chain(self.completed[&worker].iter().map(|done| done.at_ms))
             .min_by(f64::total_cmp)
     }
 
     pub(crate) fn advance(&mut self, target: f64) {
-        let target = target.max(self.now);
-        loop {
-            let counts = ReadyCounts::new(self.jobs.iter(), self.now);
-            let event = self
+        for (id, at_ms) in self.transfers.advance(target) {
+            let job = self
                 .jobs
-                .iter()
-                .map(|j| self.event_time(j, &counts))
-                .min_by(f64::total_cmp);
-            let next = event.unwrap_or(target).min(target);
-            let elapsed = next - self.now;
-            let rates = self
-                .jobs
-                .iter()
-                .map(|j| {
-                    if j.ready <= self.now {
-                        (
-                            counts.rate(&self.config, j),
-                            self.event_time(j, &counts) <= next,
-                        )
-                    } else {
-                        (0.0, false)
-                    }
-                })
-                .collect::<Vec<_>>();
-            for (job, (rate, completes)) in self.jobs.iter_mut().zip(rates) {
-                // The selected completion boundary is authoritative. Repeated
-                // byte subtraction at a large timestamp can leave a residual
-                // whose duration is below one clock ULP and would never drain.
-                if completes {
-                    job.remaining = 0.0;
-                } else {
-                    job.remaining = (job.remaining - elapsed * rate).max(0.0);
-                }
-            }
-            self.now = next;
-            let mut finished = false;
-            let mut index = 0;
-            while index < self.jobs.len() {
-                if self.jobs[index].ready <= self.now && self.jobs[index].remaining == 0.0 {
-                    let job = self.jobs.remove(index).unwrap();
-                    self.finish(job);
-                    finished = true;
-                } else {
-                    index += 1;
-                }
-            }
-            if event.is_none_or(|time| time > target) {
-                break;
-            }
-            if self.now == target && !finished {
-                // Advancing time can make first-byte waiters eligible at this boundary.
-                let counts = ReadyCounts::new(self.jobs.iter(), self.now);
-                if self
-                    .jobs
-                    .iter()
-                    .all(|job| self.event_time(job, &counts) > target)
-                {
-                    break;
-                }
-            }
+                .remove(&id)
+                .expect("finished G3 job lost its metadata");
+            self.finish(id, job, at_ms);
         }
     }
 
-    fn finish(&mut self, job: Job) {
+    fn finish(&mut self, id: u64, job: Job, now: f64) {
         self.completion_epoch += 1;
         let pool = self.pool(job.worker);
         self.ordinal += 1;
@@ -449,7 +354,6 @@ impl G3Tier {
             entry.touched = self.ordinal;
         }
         let bytes = (job.keys.len() * self.block_bytes) as u64;
-        let now = self.now;
         let io = self.io_mut(job.direction);
         io.completed_jobs += 1;
         io.completed_bytes += bytes;
@@ -458,7 +362,7 @@ impl G3Tier {
             .get_mut(&job.worker)
             .unwrap()
             .push(Completion {
-                id: job.id,
+                id,
                 direction: job.direction,
                 keys: job.keys,
                 at_ms: now,
@@ -481,9 +385,9 @@ impl G3Tier {
 
     #[cfg(test)]
     pub(crate) fn cancel(&mut self, id: u64, now: f64) {
-        self.advance(now.max(self.now));
-        if let Some(index) = self.jobs.iter().position(|job| job.id == id) {
-            let job = self.jobs.remove(index).unwrap();
+        self.advance(now);
+        if self.transfers.cancel(id) {
+            let job = self.jobs.remove(&id).unwrap();
             let pool = self.pool(job.worker);
             for key in &job.keys {
                 if job.direction == Direction::Write {

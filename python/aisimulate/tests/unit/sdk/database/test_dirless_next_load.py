@@ -94,7 +94,7 @@ def test_alpha_next_still_loads_from_its_own_directory(systems_root):
 
 def test_dirless_relaxation_does_not_weaken_the_raw_version_gate(systems_root, monkeypatch):
     monkeypatch.delenv("AIC_ALLOW_UNLISTED_VERSIONS", raising=False)
-    with pytest.raises(ValueError, match="old-style raw version query"):
+    with pytest.raises(ValueError, match="is not a queryable version"):
         pdb.get_database(_BETA, "vllm", "0.9.0", systems_paths=systems_root)
 
 

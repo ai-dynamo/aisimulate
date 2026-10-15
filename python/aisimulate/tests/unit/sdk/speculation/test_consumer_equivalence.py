@@ -295,7 +295,7 @@ class TestMemoryAndRouting:
             model._num_experts = 0
             model.model_family = "GPT"
             model.get_kvcache_bytes_per_sequence = lambda seq_len: 2048.0
-            model._cp_kv_memory_divisor = lambda: 1
+            model.get_kvcache_rank_bytes_per_sequence = lambda seq_len: 2048.0
 
         m_base = backend._get_memory_usage(base, database, **kwargs)
         m_draft = backend._get_memory_usage(drafted, database, **kwargs)

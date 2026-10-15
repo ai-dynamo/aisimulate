@@ -91,7 +91,7 @@ def test_fpm_generator_config_rejects_collector_owned_engine_fields(tmp_path):
     with pytest.raises(ValueError, match="deployment-only"):
         _load_generator_overrides(_generator_args(generator_config=str(config)))
 
-    with pytest.raises(ValueError, match="resolves generated_config_version"):
+    with pytest.raises(ValueError, match="uses the default benchmark templates"):
         _load_generator_overrides(_generator_args(generated_config_version="0.20.1"))
 
 

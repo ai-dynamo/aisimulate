@@ -4,13 +4,13 @@
 
 """Predictor-neutral domain types."""
 
-from fpm_accuracy.types.forward_pass import (
+from scripts.fpm_accuracy.types.forward_pass import (
     ForwardPassInput,
     ForwardPassIteration,
     ForwardPassMetric,
     WorkloadKind,
 )
-from fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
+from scripts.fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
 
 __all__ = [
     "ForwardPassInput",

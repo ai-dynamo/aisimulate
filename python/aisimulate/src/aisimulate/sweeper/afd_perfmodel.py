@@ -184,9 +184,15 @@ class AICAFDPerformanceModel:
                 max_seq_len=request.max_seq_len,
             )
         except Exception as exc:
+            context_advice = (
+                " Check engine.context_length: the default uses the model's full context. "
+                "A smaller context limit can reduce KV memory; verify it still covers the workload."
+                if "OOM" in str(exc)
+                else ""
+            )
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_MEASUREMENT,
-                f"AIC could not measure the AFD candidate: {type(exc).__name__}: {exc}",
+                f"AIC could not measure the AFD candidate: {type(exc).__name__}: {exc}{context_advice}",
                 provenance={
                     "provider": "aic",
                     "model": request.model_name,

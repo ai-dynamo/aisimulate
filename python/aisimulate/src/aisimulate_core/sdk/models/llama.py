@@ -23,8 +23,19 @@ class LLAMAModel(BaseModel):
     @classmethod
     def supports_cp(cls, backend_name: str) -> bool:
         # Dense GQA prefill CP: SGLang AllGather (zigzag in-seq split). vLLM CP
-        # is decode-time DCP (a different concept) -- intentionally excluded.
+        # is decode-time DCP (a different concept) -- see supports_dcp.
         return backend_name == "sglang"
+
+    @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # GQA decode CP: vLLM FlashAttention / FlashInfer backends (dcp <= tp /
+        # kv_heads, the TP-replicated kv heads are what DCP de-duplicates).
+        # SGLang's GQA DCP exists only in its Triton backend, so it is not
+        # claimed here.
+        return backend_name == "vllm"
+
+    def _dcp_kv_head_replication(self) -> int | None:
+        return int(self.config.tp_size) // max(1, int(self._num_kv_heads))
 
     @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:

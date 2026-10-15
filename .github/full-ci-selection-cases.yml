@@ -15,12 +15,13 @@ cases:
   - id: documentation
     paths: [README.md, docs/architecture.md]
     run_all: false
-    selected: []
+    selected: [readme_commands]
 
   - id: python-application
     paths: [python/aisimulate/src/aisimulate/traffic.py]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - application_wheel
       - application_tests
@@ -31,6 +32,7 @@ cases:
     paths: [python/aisimulate/src/aisimulate/generator/base.py]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - prediction_regression
       - application_wheel
@@ -43,6 +45,7 @@ cases:
     paths: [python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - collector_data
       - prediction_regression
@@ -56,6 +59,7 @@ cases:
     paths: [crates/core/src/replay/event.rs]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - collector_data
       - prediction_regression
@@ -72,6 +76,7 @@ cases:
     paths: [Cargo.lock]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - collector_data
       - prediction_regression
@@ -89,6 +94,7 @@ cases:
     paths: [THIRD_PARTY_NOTICES.md]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - application_wheel
       - application_tests
@@ -109,6 +115,7 @@ cases:
     paths: [docs/old-name.md, crates/core/src/replay/new_name.rs]
     run_all: false
     selected:
+      - readme_commands
       - platform_wheels
       - collector_data
       - prediction_regression

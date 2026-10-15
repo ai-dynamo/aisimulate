@@ -1,0 +1,1217 @@
+{
+  "schema_version": "reviewed-launcher-workload/1",
+  "records": [
+    {
+      "point": {
+        "bench_id": 438281,
+        "config_id": 1980,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 512,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 5,
+        "decode_tp": 8,
+        "decode_ep": 8,
+        "decode_dp_attention": true,
+        "decode_num_workers": 2,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 17.05778323047657,
+        "mean_tpot": 0.013894394211463584,
+        "median_ttft": 17.053814552011318,
+        "median_tpot": 0.013924119053846579
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/5p2d-tp1-dep8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "8_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 5P (TP1) x 2D (TP8_EP8_DPA)    c512.txt",
+        "job_log_sha256": "ba6edba1e4344d2ef02b1e8eb8e73a6960ff09130d9c08baf271375b870622e8",
+        "execution_lines": [
+          "2026-08-03T15:39:22.5384624Z Runner name: 'b300-nv_04'",
+          "2026-08-03T15:39:58.8461075Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:01.9057927Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/5p2d-tp1-dep8-8k1k.yaml",
+          "2026-08-03T15:40:09.5652239Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862586979,
+        "sha256": "925f124ffe0a3d5d1850b6fd1c5581f7c59000852d11b77bc3c84bc86449881a",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_512_gpus_21_ctx_5_gen_16.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 17057.78323047657,
+            "database_seconds": 17.05778323047657
+          },
+          "mean_tpot": {
+            "artifact_ms": 13.894394211463583,
+            "database_seconds": 0.013894394211463584
+          },
+          "median_ttft": {
+            "artifact_ms": 17053.814552011318,
+            "database_seconds": 17.053814552011318
+          },
+          "median_tpot": {
+            "artifact_ms": 13.924119053846578,
+            "database_seconds": 0.013924119053846579
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438289,
+        "config_id": 1982,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 768,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 8,
+        "decode_tp": 8,
+        "decode_ep": 8,
+        "decode_dp_attention": true,
+        "decode_num_workers": 2,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 134.7415987058187,
+        "mean_tpot": 0.013228126136611366,
+        "median_ttft": 3.3428879435086856,
+        "median_tpot": 0.014136873984459996
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/8p2d-tp1-dep8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 8P (TP1) x 2D (TP8_EP8_DPA)    c768x1024.txt",
+        "job_log_sha256": "76eab8b18249275a359c75b4fb06a9194e61e5bb47e33241570558ad1afcca05",
+        "execution_lines": [
+          "2026-08-03T15:39:24.3651787Z Runner name: 'b300-nv_07'",
+          "2026-08-03T15:40:01.9736498Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.9457298Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/8p2d-tp1-dep8-8k1k.yaml",
+          "2026-08-03T15:40:13.3944737Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8866318926,
+        "sha256": "ece5813d855504f9b3914003391388f0e1150f60f88ce159440224131576fa9c",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_768_gpus_24_ctx_8_gen_16.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 134741.5987058187,
+            "database_seconds": 134.7415987058187
+          },
+          "mean_tpot": {
+            "artifact_ms": 13.228126136611365,
+            "database_seconds": 0.013228126136611366
+          },
+          "median_ttft": {
+            "artifact_ms": 3342.8879435086856,
+            "database_seconds": 3.3428879435086856
+          },
+          "median_tpot": {
+            "artifact_ms": 14.136873984459996,
+            "database_seconds": 0.014136873984459996
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438290,
+        "config_id": 1982,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 1024,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 8,
+        "decode_tp": 8,
+        "decode_ep": 8,
+        "decode_dp_attention": true,
+        "decode_num_workers": 2,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 182.4646433432158,
+        "mean_tpot": 0.01330246942365026,
+        "median_ttft": 8.492934035501094,
+        "median_tpot": 0.014267486998632253
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/8p2d-tp1-dep8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "9_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 8P (TP1) x 2D (TP8_EP8_DPA)    c768x1024.txt",
+        "job_log_sha256": "76eab8b18249275a359c75b4fb06a9194e61e5bb47e33241570558ad1afcca05",
+        "execution_lines": [
+          "2026-08-03T15:39:24.3651787Z Runner name: 'b300-nv_07'",
+          "2026-08-03T15:40:01.9736498Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.9457298Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/8p2d-tp1-dep8-8k1k.yaml",
+          "2026-08-03T15:40:13.3944737Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8866318926,
+        "sha256": "ece5813d855504f9b3914003391388f0e1150f60f88ce159440224131576fa9c",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_1024_gpus_24_ctx_8_gen_16.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 182464.6433432158,
+            "database_seconds": 182.4646433432158
+          },
+          "mean_tpot": {
+            "artifact_ms": 13.30246942365026,
+            "database_seconds": 0.01330246942365026
+          },
+          "median_ttft": {
+            "artifact_ms": 8492.934035501094,
+            "database_seconds": 8.492934035501094
+          },
+          "median_tpot": {
+            "artifact_ms": 14.267486998632252,
+            "database_seconds": 0.014267486998632253
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438288,
+        "config_id": 1979,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 128,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 2,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 6.150757621265143,
+        "mean_tpot": 0.014009558721135951,
+        "median_ttft": 5.948514417512342,
+        "median_tpot": 0.014138208950922883
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/2p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "11_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 2P (TP1) x 1D (TP4)    c128.txt",
+        "job_log_sha256": "d9e074579063e5ef621d1b3a1b8f303c98b2aedc87a23f9df143e9c1242dd755",
+        "execution_lines": [
+          "2026-08-03T15:39:23.2016744Z Runner name: 'b300-nv_05'",
+          "2026-08-03T15:39:54.3833870Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:39:57.7865154Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/2p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:04.8589649Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862400203,
+        "sha256": "f2404b8158f99a3b3af3dfd1b7a630e938c092631c4dd017132434e9d68672da",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_128_gpus_6_ctx_2_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 6150.757621265143,
+            "database_seconds": 6.150757621265143
+          },
+          "mean_tpot": {
+            "artifact_ms": 14.009558721135951,
+            "database_seconds": 0.014009558721135951
+          },
+          "median_ttft": {
+            "artifact_ms": 5948.514417512342,
+            "database_seconds": 5.948514417512342
+          },
+          "median_tpot": {
+            "artifact_ms": 14.138208950922882,
+            "database_seconds": 0.014138208950922883
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438296,
+        "config_id": 1978,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 256,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 3,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 8.094530300916972,
+        "mean_tpot": 0.01875876921497244,
+        "median_ttft": 7.273534035004559,
+        "median_tpot": 0.01913099707584061
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/3p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "12_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 3P (TP1) x 1D (TP4)    c256.txt",
+        "job_log_sha256": "652343d7fa88f9da142ea6c967188c1f446e0ab1895686cc80c1ed4d99bd697c",
+        "execution_lines": [
+          "2026-08-03T15:39:24.0649428Z Runner name: 'b300-nv_03'",
+          "2026-08-03T15:39:57.1170415Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:00.6248508Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/3p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:07.9764461Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862471554,
+        "sha256": "c0f7be484b8873e86d268d4c895767d566890ad9c4f7e4cc7f0b7204c7d1c24c",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_256_gpus_7_ctx_3_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 8094.530300916972,
+            "database_seconds": 8.094530300916972
+          },
+          "mean_tpot": {
+            "artifact_ms": 18.75876921497244,
+            "database_seconds": 0.01875876921497244
+          },
+          "median_ttft": {
+            "artifact_ms": 7273.534035004559,
+            "database_seconds": 7.273534035004559
+          },
+          "median_tpot": {
+            "artifact_ms": 19.130997075840607,
+            "database_seconds": 0.01913099707584061
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438293,
+        "config_id": 1981,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 1,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.3811052327946527,
+        "mean_tpot": 0.004274043148038224,
+        "median_ttft": 0.3764503174897982,
+        "median_tpot": 0.004273234199520132
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "execution_lines": [
+          "2026-08-03T15:39:23.5627663Z Runner name: 'b300-nv_06'",
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.4859953Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+          "2026-08-03T15:40:12.9792929Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862483311,
+        "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_1_gpus_9_ctx_1_gen_8.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 381.1052327946527,
+            "database_seconds": 0.3811052327946527
+          },
+          "mean_tpot": {
+            "artifact_ms": 4.274043148038224,
+            "database_seconds": 0.004274043148038224
+          },
+          "median_ttft": {
+            "artifact_ms": 376.4503174897982,
+            "database_seconds": 0.3764503174897982
+          },
+          "median_tpot": {
+            "artifact_ms": 4.273234199520132,
+            "database_seconds": 0.004273234199520132
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438291,
+        "config_id": 1981,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 2,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.48025581810070433,
+        "mean_tpot": 0.004415482139475585,
+        "median_ttft": 0.39958611149631906,
+        "median_tpot": 0.004417986743393393
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "execution_lines": [
+          "2026-08-03T15:39:23.5627663Z Runner name: 'b300-nv_06'",
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.4859953Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+          "2026-08-03T15:40:12.9792929Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862483311,
+        "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_2_gpus_9_ctx_1_gen_8.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 480.25581810070435,
+            "database_seconds": 0.48025581810070433
+          },
+          "mean_tpot": {
+            "artifact_ms": 4.415482139475585,
+            "database_seconds": 0.004415482139475585
+          },
+          "median_ttft": {
+            "artifact_ms": 399.58611149631906,
+            "database_seconds": 0.39958611149631906
+          },
+          "median_tpot": {
+            "artifact_ms": 4.417986743393393,
+            "database_seconds": 0.004417986743393393
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438294,
+        "config_id": 1981,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 4,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.5734574407768378,
+        "mean_tpot": 0.004740428582307036,
+        "median_ttft": 0.44552349201694597,
+        "median_tpot": 0.0047468512798132904
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "execution_lines": [
+          "2026-08-03T15:39:23.5627663Z Runner name: 'b300-nv_06'",
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.4859953Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+          "2026-08-03T15:40:12.9792929Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862483311,
+        "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_4_gpus_9_ctx_1_gen_8.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 573.4574407768378,
+            "database_seconds": 0.5734574407768378
+          },
+          "mean_tpot": {
+            "artifact_ms": 4.740428582307036,
+            "database_seconds": 0.004740428582307036
+          },
+          "median_ttft": {
+            "artifact_ms": 445.52349201694597,
+            "database_seconds": 0.44552349201694597
+          },
+          "median_tpot": {
+            "artifact_ms": 4.74685127981329,
+            "database_seconds": 0.0047468512798132904
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438292,
+        "config_id": 1981,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 8,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.6896290303237038,
+        "mean_tpot": 0.005398389824961806,
+        "median_ttft": 0.5194740405131597,
+        "median_tpot": 0.005424125437937931
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "execution_lines": [
+          "2026-08-03T15:39:23.5627663Z Runner name: 'b300-nv_06'",
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.4859953Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+          "2026-08-03T15:40:12.9792929Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862483311,
+        "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_8_gpus_9_ctx_1_gen_8.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 689.6290303237038,
+            "database_seconds": 0.6896290303237038
+          },
+          "mean_tpot": {
+            "artifact_ms": 5.398389824961806,
+            "database_seconds": 0.005398389824961806
+          },
+          "median_ttft": {
+            "artifact_ms": 519.4740405131597,
+            "database_seconds": 0.5194740405131597
+          },
+          "median_tpot": {
+            "artifact_ms": 5.4241254379379304,
+            "database_seconds": 0.005424125437937931
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438295,
+        "config_id": 1981,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 16,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.91608548182503,
+        "mean_tpot": 0.0069925308077502645,
+        "median_ttft": 0.6559500194853172,
+        "median_tpot": 0.007068908299808647
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "19_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP8)    c1x2x4x8x16.txt",
+        "job_log_sha256": "b7b313359860de00a247d05c565a19360ab2f5821bdc58f9d22cd3744b053adf",
+        "execution_lines": [
+          "2026-08-03T15:39:23.5627663Z Runner name: 'b300-nv_06'",
+          "2026-08-03T15:40:01.6823902Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:05.4859953Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp8-8k1k.yaml",
+          "2026-08-03T15:40:12.9792929Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862483311,
+        "sha256": "c8873c955c915a743e1148195650e77abc0b463ecfaaab8f841900859a31626e",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_16_gpus_9_ctx_1_gen_8.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 916.08548182503,
+            "database_seconds": 0.91608548182503
+          },
+          "mean_tpot": {
+            "artifact_ms": 6.992530807750264,
+            "database_seconds": 0.0069925308077502645
+          },
+          "median_ttft": {
+            "artifact_ms": 655.9500194853172,
+            "database_seconds": 0.6559500194853172
+          },
+          "median_tpot": {
+            "artifact_ms": 7.068908299808647,
+            "database_seconds": 0.007068908299808647
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438284,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 8,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.5785660167137394,
+        "mean_tpot": 0.006410387159790895,
+        "median_ttft": 0.41549028050212655,
+        "median_tpot": 0.006429943574024285
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_8_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 578.5660167137394,
+            "database_seconds": 0.5785660167137394
+          },
+          "mean_tpot": {
+            "artifact_ms": 6.410387159790895,
+            "database_seconds": 0.006410387159790895
+          },
+          "median_ttft": {
+            "artifact_ms": 415.49028050212655,
+            "database_seconds": 0.41549028050212655
+          },
+          "median_tpot": {
+            "artifact_ms": 6.429943574024285,
+            "database_seconds": 0.006429943574024285
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438282,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 16,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.7716707637006038,
+        "mean_tpot": 0.00844095234082645,
+        "median_ttft": 0.5157804740010761,
+        "median_tpot": 0.008524313296978666
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_16_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 771.6707637006039,
+            "database_seconds": 0.7716707637006038
+          },
+          "mean_tpot": {
+            "artifact_ms": 8.44095234082645,
+            "database_seconds": 0.00844095234082645
+          },
+          "median_ttft": {
+            "artifact_ms": 515.7804740010761,
+            "database_seconds": 0.5157804740010761
+          },
+          "median_tpot": {
+            "artifact_ms": 8.524313296978667,
+            "database_seconds": 0.008524313296978666
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438283,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 24,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 0.9985281001496332,
+        "mean_tpot": 0.009422450627756993,
+        "median_ttft": 0.6423549430037383,
+        "median_tpot": 0.009519141870956368
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_24_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 998.5281001496332,
+            "database_seconds": 0.9985281001496332
+          },
+          "mean_tpot": {
+            "artifact_ms": 9.422450627756993,
+            "database_seconds": 0.009422450627756993
+          },
+          "median_ttft": {
+            "artifact_ms": 642.3549430037383,
+            "database_seconds": 0.6423549430037383
+          },
+          "median_tpot": {
+            "artifact_ms": 9.519141870956368,
+            "database_seconds": 0.009519141870956368
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438286,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 32,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 1.3703085493058098,
+        "mean_tpot": 0.010091403452795628,
+        "median_ttft": 0.9568357384996489,
+        "median_tpot": 0.010194977305545007
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_32_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 1370.3085493058097,
+            "database_seconds": 1.3703085493058098
+          },
+          "mean_tpot": {
+            "artifact_ms": 10.091403452795628,
+            "database_seconds": 0.010091403452795628
+          },
+          "median_ttft": {
+            "artifact_ms": 956.8357384996489,
+            "database_seconds": 0.9568357384996489
+          },
+          "median_tpot": {
+            "artifact_ms": 10.194977305545008,
+            "database_seconds": 0.010194977305545007
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438285,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 48,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 3.663522372737134,
+        "mean_tpot": 0.011432985431644728,
+        "median_ttft": 3.183628275990486,
+        "median_tpot": 0.011661153833775233
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_48_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 3663.522372737134,
+            "database_seconds": 3.663522372737134
+          },
+          "mean_tpot": {
+            "artifact_ms": 11.432985431644727,
+            "database_seconds": 0.011432985431644728
+          },
+          "median_ttft": {
+            "artifact_ms": 3183.628275990486,
+            "database_seconds": 3.183628275990486
+          },
+          "median_tpot": {
+            "artifact_ms": 11.661153833775233,
+            "database_seconds": 0.011661153833775233
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438287,
+        "config_id": 1983,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 64,
+        "framework": "dynamo-vllm",
+        "silicon_model": "minimaxm3",
+        "hardware": "b300",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 1,
+        "prefill_dp_attention": false,
+        "prefill_num_workers": 1,
+        "decode_tp": 4,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "c561626b06d2fc2000691f132024f8aad203d7bf"
+      },
+      "metrics": {
+        "mean_ttft": 8.097230985193846,
+        "mean_tpot": 0.011498522806045727,
+        "median_ttft": 7.8952805980079575,
+        "median_tpot": 0.011647731509710577
+      },
+      "recipe_destination": "recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+      "runner_git_sha": "c1fb6989fc5aca803b4ca0f2d17d8be85fad9732",
+      "job": {
+        "github_run_id": "30828231519",
+        "run_attempt": 1,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "8b94491037e2bcd09711c40e30722ebb17639ceb",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30828231519/attempts/1/logs",
+        "logs_archive_sha256": "4b4b34b6e56c44e1beba41e8d9f8bed2e91463b1f38eaf9bbced83deb527d27f",
+        "job_log_member": "20_multi-node 8k1k _ (vllm_vllm-openainightly-5e35a6f4f9bbc217c599692157ca985c894373f7, nvidia_Mini... _ p0.000  minimaxm3 fp4 b300 dynamo-vllm 1P (TP1) x 1D (TP4)    c8x16x24x32x48x64.txt",
+        "job_log_sha256": "9c9d1011349638b9bdd6cea82543d9bdd0cb3230b07b21625820ace8cd3d6ed5",
+        "execution_lines": [
+          "2026-08-03T15:39:27.5779466Z Runner name: 'b300-nv_10'",
+          "2026-08-03T15:40:05.5597543Z [command]/usr/bin/git checkout --progress --force 8b94491037e2bcd09711c40e30722ebb17639ceb",
+          "2026-08-03T15:40:09.9768558Z + CONFIG_FILE=recipes/vllm/minimax-m3/b300-fp4/8k1k/1p1d-tp1-tp4-8k1k.yaml",
+          "2026-08-03T15:40:18.9002099Z + git checkout c1fb6989fc5aca803b4ca0f2d17d8be85fad9732"
+        ]
+      },
+      "artifact": {
+        "id": 8862785579,
+        "sha256": "81076d198ec44882170028259f7ad7cf72d4a5d17b249c740068fcea10588cae",
+        "result_member": "./sa-bench_isl_8192_osl_1024/results_concurrency_64_gpus_5_ctx_1_gen_4.json",
+        "metric_match": {
+          "mean_ttft": {
+            "artifact_ms": 8097.230985193846,
+            "database_seconds": 8.097230985193846
+          },
+          "mean_tpot": {
+            "artifact_ms": 11.498522806045727,
+            "database_seconds": 0.011498522806045727
+          },
+          "median_ttft": {
+            "artifact_ms": 7895.280598007957,
+            "database_seconds": 7.8952805980079575
+          },
+          "median_tpot": {
+            "artifact_ms": 11.647731509710578,
+            "database_seconds": 0.011647731509710577
+          }
+        }
+      }
+    },
+    {
+      "point": {
+        "bench_id": 438760,
+        "config_id": 2194,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 1,
+        "framework": "dynamo-vllm",
+        "silicon_model": "kimik2.6",
+        "hardware": "b200",
+        "precision": "fp4",
+        "spec_method": "none",
+        "disagg": true,
+        "is_multinode": true,
+        "prefill_tp": 1,
+        "prefill_ep": 8,
+        "prefill_dp_attention": true,
+        "prefill_num_workers": 1,
+        "decode_tp": 8,
+        "decode_ep": 1,
+        "decode_dp_attention": false,
+        "decode_num_workers": 1,
+        "head_sha": "fc2609111631afc2363f1133fad5a960e9638845"
+      },
+      "metrics": {
+        "mean_ttft": 0.5473635403439403,
+        "mean_tpot": 0.0062083608965098815,
+        "median_ttft": 0.3575274017639458,
+        "median_tpot": 0.006208509730512079
+      },
+      "recipe_destination": "recipes/vllm/kimi-k2.6/b200-fp4/8k1k/disagg-b200-1p1d-dep8-tp8-c1.yaml",
+      "runner_git_sha": "c180328b98c3793ca84a1e24a030f90545eb7d5d",
+      "job": {
+        "github_run_id": "30669586535",
+        "run_attempt": 2,
+        "recorded_run_attempt": 2,
+        "source_git_sha": "ded03c15ea776ee4847ee075f1cf028c0e9356b0",
+        "logs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/30669586535/attempts/2/logs",
+        "logs_archive_sha256": "8f4d7e64c6f47b5135c0983ee7bd6ba8ccd60974fc22e3583bddad9600337864",
+        "job_log_member": "17_multi-node 8k1k _ (vllm_vllm-openaiv0.25.1, nvidia_Kimi-K2.6-NVFP4, kimik2.6, fp4, dynamo-vllm, ... _ p0.000  kimik2.6 fp4 b200-new dynamo-vllm 1P (TP1_EP8_DPA) x 1D (TP8)    c1.txt",
+        "job_log_sha256": "db7c2cf09fc6484e98ffcf207cc52a50d5de11bac3ac068228ad3d189fa02d4e",
+        "execution_lines": [
+          "2026-07-31T23:13:27.0272862Z Runner name: 'b200-nscale-slurm_7'",
+          "2026-07-31T23:14:21.2832885Z [command]/usr/bin/git checkout --progress --force ded03c15ea776ee4847ee075f1cf028c0e9356b0",
+          "2026-07-31T23:14:45.7074020Z + CONFIG_FILE=recipes/vllm/kimi-k2.6/b200-fp4/8k1k/disagg-b200-1p1d-dep8-tp8-c1.yaml",
+          "2026-07-31T23:14:52.1012335Z + git checkout c180328b98c3793ca84a1e24a030f90545eb7d5d"
+        ]
+      },
+      "artifact": {
+        "id": 8809505914,
+        "sha256": "be66c10e7444315735055df664f6d16051d5003e26be6a1d3fda74b828bb9e3d",
+        "result_member": "sa-bench_isl_8192_osl_1024/results_concurrency_1_gpus_16_ctx_8_gen_8.json",
+        "metric_match": {
+          "mean_ttft": 547.3635403439403,
+          "mean_tpot": 6.208360896509881,
+          "median_ttft": 357.5274017639458,
+          "median_tpot": 6.208509730512079
+        }
+      }
+    }
+  ]
+}

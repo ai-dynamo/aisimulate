@@ -73,10 +73,13 @@ pub struct AgenticSnapshotEvidence {
 /// Token ranges are functions of lane/ordinal, never runtime completion order.
 #[derive(Debug)]
 pub struct AgenticReplayContext {
+    /// The source graph, except that each node's `hash_ids` holds play-local
+    /// ranks (first-seen order within its play) instead of graph-wide IDs, and
+    /// `hash_values` is empty.
     pub(super) graph: ValidatedAgenticGraph,
+    graph_identity: AgenticGraphIdentity,
     pub(super) lanes: usize,
     seed: u64,
-    ranks: Vec<Vec<u32>>,
     index_by_id: FxHashMap<String, usize>,
     node_to_play: Vec<usize>,
     topological_rank: Vec<usize>,
@@ -110,6 +113,16 @@ enum PlayCut {
 impl ValidatedAgenticGraph {
     pub fn prepare_snapshots(
         &self,
+        lanes: usize,
+        options: AgenticSnapshotOptions,
+    ) -> Result<PreparedAgenticSnapshots> {
+        self.clone().into_prepared_snapshots(lanes, options)
+    }
+
+    /// [`Self::prepare_snapshots`] for a caller that no longer needs the graph:
+    /// the replay context reuses it instead of holding a second copy.
+    pub fn into_prepared_snapshots(
+        mut self,
         lanes: usize,
         options: AgenticSnapshotOptions,
     ) -> Result<PreparedAgenticSnapshots> {
@@ -153,22 +166,24 @@ impl ValidatedAgenticGraph {
         if ordinal != self.nodes.len() {
             bail!("snapshot source graph contains a dependency cycle");
         }
-        let mut ranks = vec![Vec::new(); self.nodes.len()];
+        // Replace graph-wide hash IDs with play-local ranks in place; token
+        // identities are derived from these ranks and the play's slot.
         let mut token_stride = 1_u64;
         let mut node_to_play = vec![0; self.nodes.len()];
         for (play_index, play) in self.plays.iter().enumerate() {
             let mut interner = FxHashMap::default();
             for &index in &play.nodes {
                 node_to_play[index] = play_index;
-                for hash in &self.nodes[index].hash_ids {
+                for hash in &mut self.nodes[index].hash_ids {
                     let next = u32::try_from(interner.len()).context(
                         "source play contains more unique hash IDs than u32 can represent",
                     )?;
-                    ranks[index].push(*interner.entry(*hash).or_insert(next));
+                    *hash = *interner.entry(*hash).or_insert(next);
                 }
             }
             token_stride = token_stride.max(interner.len() as u64);
         }
+        self.hash_values = Arc::default();
         let recorded_intervals = self
             .nodes
             .iter()
@@ -192,27 +207,27 @@ impl ValidatedAgenticGraph {
         let mut rng = StdRng::seed_from_u64(SYNTHETIC_OUTPUT_SEED);
         let outputs = self
             .nodes
-            .iter()
+            .iter_mut()
             .map(|node| {
                 planned_output_token_ids(
-                    node.output_token_ids.clone(),
+                    node.output_token_ids.take(),
                     node.max_output_tokens,
                     &mut rng,
                 )
             })
             .collect();
         let context = Arc::new(AgenticReplayContext {
-            graph: self.clone(),
+            graph_identity: self.identity(),
+            request_stride: self.nodes.len() as u128 + 1,
+            graph: self,
             lanes,
             seed: options.seed,
-            ranks,
             outputs,
             index_by_id,
             node_to_play,
             topological_rank,
             recorded_intervals,
             token_stride,
-            request_stride: self.nodes.len() as u128 + 1,
         });
         let plays = (0..lanes)
             .map(|lane| context.prepare_play(lane, 0, None))
@@ -223,7 +238,24 @@ impl ValidatedAgenticGraph {
 
 impl AgenticReplayContext {
     pub fn graph_identity(&self) -> AgenticGraphIdentity {
-        self.graph.identity()
+        self.graph_identity.clone()
+    }
+
+    /// Token identities for source node `index` in the play instance `slot`.
+    /// The caller passes the slot of a prepared play, whose range check bounds
+    /// `(slot + 1) * token_stride` by 2^32; every rank is below the stride.
+    pub(super) fn token_ids(&self, slot: u64, index: usize) -> Vec<u32> {
+        debug_assert!(
+            slot.checked_add(1)
+                .and_then(|next| next.checked_mul(self.token_stride))
+                .is_some_and(|end| end <= 1 << 32)
+        );
+        let base = (slot * self.token_stride) as u32;
+        self.graph.nodes[index]
+            .hash_ids
+            .iter()
+            .map(|&rank| base + rank)
+            .collect()
     }
     pub fn lane_count(&self) -> usize {
         self.lanes
@@ -244,6 +276,7 @@ impl AgenticReplayContext {
             lane_id,
             play_ordinal,
             cut_ms.map_or(PlayCut::Sampled, PlayCut::Absolute),
+            None,
         )
     }
 
@@ -254,7 +287,30 @@ impl AgenticReplayContext {
         lane_id: usize,
         play_ordinal: u64,
     ) -> Result<AgenticPlaySnapshot> {
-        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart)
+        self.prepare_play_with_cut(lane_id, play_ordinal, PlayCut::FromStart, None)
+    }
+
+    /// Select a corpus source independently of the lane incarnation used for
+    /// request/cache identity. The caller owns the shared sequential cursor.
+    pub fn prepare_source_play_from_start(
+        self: &Arc<Self>,
+        source_play_index: usize,
+        lane_id: usize,
+        play_ordinal: u64,
+    ) -> Result<AgenticPlaySnapshot> {
+        if source_play_index >= self.graph.plays.len() {
+            bail!("source play index is outside the corpus");
+        }
+        self.prepare_play_with_cut(
+            lane_id,
+            play_ordinal,
+            PlayCut::FromStart,
+            Some(source_play_index),
+        )
+    }
+
+    pub fn source_play_count(&self) -> usize {
+        self.graph.plays.len()
     }
 
     fn prepare_play_with_cut(
@@ -262,6 +318,7 @@ impl AgenticReplayContext {
         lane_id: usize,
         play_ordinal: u64,
         cut: PlayCut,
+        source_play_index: Option<usize>,
     ) -> Result<AgenticPlaySnapshot> {
         if lane_id >= self.lanes {
             bail!("snapshot lane is outside the configured lane count");
@@ -277,7 +334,8 @@ impl AgenticReplayContext {
         if range_end > u64::from(u32::MAX) + 1 {
             bail!("play token identity range exceeds u32 capacity; identities cannot be recycled");
         }
-        let source_play_index = (slot % self.graph.plays.len() as u64) as usize;
+        let source_play_index =
+            source_play_index.unwrap_or((slot % self.graph.plays.len() as u64) as usize);
         let play = &self.graph.plays[source_play_index];
         let first = play
             .nodes
@@ -324,7 +382,7 @@ impl AgenticReplayContext {
             slot,
             evidence: AgenticSnapshotEvidence {
                 schema: AGENTIC_SNAPSHOT_SCHEMA_V1,
-                graph: self.graph.identity(),
+                graph: self.graph_identity.clone(),
                 seed: self.seed,
                 lane_id,
                 play_ordinal,
@@ -469,17 +527,8 @@ impl AgenticPlaySnapshot {
             cache_id: Some(self.evidence.cache_id.clone()),
         }
     }
-    pub(super) fn token_ids(&self, index: usize) -> Result<Vec<u32>> {
-        let base = self
-            .slot
-            .checked_mul(self.context.token_stride)
-            .context("token range overflow")?;
-        self.context.ranks[index]
-            .iter()
-            .map(|&rank| {
-                u32::try_from(base + u64::from(rank)).context("token identity exceeds u32 capacity")
-            })
-            .collect()
+    pub(super) fn token_ids(&self, index: usize) -> Vec<u32> {
+        self.context.token_ids(self.slot, index)
     }
     pub(super) fn request_uuid(&self, index: usize) -> Result<Uuid> {
         let ordinal = u128::from(self.slot)
@@ -494,7 +543,7 @@ impl AgenticPlaySnapshot {
         if length > node.input_length {
             bail!("prefix length exceeds original input length");
         }
-        let ids = self.token_ids(index)?;
+        let ids = self.token_ids(index);
         super::trace::validate_synthesizable_prompt(
             node.input_length,
             &ids,

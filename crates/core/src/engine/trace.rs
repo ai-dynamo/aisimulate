@@ -31,7 +31,9 @@ pub fn g1_parent_chain_events(block_size: usize) -> Vec<KvEvent> {
     let prompt_len = computed_after - 2;
     let prompt_len_u32 =
         u32::try_from(prompt_len).expect("ordering regression prompt length must fit in u32");
+    let owner = Uuid::from_u128(1);
     let (mut sequence, identities) = RequestSequence::new(
+        owner,
         (0..prompt_len_u32).collect(),
         2,
         2,
@@ -41,7 +43,6 @@ pub fn g1_parent_chain_events(block_size: usize) -> Vec<KvEvent> {
         false,
         Some(vec![prompt_len_u32, prompt_len_u32 + 1]),
     );
-    let owner = Uuid::from_u128(1);
     let mut lease = BlockRequestLease::new(owner, identities);
     let (events, sink) = capture_kv_event_sink();
     let mut manager =

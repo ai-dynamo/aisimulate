@@ -31,6 +31,14 @@ fn run(
     caching: bool,
     prefill_ms: f64,
 ) -> (ReplayReport, ReplayArtifacts) {
+    let mut rank_defaults = EngineConfig::for_backend(backend);
+    // These fixtures include 48/96-token pages. Keep the prefill budget page-aligned
+    // while preserving the token/hash vectors and request scheduling under test.
+    rank_defaults.sglang.chunked_prefill_size = rank_defaults
+        .sglang
+        .chunked_prefill_size
+        .div_ceil(block_size)
+        * block_size;
     let engine = ReplayEngineConfig {
         rank: EngineConfig {
             block_size,
@@ -41,7 +49,7 @@ fn run(
                 prefill_ms,
                 decode_ms: 1.0,
             },
-            ..EngineConfig::for_backend(backend)
+            ..rank_defaults
         },
         ..ReplayEngineConfig::default()
     };

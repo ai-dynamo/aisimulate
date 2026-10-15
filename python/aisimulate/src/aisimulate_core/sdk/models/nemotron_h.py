@@ -305,6 +305,7 @@ class NemotronHModel(BaseModel):
                         moe_quant_mode,
                         workload_distribution,
                         attention_dp_size,
+                        moe_kernel_source=self.config.moe_kernel_source,
                         is_gated=False,  # NemotronH uses Relu2 (non-gated)
                     ),
                     ops.MoEDispatch(
@@ -597,6 +598,7 @@ class NemotronHModel(BaseModel):
                         moe_quant_mode,
                         workload_distribution,
                         attention_dp_size,
+                        moe_kernel_source=self.config.moe_kernel_source,
                         is_gated=False,  # NemotronH uses Relu2 (non-gated)
                     ),
                     ops.MoEDispatch(

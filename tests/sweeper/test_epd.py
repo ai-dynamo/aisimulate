@@ -285,7 +285,7 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
     catalog = {"one": _encoder(), "two": _encoder(workers=2)}
     monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
     monkeypatch.setattr(search_mod, "resolve_encoder_catalog", lambda c: catalog)
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a: "0.5.14")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
     if failure in {"build", "version", "kv"}:
 
         def fail_build(*args, **kwargs):
@@ -443,10 +443,10 @@ def test_encoder_catalog_preserves_version_precedence(
     version_calls = []
     database_calls = []
 
-    def latest_version(system, backend):
+    def latest_version(system, backend, systems_paths=None):
         assert implicit, "explicit encoder versions must not depend on latest-version availability"
         version_calls.append((system, backend))
-        return original_version(system, backend)
+        return original_version(system, backend, systems_paths=systems_paths)
 
     def database(system, backend, version, **kwargs):
         database_calls.append((system, backend, version))

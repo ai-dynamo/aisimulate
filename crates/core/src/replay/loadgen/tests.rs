@@ -815,6 +815,7 @@ fn test_turn_to_direct_request_repeats_hash_ids_by_block_size() {
         priority: -2,
         strict_priority: 8,
         policy_class: None,
+        synthetic_session_id: false,
     };
 
     let request = turn
@@ -845,6 +846,78 @@ fn test_turn_replay_hashes_match_full_blocks_only() {
         ReplayRequestHashes::from_tokens(&request.tokens, 4)
     );
     assert_eq!(replay_hashes.local_block_hashes.len(), 1);
+}
+
+#[test]
+fn test_replay_hashes_keep_legacy_encoding_across_repeated_blocks() {
+    fn legacy_hash(bytes: &[u8]) -> u64 {
+        xxhash_rust::xxh3::xxh3_64_with_seed(bytes, 1337)
+    }
+
+    // 64-token blocks take XXH3's long-input path. Cover repeated constant
+    // blocks, a change, a repeat after the change, repeated non-constant
+    // blocks, and an incomplete tail.
+    let block_size = 64;
+    let varied = (0..block_size as u32).collect::<Vec<_>>();
+    let tokens = [7_u32, 7, 9, 7]
+        .into_iter()
+        .flat_map(|token| std::iter::repeat_n(token, block_size))
+        .chain(varied.iter().copied())
+        .chain(varied.iter().copied())
+        .chain([1, 2, 3])
+        .collect::<Vec<_>>();
+
+    let mut expected = ReplayRequestHashes {
+        local_block_hashes: Vec::new(),
+        sequence_hashes: Vec::new(),
+    };
+    for block in tokens.chunks_exact(block_size) {
+        let bytes = block
+            .iter()
+            .flat_map(|token| token.to_le_bytes())
+            .collect::<Vec<_>>();
+        let local = legacy_hash(&bytes);
+        let sequence = expected.sequence_hashes.last().map_or(local, |parent| {
+            let mut chain = parent.to_le_bytes().to_vec();
+            chain.extend_from_slice(&local.to_le_bytes());
+            legacy_hash(&chain)
+        });
+        expected.local_block_hashes.push(local);
+        expected.sequence_hashes.push(sequence);
+    }
+
+    assert_eq!(
+        ReplayRequestHashes::from_tokens(&tokens, block_size as u32),
+        expected
+    );
+}
+
+#[test]
+fn test_trace_block_replay_hashes_match_synthesized_prompt_hashes() {
+    let hash_ids = [11_u32, 11, 12, 13, 13, 13, 14, 15];
+    for trace_block_size in [1, 3, 4, 5, 8, 64] {
+        for engine_block_size in [1_u32, 2, 3, 4, 6, 8, 16, 64] {
+            let capacity = hash_ids.len() * trace_block_size;
+            for input_length in [0, 1, capacity / 2 + 1, capacity - 1, capacity] {
+                let tokens = super::trace::synthesize_validated_trace_tokens(
+                    input_length,
+                    &hash_ids,
+                    trace_block_size,
+                );
+                assert_eq!(
+                    ReplayRequestHashes::from_trace_blocks(
+                        input_length,
+                        &hash_ids,
+                        trace_block_size,
+                        engine_block_size,
+                    ),
+                    ReplayRequestHashes::from_tokens(&tokens, engine_block_size),
+                    "trace block {trace_block_size}, engine block {engine_block_size}, \
+                     input length {input_length}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

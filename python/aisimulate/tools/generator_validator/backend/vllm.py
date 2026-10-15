@@ -111,6 +111,8 @@ def _extract_vllm_cli_args(
         if service_key:
             raise ValueError("Unable to locate vLLM services mapping in k8s_deploy.yaml.")
         return None
+    if service_key is None and expected_service not in services and "VllmWorker" in services:
+        expected_service = "VllmWorker"
     if service_key and expected_service not in services:
         available = ", ".join(sorted(str(key) for key in services)) or "<none>"
         raise ValueError(

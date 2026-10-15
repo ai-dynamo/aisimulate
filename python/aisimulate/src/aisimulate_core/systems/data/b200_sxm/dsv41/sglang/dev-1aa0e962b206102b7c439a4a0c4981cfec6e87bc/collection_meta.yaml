@@ -1,0 +1,141 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+runtime:
+  framework: sglang
+  version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+  image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+  image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+  source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+  abi: &id001
+    torch: 2.13.0+cu130
+    nccl: 2.30.7
+    image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+    nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion audit;
+      all historical measurement-rank mapped providers match audited realpaths/SHAs
+      exactly
+tables:
+  dsv41_module_perf:
+    rows: 2395
+    status: partial
+    collections:
+    - collector_ref: f9973d7eafc62db899caa3d46996afef45afbb96
+      collector_hash: sha256:f6b6b929d3d3fc9a564908332d9b2caa49cc5bca8b0db63b998b87a2d13f3635
+      case_plan_hash: sha256:faa87c9bfdd620d13a6cfbc22c9aa3f205427dc31af8294016c61547056b7fcd
+      collected_at: '2026-09-22'
+      rows: 75
+      status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi: *id001
+    - collector_ref: f9973d7eafc62db899caa3d46996afef45afbb96
+      collector_hash: sha256:f6b6b929d3d3fc9a564908332d9b2caa49cc5bca8b0db63b998b87a2d13f3635
+      case_plan_hash: sha256:4b492bb9debf2608dc60897533e71143dd8d72a7d88a8292a4e687a7bb3c1d84
+      collected_at: '2026-09-22'
+      rows: 60
+      status: partial
+      source_campaign_rows: 75
+      source_campaign_status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; all historical measurement-rank mapped providers match audited
+            realpaths/SHAs exactly
+    - collector_ref: 9706d22ce965c6f95fc544da1bf156a87fba9751
+      collector_hash: sha256:072d4812dacd6388c5c0062c2d5e4a95ccb500709a866237dc152c6732ba01c8
+      case_plan_hash: sha256:9789232b184b0688aae0da4b9efd8dab0f973a83328476f0d25920e85666c725
+      collected_at: '2026-09-22'
+      rows: 870
+      status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; all historical measurement-rank mapped providers match audited
+            realpaths/SHAs exactly
+          input_method: seeded_bf16_hidden_native_rmsnorm_per_layer_real_native_kv_v1
+    - collector_ref: 9706d22ce965c6f95fc544da1bf156a87fba9751
+      collector_hash: sha256:072d4812dacd6388c5c0062c2d5e4a95ccb500709a866237dc152c6732ba01c8
+      case_plan_hash: sha256:fe9a39efc22101c909f1fce1aade8adf8ec33a2561c6bf7612277ea8b1845553
+      collected_at: '2026-09-22'
+      rows: 870
+      status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; all historical measurement-rank mapped providers match audited
+            realpaths/SHAs exactly
+          input_method: seeded_bf16_hidden_native_rmsnorm_per_layer_real_native_kv_v1
+    - collector_ref: 9706d22ce965c6f95fc544da1bf156a87fba9751
+      collector_hash: sha256:072d4812dacd6388c5c0062c2d5e4a95ccb500709a866237dc152c6732ba01c8
+      case_plan_hash: sha256:2b98a802c1ef0315e9db8d8836ff8a2f9e2b99ba93cacea4a967a48f929ff843
+      collected_at: '2026-09-22'
+      rows: 260
+      status: partial
+      source_campaign_rows: 914
+      source_campaign_status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; all historical measurement-rank mapped providers match audited
+            realpaths/SHAs exactly
+          input_method: seeded_bf16_hidden_native_rmsnorm_per_layer_real_native_kv_v1
+    - collector_ref: 9706d22ce965c6f95fc544da1bf156a87fba9751
+      collector_hash: sha256:072d4812dacd6388c5c0062c2d5e4a95ccb500709a866237dc152c6732ba01c8
+      case_plan_hash: sha256:5d3c3ce58f197b38c034aa36d25c6fffdd5ca0eb08025231f2d16b147d99afcc
+      collected_at: '2026-09-22'
+      rows: 260
+      status: partial
+      source_campaign_rows: 914
+      source_campaign_status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: sglang-dsv41-amd64-c4ca651192e5-localimage.sqsh
+        image_digest: sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17
+          nccl_identity_evidence: post-run immutable-library artifact ncclGetVersion
+            audit; all historical measurement-rank mapped providers match audited
+            realpaths/SHAs exactly
+          input_method: seeded_bf16_hidden_native_rmsnorm_per_layer_real_native_kv_v1

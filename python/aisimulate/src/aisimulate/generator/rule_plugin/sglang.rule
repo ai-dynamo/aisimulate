@@ -20,8 +20,24 @@ agg enable_mixed_chunk = true
 when ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_size):
     agg_prefill_decode tensor_parallel_size = moe_tensor_parallel_size * moe_expert_parallel_size
 
+# Prefill context parallelism: SGLang's attention-CP ranks live INSIDE --tp
+# (attn_tp = tp / dp / attn_cp), so the launched TP is the attention-group width
+# tp x cp for dense models. MoE models are already folded above to
+# moe_tp x moe_ep, which equals tp x dp x cp by the simulator's width identity.
+# Guard: keep this AFTER the MoE fold and BEFORE gpus_per_worker. It must stay a
+# per-role conditional expression, not a `when` block: `when` is evaluated once
+# over the merged agg_prefill_decode scope, so a prefill-only cp would fold the
+# decode worker's TP too. (--enable-prefill-cp is emitted by the template
+# alongside --attn-cp-size; the pair is inseparable.)
+agg_prefill_decode tensor_parallel_size = ((tensor_parallel_size or 1) * context_parallel_size) if ((context_parallel_size or 1) > 1 and not ModelConfig.is_moe) else (tensor_parallel_size if tensor_parallel_size is defined else none)
+
 # GPUs per worker follow the same TP/PP/DP product that SGLang expects
-agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (data_parallel_size or 1)
+# (prefill CP is already folded into TP above; decode CP adds no GPUs).
+# Guard: when the MoE fold above applied, tensor_parallel_size is already
+# moe_tp x moe_ep == the whole attention-group width (tp x dp x cp): SGLang's
+# --dp-size partitions that --tp, it does not multiply it, so DP must not be
+# counted again.
+agg_prefill_decode gpus_per_worker = (tensor_parallel_size or 1) * (pipeline_parallel_size or 1) * (1 if (ModelConfig.is_moe and (moe_tensor_parallel_size and moe_expert_parallel_size)) else (data_parallel_size or 1))
 
 agg_prefill_decode enable_attention_dp = ((data_parallel_size or 1) > 1) and ModelConfig.is_moe
 

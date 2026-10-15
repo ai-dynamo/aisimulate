@@ -63,6 +63,16 @@ def test_legacy_perf_policy_allows_text_file_deletions(parquet_diff_module):
     assert "- Legacy `*_perf.txt` files added or modified: 0" in report
 
 
+def test_moe_eligibility_change_is_metadata_on_the_same_measurement(parquet_diff_module, tmp_path):
+    row = {"kernel_source": "exact", "moe_dtype": "fp8_block", "num_tokens": 32, "latency": 0.25}
+    base = _snapshot(parquet_diff_module, "moe_perf.parquet", [{**row, "default_eligible": True}])
+    head = _snapshot(parquet_diff_module, "moe_perf.parquet", [{**row, "default_eligible": False}])
+    diff = parquet_diff_module._diff_snapshots("moe_perf.parquet", base, head, detail_dir=tmp_path)
+    assert diff.added_rows == diff.removed_rows == 0
+    assert diff.modified_rows == 1
+    assert "default_eligible" not in diff.key_columns
+
+
 def test_row_diff_writes_added_removed_and_modified_artifacts(parquet_diff_module, tmp_path):
     base = _snapshot(
         parquet_diff_module,

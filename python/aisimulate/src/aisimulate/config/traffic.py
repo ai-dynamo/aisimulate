@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -116,6 +117,25 @@ class AgenticSnapshotOptions(StrictModel):
     seed: int = Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
 
 
+class AgenticProfileOptions(StrictModel):
+    """Continuous agentic replay measured from the preparation barrier."""
+
+    duration_seconds: PositiveFloat = 3600.0
+    response_grace_seconds: NonNegativeFloat = 30.0
+    cancel_drain_seconds: NonNegativeFloat = 10.0
+    tree_idle_cap_seconds: PositiveFloat = 300.0
+    global_idle_cap_seconds: PositiveFloat = 10.0
+
+    @model_validator(mode="after")
+    def _validate_millisecond_deadlines(self) -> AgenticProfileOptions:
+        values = self.model_dump()
+        if any(not math.isfinite(value * 1000.0) for value in values.values()) or not math.isfinite(
+            (self.duration_seconds + self.response_grace_seconds + self.cancel_drain_seconds) * 1000.0
+        ):
+            raise ValueError("agentic_profile deadlines overflow")
+        return self
+
+
 class TrafficPredictionLoad(StrictModel):
     type: Literal[
         "concurrency",
@@ -131,6 +151,7 @@ class TrafficPredictionLoad(StrictModel):
     agentic_lanes: PositiveInt | None = None
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_profile: AgenticProfileOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -163,6 +184,7 @@ class TrafficRecommendationLoad(StrictModel):
     agentic_lanes: PositiveInt | None = None
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_profile: AgenticProfileOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -201,6 +223,7 @@ def _validate_load_fields(load) -> None:
             "speedup",
             "agentic_lanes",
             "agentic_snapshot",
+            "agentic_profile",
         )
         if getattr(load, name, None) is not None
     }
@@ -211,7 +234,7 @@ def _validate_load_fields(load) -> None:
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot", "agentic_warmup"},
+        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot", "agentic_warmup", "agentic_profile"},
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -235,6 +258,11 @@ class _TrafficConfigBase(StrictModel):
     def _validate_source_load_stop(self, load) -> None:
         source = self.source
         stop = self.stop
+        if load.agentic_profile is not None:
+            if load.agentic_snapshot is None:
+                raise ValueError("agentic_profile requires agentic_snapshot")
+            if stop is not None and stop.max_virtual_time_seconds is not None:
+                raise ValueError("agentic_profile cannot be combined with max_virtual_time_seconds")
         if load.agentic_warmup and load.agentic_snapshot is None:
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if load.agentic_snapshot is not None and load.agentic_lanes is None:

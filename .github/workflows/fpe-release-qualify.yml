@@ -52,7 +52,7 @@ jobs:
           auditwheel repair --plat manylinux_2_28_x86_64 \
             --wheel-dir "${GITHUB_WORKSPACE}/fpe-release-wheel" "${RUNNER_TEMP}"/release-raw-wheel/aisimulate-*.whl
       - name: Record release and tooling provenance
-        run: python scripts/run_release_fpe.py record-wheel
+        run: python scripts/fpe/run_release_fpe.py record-wheel
       - name: Install the release's locked dependencies and exact wheel
         run: |
           python -m pip install uv==0.12.6
@@ -61,7 +61,7 @@ jobs:
           uv pip check --python release-source/python/aisimulate/.venv/bin/python
       - id: discover
         name: Discover the release inventory through its verified wheel
-        run: release-source/python/aisimulate/.venv/bin/python scripts/run_release_fpe.py discover
+        run: release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py discover
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-release-wheel-${{ inputs.release }}
@@ -111,7 +111,7 @@ jobs:
           FPE_SYSTEM: ${{ matrix.shard.system }}
           FPE_BACKEND: ${{ matrix.shard.backend }}
         run: |
-          release-source/python/aisimulate/.venv/bin/python scripts/run_release_fpe.py probe \
+          release-source/python/aisimulate/.venv/bin/python scripts/fpe/run_release_fpe.py probe \
             --system "${FPE_SYSTEM}" --backend "${FPE_BACKEND}" \
             --output-dir "fpe-release-results/${FPE_SYSTEM}/${FPE_BACKEND}" \
             --forward-model op_level --sdk-log-level ERROR --max-workers 8
@@ -150,7 +150,7 @@ jobs:
           pattern: fpe-release-results-${{ inputs.release }}@*
           path: fpe-release-results
       - name: Require complete same-wheel coverage and all required probes
-        run: python scripts/run_release_fpe.py package
+        run: python scripts/fpe/run_release_fpe.py package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fpe-support-matrix-web-release-${{ inputs.release }}

@@ -28,7 +28,7 @@ SPDX-License-Identifier: Apache-2.0
       }
     </script>
     <link rel="stylesheet" href="../e2e-accuracy/styles.css" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=learned-method-1" />
   </head>
   <body>
     <header class="top-header">
@@ -71,30 +71,21 @@ SPDX-License-Identifier: Apache-2.0
       </div>
     </header>
 
-    <section class="scope-bar" aria-label="Evaluation scope">
-      <div class="shell heading-controls">
-        <span id="nav-status-text" class="scope-control" aria-live="polite">Loading evaluation…</span>
-        <div class="snapshot-links">
-          <span>Daily evaluation · 10:47 UTC</span>
-          <a href="https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset">Measurement source</a>
-        </div>
-      </div>
-    </section>
-
-    <main class="shell dashboard">
-      <section class="migration-context" aria-label="Forward-pass comparison">
-        <p><strong>Compare FPM and online regression against measured forward-pass latency.</strong>
-          Check MAPE alongside prediction coverage. Expand a model to inspect its GPU, framework,
-          and configuration evidence.</p>
-      </section>
-      <p class="branch-status" id="freshness" role="status">Loading branch evidence…</p>
-      <p class="identity-line snapshot-value" aria-live="polite">Loading snapshot identity…</p>
+    <nav class="shell fpm-tabs" aria-label="FPM dashboard">
+      <a href="index.html">Overview</a><a href="predictors.html">Predictors</a><a href="trends.html">Trends</a>
+      <a href="evaluation-detail.html">Details</a><a href="3d-visualization.html">3D Visualization</a>
+    </nav>
+    <div class="shell evaluation-context">
+      <section id="evaluation-banner" class="evaluation-banner" aria-label="Evaluation snapshot" aria-live="polite">Loading evaluation…</section>
+    </div>
+    <main class="shell dashboard" data-table-view="overview">
 
       <section class="summary-grid fpm-summary" aria-label="Snapshot summary">
         <article class="summary-card"><div class="summary-label">Models</div><div class="summary-value" id="models-value">—</div></article>
         <article class="summary-card"><div class="summary-label">Configurations</div><div class="summary-value" id="configurations-value">—</div></article>
         <article class="summary-card"><div class="summary-label">Measurement-ready configurations</div><div class="summary-value" id="measurement-value">—</div></article>
         <article class="summary-card"><div class="summary-label">Evaluated configurations</div><div class="summary-value accent" id="evaluated-value">—</div></article>
+        <article class="summary-card"><div class="summary-label">Overall MAPE</div><div class="summary-value accent" id="overall-value">—</div><div class="summary-note" id="overall-count"></div></article>
       </section>
 
       <section class="matrix-panel" aria-labelledby="matrix-heading">
@@ -106,17 +97,19 @@ SPDX-License-Identifier: Apache-2.0
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="model">Model / configuration <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="gpu">GPU <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="framework">Framework <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="serving">Serving <span class="sort-mark" aria-hidden="true">▲</span></button></th>
               <th scope="col" aria-sort="none"><button class="sort-button" data-sort="measurements">Measurements <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:regression">Regression MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:warmup">FPM (KV warmup on) MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
-              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="method:nowarmup">FPM (KV warmup off) MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
+              <th scope="col" aria-sort="none"><button class="sort-button" data-sort="best">Best MAPE <span class="sort-mark" aria-hidden="true">▲</span></button></th>
             </tr></thead>
-            <tbody id="overview-body" aria-live="polite"><tr><td colspan="7" class="loading-cell">Loading accuracy matrix…</td></tr></tbody>
+            <tbody id="overview-body" aria-live="polite"><tr><td colspan="6" class="loading-cell">Loading accuracy matrix…</td></tr></tbody>
           </table>
         </div>
+        <p id="serving-note" class="overview-cell-note">* Serving layout is unknown; Agg is shown by default. N/A means not applicable.</p>
       </section>
 
     </main>
-    <script src="./app.js" defer></script>
+    <script src="./navigation.js?v=collection-parquet-1" defer></script>
+    <script src="./collection.js?v=plain-collection-summary-1" defer></script>
+    <script src="./app.js?v=learned-method-1" defer></script>
   </body>
 </html>

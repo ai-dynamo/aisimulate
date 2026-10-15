@@ -7,15 +7,22 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import sys
 import tempfile
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .resources import ResourceLimitError
+from .resources import ResourceLimitError, _SerialAdmissionRequired
 from .supervision import checkpoint, close_pool, mark_execution_ready, terminate_pool
+
+try:
+    import resource
+except ImportError:  # Windows has no getrusage; observed peaks are then unavailable.
+    resource = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +37,26 @@ def _initialize(factory, initializer, ready_directory):
     Path(ready_directory, str(os.getpid())).touch()
 
 
+def _peak_rss_bytes() -> int:
+    """Return this process's high-water RSS plus its largest waited-for child's."""
+    if resource is None:
+        return 0
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss + resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    return usage if sys.platform == "darwin" else 1024 * usage
+
+
+@dataclass(frozen=True)
+class _Measured:
+    result: Any
+    peak_bytes: int
+
+
+def _measured(evaluate, spec) -> _Measured:
+    # Each wave starts a fresh pool, so the high-water mark covers this
+    # worker's setup and at most this wave's evaluations.
+    return _Measured(evaluate(spec), _peak_rss_bytes())
+
+
 def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeout: float | None):
     """Yield indexed results. Retry interrupted work at most twice, at fewer workers.
 
@@ -40,12 +67,21 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
     pending = list(range(len(specs)))
     attempts = dict.fromkeys(pending, 0)
     capacity = max(1, workers)
+    record_peak = getattr(factory, "record_peak", None)
+    observed_peak = getattr(factory, "observed_peak", None)
+    awaiting_observation = False
     while pending:
         wave = pending[:capacity]
         while True:
             try:
                 plan = factory.admit_wave([specs[index] for index in wave])
                 break
+            except _SerialAdmissionRequired:
+                # This is a mode constraint, not transient memory pressure.
+                # Do not reparse candidates while halving an impossible wave.
+                capacity = 1
+                wave = wave[:1]
+                awaiting_observation = True
             except ResourceLimitError as exc:
                 if len(wave) > 1:
                     wave = wave[: max(1, len(wave) // 2)]
@@ -71,11 +107,30 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
         active = {}
         interrupted = None
         try:
-            active = {pool.submit(evaluate, specs[index]): index for index in wave}
+            measured = partial(_measured, evaluate)
+            active = {pool.submit(measured, specs[index]): index for index in wave}
             started = time.monotonic()
             initialized = False
             initialization_timeout = getattr(getattr(factory, "policy", None), "initialization_timeout_seconds", 60.0)
             deadline = started + timeout if timeout else None
+
+            def _drain(done_futures):
+                nonlocal interrupted
+                for future in done_futures:
+                    index = active[future]
+                    try:
+                        result = future.result()
+                    except ResourceLimitError as exc:
+                        interrupted = InterruptedEvaluation(str(exc), True, exc.plan)
+                        continue
+                    del active[future]
+                    if isinstance(result, _Measured):
+                        # Only a completed replay measures the trace's footprint.
+                        if record_peak is not None and getattr(result.result, "outcome", "replayed") == "replayed":
+                            record_peak(specs[index], result.peak_bytes)
+                        result = result.result
+                    yield index, result
+
             while active:
                 if not initialized:
                     worker_pids = {str(pid) for pid in (getattr(pool, "_processes", None) or {})}
@@ -87,15 +142,27 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
                         interrupted = InterruptedEvaluation("worker initialization timed out", False, {})
                         break
                 done, _ = wait(active, timeout=0.05, return_when=FIRST_COMPLETED)
-                for future in done:
-                    index = active[future]
-                    try:
-                        result = future.result()
-                    except ResourceLimitError as exc:
-                        interrupted = InterruptedEvaluation(str(exc), True, exc.plan)
-                        continue
-                    del active[future]
-                    yield index, result
+                yield from _drain(done)
+                if interrupted:
+                    break
+                if not active:
+                    break
+                # Each yield above can suspend this generator for an arbitrary
+                # duration -- the caller's on_candidate callback runs while
+                # paused there. A sibling can finish during ANY such pause,
+                # not just the one right after the first wait -- with three or
+                # more active futures, a later sibling can complete while the
+                # caller is still handling an earlier yield from this same
+                # non-blocking drain. So keep polling and draining until a
+                # poll comes back empty, rather than doing it once, before
+                # judging pressure or the deadline below.
+                while True:
+                    still_done, _ = wait(active, timeout=0, return_when=FIRST_COMPLETED)
+                    if not still_done:
+                        break
+                    yield from _drain(still_done)
+                    if interrupted or not active:
+                        break
                 if interrupted:
                     break
                 if not active:
@@ -126,6 +193,16 @@ def evaluate_waves(specs, *, factory, initializer, evaluate, workers: int, timeo
             else:
                 close_pool(pool)
                 pool = None
+                # Unknown peaks run one at a time until a completed replay of
+                # each upcoming candidate's trace has been measured.
+                if (
+                    awaiting_observation
+                    and observed_peak is not None
+                    and pending
+                    and all(observed_peak(specs[index]) is not None for index in pending[:workers])
+                ):
+                    awaiting_observation = False
+                    capacity = max(1, workers)
         finally:
             if pool is not None:
                 terminate_pool(pool)

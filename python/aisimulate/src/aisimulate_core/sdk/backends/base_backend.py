@@ -6,6 +6,10 @@
 # Inc. team and HuggingFace Team (Apache-2.0):
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/image_processing_kimi_k25.py
 # https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/src/transformers/models/kimi_k25/video_processing_kimi_k25.py
+# Pixtral image geometry and prompt tokens are adapted and modified from vLLM
+# (Apache-2.0), copyright contributors to the vLLM project:
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/pixtral.py
+# https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/mistral3.py
 
 import copy
 import dataclasses
@@ -441,6 +445,8 @@ class BaseBackend:
             video_frames=video_frames,
             num_video_tokens=video_token_override,
         )
+        if enc_cfg.encoder_type == "pixtral" and has_any_video_input:
+            raise ValueError("Video workloads are not modeled for the Pixtral vision encoder.")
         has_video_dims = video_frames > 0 and video_height > 0 and video_width > 0
         has_video_override = video_token_override > 0
         if has_any_video_input:
@@ -473,6 +479,29 @@ class BaseBackend:
         if has_images and has_videos:
             raise ValueError(
                 "Mixed image/video encoder workloads are not modeled yet; estimate images and videos separately."
+            )
+
+        if enc_cfg.resize_mode == "pixtral":
+            if not has_images:
+                return zero
+            if not has_image_dims:
+                raise ValueError("Pixtral requires image_height and image_width to count image-row context tokens.")
+            # Match PixtralHFEncoderInfo's longest-side resize and upward
+            # rounding to the patch/merge stride. Each merged row contributes
+            # one separator token (the final separator is the end token).
+            ratio = max(image_height, image_width) / enc_cfg.image_size
+            if ratio > 1:
+                image_height = math.floor(image_height / ratio)
+                image_width = math.floor(image_width / ratio)
+            stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+            rows = -(-image_height // stride)
+            cols = -(-image_width // stride)
+            if rows <= 0 or cols <= 0:
+                raise ValueError("Pixtral image dimensions resize to zero; use a less extreme aspect ratio.")
+            output_tokens = rows * cols
+            patch_tokens = output_tokens * enc_cfg.spatial_merge_size**2
+            return _EncoderVisualWorkload(
+                output_tokens, output_tokens + rows, output_tokens, patch_tokens, patch_tokens, 1, image_count
             )
 
         if isinstance(enc_cfg, common.Gemma4VisionEncoderConfig):
@@ -1221,8 +1250,8 @@ class BaseBackend:
         # KV-per-seq context for capacity probing in CLI detail reports.
         try:
             kv_seq_len_used = isl + img_ctx_tokens + beam_width * osl
-            # CP shards persistent KV across cp ranks (full/cp per rank).
-            kv_bytes_per_seq = model.get_kvcache_bytes_per_sequence(kv_seq_len_used) / model._cp_kv_memory_divisor()
+            # Per-rank persistent KV (decode CP stripes the token-linear KV).
+            kv_bytes_per_seq = model.get_kvcache_rank_bytes_per_sequence(kv_seq_len_used)
             summary.set_kv_per_seq(kv_bytes_per_seq, kv_seq_len_used)
         except Exception:
             # Best-effort; downstream report degrades gracefully when unset.
@@ -1617,7 +1646,12 @@ class BaseBackend:
                 # an analytical lower bound, not a calibrated peak-memory model.
                 encoder_tp = 1 if model.config.enable_encoder_dp else model.config.tp_size
                 qkv_width = 3 * (enc_cfg.qkv_hidden_size or enc_cfg.hidden_size) // encoder_tp
-                activations = 2 * num_tokens * max(3 * enc_cfg.hidden_size, qkv_width)
+                live_width = max(3 * enc_cfg.hidden_size, qkv_width)
+                if enc_cfg.gated_mlp:
+                    # The replicated residual stays live alongside the sharded
+                    # gate and up intermediates, as in the Gemma4 branch above.
+                    live_width = max(live_width, enc_cfg.hidden_size + (2 * enc_cfg.intermediate_size) // encoder_tp)
+                activations = 2 * num_tokens * live_width
                 # Projected embeddings (all projector instances concatenated along hidden)
                 activations += 2 * embed_tokens * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances
             activations = max(activations, 32 * 1024 * 1024)  # 32 MiB minimum
@@ -2292,9 +2326,9 @@ class BaseBackend:
             activations *= 1.0 + self.ACTIVATION_OVERHEAD_FRAC
 
         seq_tokens = max_seq_len if max_seq_len is not None else isl + beam_width * osl
-        # CP shards persistent KV across cp ranks (full/cp per rank); the
-        # all-gather is a transient compute buffer, not steady-state footprint.
-        kvcache = batch_size * model.get_kvcache_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        # Per-rank persistent KV: decode CP stripes the token-linear KV (prefill
+        # CP's all-gather is a transient compute buffer, not steady-state footprint).
+        kvcache = batch_size * model.get_kvcache_rank_bytes_per_sequence(seq_tokens)
         if has_draft_scheme:
             kvcache += batch_size * scheme.draft_kv_bytes_per_sequence(model, seq_tokens)
         # should not be divided by pp_size as you need to hold all kvcache for stages.

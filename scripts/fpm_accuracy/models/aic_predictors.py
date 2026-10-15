@@ -6,16 +6,18 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any, ClassVar, Literal
 
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
-from fpm_accuracy.models.aic_config import map_worker_config_to_aic
-from fpm_accuracy.models.aic_fpm_database import PreparedAicFpmDatabase, prepare_aic_fpm_database
-from fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
-from fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from scripts.fpm_accuracy.models.aic_config import map_worker_config_to_aic
+from scripts.fpm_accuracy.models.aic_fpm_database import PreparedAicFpmDatabase, prepare_aic_fpm_database
+from scripts.fpm_accuracy.models.fpt_predictor import ForwardPassTimePredictor, Prediction, PredictorContext
+from scripts.fpm_accuracy.types.forward_pass import ForwardPassInput, ForwardPassIteration
 
 AicMode = Literal["fpm", "regression"]
 
@@ -48,14 +50,11 @@ class _AicPredictor(ForwardPassTimePredictor):
             if not callable(getattr(perf_model, "regression_store_diagnostics", None)):
                 raise DependencyError("This AISim revision does not support worker-scoped regression.")
             config_type = _canonical_config_type()
-            if config_type is not None:
-                request = config_type.from_legacy_engine_config(
-                    cls._native_engine_config(context), context.worker_role, options
-                )
-                model = perf_model.best_available(replace(request, estimation_mode="fpm_regression"))
-            else:
-                # The evaluator also runs against older released branch wheels.
-                model = perf_model.from_regression(context.worker_role, options)
+            if config_type is None or not callable(getattr(perf_model, "normalize_config", None)):
+                raise DependencyError("FPM Gym regression requires AISim's configurable signed lazy regression.")
+            engine_config = cls._native_engine_config(context)
+            request = config_type.from_legacy_engine_config(engine_config, context.worker_role, options)
+            model = perf_model.best_available(_gym_regression_config(perf_model, request, options, engine_config))
             try:
                 store_diagnostics = getattr(model, "regression_store_diagnostics", None)
                 if not callable(store_diagnostics):
@@ -151,7 +150,7 @@ class AicFpmPredictor(_AicPredictor):
 
 
 class AicRegressionPredictor(_AicPredictor):
-    """AISim's workload-inferred, online regression predictor."""
+    """Gym's signed 4x1 lazy regression, isolated from shared AISim defaults."""
 
     mode = "regression"
     predictor_id = "regression"
@@ -160,6 +159,62 @@ class AicRegressionPredictor(_AicPredictor):
         result = dict(super().diagnostics())
         result["regression_stores"] = self._model.regression_store_diagnostics()
         return result
+
+
+def _gym_regression_config(
+    perf_model: Any, request: Any, options: Mapping[str, Any], engine_config: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Select the measured Gym policy through the canonical Rust-owned schema.
+
+    Migration resolves identity and explicit legacy options first. Override only
+    Gym's grid and linear policy, preserving capacity, minimum observations,
+    ridge, rebuild controls, and explicit canonical sampling or legacy grids.
+    """
+    estimator_config = deepcopy(request.estimator_config)
+    regression = estimator_config["fpm_regression"]
+    sampling = regression["sampling"]
+    # Rust has already validated this payload and expanded defaults in request.
+    # Use the original payload to distinguish explicit sampling from defaults.
+    explicit = json.loads(engine_config["extra"].get("estimator_config", "{}"))
+    has_explicit_sampling = "sampling" in explicit.get("fpm_regression", {})
+    if not has_explicit_sampling and not {"bucket_count", "bucket_shape"}.intersection(options):
+        sampling.update(axes=["attention", "moe"], bins_per_axis=[4, 1])
+    linear = {
+        "feature_axes": ["attention", "moe"],
+        "non_negative": False,
+        "update_policy": {
+            "kind": "error_threshold",
+            "relative_tolerance": 0.01,
+            "absolute_tolerance_ms": 0.1,
+            "window": 8,
+            "trigger": 2,
+            "cooldown": 1,
+            "startup_observations": 10,
+        },
+    }
+    regression["fit"].update(kind="standardized_nnls", linear=linear)
+    request = replace(
+        request,
+        estimation_mode="fpm_regression",
+        fallback_policy="deny",
+        estimator_config=estimator_config,
+    )
+    try:
+        resolved = perf_model.normalize_config(request)
+    except ValueError as exc:
+        raise DependencyError("This AISim revision cannot evaluate Gym's signed 4x1 lazy regression.") from exc
+    # Historical wheels may reject or ignore controls introduced after their
+    # release. Never publish their old policy under the recommended Gym method.
+    actual = resolved.get("estimator_config", {}).get("fpm_regression", {})
+    # Rust omits the default attention/MoE axes from serialized sampling.
+    actual_sampling = actual.get("sampling", {})
+    if (
+        actual.get("fit", {}).get("linear") != linear
+        or actual_sampling.get("axes", ["attention", "moe"]) != sampling.get("axes", ["attention", "moe"])
+        or actual_sampling.get("bins_per_axis") != sampling["bins_per_axis"]
+    ):
+        raise DependencyError("This AISim revision does not preserve Gym's signed lazy regression controls.")
+    return resolved
 
 
 def _import_aisim_forward_pass_perf_model() -> Any:

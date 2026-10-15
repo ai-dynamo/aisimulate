@@ -2,4 +2,5 @@
 # SPDX-License-Identifier: Apache-2.0
 """Advisory forward-prediction performance gate."""
 
-PROTOCOL_VERSION = 1
+# Version 2 enables shared-layer data reuse for every benchmark case.
+PROTOCOL_VERSION = 2

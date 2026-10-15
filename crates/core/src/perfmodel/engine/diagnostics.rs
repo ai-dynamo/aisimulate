@@ -27,6 +27,9 @@ pub struct OperationDetails {
     pub sol_unavailable_reason: Option<String>,
     /// Executed measurement substitutions; empty means no recorded substitution.
     pub fallbacks: Vec<ExecutedFallback>,
+    /// Whole-forward estimates, counted by identical result and replay scale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fpm_estimates: Vec<crate::FpmEstimateEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
