@@ -161,6 +161,17 @@ class FpmResourceProfile(_ProfileModel):
                 )
 
 
+class FpmSpeculativeExecutionProfile(_ProfileModel):
+    """Explicit full-round timing identity; Rust validates its canonical selector."""
+
+    kind: Literal["speculative_round"]
+    method: Literal["eagle3"]
+    num_draft_tokens: Annotated[int, Field(ge=1, le=5)]
+    draft_model: _Nonempty
+    draft_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
+    timing_scope: Literal["model_step_cuda"]
+
+
 class FpmDeploymentProfile(_ProfileModel):
     """One hardware, runtime, topology, precision and optional serving-role identity."""
 
@@ -186,6 +197,7 @@ class FpmDeploymentProfile(_ProfileModel):
     enable_eplb: Literal[False] = False
     # Absent in historical shared profiles; never infer role-specific evidence.
     worker_type: Literal["prefill", "decode", "aggregated"] | None = None
+    execution_profile: FpmSpeculativeExecutionProfile | None = None
     resources: FpmResourceProfile
 
     @model_serializer(mode="wrap")
@@ -193,6 +205,8 @@ class FpmDeploymentProfile(_ProfileModel):
         result = handler(self)
         if self.worker_type is None:
             result.pop("worker_type", None)
+        if self.execution_profile is None:
+            result.pop("execution_profile", None)
         return result
 
     @field_validator("pp", "cp", mode="before")
@@ -223,6 +237,10 @@ class FpmDeploymentProfile(_ProfileModel):
 
     @model_validator(mode="after")
     def _deployment_identity(self) -> FpmDeploymentProfile:
+        if self.execution_profile is not None and not (
+            self.dp == 1 and self.pp == 1 and self.cp == 1 and self.moe_ep == 1 and self.moe_tp in (1, self.tp)
+        ):
+            raise ValueError("speculative-round FPM identity currently requires vLLM pure TP with DP1/PP1/CP1")
         modes = {
             "gemm_quant_mode": quantization.GEMMQuantMode,
             "moe_quant_mode": quantization.MoEQuantMode,
@@ -253,6 +271,14 @@ class FpmDeploymentProfile(_ProfileModel):
             str(self.enable_wideep),
             str(self.enable_eplb),
         ]
+
+    def execution_identity(self, model_revision: str) -> tuple[str, ...]:
+        """The existing four-column suffix; absent execution preserves AR identity."""
+        from .sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY, speculative_execution_identity
+
+        if self.execution_profile is None:
+            return LEGACY_EXECUTION_IDENTITY
+        return speculative_execution_identity(model_revision, self.execution_profile.model_dump(mode="json"))
 
     def quantization_kwargs(self) -> dict[str, str]:
         return {

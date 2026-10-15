@@ -1961,6 +1961,24 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&estimate).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Normalize recorded execution identity without constructing a timing model.
+    #[staticmethod]
+    fn _normalize_fpm_execution_profile(
+        model_revision: &str,
+        execution_profile_json: &str,
+    ) -> PyResult<String> {
+        let execution_profile: crate::FpmExecutionProfile =
+            serde_json::from_str(execution_profile_json).map_err(|error| {
+                PyValueError::new_err(format!("invalid FPM execution profile: {error}"))
+            })?;
+        crate::FpmExecutionBinding {
+            model_revision: model_revision.to_owned(),
+            execution_profile,
+        }
+        .selector()
+        .map_err(aic_to_py)
+    }
+
     /// Share typed FPM option validation with the compilation adapter.
     #[staticmethod]
     #[pyo3(signature = (options_json, fmha_quant_mode=None, comm_quant_mode=None, has_profile=false))]

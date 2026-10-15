@@ -14,6 +14,63 @@ Use [FPM self-service](../fpm-self-service/README.md) to prepare, review, collec
 or import a profile. The existing [implementation guide](../fpm-self-service/implementation.md)
 owns artifact validation, publication, checkpoints, and recovery.
 
+## Recorded speculative-round identity
+
+A profile deployment may record the following optional identity. The parent
+profile's `model_revision` and the draft revision must be lowercase 40-hex
+immutable checkpoint commits. This schema describes a **complete target-plus-draft
+round**, not an AR target-verification approximation:
+
+```yaml
+execution_profile:
+  kind: speculative_round
+  method: eagle3
+  num_draft_tokens: 3
+  draft_model: example/draft-model
+  draft_revision: "2222222222222222222222222222222222222222"
+  timing_scope: model_step_cuda
+```
+
+The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
+draft tokens. Acceptance length belongs to replay progress, not this timing
+selector. Omitting `execution_profile` preserves existing AR profile JSON and
+cell keys. Identity publication alone does not enable execution: canonical
+construction rejects these profiles with either `nextn: 0` or nonzero `nextn`
+until the corresponding consumer is supported.
+
+Rust produces the exact table `execution_profile` string by prefixing
+`speculative_round_v1:` to its canonical serialization of
+`{"model_revision": ..., "execution_profile": ...}`. The descriptor's field
+order is `kind`, `method`, `num_draft_tokens`, `draft_model`, `draft_revision`,
+`timing_scope`. Use the profile's `execution_identity(model_revision)` helper;
+do not hand-build a selector or substitute another checkpoint, draft, depth,
+or timing boundary. The resulting four-column suffix is
+`["", selector, "none", "text"]`; the existing Op layout and binary schema do
+not change. Malformed, unknown-version, or noncanonical speculative selectors
+are invalid data, not a fallback opportunity.
+
+### Native-CUDA measured rows
+
+Speculative-round rows require schema 7, backend `vllm`, sidecar
+`measurement_policy: vllm_native_fpm_model_step_cuda_v1`, and sidecar
+`timing_scope: model_step_cuda`. Every row carries that same measurement policy
+and scope, plus:
+
+| Field | Meaning |
+|---|---|
+| `measurement_reduction` | `single_sample` or `actual_upper_median` |
+| `source_sample_count` | Integer 1 for a raw sample; at least 2 for an actual upper median |
+| `latency_ms` | The selected real observation's complete native CUDA elapsed time |
+
+An actual upper median selects a real sample and retains **that sample's own
+workload coordinates**. It does not average latencies, use an unmeasured nominal
+coordinate, or divide the recorded time by the sample count. Preserve raw
+observations and selection provenance alongside the table. The policy does not
+admit AR-labelled rows or scheduler/host wall-time rows; renaming a CPU clock is
+not a valid conversion. Cached prefill and decode must retain the existing
+`real_kv` provenance requirement. Missing or fabricated state cannot be healed
+into these measured-only cells.
+
 ## Direct and SOL-assisted methods
 
 - `method: direct` needs a verified resource profile and `database_mode: SILICON`.

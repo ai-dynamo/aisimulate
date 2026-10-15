@@ -54,6 +54,10 @@ pub use perfmodel::{
     RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
     UnrecordedFpmQuantMode,
 };
+pub use perfmodel::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
 
 #[cfg(feature = "python")]
 pub use perfmodel::{

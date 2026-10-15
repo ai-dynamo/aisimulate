@@ -364,6 +364,29 @@ impl Engine {
     }
 
     fn validate_fpm_spec(spec: &EngineSpec) -> Result<(), AicError> {
+        fn contains_sd_round(ops: &[Op]) -> bool {
+            ops.iter().any(|op| match op {
+                Op::FpmForward(op) => {
+                    op.match_identity
+                        .get(16)
+                        .is_some_and(|selector| selector.starts_with("speculative_round"))
+                        || contains_sd_round(&op.sol_ops)
+                }
+                Op::TokenScale(op) => contains_sd_round(std::slice::from_ref(&op.op)),
+                Op::Overlap(op) => contains_sd_round(&op.group_a) || contains_sd_round(&op.group_b),
+                Op::Fallback(op) => {
+                    contains_sd_round(std::slice::from_ref(&op.primary))
+                        || contains_sd_round(&op.fallback)
+                }
+                _ => false,
+            })
+        }
+        if contains_sd_round(&spec.context_ops) || contains_sd_round(&spec.generation_ops) {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM tables are identity-only; EngineSpec execution is not enabled"
+                    .into(),
+            ));
+        }
         let nextn = spec
             .engine
             .speculative
@@ -3532,6 +3555,64 @@ mod tests {
         );
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn identity_only_sd_tables_cannot_be_consumed_by_a_public_ar_spec() {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let binding: crate::FpmExecutionBinding = serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40), "execution_profile": {
+                "kind": "speculative_round", "method": "eagle3", "num_draft_tokens": 3,
+                "draft_model": "test/draft", "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap();
+        let selector: &'static str = Box::leak(binding.selector().unwrap().into_boxed_str());
+        let mut spec = build_fpm_spec(tmp.path(), Some(0));
+        spec.engine.model_name = "org/model-a".into();
+        spec.engine.parallel.tp_size = 4;
+        spec.engine.parallel.moe_tp_size = Some(4);
+        spec.engine.parallel.moe_ep_size = Some(1);
+        let rows: Vec<_> = default_rows()
+            .into_iter()
+            .map(|mut row| {
+                row.execution = Some(["", selector, "none", "text"]);
+                row.kv_seed_regime = Some("real_kv");
+                row.native_cuda = Some(NativeCudaSampleSpec {
+                    scope: "model_step_cuda",
+                    reduction: "single_sample",
+                    source_sample_count: 1,
+                });
+                row
+            })
+            .collect();
+        write_pair(tmp.path(), &rows);
+        for op in spec.context_ops.iter_mut().chain(&mut spec.generation_ops) {
+            let Op::FpmForward(op) = op else {
+                unreachable!()
+            };
+            op.match_identity[16] = selector.into();
+            op.interpolation = FpmInterpolation::Direct;
+        }
+        let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path());
+        if let Ok(engine) = result {
+            // Independent fixture oracle: this 7ms row is a complete K3 round,
+            // but the forged public spec declares AR (nextn=0, verify_width=1).
+            assert_eq!(engine.predict_decode_latency_total(8, 4096).unwrap(), 7.0);
+            panic!("identity-only PR consumed a measured K3 round through an AR EngineSpec");
+        }
+        let error = result.unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
+        spec.engine.fpm_parquet_path = Some("/missing/identity-only-sd.parquet".into());
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
     }
 
     /// The marginal-decode mixed composition, exact arithmetic over the

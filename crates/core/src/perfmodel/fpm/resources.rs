@@ -406,6 +406,14 @@ impl ForwardPassPerfModelConfig {
         if matching.next().is_some() {
             return Err(invalid("duplicate FPM deployment resources"));
         }
+        if deployment
+            .get("execution_profile")
+            .is_some_and(|execution| !execution.is_null())
+        {
+            return Err(invalid(
+                "speculative-round FPM profiles are identity-only; execution is not enabled",
+            ));
+        }
         let resources: FpmResourceConfig = serde_json::from_value(
             deployment
                 .get("resources")
