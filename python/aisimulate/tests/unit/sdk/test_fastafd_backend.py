@@ -7,7 +7,6 @@ import pytest
 
 import aisimulate_core
 from aisimulate.config import EnginePredictionConfig
-from aisimulate.config.engine import TimingConfig
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import InvalidEngineConfigurationError, compile_engine
 from aisimulate_core.sdk.fastafd_backend import apply_fastafd_moe_profile
@@ -171,34 +170,21 @@ def test_fastafd_stage_preserves_generation_weights(tmp_path):
     assert metadata["measurement_method"] == "cuda_event"
 
 
-def test_fastafd_timing_requires_a_backend_and_op_level():
-    with pytest.raises(ValueError, match="configured together"):
-        TimingConfig(fastafd_profile_path="profile.json")
-    with pytest.raises(ValueError, match="op_level"):
-        TimingConfig(
-            fastafd_profile_path="profile.json",
-            fastafd_moe_backend="megamoe",
-            estimation_mode="fpm_interpolation",
-        )
-
-
-def test_fastafd_profile_is_aggregated_sglang_only():
-    timing = {"fastafd_profile_path": "profile.json", "fastafd_moe_backend": "megamoe"}
-    worker = {"parallelism": {"tensor": 1, "attention_data": 8, "moe_tensor": 1, "moe_expert": 8}, "timing": timing}
-    with pytest.raises(ValueError, match="backend='sglang'"):
-        EnginePredictionConfig(
-            mode="aggregated",
-            model="deepseek-ai/DeepSeek-V4-Flash",
-            hardware="b200_sxm",
-            backend="vllm",
-            workers={"aggregated": worker},
-        )
-
-    with pytest.raises(ValueError, match="pipeline=1"):
-        EnginePredictionConfig(
-            mode="aggregated",
-            model="deepseek-ai/DeepSeek-V4-Flash",
-            hardware="b200_sxm",
-            backend="sglang",
-            workers={"aggregated": {**worker, "parallelism": {**worker["parallelism"], "pipeline": 2}}},
-        )
+def test_prediction_config_carries_fastafd_controls_in_op_level_estimator_config():
+    timing = {
+        "estimation_mode": "op_level",
+        "estimator_config": {"op_level": {"fastafd_profile_path": "profile.json", "fastafd_moe_backend": "megamoe"}},
+    }
+    config = EnginePredictionConfig(
+        mode="aggregated",
+        model="deepseek-ai/DeepSeek-V4-Flash",
+        hardware="b200_sxm",
+        backend="sglang",
+        workers={
+            "aggregated": {
+                "parallelism": {"tensor": 1, "attention_data": 8, "moe_tensor": 1, "moe_expert": 8},
+                "timing": timing,
+            }
+        },
+    )
+    assert config.workers.aggregated.timing.estimator_config == timing["estimator_config"]

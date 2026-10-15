@@ -90,7 +90,7 @@ levels, their exported Python reachability view, and tests described in [Extendi
 
 ## Measured FastAFD MoE stage
 
-`timing.fastafd_profile_path` with `timing.fastafd_moe_backend` replaces the decode
+`estimator_config.op_level.fastafd_profile_path` with `fastafd_moe_backend` replaces the decode
 routed-expert, shared-expert, dispatch, and combine span with the matching measured
 stage from an AISimulate [FastAFD MoE stage profile](../schemas/fastafd-moe-stage-profile.md),
 keeping the router and every non-MoE operation. It applies to an aggregated SGLang
@@ -115,8 +115,10 @@ engine:
       timing:
         type: default
         estimation_mode: op_level
-        fastafd_profile_path: /data/megamoe-colocated-gb200.json
-        fastafd_moe_backend: megamoe
+        estimator_config:
+          op_level:
+            fastafd_profile_path: /data/megamoe-colocated-gb200.json
+            fastafd_moe_backend: megamoe
 ```
 
 ## Diagnostics and limits

@@ -1729,10 +1729,12 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
         fastafd_profile_path: config
+            .estimator_config
+            .op_level
             .fastafd_profile_path
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
-        fastafd_moe_backend: config.fastafd_moe_backend.clone(),
+        fastafd_moe_backend: config.estimator_config.op_level.fastafd_moe_backend.clone(),
     })
 }
 
@@ -2137,8 +2139,6 @@ impl PyForwardPassPerfModel {
             moe_kernel_source: request.moe_kernel_source,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
-            fastafd_profile_path: request.fastafd_profile_path.map(PathBuf::from),
-            fastafd_moe_backend: request.fastafd_moe_backend,
         };
         config.validate().map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))

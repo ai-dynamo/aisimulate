@@ -299,10 +299,6 @@ struct AicTimingConfig {
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
-    #[serde(default)]
-    fastafd_profile_path: Option<PathBuf>,
-    #[serde(default)]
-    fastafd_moe_backend: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -393,8 +389,6 @@ impl AicTimingConfig {
             moe_kernel_source: self.moe_kernel_source.clone(),
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
-            fastafd_profile_path: self.fastafd_profile_path.clone(),
-            fastafd_moe_backend: self.fastafd_moe_backend.clone(),
         })
     }
 
@@ -3859,8 +3853,6 @@ mod tests {
             moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
-            fastafd_profile_path: None,
-            fastafd_moe_backend: None,
             systems_path: None,
             forward_model: None,
             fpm_profile: None,
