@@ -96,26 +96,6 @@ its own KV event stream. A requested deterministic selector uses
 
 ### KV events
 
-Engine `Request.session_id` and the `StoredBlocks.session_id` payload inside
-`KvEventData::Stored` are optional metadata. Replay uses
-`DirectRequest.replay_context.session_id` as its single session identity and
-forwards it into the native engine request for aggregated execution and both
-prefill/decode request legs. A session-only replay context may omit `authored_id`;
-this does not manufacture a source request ID in reports. Legacy trace loaders
-normalize authored session IDs into this context, including single-turn traces
-with session reporting disabled. Whitespace is trimmed and blank IDs are absent.
-Native G1 stores identify the request making blocks visible; they do not imply exclusive
-ownership. Requests without an authored session stay unattributed, including
-legacy traces that use synthetic row IDs for reporting. G2 residency events and
-removals remain unattributed. Missing IDs deserialize as `None` and are omitted
-from JSON output.
-Rust struct literals constructing `Request` or `StoredBlocks` must supply
-`session_id: None` when attribution is absent; JSON defaults do not make fields
-omittable in Rust source.
-
-Session IDs do not enter block hashes or change admission, scheduling, eviction,
-or modeled timing. There is no new policy or configuration switch.
-
 Device (G1) events omit `tier`; a missing `tier` means `device`. A vLLM rank
 with G2 also publishes G2 residency changes as `Stored`/`Removed` events with
 `"tier": "host_pinned"`, as vLLM's offloading connector does. With
@@ -132,3 +112,7 @@ Router identity does not depend on which rank stored it.
 finite cadence after workload settlement and before same-time scaling. It must
 remain observational and cannot keep an otherwise deadlocked runtime alive.
 Observer failures are typed `ReplayError::Telemetry`.
+
+The optional `Request.session_id` is forwarded to device (G1)
+`StoredBlocks.session_id`, identifying the session whose request triggered the
+store, not exclusive block ownership. G2 events and removals remain unattributed.
