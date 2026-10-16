@@ -233,6 +233,8 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
         "--config",
     }
     owned.update(_TOPOLOGY_OPTIONS[backend])
+    if backend == "sglang" and role != "agg":
+        owned.add("--host")
     for token in extra:
         option = token.split("=", 1)[0].replace("_", "-")
         if not option.startswith("-") or option in {"-", "--"}:
