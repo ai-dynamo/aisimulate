@@ -90,6 +90,8 @@ def test_trtllm_preserved_limits_still_default_missing_transfer_buffer(rule):
     result = apply_rule_plugins(copy.deepcopy(params), "trtllm")
 
     assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] > 0
+    block_size = params["params"]["prefill"]["tokens_per_block"]
+    assert result["params"]["prefill"]["cache_transceiver_max_tokens_in_buffer"] % block_size == 0
     assert result["params"]["decode"]["cache_transceiver_max_tokens_in_buffer"] == 8192
     for role in ("prefill", "decode"):
         for key in ("max_batch_size", "max_num_tokens", "max_seq_len"):

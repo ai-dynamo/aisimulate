@@ -145,8 +145,8 @@ not recreate the selected recommendation. See the
 
 Generated TRT-LLM prefill/decode engine YAML includes `cache_transceiver_config`
 for both roles, including when candidate batch, token and KV memory limits are
-preserved. A missing transfer buffer size receives the rule's block-aligned
-default; an explicitly preserved buffer size remains unchanged. This enables
+preserved. A missing transfer buffer size receives the rule's default, rounded
+up to a `tokens_per_block` multiple; an explicitly preserved buffer size remains unchanged. This enables
 the KV transfer required by P/D serving without resizing the evaluated scheduler
 limits. Aggregated deployments do not need this transfer configuration.
 Validate a real completion after readiness: worker startup alone does not test
