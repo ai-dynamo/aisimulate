@@ -242,29 +242,33 @@ real member IDs):
 {
   "start_date": "2026-10-19",
   "roster": [
-    {"name": "Simone Chen", "slack_id": "U00000001"},
     {"name": "Harry Lee", "slack_id": "U00000002"},
-    {"name": "Jason Zhou", "slack_id": "U00000003"},
-    {"name": "Yongming Ding", "slack_id": "U00000004"},
     {"name": "Hongkuan Zhou", "slack_id": "U00000005"},
+    {"name": "Jason Zhou", "slack_id": "U00000003"},
+    {"name": "Simone Chen", "slack_id": "U00000001"},
+    {"name": "Yongming Ding", "slack_id": "U00000004"},
     {"name": "Yueqi Zhao", "slack_id": "U00000006"}
   ],
   "overrides": {
     "2026-11-02": "Yongming Ding",
-    "2026-11-09": "Jason Zhou"
+    "2026-11-09": "Jason Zhou",
+    "2026-11-16": "Simone Chen"
   }
 }
 ```
 
 For OOO coverage, edit only `overrides`: keys are the Monday dates of affected
-weeks, and values are exact names from `roster`. The example swaps Jason's
-November 2 shift with Yongming's November 9 shift. Overrides affect both
+weeks, and values are exact names from `roster`. The example uses alphabetical
+order by first name, with Yongming covering November 2, Jason November 9, and
+Simone November 16 so everyone serves once in the first six weeks. Overrides affect both
 reminders for those weeks without shifting later weeks. Omit `overrides` or use
 `{}` for the normal rotation. Names, roster size/order, and the start date are
 all editable in this variable. Changing the roster order or start date
 recalculates the current rotation, so use dated overrides for temporary swaps.
-Invalid dates, unknown coverage names, or duplicate/invalid roster entries fail
-before contacting Slack.
+Missing configuration, invalid dates, unknown coverage names, or
+duplicate/invalid roster entries fail before contacting Slack. A missing roster
+does not fall back to an unassigned digest: the published Slack workflow requires
+the `review_pic` User ID input.
 
 The Actions variable is the source for Slack's PIC. The
 [Linear review project](https://linear.app/nvidia/project/external-pr-review-pic-aisim-51559cd6cfe2)
