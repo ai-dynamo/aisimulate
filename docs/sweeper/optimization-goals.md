@@ -56,8 +56,9 @@ absent, but `ttft` and `e2e_latency` default to `+inf` when their metric is miss
 no qualifying samples. Such a latency report scores worst-possible (`-inf` after negation)
 rather than best.
 
-The `*_per_user` metric is already a rate (mean of per-token-gap `1000/itl`), so it gets
-**no** GPU/time normalization — it is the InferenceX x-axis (tok/s/user).
+The `*_per_user` metric is already a rate, so it gets **no** GPU/time
+normalization — it is the InferenceX x-axis (tok/s/user). Its aggregation depends
+on the executor; see the [Pareto metric definitions](#pareto).
 
 ### `avg_gpu` — the per-GPU divisor
 
