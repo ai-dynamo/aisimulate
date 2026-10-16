@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
@@ -22,6 +22,8 @@ from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
+# Dataclass field metadata: leave the field out of canonical JSON while it is None.
+OMIT_IF_NONE = "aisimulate.omit_if_none"
 
 
 @dataclass(frozen=True)
@@ -154,7 +156,8 @@ class BackendDeploymentSpec:
     forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
     # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
-    tokenization: dict[str, JSONValue] | None = None
+    # Omitted from canonical JSON when unset, so existing spec identities hold.
+    tokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
 
 
 @dataclass(frozen=True)
@@ -600,7 +603,11 @@ def _jsonable(value: Any) -> JSONValue:
     if isinstance(value, BaseModel):
         return _jsonable(value.model_dump(mode="json"))
     if is_dataclass(value) and not isinstance(value, type):
-        return _jsonable(asdict(value))
+        return {
+            item.name: _jsonable(getattr(value, item.name))
+            for item in fields(value)
+            if not (item.metadata.get(OMIT_IF_NONE) and getattr(value, item.name) is None)
+        }
     if isinstance(value, Enum):
         return _jsonable(value.value)
     if isinstance(value, Mapping):

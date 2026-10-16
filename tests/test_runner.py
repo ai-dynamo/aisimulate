@@ -2672,3 +2672,13 @@ def test_native_replay_tokenizes_on_the_placed_worker() -> None:
     assert record["tokenized_ms"] == 7.0
     assert record["first_admit_ms"] == 7.0
     assert record["ttft_ms"] > 7.0
+
+
+def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
+    from aisimulate.sweeper.replay import canonical_json
+
+    unset = json.loads(canonical_json(_spec()))
+    assert "tokenization" not in unset["backend_deployment"]
+    tokenization = {"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}
+    configured = json.loads(canonical_json(_spec(deployment=_tokenization_deployment(tokenization))))
+    assert configured["backend_deployment"]["tokenization"] == tokenization
