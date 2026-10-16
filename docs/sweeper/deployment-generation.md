@@ -393,6 +393,57 @@ model capacity or performance estimates. Validate the chosen container, model an
 topology on the target cluster with the generated smoke and benchmark job, and
 retain its logs, package versions and AIPerf reports.
 
+### Clusters without GPU GRES
+
+Both `deploy.sbatch` and `benchmark.sbatch` request GPUs in two places:
+`#SBATCH --gres=gpu:N` for the allocation and `srun --gpus-per-task=N` for
+the container step. `N` is the sum of the generated workers' GPU counts.
+These options require Slurm GPU GRES. Check the target partition and node:
+
+```bash
+scontrol show partition YOUR_PARTITION
+scontrol show node YOUR_NODE
+```
+
+If the site uses whole-node exclusive allocation and reports `Gres=(null)`
+with no GPU TRES, these requests fail with `Invalid generic resource (gres)
+specification` before starting the container. Adapt a copy of the generated
+bundle according to that site's allocation policy:
+
+1. In **both** `deploy.sbatch` and `benchmark.sbatch`, remove the
+   `#SBATCH --gres=gpu:N` line and the `--gpus-per-task=N` argument from `srun`.
+   Keep `--nodes=1`, `--ntasks=1`, and the container options. Add
+   `#SBATCH --exclusive` when required by the site to guarantee ownership of
+   the whole node; removing GRES alone does not reserve GPUs.
+2. Supply `CUDA_VISIBLE_DEVICES` from trusted allocation information. For
+   example, on an exclusively allocated node whose container exposes GPUs 0
+   and 1, add `export CUDA_VISIBLE_DEVICES=0,1` to `environment.sh` for a
+   TP1 prefill + TP1 decode deployment. A TP1 aggregated deployment needs
+   one device, such as `CUDA_VISIBLE_DEVICES=0`. Use the actual IDs or GPU
+   UUIDs visible inside the container, not a guessed list on a shared node.
+   If Pyxis resets the variable, add
+   `--container-env=CUDA_VISIBLE_DEVICES` to the generated `srun` command.
+3. Keep worker commands and `deployment.json` unchanged. The supervisor
+   splits the supplied list among workers using their generated GPU offsets
+   and counts. It rejects a missing or insufficient list; exposing GPUs in
+   Pyxis does not by itself populate `CUDA_VISIBLE_DEVICES`.
+4. From the copied bundle directory, validate both job files before submitting
+   the desired operation:
+
+   ```bash
+   bash submit.sh serve --test-only
+   bash submit.sh benchmark --test-only
+   bash submit.sh serve
+   # Or, with aiperf installed in the image: bash submit.sh benchmark
+   ```
+
+Repeat these site-specific edits after regenerating the bundle. Successful
+`--test-only` validates the scheduler request; check the generated job's
+inference smoke result to verify runtime operation. Benchmark mode additionally
+requires `aiperf` on the container's `PATH`.
+
+### Example configuration
+
 Example unified generator input (`slurm.yaml`):
 
 ```yaml
