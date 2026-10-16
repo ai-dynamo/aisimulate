@@ -1091,6 +1091,11 @@ fn materialize_aic_capacity(
         role.tensor_parallel_size
     );
     ensure!(
+        config.cp_size.unwrap_or(1) == role.prefill_context_parallel_size,
+        "AIC cp_size does not match engine prefill_context_parallel_size={}",
+        role.prefill_context_parallel_size
+    );
+    ensure!(
         config.attention_dp == role.dp_size,
         "AIC attention_dp={} does not match engine dp_size={}",
         config.attention_dp,
@@ -1196,6 +1201,7 @@ fn aggregated_role(engine: &ReplayEngineConfig) -> ReplayRoleConfig {
     ReplayRoleConfig {
         dp_size: engine.dp_size,
         tensor_parallel_size: engine.tensor_parallel_size,
+        prefill_context_parallel_size: engine.prefill_context_parallel_size,
         num_gpu_blocks_is_explicit: engine.num_gpu_blocks_is_explicit,
         rank: engine.rank.clone(),
     }
@@ -2142,8 +2148,13 @@ fn infer_aic_timing_topology(engine: &mut serde_json::Value) -> Result<()> {
         for (target, fields) in [
             ("tensor_parallel_size", ["tp", "tp_size"]),
             ("dp_size", ["attention_dp", "attention_dp_size"]),
+            ("prefill_context_parallel_size", ["cp_size", "cp_size"]),
         ] {
-            if let Some(value) = config.get(fields[0]).or_else(|| config.get(fields[1])) {
+            if let Some(value) = config
+                .get(fields[0])
+                .or_else(|| config.get(fields[1]))
+                .filter(|value| !value.is_null())
+            {
                 if let Some(explicit) = engine.get(target) {
                     ensure!(
                         explicit == value,
@@ -2325,6 +2336,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
             prediction_provenance.insert("aggregated".into(), timing_provenance(&role.rank.timing_model));
             engine_config.dp_size = role.dp_size;
             engine_config.tensor_parallel_size = role.tensor_parallel_size;
+            engine_config.prefill_context_parallel_size = role.prefill_context_parallel_size;
             engine_config.num_gpu_blocks_is_explicit = role.num_gpu_blocks_is_explicit;
             engine_config.rank = role.rank;
             if let Some(traffic) = traffic.as_mut()
@@ -2334,6 +2346,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                     &ReplayRoleConfig {
                         dp_size: engine_config.dp_size,
                         tensor_parallel_size: engine_config.tensor_parallel_size,
+                        prefill_context_parallel_size: engine_config.prefill_context_parallel_size,
                         num_gpu_blocks_is_explicit: engine_config.num_gpu_blocks_is_explicit,
                         rank: engine_config.rank.clone(),
                     },
@@ -3585,10 +3598,14 @@ mod tests {
 
     #[test]
     fn canonical_timing_infers_topology_and_rejects_explicit_conflicts() {
-        let mut engine = serde_json::json!({"rank": {"timing_model": {"type":"external", "provider":"aic", "config":{"tp":2, "attention_dp":4}}}});
+        let mut engine = serde_json::json!({"rank": {"timing_model": {"type":"external", "provider":"aic", "config":{"tp":2, "attention_dp":4, "cp_size":8, "dcp":2}}}});
         infer_aic_timing_topology(&mut engine).unwrap();
         assert_eq!(engine["tensor_parallel_size"], 2);
         assert_eq!(engine["dp_size"], 4);
+        assert_eq!(engine["prefill_context_parallel_size"], 8);
+        let mut conflicting_cp = engine.clone();
+        conflicting_cp["prefill_context_parallel_size"] = serde_json::json!(1);
+        assert!(infer_aic_timing_topology(&mut conflicting_cp).is_err());
         engine["tensor_parallel_size"] = serde_json::json!(1);
         assert!(infer_aic_timing_topology(&mut engine).is_err());
     }

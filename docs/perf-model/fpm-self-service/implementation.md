@@ -131,7 +131,7 @@ Present a concise **options table with one row per joint combination**, includin
 | Collector compatibility | Compatible with the current profile collector's identity checks, blocked, or unresolved, independently of runtime support. |
 | Resource effects and limits | Expected changes to weights, attention cache, fixed state, workspaces/padding and memory fit; retain unknown bounds. Accuracy remains unmeasured without matched evidence. |
 
-The current profile collector requires KV dtype to equal its checkpoint-inferred native dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Those checks restrict collection even when the pinned runtime supports another combination. Mark any blocked alternative with its precise limitation; user selection or a schema-valid profile does not override serving dispatch. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
+The profile collector preserves the selected KV dtype and checks GEMM, MoE, FMHA and communication identities against its resolved configuration. Checkpoint-inferred KV defaults do not restrict explicit selections. The pinned runtime must support the selected combination, and observed precision must match the plan. Mark any blocked alternative with its precise limitation; a schema-valid profile does not prove runtime support. Do not relabel checkpoint data or use extra launch arguments to disguise an unsupported identity. See [profile collection constraints](#plan-preview-and-explicitly-execute).
 
 Treat runtime defaults as one proposal and let the user choose the precision combination(s) to cover, preserving prior explicit choices. Record the choice, rationale, sources and unresolved conditions in profile provenance. A blocked selection stays blocked until the required capability is available; do not substitute a default silently. For multiple selected combinations, use a separate fresh output root per precision combination and the existing `--parallel-configs` topology list within each. Duplicate resolved topologies within the same serving role are rejected even if their precision overrides differ. This is agent orchestration over the existing CLI, not a new precision-matrix command or schema. Recompute resources and review each exact precision/topology profile in stage 3 before accepting it.
 
@@ -828,11 +828,32 @@ Use that complete string for both the request's `--framework-version` and the co
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
-New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must select one literal runtime version for the target hardware/backend.
+Profile-based collection retains checkpoint weight quantization and the selected KV precision without consulting op-level timing tables. An explicit BF16 KV selection uses BF16 attention/cache identity even when FP8 weights caused the default inference to choose FP8 KV. This does not prove runtime support: initialization, observed cache precision and readiness checks must agree with the plan before measurements are accepted. Model-specific native-cache requirements still apply, including DeepSeek V4.1's FP8 KV path. The vLLM collector rejects the unsupported literal `int8` cache option; explicit BF16 and FP8 selections remain available independently of the inferred default.
+
+The current unversioned vLLM template used by FPM collection, and explicit
+vLLM 0.11.0 and newer templates, render an explicit BF16 KV
+selection as `--kv-cache-dtype bfloat16`. This preserves the selection when
+checkpoint metadata declares FP8 KV. See the pinned runtime's
+[accepted cache dtypes](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/config/cache.py)
+and [dtype resolution](https://github.com/vllm-project/vllm/blob/v0.20.1/vllm/utils/torch_utils.py).
+Only the 0.10.2 template retains `--kv-cache-dtype auto` because that runtime
+does not accept literal `bfloat16`. Observed-precision checks must still reject
+any runtime mismatch. Preview success does not qualify GPU execution.
+Explicit FP8 and runtime `auto` selections retain their existing meanings.
+
+Use a fresh onboarding output directory and dataset when changing collection precision. Do not relabel historical timings or reuse their memory bounds without validation. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. A collection profile must select one literal runtime version for the target hardware/backend.
 
 Successful formal collection and resume verify that the published data's pod-reported runtime version exactly matches `framework_version`, including suffixes such as `+cu128`. A mismatch exits 1 and preserves collection artifacts. Use the declared runtime or create a new request and plan for the observed version; generated configs are never silently retargeted. Diagnostic smoke runs do not publish or verify formal data.
 
 ### Check timing readiness before full collection
+
+For a request containing an FPM profile, `onboard collect-fpm` preview runs the
+collector's CPU planning checks before printing the command. A mismatch between
+the requested KV precision and the profile fails here, before workers launch.
+Planning may resolve checkpoint metadata from local files, the packaged cache or Hugging Face. It does not verify
+GPU execution or make a historical profile invalid for prediction.
+The checkpoint config must remain resolvable through the saved model identity;
+an embedded resource profile does not replace that runtime metadata.
 
 Apply this procedure independently to every selected precision/topology configuration before new full collection. The readiness gate governs collection; it does not require recollecting compatible historical formal data that can already be used by ordinary prediction/recommendation. Historical data reuse retains the separate identity, memory, query-coverage and accuracy checks, including recorded provenance gaps. First inspect any saved native campaign artifacts:
 

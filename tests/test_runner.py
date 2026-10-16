@@ -1449,6 +1449,24 @@ def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize(("cp", "dcp"), [(1, 1), (8, 1), (16, 1), (1, 4)])
+def test_runner_retains_prefill_cp_for_resource_accounting(cp, dcp):
+    runtime = RecordingRuntime()
+    args = _engine_args()
+    args.update(aic_cp_size=cp, aic_dcp_size=dcp)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=args,
+        num_workers=1,
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    engine = runtime.execution_spec["engine"]
+    assert engine["prefill_context_parallel_size"] == cp
+    assert engine["tensor_parallel_size"] == 2
+
+
 @pytest.mark.parametrize(("field", "alias"), [("dcp", "aic_dcp_size"), ("cp", "aic_cp_size")])
 def test_runner_rejects_parallel_config_that_conflicts_with_context_parallel_args(field, alias):
     # Same contract as tp / attention_dp: capacity and timing must not price one

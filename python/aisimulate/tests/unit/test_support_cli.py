@@ -573,7 +573,10 @@ def test_plan_guides_both_collection_executors_without_launching_workers(tmp_pat
         pytest.fail("initialization, planning and collection preview must not launch workers")
 
     monkeypatch.setattr(subprocess, "run", unexpected_launch)
-    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
+    from collector.fpm_forward import entry, planner
+
+    monkeypatch.setattr(entry, "run_resolved", unexpected_launch)
+    monkeypatch.setattr(planner, "_git_revision", lambda: "preview-test")
     command = _local_collection_command(tmp_path, with_profile=with_profile)
     request = SupportRequest.from_yaml(tmp_path / "request.yaml")
     assert (request.fpm_profile is not None) == with_profile
@@ -1337,6 +1340,49 @@ def test_scripted_init_requires_context_evidence(tmp_path, capsys):
         cli.main(_init_args(tmp_path / "request.yaml", context_length=None))
     assert error.value.code == 2
     assert "--context-length is required" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
+def test_minimax_collection_preview_preserves_selected_precision(tmp_path, capsys, monkeypatch, kv_dtype):
+    from collector.fpm_forward import entry
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(entry, "run_resolved", lambda *_args: pytest.fail("preview must not launch workers"))
+    config = Path(__file__).parents[2] / "src/aisimulate_core/model_configs/MiniMaxAI--MiniMax-M2.7_config.json"
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(json.dumps({"fmha_quant_mode": kv_dtype, "kv_cache_dtype": kv_dtype}))
+    request = tmp_path / "request.yaml"
+    assert (
+        cli.main(
+            [
+                *_init_args(
+                    request,
+                    model="MiniMaxAI/MiniMax-M2.7",
+                    model_kind="moe",
+                    tensor_parallel=4,
+                    context_length=8192,
+                    framework_version="0.27.0",
+                ),
+                "--model-config",
+                str(config),
+                "--resource-overrides",
+                str(overrides),
+            ]
+        )
+        == 0
+    )
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "-c", str(request), "--output-dir", str(root)]) == 0
+    before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    command = ["onboard", "collect-fpm", "-c", str(root / "request.yaml"), "--output-dir", str(root)]
+    capsys.readouterr()
+    assert cli.main(command) == 0
+    output = capsys.readouterr().out
+    assert "--plan-only" in output
+    assert f"--fpm-kv-cache-dtypes {kv_dtype}" in output
+    assert {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} == before
+    assert not (root / "fpm-checkpoint").exists()
+    assert not (root / "fpm-artifacts").exists()
 
 
 @pytest.mark.parametrize("mode", [None, "NONE"])

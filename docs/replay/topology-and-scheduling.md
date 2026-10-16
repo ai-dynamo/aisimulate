@@ -20,6 +20,13 @@ transfer, readiness transition, or active telemetry/scaling tick. It settles
 all work at that timestamp before advancing again. Same-time policy decisions
 cannot expose compute or transferred KV before completion.
 
+Engine replay reports each role's GPUs per worker as
+`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
+by engine replay). GPU-hours sum each role's worker-seconds times this count,
+divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
+`decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
+multiplier.
+
 ## Disaggregated prefill and decode
 
 P/D uses separate worker pools and one logical clock. vLLM and TensorRT-LLM
