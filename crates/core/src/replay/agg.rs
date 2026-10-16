@@ -295,6 +295,7 @@ where
                 self.now_ms,
                 logical_worker_id,
                 input_tokens,
+                uuid,
                 (request, uuid, worker_idx),
             )?;
         } else {
@@ -1080,12 +1081,20 @@ where
                 .get(&uuid)
                 .context("profile cancellation lost request state")?;
             let scheduler_id = state.scheduler_id();
-            let busy = if let Some(scheduler_id) = scheduler_id {
+            // A request still being tokenized has not reached its engine.
+            let tokenizing = self
+                .tokenization
+                .as_mut()
+                .is_some_and(|tokenization| tokenization.cancel(uuid));
+            let busy = if tokenizing {
+                false
+            } else if let Some(scheduler_id) = scheduler_id {
                 self.engine.request_has_committed_pass(scheduler_id, uuid)?
             } else {
                 false
             };
-            if let Some(scheduler_id) = scheduler_id {
+            if tokenizing {
+            } else if let Some(scheduler_id) = scheduler_id {
                 let effects = self.engine.apply_command(
                     scheduler_id,
                     Command::CancelRequest {
@@ -2788,6 +2797,11 @@ where
                     bail!("offline replay queued request {uuid} was absent from its router");
                 }
             }
+            super::state::AggRequestPhase::Running
+                if self
+                    .tokenization
+                    .as_mut()
+                    .is_some_and(|tokenization| tokenization.cancel(uuid)) => {}
             super::state::AggRequestPhase::Running => {
                 let scheduler_id = scheduler_id.ok_or_else(|| {
                     anyhow::anyhow!("offline replay running request {uuid} has no scheduler")

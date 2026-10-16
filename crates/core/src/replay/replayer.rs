@@ -442,18 +442,12 @@ impl<C: ReplayComposition> Replayer<C> {
         };
         let telemetry = self.telemetry.take();
         let tokenization = self.tokenization;
-        if tokenization.is_some() {
-            if scaling.is_some() || self.spec.adapters.scaling.provider != "none" {
-                return Err(ReplayError::InvalidSpec(
-                    "tokenization does not support worker scaling".to_string(),
-                ));
-            }
-            if matches!(&runtime_input, ReplayRuntimeInput::Workload(driver) if driver.is_agentic())
-            {
-                return Err(ReplayError::InvalidSpec(
-                    "tokenization is not supported with agentic workloads".to_string(),
-                ));
-            }
+        if tokenization.is_some()
+            && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        {
+            return Err(ReplayError::InvalidSpec(
+                "tokenization does not support worker scaling".to_string(),
+            ));
         }
 
         let collector = match &self.spec.topology {

@@ -476,8 +476,6 @@ class RunnerCapabilities:
                 raise ValueError("runner does not support engine.tokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.tokenization requires offline replay")
-            if spec.workload.get("trace_format") in {"weka", "agentic_mooncake"} or spec.workload.get("agentic_lanes"):
-                raise ValueError("engine.tokenization is not supported with agentic workloads")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:

@@ -1322,6 +1322,7 @@ where
             self.now_ms,
             logical_worker_id,
             input_tokens,
+            uuid,
             (uuid, worker_idx, action),
         )?;
         Ok(())
@@ -1838,6 +1839,11 @@ where
     fn cancel_prefill_route(&mut self, uuid: Uuid) -> Result<()> {
         if !self.state(uuid)?.prefill_routed {
             return Ok(());
+        }
+        // Like a router-queued prefill, a request still being tokenized drops
+        // its unsubmitted prefill action.
+        if let Some(tokenization) = &mut self.tokenization {
+            tokenization.cancel(uuid);
         }
         self.state_mut(uuid)?.pending_prefill_action = None;
         let placements = if self.prefill_placement.cancel_pending(uuid) {

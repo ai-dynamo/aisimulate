@@ -95,7 +95,7 @@ Field tables on these pages use the following columns:
 | `engine.backend_version` | Latest data for the backend | fixed | Selects performance data only. It does not change scheduler behavior. Must be a queryable version for the hardware and backend: `current`, `previous` when configured, `next` when newer data is available, or a version one of those available aliases resolves to. See [backend versions](#backend-versions). |
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
-| `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; agentic workloads, online replay, AFD and analytical EPD are rejected. |
+| `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, AFD and analytical EPD are rejected. |
 
 <a id="tokenization"></a>
 
@@ -153,6 +153,9 @@ are only an illustration.
   concurrency slot.
 - With `traffic.stop.max_virtual_time_seconds`, a request still being
   tokenized at the cutoff is reported as incomplete.
+- When an agentic profile cancels a request that is still being tokenized,
+  the request never reaches the engine. Its tokenizer time stays reserved,
+  so requests behind it on that worker are not released earlier.
 - Setting both costs to `0` is the same as omitting the block.
 
 ## Backend versions

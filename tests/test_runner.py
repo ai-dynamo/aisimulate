@@ -2641,7 +2641,7 @@ def test_engine_runner_omits_tokenization_when_unset() -> None:
     assert "spec" not in runtime.execution_spec
 
 
-def test_tokenization_requires_capability_offline_and_non_agentic_traffic() -> None:
+def test_tokenization_requires_capability_and_offline_replay() -> None:
     from aisimulate.sweeper import RunnerCapabilities
 
     deployment = _tokenization_deployment({"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}, 1)
@@ -2654,12 +2654,6 @@ def test_tokenization_requires_capability_offline_and_non_agentic_traffic() -> N
         replace(engine, supported_execution_modes=("offline", "online")).require_compatible(
             replace(spec, execution_mode="online")
         )
-    agentic = _spec(
-        deployment=deployment,
-        workload={"trace_format": "agentic_mooncake", "source_type": "trace", "agentic_lanes": 1},
-    )
-    with pytest.raises(ValueError, match="agentic"):
-        engine.require_compatible(agentic)
 
 
 def test_native_replay_tokenizes_on_the_placed_worker() -> None:

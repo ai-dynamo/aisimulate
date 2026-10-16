@@ -77,8 +77,8 @@ request on the worker it was placed on before that worker's engine sees it.
 Each worker of the entry role has `workers` first-come, first-served servers,
 and a request takes `base_ms + per_input_token_ms × input tokens` on one of
 them. Latency metrics keep the arrival time, and each per-request record gains
-`tokenized_ms`. Both costs zero, the default, keep direct dispatch. Scaling and
-agentic workloads are rejected. See
+`tokenized_ms`. Both costs zero, the default, keep direct dispatch. Scaling is
+rejected. See
 [request tokenization](../engine/README.md#tokenization).
 
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
