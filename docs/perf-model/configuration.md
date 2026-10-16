@@ -50,6 +50,8 @@ print(model.diagnostics()["provenance"])
 
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
+`encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
+
 `moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
 
 `moe_perf.parquet` may include Boolean selection metadata `default_eligible`. An absent column preserves legacy automatic selection; when present, every value must be a non-null Boolean. A `false` row requires a nonblank string `kernel_source`, preserved exactly, and is available only through that named source. It cannot enter automatic standard or low-latency grids, including empirical cross-shape and cross-quant reference selection. Among eligible rows, existing source priority and first-row precedence remain unchanged. Default table views, coverage, and readiness use those same eligible grids; raw Parquet enumeration retains all measured rows. Malformed eligibility metadata is an invalid-data error, never a missing-data fallback. The flag is not a measurement identity dimension. Collector finalization preserves it during merges, including existing annotations when a legacy recollection omits the column; genuinely new legacy keys remain eligible.
@@ -322,8 +324,8 @@ These additional public YAML fields are concrete controls:
 | `engine.nextn`, `nextn_accepted` | Compute-side MTP identity and separate expected acceptance assumption; both are required for explicit MTP. |
 | `engine.enable_chunked_prefill` | Override chunked prefill; omission preserves the backend default. |
 
-These controls require default timing on language roles. AFD and analytical
-encoder configurations reject the unsupported controls. Use `--stack engine`
+These controls require default timing on language roles. AFD and encoder-pool
+configurations of either mode reject the unsupported controls. Use `--stack engine`
 and the supported model/backend; an older external adapter can reject them at
 capability validation before Replay. Expected acceptance is workload behavior,
 not an estimator-fitting observation. See [Replay features](../replay/features.md)

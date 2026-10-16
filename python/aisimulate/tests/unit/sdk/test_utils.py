@@ -9,6 +9,7 @@ Tests HuggingFace config parsing and model config retrieval.
 
 import io
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -2168,3 +2169,23 @@ class TestQwen3VLVisionEncoderParsing:
         cfg = {**_QWEN3VL_HF_CONFIG, "vision_config": vision_cfg}
         result = _parse_hf_config_json(cfg)
         assert result["extra_params"].deepstack_visual_indexes == (8, 17, 26)
+
+
+def test_qwen3_vl_pixel_budget_follows_the_checkpoint_processor(tmp_path, caplog):
+    checkpoint = tmp_path / "with-processor"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (checkpoint / "preprocessor_config.json").write_text(
+        json.dumps({"size": {"shortest_edge": 3136, "longest_edge": 1003520}})
+    )
+    enc_cfg = get_model_config_from_model_path(str(checkpoint))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == (3136, 1003520)
+
+    # A checkpoint without the file keeps the pinned Qwen3-VL budget instead of failing.
+    bare = tmp_path / "without-processor"
+    bare.mkdir()
+    (bare / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    with caplog.at_level(logging.WARNING):
+        enc_cfg = get_model_config_from_model_path(str(bare))["extra_params"]
+    assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == utils.QWEN3_VL_PIXEL_BOUNDS
+    assert "no pixel budget" in caplog.text

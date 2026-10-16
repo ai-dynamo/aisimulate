@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use crate::engine::FrontendConfig;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::common::protocols::{KvTransferTimingMode, MockEngineArgs, WorkerType};
 
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4096;
+const DEFAULT_VLM_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 const DEFAULT_INIT_NEW_TOKEN_RATIO: f64 = 0.7;
 const DEFAULT_MIN_NEW_TOKEN_RATIO_FACTOR: f64 = 0.14;
 const DEFAULT_NEW_TOKEN_RATIO_DECAY_STEPS: f64 = 600.0;
@@ -45,6 +47,12 @@ pub(super) struct SglangConfig {
     pub(super) kv_transfer_bandwidth: Option<f64>,
     pub(super) kv_transfer_timing_mode: KvTransferTimingMode,
     pub(super) speculative_max_tokens: Option<usize>,
+    /// Vision embedding cache capacity in bytes.
+    pub(super) vlm_cache_bytes: u64,
+    /// Whether a pass is one iteration of the overlap scheduler loop.
+    pub(super) host_loop: bool,
+    /// Frontend worker pools ahead of the scheduler inbox.
+    pub(super) frontend: Option<FrontendConfig>,
 }
 
 impl SglangConfig {
@@ -105,6 +113,11 @@ impl SglangConfig {
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,
             speculative_max_tokens: args.aic_nextn.map(|nextn| nextn + 1),
+            vlm_cache_bytes: sglang
+                .and_then(|s| s.vlm_cache_bytes)
+                .unwrap_or(DEFAULT_VLM_CACHE_BYTES),
+            host_loop: sglang.is_some_and(|s| s.host_loop),
+            frontend: sglang.and_then(|s| s.frontend.clone()),
         }
     }
 

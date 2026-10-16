@@ -52,7 +52,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
-| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1); synthetic analytical EPD only; requires `engine.workers.encoder`. |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), `identity` (`unique` or `{pool: N}`) and optional `min_pixels`/`max_pixels` (the served processor's rescale budget; defaults to the checkpoint's); synthetic only. Requires `engine.workers.encoder` or an aggregated or prefill SGLang worker (native VL replay); the pixel budget is honored by native VL replay and native encoder pools, not by the analytical overlay. |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -104,6 +104,9 @@ traffic:
 ```
 
 `synthetic` generates independent single requests. It does not accept a `session` mapping.
+`images` adds the same fixed images to every request; the deployment encodes them
+with an [encoder pool](engine/analytical.md#epd) or on an
+[SGLang worker](engine/sglang-vl-host-loop.md).
 
 <a id="synthetic-session-source"></a>
 

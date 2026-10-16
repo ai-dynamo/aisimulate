@@ -13,10 +13,10 @@ use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::engine::KvEvent;
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::config::{NativeHostOffloadConfig, StateCacheConfig};
+use crate::engine::{FrontendConfig, ImageSpec, KvEvent};
 
 /// Sink for neutral KV-cache events emitted by a rank.
 pub(crate) trait KvCacheEventSink: Send + Sync {
@@ -80,6 +80,9 @@ pub(crate) struct DirectRequest {
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Image placeholders inside `tokens`; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
 }
 
 impl DirectRequest {
@@ -163,6 +166,9 @@ pub(crate) struct SglangArgs {
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
+    pub vlm_cache_bytes: Option<u64>,
+    pub host_loop: bool,
+    pub frontend: Option<FrontendConfig>,
 }
 
 /// Rank-local view of `EngineConfig`.

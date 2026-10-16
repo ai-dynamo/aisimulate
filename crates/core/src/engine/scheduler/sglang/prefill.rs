@@ -33,7 +33,10 @@ pub(super) struct AdmitResult {
 /// Behavioral model of SGLang's prefill admission (`Scheduler.get_new_batch_prefill`,
 /// `PrefillAdder.add_one_req` / `add_chunked_req`, `Req.init_next_round_input`) as of
 /// sgl-project/sglang v0.5.6.post2 (`5c8bd8b5`, `python/sglang/srt/managers/scheduler.py`,
-/// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied.
+/// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied. The
+/// admission-time radix match and KV lease, whose prefix-cache commit the core defers to the
+/// overlap iteration's result observation, were verified against v0.5.19 (`0bcd822`); the token
+/// budgets, chunking and batch selection keep the `5c8bd8b5` pin.
 pub(super) fn get_new_batch_prefill(
     waiting: &mut WaitingQueue,
     kv_manager: &mut SglangKvManager,

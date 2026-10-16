@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::engine::ImageSpec;
+
 /// Stable Agentic correlation data carried across replay-owned boundaries.
 ///
 /// The static graph already owns request, play, and conversation identity.
@@ -106,6 +108,9 @@ pub struct DirectRequest {
     /// to the native request; the remaining context stays in Replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_context: Option<ReplayRequestContext>,
+    /// Image placeholders inside `tokens`; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
 }
 
 fn is_zero_i32(value: &i32) -> bool {

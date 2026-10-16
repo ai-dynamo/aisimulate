@@ -165,9 +165,12 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 
     checkpoint("resource_plan", plan)
     factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
-    epd = config.engine.workers.encoder is not None
-    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
-        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
+    encoder = config.engine.workers.encoder
+    if encoder is not None and (args.stack != "engine" or args.online or adapter_raw):
+        raise ValueError("encoder pools require offline --stack engine without adapters")
+    analytical_epd = encoder is not None and encoder.mode == "analytical"
+    if analytical_epd and args.capture_per_request:
+        raise ValueError("analytical EPD cannot capture per-request records")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     factory = _PredictionCliRunnerFactory(
         factory,
@@ -184,7 +187,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         providers=adapters,
         execution_mode="online" if args.online else "offline",
         output_requirements=ReplayOutputRequirements(
-            include_raw_report=not epd,
+            include_raw_report=not analytical_epd,
             capture_per_request=args.capture_per_request,
             capture_memory_diagnostics="memory" in args.detail,
             capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),

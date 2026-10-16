@@ -30,6 +30,7 @@ fn spec(backend: Backend, workers: usize, dp_size: u32) -> ReplaySpec {
         ..ReplayEngineConfig::default()
     };
     ReplaySpec {
+        encoder: None,
         version: CURRENT_REPLAY_SPEC_VERSION,
         topology: ReplayTopology::Aggregated {
             workers: WorkerPoolSpec {

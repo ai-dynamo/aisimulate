@@ -30,6 +30,7 @@ from aisimulate.sweeper.kv_estimate import NoPerfDatabase
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.sampler import Suggestion
 from aisimulate.sweeper.search_space import BranchSpace
+from aisimulate_core.sdk.errors import NoFeasibleConfigError
 
 
 def _config(**kwargs):
@@ -81,6 +82,18 @@ def _encoder(**kwargs):
         image_count=1,
     )
     return EncoderPoolSpec(**(values | kwargs))
+
+
+def _native_encoder(**kwargs):
+    values = dict(
+        mode="native",
+        tp=[1],
+        batch_size=[1],
+        workers=[1],
+        host_profile={"path": "unused.json", "frontend": "python"},
+        transfer_bandwidth_gb_per_second=50.0,
+    )
+    return values | kwargs
 
 
 def _report():
@@ -492,6 +505,78 @@ def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
     assert caught.value is error
 
 
+def test_native_encoder_pools_require_synthetic_text_lengths():
+    search_space = _config().search_space.model_dump() | {"encoder": _native_encoder()}
+    workload = {"trace_path": "unused.jsonl", "images": {"height": 448, "width": 448, "count": 1}}
+    with pytest.raises(ValueError, match="native encoder replay requires synthetic traffic with isl and osl"):
+        _config(search_space=search_space, workload=workload)
+
+
+@pytest.mark.parametrize(
+    "error", [NoFeasibleConfigError("tp must divide the ViT geometry"), ValueError("invalid batch latency")]
+)
+def test_native_catalog_names_rejected_tps_and_propagates_invalid_data(monkeypatch, caplog, error):
+    import aisimulate.sdk.sweep as aic_sweep
+    from aisimulate.vl import table
+    from aisimulate_core.sdk import perf_database
+
+    def reject(**kwargs):
+        raise error
+
+    frontend = SimpleNamespace(stages=[SimpleNamespace(service_ms=3.0)])
+    monkeypatch.setattr(perf_database, "get_database_view", lambda *a, **kw: SimpleNamespace(version="resolved"))
+    monkeypatch.setattr("aisimulate.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
+    monkeypatch.setattr(table, "resolve_frontend", lambda *a, **kw: (frontend, "digest"))
+    monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", reject)
+    config = _config(search_space=_config().search_space.model_dump() | {"encoder": _native_encoder(tp=[1, 2])})
+    with pytest.raises(type(error)) as caught:
+        resolve_encoder_catalog(config)
+    if isinstance(error, ValueError):
+        assert caught.value is error
+    else:
+        assert "tp=1 workers=1: tp must divide" in str(caught.value)
+        assert "tp=2 workers=1: tp must divide" in str(caught.value)
+        assert "native encoder: tp=2 workers=1 skipped" in caplog.text
+
+
+@pytest.mark.parametrize("count,workers,images_per_part", [(1, [1], [1]), (5, [1, 8], [5, 1]), (1, [8], [1])])
+def test_native_catalog_prechecks_memory_on_the_processor_geometry(monkeypatch, count, workers, images_per_part):
+    import aisimulate.sdk.sweep as aic_sweep
+    from aisimulate.vl import table
+    from aisimulate_core.sdk import perf_database
+
+    recorded = []
+
+    def record(**kwargs):
+        recorded.append(kwargs["runtime_config"])
+        raise NoFeasibleConfigError("stop")
+
+    frontend = SimpleNamespace(stages=[SimpleNamespace(service_ms=3.0)])
+    monkeypatch.setattr(perf_database, "get_database_view", lambda *a, **kw: SimpleNamespace(version="resolved"))
+    monkeypatch.setattr("aisimulate.sweeper.epd.resolve_backend_version", lambda *args: "pinned")
+    monkeypatch.setattr(table, "resolve_frontend", lambda *a, **kw: (frontend, "digest"))
+    monkeypatch.setattr(aic_sweep, "_get_encoder_worker_candidates", record)
+    workload = dict(isl=128, osl=32, concurrency=8, num_request_ratio=2)
+    workload["images"] = dict(height=448, width=448, count=count, max_pixels=65536)
+    search_space = _config().search_space.model_dump() | {"encoder": _native_encoder(workers=workers)}
+    config = _config(search_space=search_space, workload=workload)
+    with pytest.raises(NoFeasibleConfigError, match="stop"):
+        resolve_encoder_catalog(config)
+    # The memory precheck sees the pixel-budgeted geometry the replay encodes, not the raw image,
+    # at the share of the request's images one of the pool's replicas batches.
+    assert all(runtime.image_height == 0 and runtime.num_image_tokens == 64 for runtime in recorded)
+    assert [runtime.num_images_per_request for runtime in recorded] == images_per_part
+
+
+def test_native_catalog_refuses_other_vision_families_before_the_host_table(tmp_path):
+    search_space = _config().search_space.model_dump() | {
+        "model_name": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "encoder": _native_encoder(host_profile={"path": str(tmp_path / "absent.json"), "frontend": "python"}),
+    }
+    with pytest.raises(ValueError, match="native encoder pools price Qwen3-VL vision towers"):
+        resolve_encoder_catalog(_config(search_space=search_space))
+
+
 @pytest.mark.parametrize("modes", [["agg", "disagg"], ["disagg", "agg"], ["agg"]])
 def test_epd_native_search_preserves_available_modes(monkeypatch, caplog, modes):
     from aisimulate_core.sdk import perf_database
@@ -666,7 +751,7 @@ def test_epd_rejects_afd_search_before_materialization(mode):
         deployment_mode=[mode],
         afd_batch_size_candidates=[16],
     )
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         SmartSearchConfig.model_validate(payload)
 
 
@@ -675,7 +760,7 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
     from aisimulate.sweeper.deploy import build_backend_deployment
 
     encoder = _encoder()
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         build_backend_deployment({"deployment_mode": mode}, backend_version="test", encoder=encoder)
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
@@ -691,8 +776,34 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
         supported_backend_topologies=(("*", "*"),),
         supports_analytical_epd=True,
     )
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         capabilities.require_compatible(spec)
+
+
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_hosted_vision_rejects_afd_search_and_replay(mode):
+    role = "agg" if mode == "afd" else "prefill"
+    payload = _config().model_dump(mode="json")
+    payload["search_space"].update(
+        deployment_mode=[mode],
+        afd_batch_size_candidates=[16],
+        encoder=None,
+        **{f"{role}_vision": {"cache_mib": 100, "encoder_parallel": "tp"}},
+    )
+    with pytest.raises(ValueError, match="image workloads are unsupported for AFD"):
+        SmartSearchConfig.model_validate(payload)
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode=mode,
+            backend="sglang",
+            backend_version="0.5.14",
+            **{f"{role}_engine_args": {"vision": True, "sglang": {"vlm_cache_bytes": 100 << 20}}},
+        ),
+        workload=_config().workload.model_dump(mode="json") | {"source_type": "synthetic"},
+        goal={},
+    )
+    with pytest.raises(InvalidRunnerError, match="image workloads are unsupported for AFD"):
+        EngineReplayRunnerFactory().create(0).run(spec)
 
 
 @pytest.mark.parametrize("encoder_present", [False, True])

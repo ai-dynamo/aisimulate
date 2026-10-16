@@ -1065,7 +1065,7 @@ def test_encoder_worker_candidates_keep_llama4_specialized_tower_unsupported():
     from aisimulate.sdk.perf_database import get_database_view
 
     database = get_database_view("b200_sxm", "trtllm", "current", database_mode="SOL", allow_missing_data=True)
-    with pytest.raises(ValueError, match="has no vision encoder"):
+    with pytest.raises(ValueError, match="encoder pools price Qwen3-VL and Kimi K3 vision towers"):
         sweep._get_encoder_worker_candidates(
             model_path="meta-llama/Llama-4-Scout-17B-16E-Instruct",
             tp_list=[1],

@@ -10,6 +10,7 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
     EngineRecommendationConfig,
+    HostWorkerPredictionConfig,
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
@@ -126,6 +127,8 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+    hosted = WorkersPredictionConfig(prefill=HostWorkerPredictionConfig(host_loop=True))
+    assert hosted.prefill is not None and hosted.prefill.host_loop is True
 
 
 def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
@@ -1021,6 +1024,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
+    if mode != "aggregated":
+        worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
     roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
     raw["engine"]["mode"] = mode
     for public_role in roles:
