@@ -141,6 +141,17 @@ it creates a starting configuration without replay/SLA optimization; it does
 not recreate the selected recommendation. See the
 [legacy CLI guide](../aic-backward-compatibility/cli.md).
 
+### vLLM KV precision versions
+
+Pin the generated configuration version to the serving runtime. With vLLM
+0.11.0 and newer templates (including unversioned/`current`), an explicit `kv_cache_dtype: bfloat16` renders
+`--kv-cache-dtype bfloat16`, so checkpoint FP8 KV metadata cannot replace that
+selection through `auto`. Explicit `fp8` and `auto` remain unchanged.
+The 0.10.2 template retains the BF16-to-`auto` compatibility mapping because
+that runtime does not accept literal `bfloat16`. Verify the runtime's observed
+cache precision before collecting timings.
+See the [FPM precision contract](../perf-model/fpm-self-service/implementation.md#plan-preview-and-explicitly-execute).
+
 ### SGLang CUDA graph versions
 
 Pin `request.backend.generated_config_version` to the SGLang version installed

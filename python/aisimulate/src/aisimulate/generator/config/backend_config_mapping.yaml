@@ -91,10 +91,9 @@ parameters:
 
 # KV Cache
 - param_key: kv_cache_dtype
-  # Guard: vLLM doesn't accept "bfloat16" as a literal kv-cache-dtype -> map to "auto".
-  vllm:
-    key: kv-cache-dtype
-    value: '"auto" if kv_cache_dtype == "bfloat16" else kv_cache_dtype'
+  # Guard: vLLM >= 0.11 accepts literal bfloat16; preserve the requested dtype.
+  # Only cli_args.0.10.2.j2 maps BF16 to auto for the older CLI contract.
+  vllm: kv-cache-dtype
   # Guard: SGLang interprets "bfloat16" literally -> "auto"; and accepts "fp8_e4m3" not "fp8".
   sglang:
     key: kv-cache-dtype
