@@ -10,7 +10,7 @@ import copy
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +81,13 @@ FPM_KV_WARMUP_DEFAULTS = {"DYN_BENCH_KV_WARMUP": "on", "DYN_BENCH_PREFILL_REAL_S
 
 PARALLEL_AXES = ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp")
 PARALLEL_PRESETS = ("auto", "tp", "tep", "dep", "pure_tp")
+
+
+def semantic_generator_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Freeze launch settings without treating declared versions as compatibility."""
+    normalized = with_kv_warmup_defaults(overrides)
+    normalized.pop("generator_dynamo_version", None)
+    return normalized
 
 
 def with_kv_warmup_defaults(overrides: dict[str, Any]) -> dict[str, Any]:
@@ -392,6 +399,23 @@ class FPMCollectionOptions:
     # None preserves legacy saved-plan identity; fresh CLI plans resolve both.
     slurm_cpus_per_task: int | None = None
     slurm_cpu_bind: str | None = None
+
+    def resolve_model_execution(self, architecture: str | None) -> FPMCollectionOptions:
+        if architecture != "DeepseekV41ForCausalLM" or self.enforce_eager:
+            return self
+        if (
+            self.cudagraph_mode not in (None, "NONE")
+            or self.cudagraph_capture_sizes is not None
+            or self.max_cudagraph_capture_size is not None
+            or self.max_prefill_cudagraph_size is not None
+            or self.prefill_cudagraph_policy != "runtime"
+        ):
+            raise ValueError(
+                "DeepSeek V4.1 requires eager execution; pass --fpm-enforce-eager, or use "
+                "--fpm-prefill-cudagraph-policy runtime without CUDA graph capture flags "
+                "(cudagraph_mode=NONE)"
+            )
+        return replace(self, enforce_eager=True)
 
     def __post_init__(self) -> None:
         collection_phases(self.worker_type)
@@ -778,7 +802,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
-        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
+        help="Disable both CUDA graphs and torch.compile via worker --enforce-eager; included in the frozen plan.",
     )
     group.add_argument(
         "--fpm-benchmark-points-file",
@@ -1030,14 +1054,24 @@ def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
         "--generated-config-version",
         dest="generated_config_version",
         default=None,
-        help="Rejected for FPM; the Collector resolves this from --dynamo-version.",
+        help="Rejected for FPM; collection uses the default benchmark templates.",
     )
     group.add_argument(
         "--dynamo-version",
         "--generator-dynamo-version",
         dest="generator_dynamo_version",
         default=None,
-        help="Target Dynamo release used to resolve the Generator template.",
+        help="Optional Dynamo version provenance; does not select images or templates.",
+    )
+    group.add_argument(
+        "--fpm-backend-version",
+        default=None,
+        help="Explicit backend data label; omitted labels use the observed runtime during publication.",
+    )
+    group.add_argument(
+        "--fpm-runtime-backend-version",
+        default=None,
+        help="Observed backend package version, separate from the profile's custom data label.",
     )
     group.add_argument("--namespace", default=None)
     group.add_argument("--model-cache", default=None, metavar="NAME[:MOUNT[:SUBPATH]]")
@@ -1112,6 +1146,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "generator_set",
         "generated_config_version",
         "generator_dynamo_version",
+        "fpm_runtime_backend_version",
+        "fpm_backend_version",
         "namespace",
         "model_cache",
         "transport",

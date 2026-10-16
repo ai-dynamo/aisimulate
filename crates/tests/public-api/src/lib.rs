@@ -99,16 +99,6 @@ pub fn best_available_model(
     ForwardPassPerfModel::best_available(config)
 }
 
-/// The qualified direct-prefill method is on the canonical returned model.
-pub fn predict_graph_prefill(
-    model: &ForwardPassPerfModel,
-    bs: u32,
-    isl: u32,
-    prefix: u32,
-) -> Result<f64, AicError> {
-    model.predict_prefill_latency(bs, isl, prefix)
-}
-
 pub fn best_available_model_with_roots(
     mut config: ForwardPassPerfModelConfig,
     systems_root: impl AsRef<Path>,
@@ -128,8 +118,8 @@ mod tests {
     use super::*;
     use aisimulate_core::{
         ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
-        ForwardPassRegressionWorkloadKind, TimingEvidenceSource, TimingEvidenceSummary,
-        TimingOperationEvidence, TimingPhaseEvidence,
+        ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, TimingEvidenceSource,
+        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
     };
 
     #[test]
@@ -165,42 +155,13 @@ mod tests {
         // v19: Dsv41AttentionOp gained kv_cache_layout.
         // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
         // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
-        // v22: observed MoE selection and exact prefill graph composites.
         // v23: ParallelMapping gained optional recorded DCP identity.
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 26);
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 28);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
-    }
-
-    #[test]
-    fn direct_graph_api_rejects_an_unselected_regression_model() {
-        let model = regression_model().unwrap();
-        assert!(predict_graph_prefill(&model, 1, 1024, 0).is_err());
-        let mut controls = EstimatorConfig::default();
-        controls.op_level.prefill_graph_profile =
-            Some("sglang_glm52_nvfp4_vr200_tp4_graph_v1".into());
-        controls.op_level.prefill_graph_profile_id =
-            Some("829a83e1629ba546dd4bd90e75a2e2496b7fb24ddc8b60dfbf076ba02312cbce".into());
-        assert!(controls.op_level.decode_workload_distribution.is_none());
-        let mut config = ForwardPassPerfModelConfig::new(
-            "missing-model",
-            "missing-system",
-            BackendKind::Sglang,
-            ForwardPassWorkerType::Prefill,
-        );
-        config.estimator_config = controls;
-        // Auto/default correction cannot admit a direct-only graph profile.
-        // This fails before Python/model/system lookup despite nonexistent data.
-        assert!(
-            ForwardPassPerfModel::best_available(config)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("requires explicit")
-        );
     }
 
     struct LatencyOnlyProvider;
@@ -267,6 +228,81 @@ mod tests {
     #[test]
     fn ergonomic_builder_is_available_to_external_crates() {
         let _builder = configured_builder();
+    }
+
+    #[test]
+    fn speculative_identity_round_trips_through_public_configuration() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/target",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::OpLevel;
+        config.database_mode = DatabaseMode::Sol;
+        let draft_config = serde_json::json!({
+            "architectures": ["LlamaForCausalLM"],
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+        });
+        config.speculation = Some(ForwardPassSpeculationConfig {
+            kind: "draft_model".into(),
+            params: [("num_speculative_tokens".into(), 8.into())]
+                .into_iter()
+                .collect(),
+            draft_model_path: Some("test/draft".into()),
+            draft_config: Some(draft_config.as_object().unwrap().clone()),
+        });
+
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            encoded["speculation"],
+            serde_json::json!({
+                "kind": "draft_model",
+                "params": {"num_speculative_tokens": 8},
+                "draft_model_path": "test/draft",
+                "draft_config": draft_config,
+            })
+        );
+        let restored: ForwardPassPerfModelConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn legacy_ngram_json_and_nextn_keep_their_public_contract() {
+        let ngram = serde_json::json!({
+            "kind": "ngram", "params": {"num_speculative_tokens": 2},
+        });
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(ngram.clone()).unwrap();
+        assert_eq!(speculation.kind, "ngram");
+        assert_eq!(speculation.draft_model_path, None);
+        assert_eq!(speculation.draft_config, None);
+        assert_eq!(serde_json::to_value(speculation).unwrap(), ngram);
+
+        let config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "test/target", "system": "test-system", "backend": "vllm",
+            "worker_type": "decode", "nextn": 2,
+        }))
+        .unwrap();
+        assert_eq!(config.nextn, 2);
+        assert_eq!(config.speculation, None);
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn speculative_schema_defaults_params_and_excludes_acceptance() {
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap();
+        assert!(speculation.params.is_empty());
+        assert!(
+            serde_json::from_value::<ForwardPassSpeculationConfig>(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 2}, "accepted_tokens": 1.5,
+            }))
+            .is_err()
+        );
     }
 
     #[test]

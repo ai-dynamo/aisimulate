@@ -754,14 +754,14 @@ def get_mla_module_model_specs(
     """Return YAML-backed model metadata for full MLA/DSA module collectors."""
 
     values = _model_case_values("mla_module", apply_model_filter=False)
+    backend_values = []
     if backend is not None:
-        values.extend(
-            _framework_specific_model_case_values(
-                "mla_module",
-                backend,
-                apply_model_filter=False,
-            )
+        backend_values = _framework_specific_model_case_values(
+            "mla_module",
+            backend,
+            apply_model_filter=False,
         )
+        values.extend(backend_values)
 
     specs = []
     model_path_filter = _get_model_path_filter() if apply_model_filter else None
@@ -782,10 +782,17 @@ def get_mla_module_model_specs(
             )
         )
 
+    if backend == "vllm":
+        # An explicit backend DSA reference may also appear among shared
+        # artifact declarations. Keep targeted runs exact and singular.
+        specs = list(dict.fromkeys(specs))
+
     if backend in {"trtllm", "vllm"} and apply_model_filter and model_path_filter is None:
         # TRT-LLM and vLLM build every module with the case's explicit
         # precision and head count, so checkpoint aliases no longer change the
-        # consumer-visible identity.
+        # consumer-visible identity. A vLLM backend-specific DSA declaration
+        # selects the reference for that architecture: unlike full-only
+        # checkpoints, an index-sharing checkpoint also emits reuse rows.
         # MLA has one architecture-less consumer table (the perf rows carry no
         # lora/rope geometry key, so distinct-geometry models could not be
         # represented anyway); DSA is keyed by architecture. Stable first-wins
@@ -795,10 +802,19 @@ def get_mla_module_model_specs(
         # consumer key dimension (a contract change).
         canonical_specs = {}
         collapsed: dict[tuple, list[str]] = {}
+        preferred_dsa_paths = {
+            str(value["model_path"])
+            for value in backend_values
+            if backend == "vllm" and value.get("attention_type") == "dsa"
+        }
         for spec in specs:
             key = (spec.attention_type, spec.architecture if spec.attention_type in ("dsa", "msa") else None)
             if key in canonical_specs:
-                collapsed.setdefault(key, []).append(spec.model_path)
+                if spec.attention_type == "dsa" and spec.model_path in preferred_dsa_paths:
+                    collapsed.setdefault(key, []).append(canonical_specs[key].model_path)
+                    canonical_specs[key] = spec
+                else:
+                    collapsed.setdefault(key, []).append(spec.model_path)
             else:
                 canonical_specs[key] = spec
         specs = list(canonical_specs.values())
@@ -2032,19 +2048,23 @@ class GdnCommonTestCase:
 
 
 # =============================================================================
-# MHC (DeepSeek-V4 Hash-Compressed attention) Test Cases
+# MHC (manifold-constrained hyper-connection) Test Cases
 # =============================================================================
 
 
 @dataclasses.dataclass
 class MhcCommonTestCase:
-    """Test case configuration for DeepSeek-V4 mHC pre/post kernel benchmarking."""
+    """Test case configuration for mHC pre/post kernel benchmarking."""
 
     phase: str  # "pre" or "post"
     hidden_size: int
     hc_mult: int
     num_tokens_list: list[int]
     model_name: str
+    # Model-file architecture (config.json ``architectures[0]``). Collectors
+    # use it to select the framework's call sites for that model family; it
+    # is part of the invocation identity, not of the persisted table key.
+    architecture: str
 
 
 def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
@@ -2059,6 +2079,9 @@ def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
         hidden_size = int(model_config["hidden_size"])
         hc_mult = int(model_config["hc_mult"])
         model_name = str(model_config["model_path"])
+        architecture = model_config.get("architecture")
+        if not architecture:
+            raise ValueError(f"model_case_values.mhc row for {model_name!r} has no architecture")
         for phase in ("pre", "post"):
             test_cases.append(
                 MhcCommonTestCase(
@@ -2067,6 +2090,7 @@ def get_common_mhc_test_cases() -> list[MhcCommonTestCase]:
                     hc_mult=hc_mult,
                     num_tokens_list=num_tokens_list,
                     model_name=model_name,
+                    architecture=str(architecture),
                 )
             )
     return test_cases

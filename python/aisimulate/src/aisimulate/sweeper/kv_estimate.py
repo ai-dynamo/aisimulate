@@ -28,6 +28,8 @@ but no timing database or analytical model.
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Iterable
 from typing import Any
 
@@ -43,8 +45,26 @@ DEFAULT_MAX_BATCH_SIZE = 256
 DEFAULT_MEMORY_FRACTION = 0.9
 
 
+logger = logging.getLogger(__name__)
+
+# Model builders reject a tensor-parallel size that does not evenly split a
+# tensor-parallel dimension (attention heads, linear-attention heads, or another
+# sharded size such as intermediate_size). That is a property of the shape, not
+# of the model, so enumeration skips the shape instead of aborting.
+_TP_DIVISIBILITY = re.compile(r"divisible by (tp_size|tensor parallel size)")
+
+
 class NoPerfDatabase(RuntimeError):
     """No perf database for this ``(hardware_sku, backend)`` — cannot estimate KV cache."""
+
+
+class IllegalParallelShape(ValueError):
+    """The model cannot be split into this parallel shape (e.g. heads % tp != 0)."""
+
+
+def _shape_label(shape: ParallelShape) -> str:
+    label = f"tp={shape.tp} dp={shape.dp} moe_tp={shape.moe_tp} moe_ep={shape.moe_ep}"
+    return label if shape.pp == 1 else f"{label} pp={shape.pp}"
 
 
 def memory_fraction_kind(backend: str) -> str:
@@ -148,7 +168,8 @@ def estimate_kv_tokens(
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
 
-    Genuine estimation errors (bad inputs, unsupported model) propagate.
+    Raises :class:`IllegalParallelShape` when the model cannot be split into
+    ``shape``. Genuine estimation errors (bad inputs, unsupported model) propagate.
     """
     try:
         est = estimate_kv_cache(
@@ -182,6 +203,8 @@ def estimate_kv_tokens(
         #    property of *this shape*, not the model, so the enumerator should just drop it.
         if "no KV budget" in msg or "Invalid quantized MoE configuration" in msg:
             return None
+        if _TP_DIVISIBILITY.search(msg):
+            raise IllegalParallelShape(str(exc.__cause__ or exc).strip()) from exc
         raise
     return int(est["total_kv_size_tokens"])
 
@@ -206,28 +229,54 @@ def feasible_shape_tokens(
     """Map each *feasible* shape to its KV-cache token capacity.
 
     A shape is feasible iff ``estimate_kv_tokens(shape) > max_seq_len``. Shapes
-    that OOM (no KV budget) or fall short are omitted. Estimates are computed once
-    per distinct shape, so repeated shapes across replica counts are free.
+    that OOM (no KV budget), fall short, or that the model cannot be split into
+    are omitted; the last two are logged with the reason. Estimates are computed
+    once per distinct shape, so repeated shapes across replica counts are free.
     """
     if backend_version is None:
         backend_version = resolve_backend_version(hardware_sku, backend, systems_paths=systems_paths)
     feasible: dict[ParallelShape, int] = {}
+    illegal: dict[ParallelShape, str] = {}
+    short: list[ParallelShape] = []
     for shape in dict.fromkeys(shapes):  # dedup, preserve first-seen order
-        tokens = estimate_kv_tokens(
-            shape,
-            model_name=model_name,
-            hardware_sku=hardware_sku,
-            backend=backend,
-            backend_version=backend_version,
-            systems_paths=systems_paths,
-            max_num_tokens=max_num_tokens,
-            max_batch_size=max_batch_size,
-            memory_fraction=memory_fraction,
-            **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
-            **({"context_length": max_seq_len} if fpm_profile is not None else {}),
-            **({"model_controls": model_controls} if model_controls else {}),
-            **({"nextn": nextn} if nextn else {}),
-        )
+        try:
+            tokens = estimate_kv_tokens(
+                shape,
+                model_name=model_name,
+                hardware_sku=hardware_sku,
+                backend=backend,
+                backend_version=backend_version,
+                systems_paths=systems_paths,
+                max_num_tokens=max_num_tokens,
+                max_batch_size=max_batch_size,
+                memory_fraction=memory_fraction,
+                **({"fpm_profile": fpm_profile, "worker_type": worker_type} if fpm_profile is not None else {}),
+                **({"context_length": max_seq_len} if fpm_profile is not None else {}),
+                **({"model_controls": model_controls} if model_controls else {}),
+                **({"nextn": nextn} if nextn else {}),
+            )
+        except IllegalParallelShape as exc:
+            illegal[shape] = str(exc)
+            continue
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens
+        elif tokens is not None:
+            short.append(shape)
+    if illegal:
+        logger.warning(
+            "Skipped %d parallel shape(s) that %s cannot be split into (backend=%s): %s",
+            len(illegal),
+            model_name,
+            backend,
+            "; ".join(f"{_shape_label(shape)}: {reason}" for shape, reason in illegal.items()),
+        )
+    if short:
+        logger.warning(
+            "Excluded %d parallel shape(s) whose KV cache cannot hold one %d-token sequence "
+            "(context length; backend=%s): %s",
+            len(short),
+            max_seq_len,
+            backend,
+            ", ".join(_shape_label(shape) for shape in short),
+        )
     return feasible

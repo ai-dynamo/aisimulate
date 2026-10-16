@@ -40,16 +40,16 @@ jobs:
       - name: Fetch historical test baseline
         run: git fetch origin d066e918705b98e2d55eed55743ce8d225f129ea
       - name: Install harness dependencies
-        run: python -m pip install uv psutil PyYAML pytest
+        run: python -m pip install --require-hashes -r scripts/readme/requirements.txt
       - name: Check harness and reporting contracts
         run: |
-          python -m pytest -c /dev/null -p no:cacheprovider scripts/test_readme_commands.py scripts/test_readme_report.py
-          python scripts/check_readme_commands.py --validate
+          python -m pytest -c /dev/null -p no:cacheprovider scripts/readme/test_readme_commands.py scripts/readme/test_readme_report.py
+          python scripts/readme/check_readme_commands.py --validate
       - name: Execute README commands
         env:
           PROFILE: ${{ matrix.profile }}
         run: >-
-          python scripts/check_readme_commands.py
+          python scripts/readme/check_readme_commands.py
           --profile "$PROFILE"
           --workspace "$RUNNER_TEMP/readme-$PROFILE"
           --output "readme-results/$PROFILE"

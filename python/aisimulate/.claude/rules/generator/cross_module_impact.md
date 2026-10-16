@@ -51,7 +51,7 @@ Collector (collector/)
 | 3. CLI | `src/aisimulate/legacy_cli/main.py` or CLI arg group | Expose via `--generator-set` (auto if in schema) |
 | 4. Bridge | `src/aisimulate/generator/module_bridge.py` | Pass from SDK search results if profiler-sourced |
 | 5. Validator | `tools/generator_validator/` | Add to expected flags if new CLI flag |
-| 6. Docs | `docs/cli/legacy-aic-user-guide.md` (repository root) | Document the new parameter |
+| 6. Docs | `docs/aic-backward-compatibility/cli.md` (repository root) | Document the new parameter |
 
 ### Renaming a Parameter
 

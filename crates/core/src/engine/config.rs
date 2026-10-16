@@ -796,25 +796,12 @@ impl EngineConfig {
                 "state_cache is supported only for backend=vllm"
             );
             ensure!(
-                self.worker_type == WorkerType::Aggregated,
-                "state_cache is supported only for worker_type=aggregated"
-            );
-            ensure!(
                 self.native_host_offload.is_none(),
                 "state_cache does not support native_host_offload in the G1-only implementation"
             );
             ensure!(
                 self.g3_offload.is_none(),
                 "state_cache does not support g3_offload in the G1-only implementation"
-            );
-            ensure!(
-                self.kv_transfer_bytes_per_token.is_none() && self.kv_transfer_bandwidth.is_none(),
-                "state_cache does not support kv_transfer_bytes_per_token or kv_transfer_bandwidth"
-            );
-            // Keep the default accepted, including serialized configs that emit it explicitly.
-            ensure!(
-                self.kv_transfer_timing_mode == TransferTimingMode::FullPrompt,
-                "state_cache does not support non-default kv_transfer_timing_mode"
             );
             ensure!(
                 self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
@@ -1025,6 +1012,16 @@ impl EngineConfig {
             self.kv_transfer_bandwidth
                 .is_none_or(|bandwidth| bandwidth.is_finite() && bandwidth >= 0.0),
             "kv_transfer_bandwidth must be finite and non-negative"
+        );
+        // Only the prefill source prices the handoff, so a positive bandwidth
+        // needs payload bytes rather than the topology's fallback latency.
+        ensure!(
+            self.worker_type != WorkerType::Prefill
+                || self
+                    .kv_transfer_bandwidth
+                    .is_none_or(|bandwidth| bandwidth <= 0.0)
+                || self.kv_transfer_bytes_per_token.is_some(),
+            "kv_transfer_bandwidth requires kv_transfer_bytes_per_token on prefill workers"
         );
         match &self.timing_model {
             TimingModelConfig::Polynomial => {}
@@ -1241,20 +1238,10 @@ mod tests {
     }
 
     #[test]
-    fn state_cache_rejects_non_vllm_disaggregated_and_host_offload_configs() {
+    fn state_cache_rejects_non_vllm_and_offload_configs() {
         for (field, value, message) in [
             ("backend", serde_json::json!("sglang"), "backend=vllm"),
             ("backend", serde_json::json!("trtllm"), "backend=vllm"),
-            (
-                "worker_type",
-                serde_json::json!("prefill"),
-                "worker_type=aggregated",
-            ),
-            (
-                "worker_type",
-                serde_json::json!("decode"),
-                "worker_type=aggregated",
-            ),
             (
                 "native_host_offload",
                 serde_json::json!({"num_host_blocks": 8}),
@@ -1286,28 +1273,51 @@ mod tests {
                 serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
             assert_eq!(config, roundtrip);
         }
-        for (field, value) in [
-            ("kv_transfer_bytes_per_token", serde_json::json!(16)),
-            ("kv_bytes_per_token", serde_json::json!(16)),
-            ("kv_transfer_bandwidth", serde_json::json!(0.0)),
-            (
-                "kv_transfer_timing_mode",
-                serde_json::json!("destination_missing"),
-            ),
-        ] {
-            let mut input = state_cache_config_json();
-            input[field] = value;
-            assert!(
-                serde_json::from_value::<EngineConfig>(input.clone()).is_err(),
-                "{field}"
-            );
-            input.as_object_mut().unwrap().remove("state_cache");
-            let mut config: EngineConfig = serde_json::from_value(input).unwrap();
-            config.validate().unwrap();
-            config.state_cache = Some(StateCacheConfig {
-                bytes_per_request: 1500,
+    }
+
+    #[test]
+    fn prefill_bandwidth_requires_transfer_bytes() {
+        let config = |worker_type: &str, bandwidth: f64, bytes: Option<usize>| {
+            let mut input = serde_json::json!({
+                "worker_type": worker_type,
+                "kv_transfer_bandwidth": bandwidth,
             });
-            assert!(config.validate().is_err(), "{field}");
+            if let Some(bytes) = bytes {
+                input["kv_transfer_bytes_per_token"] = serde_json::json!(bytes);
+            }
+            serde_json::from_value::<EngineConfig>(input)
+                .unwrap()
+                .validate()
+        };
+        let error = config("prefill", 50.0, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+            "{error}"
+        );
+        // Zero bandwidth keeps its legacy "disabled" meaning; only the prefill
+        // source prices the transfer.
+        config("prefill", 0.0, None).unwrap();
+        config("prefill", 50.0, Some(16)).unwrap();
+        config("decode", 50.0, None).unwrap();
+        config("aggregated", 50.0, None).unwrap();
+    }
+
+    #[test]
+    fn state_cache_accepts_transfer_fields_on_every_role() {
+        // Replay descriptors omit worker_type until a stage assigns it, so
+        // transfer settings must deserialize before the role is known.
+        for worker_type in [None, Some("prefill"), Some("decode")] {
+            let mut input = state_cache_config_json();
+            if let Some(worker_type) = worker_type {
+                input["worker_type"] = serde_json::json!(worker_type);
+            }
+            input["kv_transfer_bytes_per_token"] = serde_json::json!(16);
+            input["kv_transfer_bandwidth"] = serde_json::json!(50.0);
+            input["kv_transfer_timing_mode"] = serde_json::json!("destination_missing");
+            let config: EngineConfig = serde_json::from_value(input).unwrap();
+            config.validate().unwrap();
         }
     }
 

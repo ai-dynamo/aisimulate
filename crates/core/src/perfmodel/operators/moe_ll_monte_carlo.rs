@@ -4,7 +4,7 @@
 //! Cached Monte Carlo load model for DeepEP low-latency decode.
 //!
 //! This is the executable counterpart of
-//! `python/aisimulate/docs/DEEPEP_LL_MODELING.md`,
+//! `docs/perf-model/methods/deepep-ll.md`,
 //! especially sections 2-3 and 8-10 (token conventions, endpoint aggregation,
 //! topology, Monte Carlo, and final latency). It deliberately models logical source/destination
 //! traffic and then collapses it onto physical TX/RX endpoints; the `P^2`

@@ -47,6 +47,7 @@ def assessed_collection(tmp_path, monkeypatch):
         model_architecture=original.fpm_profile.architecture,
         model_config_path=str(tmp_path / "config.json"),
         fpm_profile=original.fpm_profile,
+        collector_config={"runtime_backend_version": original.identity.runtime_framework_version},
     )
     campaign = root / "fpm-artifacts" / plan.sha256[:16]
     checkpoint = root / "fpm-checkpoint/fpm_forward.json"

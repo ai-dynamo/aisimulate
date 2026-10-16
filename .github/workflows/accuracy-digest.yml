@@ -1,15 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-name: Accuracy Slack Daily
+name: Accuracy Slack Weekly
 
 on:
-  workflow_run:
-    workflows: [E2E Accuracy Matrix, FPM Accuracy Matrix]
-    types: [completed]
   schedule:
-    # 09:00 Los Angeles is 16:00 UTC in summer, 17:00 in winter.
-    # The script checks the actual local deadline. Rechecks resume interrupted delivery.
-    - cron: "0,30 16-18 * * *"
+    # One Monday report; rechecks resume interrupted delivery without reposting.
+    - cron: "0,30 9-11 * * 1"
+      timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
       mode:
@@ -41,10 +38,7 @@ jobs:
       ((github.event_name == 'workflow_dispatch' &&
         (inputs.mode == 'dry-run' || github.ref == 'refs/heads/main')) ||
        (vars.SLACK_ACCURACY_ENABLED == 'true' && github.ref == 'refs/heads/main' &&
-        (github.event_name == 'schedule' ||
-         (github.event.workflow_run.event == 'schedule' &&
-          github.event.workflow_run.head_branch == 'main' &&
-          github.event.workflow_run.head_repository.full_name == github.repository))))
+        github.event_name == 'schedule'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -70,7 +64,7 @@ jobs:
           if [[ "$MODE" != daily ]]; then
             args+=(--e2e-run-id "$E2E_RUN_ID" --fpm-run-id "$FPM_RUN_ID")
           fi
-          python scripts/notify_accuracy.py "${args[@]}"
+          python scripts/notifications/notify_accuracy.py "${args[@]}"
       - name: Preserve frozen report before any Slack write
         if: hashFiles('accuracy-preview/report.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -92,7 +86,7 @@ jobs:
         env:
           SLACK_ACCURACY_BOT_TOKEN: ${{ secrets.SLACK_ACCURACY_BOT_TOKEN }}
           SLACK_ACCURACY_CHANNEL_ID: ${{ vars.SLACK_ACCURACY_CHANNEL_ID }}
-        run: python scripts/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
+        run: python scripts/notifications/notify_accuracy.py --mode "$MODE" --deliver accuracy-preview/report.json
       - name: Preserve delivered baseline and recovery state
         if: hashFiles('accuracy-preview/delivery/state.json') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

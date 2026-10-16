@@ -199,6 +199,8 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             f"GPU {request.identity.gpu!r} has no packaged system specification; "
             "new GPU architectures require integration"
         )
+    if request.identity.framework_version is None:
+        return _pending_version_documents(request, root)
     prediction, recommendations, presets = _configs(request, root)
     commands = _commands(request, root, list(recommendations))
     runtime_prerequisite = (
@@ -246,7 +248,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "detail": (
                     "Verify pinned model metadata, memory/cache accounting, and chosen parallelism. Without an "
                     "FPM profile, predict/recommend uses a registered analytical class and SOL transfer; follow "
-                    "python/aisimulate/docs/add_a_new_model.md for that route. Supply an FPM identity/resource "
+                    "docs/perf-model/extending.md for that route. Supply an FPM identity/resource "
                     "profile to use direct interpolation without a class. Per-operation silicon data is not required."
                 ),
             },
@@ -423,6 +425,49 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
     documents[Path("commands.json")] = (json.dumps(commands, indent=2, sort_keys=True) + "\n").encode()
     plan["generated_files_sha256"] = {
         path.as_posix(): hashlib.sha256(content).hexdigest() for path, content in documents.items()
+    }
+    documents[Path("support-plan.json")] = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
+    return plan, documents
+
+
+def _pending_version_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
+    """Offline registration before the target image supplies a data identity."""
+    command = [
+        "aisimulate",
+        "onboard",
+        "collect-fpm",
+        "--config",
+        str(root / "request.yaml"),
+        "--output-dir",
+        str(root),
+    ]
+    documents = {
+        Path("request.yaml"): yaml.safe_dump(
+            request.model_dump(mode="json", exclude_none=True), sort_keys=False
+        ).encode(),
+        Path("commands.json"): (json.dumps({"fpm_run_local": command}, indent=2, sort_keys=True) + "\n").encode(),
+    }
+    if request.fpm_profile is not None:
+        documents[Path("fpm-model-profile.json")] = (
+            json.dumps(request.fpm_profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+        ).encode()
+    plan = {
+        "schema_version": "aisimulate-support-plan/v2",
+        "request_id": request_id(request),
+        "validation_id": validation_id(request),
+        "status": "pending_runtime_version",
+        "identity": request.identity.model_dump(mode="json", exclude_none=True),
+        "fpm": {"status": "pending_runtime_version", "simulation_ready": False},
+        "outputs": {
+            "request": str(root / "request.yaml"),
+            "commands": str(root / "commands.json"),
+            "prediction_configs": [],
+            "recommendation_configs": [],
+        },
+        "next": "collect-fpm --execute --image IMAGE probes the target runtime and freezes runtime-resolved/",
+        "generated_files_sha256": {
+            path.as_posix(): hashlib.sha256(data).hexdigest() for path, data in documents.items()
+        },
     }
     documents[Path("support-plan.json")] = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
     return plan, documents

@@ -102,11 +102,11 @@ def checkpoint(raw: dict, output: Path, started: float) -> None:
 
 def qualification_errors(raw: dict, results: list[dict]) -> list[str]:
     errors = []
-    if raw["elapsed_seconds"] > 900:
-        errors.append("benchmark exceeded the 15-minute qualification budget")
+    if raw["elapsed_seconds"] > 720:
+        errors.append("benchmark exceeded the 12-minute qualification budget")
     for case, result in zip(raw["cases"], results, strict=True):
         if (
-            not case.get("trace_sha256")
+            not case.get("fixture")
             and result["classification"] == "PASS"
             and min(result["base_median_ms"], result["head_median_ms"]) < 2000
         ):
@@ -125,7 +125,7 @@ def main() -> int:
     parser.add_argument("--worker-timeout", type=float, default=120)
     parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument(
-        "--qualification", action="store_true", help="Require the full same-revision suite within 15 min"
+        "--qualification", action="store_true", help="Require the full same-revision suite within 12 min"
     )
     args = parser.parse_args()
     if args.rounds < 1 or args.worker_timeout <= 0:

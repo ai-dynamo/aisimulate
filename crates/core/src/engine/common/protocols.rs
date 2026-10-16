@@ -78,6 +78,8 @@ pub(crate) struct DirectRequest {
     pub output_token_ids: Option<Vec<Token>>,
     pub uuid: Option<Uuid>,
     pub arrival_timestamp_ms: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 impl DirectRequest {

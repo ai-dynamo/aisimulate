@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -268,6 +269,10 @@ def _prepare_collection(tmp_path: Path, extra_init_args: tuple[str, ...] = ()) -
         )
         == 0
     )
+    # The synthetic completed campaign below records this actual worker version.
+    payload = yaml.safe_load(original.read_text())
+    payload["identity"]["runtime_framework_version"] = "0.27.0"
+    original.write_text(yaml.safe_dump(payload))
     root = (tmp_path / "collection").resolve()
     assert cli.main(["onboard", "plan", "--config", str(original), "--output-dir", str(root)]) == 0
     request = SupportRequest.from_yaml(root / "request.yaml")
@@ -302,6 +307,7 @@ def build_completed_collection(
         selected_ops={"attention_context", "attention_generation"},
         options=replace(FPMCollectionOptions.from_args(args), **(plan_changes or {})),
         fpm_profile=request.fpm_profile,
+        collector_config={"runtime_backend_version": request.identity.runtime_framework_version},
     )
     artifact_root = root / "fpm-artifacts" / plan.sha256[:16]
     _write(artifact_root / "collection-plan.json", plan.to_dict())

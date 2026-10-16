@@ -34,7 +34,6 @@ pub mod engine;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
-pub(crate) mod observed_moe_profile;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
@@ -51,7 +50,8 @@ pub use fpm::{
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics,
-    ForwardPassWorkerType, FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
+    ForwardPassWorkerType, FpmRegressionConfig, LEARNED_SCHEMA_VERSION, RegressionFeatureWeights,
+    SamplingConfig,
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,

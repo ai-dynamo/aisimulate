@@ -369,6 +369,7 @@ def _bounded_source(case, tmp_path, *, explicit=False):
         model_architecture=request.fpm_profile.architecture,
         model_config_path=str(model_config),
         fpm_profile=request.fpm_profile,
+        collector_config={"runtime_backend_version": request.identity.runtime_framework_version},
         generator_overrides=overrides,
         options=replace(
             case["plan"].options,

@@ -286,6 +286,37 @@ def test_resolver_rejects_consistent_but_unsupported_runtime_policy(tmp_path, mo
         _resolve(cell, tmp_path)
 
 
+@pytest.mark.parametrize("cache_dtype", ["auto", "bfloat16", "fp8"])
+def test_fp8_block_weights_preserve_and_verify_selected_bf16_cache(tmp_path, monkeypatch, cache_dtype):
+    cell = replace(
+        _evidence(tmp_path, monkeypatch),
+        gemm_quant_mode="fp8_block",
+        weight_quantization="fp8_block",
+        moe_quant_mode="fp8_block",
+    )
+
+    def edit(evidence):
+        config = evidence["resolved_config"]
+        config["model_config"]["quantization"] = "fp8"
+        config["cache_config"]["cache_dtype"] = cache_dtype
+        config["quantization_config"] = {
+            "type": "vllm.model_executor.layers.quantization.fp8.Fp8Config",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [128, 128],
+        }
+
+    _edit_memory(tmp_path, edit)
+    if cache_dtype == "fp8":
+        with pytest.raises(ValueError, match="KV precision differs from the planned identity"):
+            _resolve(cell, tmp_path)
+    else:
+        resources = FpmResourceProfile.model_validate(_resolve(cell, tmp_path))
+        settings = json.loads(resources.runtime_memory.provenance)["runtime_settings"]
+        assert settings["cache_config"]["cache_dtype"] == cache_dtype
+        assert settings["model_config"]["dtype"] == "torch.bfloat16"
+        assert settings["quantization_config"]["weight_block_size"] == [128, 128]
+
+
 def test_modelopt_nvfp4_allows_bfloat16_attention_and_shared_experts(tmp_path, monkeypatch):
     cell = _evidence(tmp_path, monkeypatch)
     cell = replace(cell, gemm_quant_mode="bfloat16", weight_quantization="bfloat16", moe_quant_mode="nvfp4")
@@ -794,7 +825,7 @@ def _pending_plan(version="0.27.0"):
         deployment["backend_version"] = version
         for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
             deployment["resources"].pop(key)
-    return _plan(profile)
+    return _plan(profile, collector_config={"runtime_backend_version": version})
 
 
 @pytest.mark.usefixtures("no_models_or_timing_data")
@@ -946,3 +977,20 @@ def test_historical_formal_publication_reports_unsupported_migration_without_cha
     with pytest.raises(ValueError, match="historical schema-6.*Automatic migration is unsupported"):
         database.validate_formal_database_commit(parquet, metadata, _pending_plan())
     assert (parquet.read_bytes(), metadata.read_bytes()) == original
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_custom_label_round_trips_independently_of_observed_memory_runtime():
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["backend_version"] = "local-vllm-branch"
+        for key in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            deployment["resources"].pop(key)
+    plan = _plan(profile, collector_config={"runtime_backend_version": "0.27.0"})
+    saved = runtime_memory.saved_plan_identity(plan.to_dict())
+    assert saved.backend_version == "local-vllm-branch"
+    assert saved.runtime_backend_version == "0.27.0"
+    assert runner._observe_runtime_memory(plan, plan.cells[0])
+    assert plan.to_dict()["runtime_memory_policy"]["selected_vllm_version"] == "0.27.0"
+    unknown = _plan(profile)
+    assert not runner._observe_runtime_memory(unknown, unknown.cells[0])

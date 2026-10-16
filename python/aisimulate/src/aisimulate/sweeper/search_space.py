@@ -311,6 +311,19 @@ def _runtime_by_role(search_space, backend: str, mode: str) -> dict[str, tuple[i
     return {role: _role_runtime(search_space, backend, role) for role in roles}
 
 
+def _context_by_role(search_space, mode: str, max_seq_len: int | None) -> dict[str, int] | None:
+    if mode == "agg":
+        return None
+    result = {}
+    for role in ("prefill", "decode"):
+        value = getattr(search_space, f"{role}_context_length")
+        if value is not None:
+            result[role] = value
+        elif max_seq_len is not None:
+            result[role] = max_seq_len
+    return result or None
+
+
 def _heterogeneous_disagg_configs(
     search_space,
     *,
@@ -348,6 +361,11 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
+                role_max_seq_len=(
+                    {"agg": getattr(search_space, f"{role}_context_length") or max_seq_len}
+                    if getattr(search_space, f"{role}_context_length") is not None or max_seq_len is not None
+                    else None
+                ),
                 **_engine_memory_kwargs(search_space),
                 **_estimator_root_kwargs(search_space, role),
                 **({"fpm_profile": search_space.fpm_profile} if search_space.fpm_profile is not None else {}),
@@ -476,6 +494,11 @@ def _afd_branch(
                     min_gpu_budget=None,
                     max_seq_len=max_seq_len,
                     role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
+                    role_max_seq_len=(
+                        {"agg": getattr(ss, f"{companion_role}_context_length") or max_seq_len}
+                        if getattr(ss, f"{companion_role}_context_length") is not None or max_seq_len is not None
+                        else None
+                    ),
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue
@@ -646,11 +669,19 @@ def enumerate_branches(
         # each backend contributes its full enumerated menu.
         raw_pinned = ss.parallel_configs_by_mode.get(deployment_mode, ss.parallel_configs)
         pinned = [_parse_parallel_entry(e, deployment_mode) for e in raw_pinned] if raw_pinned else None
+        for candidate in pinned or ():
+            if candidate.total_gpus > ss.gpu_budget:
+                raise NoViableParallelConfig(
+                    f"pinned parallel config {candidate}: used_gpus={candidate.total_gpus} exceeds "
+                    f"gpu_budget={ss.gpu_budget} (optimization.constraints.max_candidate_gpus in recommend); "
+                    "remove this preset or increase the GPU budget"
+                )
         raw_custom = ss.parallel_custom_configs_by_mode.get(deployment_mode, {})
         custom_by_role = {
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()
         }
         profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
+        candidate_configs = profile_configs if profile_configs is not None else pinned
 
         def matches_custom(config: _ParallelConfig) -> bool:
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
@@ -671,7 +702,7 @@ def enumerate_branches(
                         ss,
                         backend=backend,
                         max_seq_len=max_seq_len,
-                        candidate_configs=profile_configs,
+                        candidate_configs=candidate_configs,
                     )
                 else:
                     legal = parallel_configs_for(
@@ -684,10 +715,11 @@ def enumerate_branches(
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                        role_max_seq_len=_context_by_role(ss, deployment_mode, max_seq_len),
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                         **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
-                        **({"candidate_configs": profile_configs} if profile_configs is not None else {}),
+                        **({"candidate_configs": candidate_configs} if candidate_configs is not None else {}),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

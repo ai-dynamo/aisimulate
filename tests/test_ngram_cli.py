@@ -102,9 +102,11 @@ def test_acceptance_is_required():
 
 
 @pytest.mark.parametrize("backend", ["sglang", "trtllm"])
-def test_unqualified_backends_are_rejected(backend):
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_unqualified_backends_are_rejected(backend, speculation):
     raw = _prediction()
     raw["engine"]["backend"] = backend
+    raw["engine"]["speculation"] = deepcopy(speculation)
     with pytest.raises(ValidationError, match="requires vllm"):
         CorePredictionConfig.model_validate(raw)
 
@@ -132,10 +134,9 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
     ordinary = _run(baseline)
     assert accepted.metrics["completed_requests"] == rejected.metrics["completed_requests"] == 1
     assert accepted.metrics["mean_e2e_latency_ms"] < rejected.metrics["mean_e2e_latency_ms"]
-    # Ordinary aggregated prefill supplies the first token; speculative
-    # verification and disaggregated timing retain their existing forward count.
-    first_token_decode_ms = 1.0 if mode == "aggregated" else 0.0
-    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"] + first_token_decode_ms
+    # The prefill output is a base token in both AR and SD. Fixed round timing
+    # makes always-rejected drafts match the AR output cadence.
+    assert rejected.metrics["mean_e2e_latency_ms"] == ordinary.metrics["mean_e2e_latency_ms"]
     assert accepted.metrics["mean_ttft_ms"] == rejected.metrics["mean_ttft_ms"]
 
 
@@ -192,7 +193,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 
 
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
-def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
+def test_canonical_prompt_lookup_rejects_unsupported_estimators_without_fallback(mode):
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
@@ -204,7 +205,7 @@ def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
                 worker_type="aggregated",
                 speculation=deepcopy(_COST),
                 estimation_mode=mode,
-                fallback_policy="allow",
+                fallback_policy="deny",
             )
         )
 
@@ -253,7 +254,7 @@ def test_set_override_reaches_native_replay(tmp_path):
 
     report = json.loads((output / "prediction.json").read_text())
     summary = report.get("summary", report)
-    assert summary["mean_e2e_latency_ms"] == pytest.approx(4.0)
+    assert summary["mean_e2e_latency_ms"] == pytest.approx(3.0)
 
 
 def test_lower_level_sweeper_rejects_legacy_mtp_combination():
@@ -327,8 +328,8 @@ def test_native_progress_clamps_final_burst(output_tokens):
     raw = _prediction()
     raw["traffic"]["source"]["output_tokens"] = output_tokens
     report = _run(raw)
-    # The native scheduler performs prefill, then up to three tokens per decode round.
-    rounds = (output_tokens + 2) // 3
+    # Prefill emits one base token, then each round accepts up to three tokens.
+    rounds = (output_tokens - 1 + 2) // 3
     assert report.metrics["mean_e2e_latency_ms"] == pytest.approx(1 + rounds)
 
 
@@ -340,7 +341,7 @@ def test_ngram_rejection_still_pays_target_verification_cost():
     assert speculative.metrics["mean_e2e_latency_ms"] > ordinary.metrics["mean_e2e_latency_ms"]
 
 
-def test_agentic_capabilities_accept_ngram():
+def test_agentic_hbm_execution_accepts_ngram_capability():
     raw = _prediction()
     raw["traffic"] = {
         "source": {"type": "trace", "paths": ["not-loaded.jsonl"], "format": "weka"},
@@ -350,10 +351,51 @@ def test_agentic_capabilities_accept_ngram():
     EngineReplayRunnerFactory().capabilities().require_compatible(spec)
 
 
-def test_online_prediction_rejects_ngram():
-    config = CorePredictionConfig.model_validate(_prediction())
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_online_prediction_rejects_ngram(speculation):
+    raw = _prediction()
+    raw["engine"]["speculation"] = deepcopy(speculation)
+    config = CorePredictionConfig.model_validate(raw)
     with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
+
+
+@pytest.mark.parametrize("speculation", [_SPEC, {**_COST, "expected_accepted_tokens": 1.5}])
+def test_adapter_prediction_rejects_ngram(speculation):
+    raw = _prediction()
+    raw["engine"]["speculation"] = deepcopy(speculation)
+    config = CorePredictionConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="offline engine stack without adapters"):
+        prediction_to_replay_spec(config, adapter_specs={"test": object()})
+
+
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
+def test_generic_speculation_fixed_capacity_error_identifies_scheme_and_role(role):
+    raw = _prediction(mode="aggregated" if role == "aggregated" else "disaggregated", timing="default")
+    raw["engine"]["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    raw["engine"]["workers"][role]["kv_cache"]["capacity"] = {"type": "default"}
+    with pytest.raises(
+        ValidationError, match=rf"mtp speculation requires explicit fixed KV capacity on workers\.{role}"
+    ):
+        CorePredictionConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+@pytest.mark.parametrize("fallback", ["allow", "deny"])
+def test_generic_replay_preserves_canonical_estimator_selection(mode, fallback):
+    raw = _prediction(timing="default")
+    raw["engine"].update(
+        estimation_mode=mode,
+        fallback_policy=fallback,
+        speculation={"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5},
+    )
+    if fallback == "deny":
+        with pytest.raises(ValueError, match="speculat.*op_level|op_level.*speculat"):
+            _run(raw)
+    else:
+        report = _run(raw)
+        assert report.metrics["completed_requests"] == 1
+        assert report.metadata["prediction_provenance"]["aggregated"]["estimator"] == "op_level"
 
 
 def test_ngram_rejects_mtp_combination_before_compilation():

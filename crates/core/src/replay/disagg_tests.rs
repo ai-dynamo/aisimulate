@@ -259,17 +259,20 @@ impl TestDisaggConfig {
             kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
+            prefill_context_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
             rank: MockEngineArgs::default(),
             prefill: Some(ReplayRoleConfig {
                 dp_size: self.prefill_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.prefill_args.clone(),
             }),
             decode: Some(ReplayRoleConfig {
                 dp_size: self.decode_dp_size,
                 tensor_parallel_size: 1,
+                prefill_context_parallel_size: 1,
                 num_gpu_blocks_is_explicit: None,
                 rank: self.decode_args.clone(),
             }),
@@ -2212,6 +2215,44 @@ fn handoff_delay_is_applied_once_to_decode_visible_ttft() {
         DisaggTransition::DestinationActivated { uuid },
     );
     assert!(queued_idx < activated_idx);
+}
+
+#[test]
+fn prefill_bandwidth_without_transfer_bytes_is_rejected() {
+    let mut config = disagg_config_with_handoff_delay();
+    config.prefill_args.kv_transfer_bytes_per_token = None;
+    let error = config
+        .runtime_config(false)
+        .err()
+        .expect("missing transfer bytes");
+    assert!(
+        error
+            .to_string()
+            .contains("kv_transfer_bandwidth requires kv_transfer_bytes_per_token"),
+        "{error}"
+    );
+}
+
+#[test]
+fn state_cache_handoff_adds_one_state_copy_to_transfer_time() {
+    let handoff_ms = |state: bool| {
+        let mut config = disagg_config_with_handoff_delay();
+        config.num_prefill_workers = 1;
+        config.num_decode_workers = 1;
+        if state {
+            for args in [&mut config.prefill_args, &mut config.decode_args] {
+                args.kv_cache_bytes_per_token = Some(1_000_000);
+                args.state_cache = Some(crate::engine::StateCacheConfig {
+                    bytes_per_request: 8_000_000,
+                });
+            }
+        }
+        let (_, stats) = run_trace_collect(&config, vec![request(1, 128, 2, 0.0)], None, 1.0);
+        stats.handoff_ms[&Uuid::from_u128(1)]
+    };
+    // One 8 MB state at 1 GB/s on top of 128 tokens x 1 MB.
+    let delta = handoff_ms(true) - handoff_ms(false);
+    assert!((delta - 8.0).abs() < 1e-6, "delta={delta}");
 }
 
 #[test]

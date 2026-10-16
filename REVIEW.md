@@ -82,7 +82,7 @@ branch rules rather than
 individual conditional or reusable-workflow jobs.
 
 The additive ruleset payload and runner-image rollout procedure are in the
-[CI guide](docs/ci.md#required-checks-and-release-approval). A committed ruleset
+[CI guide](docs/ci/release.md#required-checks-and-release-approval). A committed ruleset
 payload is not evidence that repository enforcement has been activated.
 
 During the review-acceleration pilot, a maintainer dispatches Full CI after
@@ -107,7 +107,7 @@ support-matrix, and tool-build shards. Admission itself remains the maintainer s
 do not replace it with PR-authored credentials or a `pull_request_target`
 workflow.
 
-The [application test inventory](docs/ci.md#application-test-inventory-and-exceptions)
+The [application test inventory](docs/ci/README.md#application-test-inventory-and-exceptions)
 maps collected cases to their Full CI shard and records explicit manual and
 optional-dependency exceptions. The contracts shard fails when a collected test
 has no assignment.

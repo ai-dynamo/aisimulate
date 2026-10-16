@@ -29,7 +29,9 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None):
+def _campaign(
+    tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None, model=None
+):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
     if cpu_policy:
@@ -55,7 +57,9 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
     checkpoint_model = tmp_path / "model-checkpoint"
     checkpoint_model.mkdir()
     (checkpoint_model / "config.json").write_bytes(model_path.read_bytes())
-    launch["identity"]["model"] = str(checkpoint_model)
+    launch["identity"]["model"] = model or str(checkpoint_model)
+    if model is not None:
+        launch["identity"]["model_revision"] = "4" * 40
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
     if worker_type is not None:
@@ -79,7 +83,9 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
             value["launch"] = launch
             if ref.get("kind") == "observation":
                 value["identity"] = launch["identity"]
-                value["resolved_config"]["model_config"]["model"] = str(checkpoint_model)
+                value["resolved_config"]["model_config"].update(
+                    model=launch["identity"]["model"], revision=launch["identity"]["model_revision"]
+                )
                 value["model_config_sha256"] = launch["model_config"]["sha256"]
                 value["resolved_config"]["model_config"]["max_model_len"] = context_length
                 if worker_type is not None:
@@ -250,6 +256,13 @@ def test_public_probe_partial_resume_recovers_saved_policy_before_validation(
     from collector.fpm_forward import runtime_probe
 
     checkpoint, index, launch = _campaign(tmp_path, cpu_policy=(32, "none"))
+    from aisimulate.support import versioning
+
+    monkeypatch.setattr(
+        versioning,
+        "detect_runtime_versions",
+        lambda deployment: {"backend_version": launch["identity"]["framework_version"]},
+    )
     if checkpoint_policy:
         assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
         capsys.readouterr()
@@ -661,8 +674,10 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None):
-    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type)
+def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None):
+    checkpoint, index, _ = _campaign(
+        tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type, model=model
+    )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
@@ -776,7 +791,7 @@ def _formal_bindings(index, cells=None):
     for phase, result in attempt["phases"].items():
         cell_id = cells[phase] if cells else f"cell-{phase}"
         attempt_id = f"native-{phase}"
-        result.update(cell_id=cell_id, collector_attempt_id=attempt_id)
+        result.update(cell_id=cell_id, collector_attempt_id=attempt_id, status="passed")
         entries[cell_id] = {"status": "passed", "attempt_id": attempt_id}
         for ref in [result["launch_manifest"], *result["artifacts"]]:
             path = index.parent / ref["path"]
@@ -788,7 +803,7 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
+def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -800,7 +815,9 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
 
     from .test_onboard_finalization import _native
 
-    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type)
+    checkpoint, _, request, files = _imported(
+        tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type, model=model
+    )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     root = tmp_path / "collection"
@@ -1316,3 +1333,92 @@ def test_collection_inputs_without_probe_do_not_reverify_finalized_quality(monke
     monkeypatch.setattr(runtime, "runtime_probe_manifest", lambda request: None)
     monkeypatch.setattr(runtime, "verify_runtime_profile", lambda request: pytest.fail("unnecessary full verification"))
     assert runtime.runtime_collection_inputs(None, None) == ([], None)
+
+
+@pytest.mark.parametrize("label", [None, "custom-vllm"])
+@pytest.mark.parametrize("resume", [False, True])
+def test_pending_probe_preview_then_execute_reuses_output_directory(tmp_path, monkeypatch, label, resume):
+    from collector.fpm_forward import runner
+
+    from aisimulate.support import versioning
+
+    from .collector.test_fpm_runtime_probe import _SyntheticExecutor
+
+    checkpoint, _, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    draft = copy.deepcopy(state.configurations["tp2"].draft_request)
+    draft["identity"]["framework_version"] = label
+    save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": draft}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    output = tmp_path / "pending-probe"
+    command = [
+        "onboard",
+        "probe-runtime",
+        "--checkpoint",
+        str(checkpoint),
+        "--configuration",
+        "tp2",
+        "--output-dir",
+        str(output),
+    ]
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: pytest.fail("preview must not detect"))
+    assert cli.main(command) == 1
+    assert not output.exists()
+    preview = _load(checkpoint).configurations["tp2"].history[-1]
+    assert preview["result"]["status"] == "pending_runtime_version"
+    assert "report" not in preview
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: {"backend_version": "0.27.0"})
+    executions = []
+    monkeypatch.setattr(runner, "_cell_runner", lambda p, c, _m, d: _SyntheticExecutor(p, c, d, executions))
+
+    assert cli.main([*command, "--execute", *(["--resume"] if resume else [])]) == 0
+    assert executions == [("tp2", "prefill"), ("tp2", "decode")]
+    assert (output / "probe-plan.json").exists()
+    observed = json.loads((output / "observations.json").read_text())["configurations"]["tp2"]
+    assert observed["launch"]["identity"]["framework_version"] == (label or "0.27.0")
+    assert cli.main([*command, "--execute", "--resume"]) == 0
+    assert len(executions) == 2
+
+
+def test_mixed_known_and_pending_probe_preview_records_every_configuration(tmp_path, monkeypatch):
+    from collector.fpm_forward import runner
+
+    from aisimulate.support import versioning
+
+    checkpoint, _, _ = _campaign(tmp_path)
+    state = _load(checkpoint)
+    patches = {}
+    for name, label in (("tp2", "0.27.0"), ("incomplete", None)):
+        draft = copy.deepcopy(state.configurations[name].draft_request)
+        draft["identity"]["framework_version"] = label
+        patches[name] = {"draft_request": draft}
+    save_checkpoint(checkpoint, patch={"configurations": patches}, expected_revision=state.revision, accept=[])
+    monkeypatch.setattr(versioning, "detect_runtime_versions", lambda *_: pytest.fail("preview must not detect"))
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_: pytest.fail("preview must not launch workers"))
+    output = tmp_path / "mixed-probe"
+
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "probe-runtime",
+                "--checkpoint",
+                str(checkpoint),
+                "--configuration",
+                "tp2",
+                "--configuration",
+                "incomplete",
+                "--output-dir",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    state = _load(checkpoint)
+    assert state.configurations["tp2"].history[-1]["result"]["status"] == "deferred"
+    assert state.configurations["incomplete"].history[-1]["result"]["status"] == "pending_runtime_version"
+    assert not output.exists()

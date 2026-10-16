@@ -396,11 +396,49 @@ class RustForwardPassPerfModel:
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
         """Return uncorrected native prefill latency in milliseconds.
 
-        ``isl`` is the total sequence length including ``prefix``. A selected graph
-        profile admits only its measured integer shapes; Rust owns validation
-        and prediction. This method returns no scheduler or energy estimate.
+        ``isl`` is the total sequence length including ``prefix``.
+        This method returns no scheduler or energy estimate.
         """
         return self._inner.predict_prefill_latency(bs, isl, prefix)
+
+    @classmethod
+    def from_learned(
+        cls,
+        source: str | os.PathLike[str] | dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> RustForwardPassPerfModel:
+        """API: ``from_learned(source, options=None)``.
+
+        Description: create a forward-pass model from an offline-trained learned
+        artifact (``aic_fpm_learned_forward_perf`` JSON produced by
+        ``aisimulate_core.sdk.fpm_learned``). ``source`` is an artifact path,
+        the artifact JSON text, or the already-parsed artifact mapping. The
+        artifact binds the worker type and the ordered feature ABI; estimation is
+        the learned prediction times the native-style online correction factor
+        accumulated through ``tune_with_fpms()``. Iterations whose workload kind
+        has no trained store return ``None``.
+        """
+        _configure_default_data_roots()
+        import aisimulate_core
+
+        if isinstance(source, dict):
+            source_text = _json_dumps(source)
+        else:
+            source_text = os.fspath(source)
+        inner = aisimulate_core.RustForwardPassPerfModel.from_learned(
+            source_text,
+            _optional_json_dumps(options),
+        )
+        return cls(inner)
+
+    def learned_feature_names(self) -> list[str] | None:
+        """Ordered feature ABI of a learned model; ``None`` for other modes."""
+        return self._inner.learned_feature_names()
+
+    def learned_metadata(self) -> dict[str, Any] | None:
+        """Trainer metadata embedded in a learned artifact; ``None`` for other modes."""
+        raw = self._inner.learned_metadata()
+        return None if raw is None else json.loads(raw)
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
@@ -1423,8 +1461,6 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "dcp_comm": getattr(model_config, "dcp_comm", None),
                         "dcp_q_replicate": getattr(model_config, "dcp_q_replicate", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
-                        "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
-                        "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),

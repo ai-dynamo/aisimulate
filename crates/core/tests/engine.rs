@@ -514,6 +514,7 @@ fn submit_interval_request(
                     tokens: vec![id as u32; input_tokens],
                     max_output_tokens: output_tokens,
                     output_token_ids: None,
+                    session_id: None,
                 }),
             ),
             now_ms,
@@ -593,6 +594,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
                         tokens,
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        session_id: None,
                     }),
                 ),
                 now_ms,
@@ -646,6 +648,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
                             tokens,
                             max_output_tokens: 0,
                             output_token_ids: None,
+                            session_id: None,
                         }),
                     ),
                     now_ms,
@@ -1022,22 +1025,41 @@ fn aggregated_prefill_batch_uses_the_final_prefill_forward_once(
     }
 }
 
-#[test]
-fn first_token_timing_fix_preserves_speculative_verification() {
+#[rstest::rstest]
+#[case::vllm_prefill_only(Backend::Vllm, 1, 10.0, 10.0, &[])]
+#[case::vllm_full_round(Backend::Vllm, 3, 10.0, 12.0, &[5])]
+#[case::vllm_truncated_last_round(Backend::Vllm, 4, 10.0, 14.0, &[5, 7])]
+#[case::trtllm_first_output_unchanged(Backend::Trtllm, 1, 12.0, 12.0, &[4])]
+#[case::trtllm_truncated_last_round_unchanged(Backend::Trtllm, 3, 12.0, 14.0, &[4, 6])]
+#[case::trtllm_full_round_unchanged(Backend::Trtllm, 4, 12.0, 14.0, &[4, 6])]
+fn speculative_first_output_and_verification_follow_backend_policy(
+    #[case] backend: Backend,
+    #[case] output_tokens: usize,
+    #[case] first_token_ms: f64,
+    #[case] terminal_ms: f64,
+    #[case] decode_contexts: &[usize],
+) {
     let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec(Backend::Vllm);
+    let mut replay = recording_timing_spec(backend);
     let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
     config.rank.aic_nextn = Some(1);
     config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
     replay.engine = serde_json::to_value(config).unwrap();
-    replay.requests = vec![request("request", 0.0, 4, 1)];
+    replay.requests = vec![request("request", 0.0, 4, output_tokens)];
     let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-    assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
-    assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
-    assert_eq!(
-        *timing.calls.lock().unwrap(),
-        vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
+    assert_eq!(report.per_request[0].output_length, output_tokens);
+    assert_eq!(report.per_request[0].first_token_ms, Some(first_token_ms));
+    assert_eq!(report.per_request[0].terminal_time_ms, terminal_ms);
+    // Hand oracle: prefill costs 10 ms, every verification costs 2 ms, and
+    // K=1/all-accept emits two tokens per round. vLLM's initial prefill emits
+    // one base token; TRT-LLM keeps its existing initial verification burst.
+    let mut expected = vec![TimingCall::Prefill(1, 4, 0)];
+    expected.extend(
+        decode_contexts
+            .iter()
+            .map(|&context| TimingCall::Decode(1, context, context)),
     );
+    assert_eq!(*timing.calls.lock().unwrap(), expected);
 }
 
 #[rstest::rstest]
@@ -1075,12 +1097,18 @@ fn aggregated_mixed_pass_prices_only_ongoing_decoders_and_completes_together(
     );
 }
 
-#[test]
-fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
+#[rstest::rstest]
+fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling(
+    #[values(false, true)] speculative: bool,
+) {
     let timing = Arc::new(RecordingTiming::default());
     let mut replay = recording_timing_spec(Backend::Vllm);
     let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
     config.rank.max_num_batched_tokens = 4;
+    if speculative {
+        config.rank.aic_nextn = Some(1);
+        config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
+    }
     replay.engine = serde_json::to_value(config).unwrap();
     replay.requests = vec![request("chunked", 0.0, 10, 2)];
     let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
@@ -1592,6 +1620,50 @@ fn resource_accounting_multiplies_attention_dp_and_tensor_parallelism() {
     assert_eq!(report.throughput.decode_gpus_per_worker, 6);
 }
 
+#[test]
+fn resource_accounting_includes_prefill_context_parallelism() {
+    for (dp, tp, cp) in [(1, 1, 1), (1, 1, 8), (1, 1, 16), (2, 3, 4)] {
+        let mut config = engine_config(TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        });
+        config.dp_size = dp;
+        config.tensor_parallel_size = tp;
+        let gpus = (dp * tp * cp) as usize;
+        let mut replay = spec(config);
+        replay.engine["prefill_context_parallel_size"] = serde_json::json!(cp);
+        let report = run_engine_replay(replay).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.decode_gpus_per_worker, gpus);
+        assert_eq!(report.throughput.prefill_gpus_per_worker, 0);
+        assert!(
+            (report.throughput.gpu_hours
+                - report.throughput.decode_worker_seconds * gpus as f64 / 3600.0)
+                .abs()
+                < 1e-12
+        );
+    }
+}
+
+#[test]
+fn disaggregated_resource_accounting_includes_role_prefill_context_parallelism() {
+    let fixed = TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    };
+    let mut replay = disaggregated_spec(Backend::Sglang, fixed.clone(), fixed);
+    replay.engine["prefill"]["prefill_context_parallel_size"] = serde_json::json!(8);
+    replay.engine["decode"]["tensor_parallel_size"] = serde_json::json!(8);
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.throughput.prefill_gpus_per_worker, 8);
+    assert_eq!(report.throughput.decode_gpus_per_worker, 8);
+    let expected =
+        (report.throughput.prefill_worker_seconds + report.throughput.decode_worker_seconds) * 8.0
+            / 3600.0;
+    assert!((report.throughput.gpu_hours - expected).abs() < 1e-12);
+}
+
 struct FixedExternalTiming {
     prefill_ms: f64,
     decode_ms: f64,
@@ -1643,9 +1715,11 @@ fn runner_must_resolve_external_timing_before_execution() {
     assert_eq!(report.throughput.duration_ms, 6.0);
 }
 
-#[test]
-fn native_vllm_disaggregated_replay_completes_deterministically() {
-    let spec = disaggregated_spec(
+#[rstest::rstest]
+fn native_vllm_disaggregated_replay_completes_deterministically(
+    #[values(false, true)] speculative: bool,
+) {
+    let mut spec = disaggregated_spec(
         Backend::Vllm,
         TimingModelConfig::Fixed {
             prefill_ms: 3.0,
@@ -1656,6 +1730,15 @@ fn native_vllm_disaggregated_replay_completes_deterministically() {
             decode_ms: 2.0,
         },
     );
+    if speculative {
+        let mut config: ReplayEngineConfig = serde_json::from_value(spec.engine).unwrap();
+        for role in [&mut config.prefill, &mut config.decode] {
+            let rank = &mut role.as_mut().unwrap().rank;
+            rank.aic_nextn = Some(1);
+            rank.aic_nextn_accept_rates = Some("1.0".to_string());
+        }
+        spec.engine = serde_json::to_value(config).unwrap();
+    }
     let first = run_canonical_engine_replay(spec.clone());
     let second = run_canonical_engine_replay(spec);
     assert_deterministic(&first, &second);
@@ -1664,6 +1747,10 @@ fn native_vllm_disaggregated_replay_completes_deterministically() {
     assert_eq!(first.request_counts.total_output_tokens, 2);
     assert_eq!(first.per_request[0].output_length, 2);
     let request = &first.per_request[0];
+    // P/D publishes decode outputs: 3 ms prefill + 1 ms handoff, then
+    // two 2 ms decode rounds. The aggregate-only shortcut must not apply.
+    assert_eq!(request.first_token_ms, Some(6.0));
+    assert_eq!(request.terminal_time_ms, 8.0);
     assert_eq!(request.prefill_worker_idx, Some(0));
     assert_eq!(request.decode_worker_idx, Some(0));
     assert!(request.prefill_admit_ms.is_some());

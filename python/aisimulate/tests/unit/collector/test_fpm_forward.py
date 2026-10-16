@@ -1043,6 +1043,90 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture, mixed):
+    config = _unknown_fp8_moe_config()
+    config.update(
+        architectures=[architecture],
+        layer_types=(
+            ["linear_attention", "deepseek_sparse_attention"] * 2 if mixed else ["deepseek_sparse_attention"] * 4
+        ),
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+@pytest.mark.parametrize("native", [False, True])
+def test_qwen_gdn_hybrid_cannot_select_exact_dense_attention(tmp_path, architecture, native):
+    config = {
+        "architectures": [architecture],
+        "text_config": {
+            "num_hidden_layers": 4,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=True,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=native,
+        )
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_count,error",
+    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+)
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_count, error):
+    config = _unknown_fp8_moe_config()
+    config["num_hidden_layers"] = declared_layers
+    config["layer_types"] = ["full_attention"] * layer_count
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=error):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture="NewMoeDsaForCausalLM",
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
     config_dir = tmp_path / "private-model-config"
     config_dir.mkdir()
@@ -2816,6 +2900,30 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
 
 
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "DeepseekV3ForCausalLM", None])
+def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_worker_type="aggregated", fpm_cudagraph_mode="NONE", fpm_prefill_cudagraph_policy="runtime")
+    )
+    assert options.resolve_model_execution(architecture).enforce_eager is False
+
+
+@pytest.mark.parametrize(
+    "graph_args",
+    [
+        {"fpm_cudagraph_mode": "FULL"},
+        {"fpm_cudagraph_capture_sizes": [1, 2]},
+        {"fpm_max_cudagraph_capture_size": 8},
+        {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},
+    ],
+)
+def test_v41_auto_eager_rejects_capture_requests(graph_args):
+    args = {"fpm_worker_type": "aggregated", "fpm_prefill_cudagraph_policy": "runtime", **graph_args}
+    options = FPMCollectionOptions.from_args(_args(**args))
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        options.resolve_model_execution("DeepseekV41ForCausalLM")
+
+
 @pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])
 def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
     from collector.fpm_forward import planner
@@ -2981,3 +3089,91 @@ def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, c
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="native"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_custom_profile_label_is_published_with_observed_runtime_provenance(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.fpm_profile = True
+    plan.deployment_profile = lambda _cell: SimpleNamespace(backend_version="my-vllm-patch-3")
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "my-vllm-patch-3"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_explicit_label_without_profile_uses_native_precision_not_database_version(monkeypatch):
+    from collector.fpm_forward import capabilities
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("an explicit FPM data label must not resolve op-level database versions")
+
+    monkeypatch.setattr(capabilities, "get_latest_database_version", forbidden)
+    monkeypatch.setattr(capabilities, "get_database", forbidden)
+    args = _args()
+    plan = build_collection_plan(
+        backend="vllm",
+        model_path="nvidia/GLM-5.2-NVFP4",
+        system="b200_sxm",
+        selected_ops={"dsa_context_module", "dsa_generation_module"},
+        options=FPMCollectionOptions.from_args(args),
+        collector_config={"aic_database_version": "private-vllm-build", "runtime_backend_version": "0.28.0"},
+    )
+    assert plan.fpm_profile is None
+    assert plan.backend_version == "private-vllm-build"
+    assert plan.capability.aic_database_version == "private-vllm-build"
+    assert plan.runtime_backend_version == "0.28.0"
+
+
+def test_explicit_label_without_profile_survives_native_publication(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "private-vllm-build"
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["backend_version"] == "private-vllm-build"
+    assert rows[0]["runtime_backend_version"] == "0.24.0"
+
+
+def test_dynamo_versions_remain_per_pod_provenance_without_registration_gate(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    for index, path in enumerate(sorted((cell_dir / "raw").glob("*/collector-provenance.json"))):
+        provenance = json.loads(path.read_text())
+        provenance["dynamo_version"] = f"declared-build-{index}"
+        provenance["runtime"]["dynamo_version"] = f"observed-build-{index}"
+        path.write_text(json.dumps(provenance))
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert rows[0]["latency_ms"] == pytest.approx(6.0)
+
+
+def test_aggregation_rejects_observed_backend_drift_even_with_custom_label(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    plan.backend_version = "my-vllm-patch-3"
+    plan.runtime_backend_version = "0.28.0"
+    with pytest.raises(ValueError, match="observed backend version differs"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_preserves_runtime_provenance_when_legacy_row_sorts_first(tmp_path):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    row = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")[0]
+    old = {**row, "cell_id": "a-legacy"}
+    root = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, [old], systems_root=root)
+    # Model a sealed schema-v7 publication predating the additive runtime field.
+    table = pq.read_table(parquet).drop(["runtime_backend_version"])
+    pq.write_table(table, parquet)
+    committed = json.loads(metadata.read_text())
+    committed["parquet_sha256"] = hashlib.sha256(parquet.read_bytes()).hexdigest()
+    metadata.write_text(json.dumps(committed))
+    incoming = {**row, "cell_id": "z-new", "runtime_backend_version": "0.28.0+observed"}
+
+    _, _, skipped = write_formal_database(plan, [incoming], systems_root=root)
+
+    assert skipped == ()
+    published = pq.read_table(parquet).to_pylist()
+    assert [(item["cell_id"], item["runtime_backend_version"]) for item in published] == [
+        ("a-legacy", None),
+        ("z-new", "0.28.0+observed"),
+    ]
+    write_formal_database(plan, [incoming], systems_root=root)
+    assert pq.read_table(parquet).to_pylist() == published

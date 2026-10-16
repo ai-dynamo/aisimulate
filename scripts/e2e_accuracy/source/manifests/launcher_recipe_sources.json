@@ -1,0 +1,609 @@
+{
+  "schema_version": "reviewed-launcher-copy/1",
+  "repository": "SemiAnalysisAI/InferenceX",
+  "jobs_endpoint": "repos/SemiAnalysisAI/InferenceX/actions/runs/26857293503/attempts/3/jobs",
+  "retrieved_on": "2026-09-18",
+  "launcher_path": "runners/launch_b300-nv.sh",
+  "launcher_sha256": "de7391aed32d6697cb861aafa8f466e5904bb246f32805232a0ab7cff3719581",
+  "workflow_path": ".github/workflows/benchmark-multinode-tmpl.yml",
+  "workflow_sha256": "c3ca415cc3fd1e02d8d38c47b24fffa0b8adcf047013c8e0b44fc5622bdeff1e",
+  "source_directory": "benchmarks/multi_node/srt-slurm-recipes/vllm/minimax-m2.5-b300",
+  "destination_directory": "recipes/vllm/minimax-m2.5",
+  "points": [
+    {
+      "point": {
+        "config_id": 1297,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 2048
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408186,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp2/ep2/dptrue/nw3) | disagg-true spec-none conc-2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_11"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1297,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 4096
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408186,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp2/ep2/dptrue/nw3) | disagg-true spec-none conc-2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_11"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1297,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 6144
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408161,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp2/ep2/dptrue/nw3) | disagg-true spec-none conc-6144x8192",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_17"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1297,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 8192
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408161,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp2/ep2/dptrue/nw3) | disagg-true spec-none conc-6144x8192",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_17"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1298,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 512
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216407821,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw4) D(tp4/ep4/dptrue/nw1) | disagg-true spec-none conc-384x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_02"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1298,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 384
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216407821,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw4) D(tp4/ep4/dptrue/nw1) | disagg-true spec-none conc-384x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_02"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1299,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 128
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408195,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-32x64x128",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_14"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1299,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 64
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408195,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-32x64x128",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_14"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1299,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 32
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408195,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-32x64x128",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_14"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1299,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 32
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408152,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-32x128",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_08"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1299,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 128
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408152,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-32x128",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_08"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1300,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 8
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408372,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw2) | disagg-true spec-none conc-8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_04"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1300,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 16
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408372,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw2) | disagg-true spec-none conc-8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_04"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1301,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 4
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408212,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp8/ep1/dpfalse/nw1) | disagg-true spec-none conc-4",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_07"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1301,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 4
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408338,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp8/ep1/dpfalse/nw1) | disagg-true spec-none conc-4",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_12"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1302,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 1024
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408275,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw3) | disagg-true spec-none conc-64x128x256x1024",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_06"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1302,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 128
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408275,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw3) | disagg-true spec-none conc-64x128x256x1024",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_06"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1302,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 256
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408275,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw3) | disagg-true spec-none conc-64x128x256x1024",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_06"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1302,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 64
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408275,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep4/dpfalse/nw3) | disagg-true spec-none conc-64x128x256x1024",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_06"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 4
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408296,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-4x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_10"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 16
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408296,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-4x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_10"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 16
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408264,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-2x4x8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_03"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 8
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408264,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-2x4x8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_03"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 4
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408264,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-2x4x8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_03"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1303,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 2
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408264,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp4/ep1/dpfalse/nw1) | disagg-true spec-none conc-2x4x8x16",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_03"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1304,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 384
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408145,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw4) D(tp8/ep8/dptrue/nw1) | disagg-true spec-none conc-384",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_02"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1305,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 512
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408157,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-64x128x256x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_16"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1305,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 256
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408157,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-64x128x256x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_16"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1305,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 128
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408157,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-64x128x256x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_16"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1305,
+        "isl": 8192,
+        "osl": 1024,
+        "conc": 64
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408157,
+        "name": "multi-node 8k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_8k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp4/ep4/dpfalse/nw1) | disagg-true spec-none conc-64x128x256x512",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_16"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1306,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 4096
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408181,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw1) D(tp2/ep2/dptrue/nw2) | disagg-true spec-none conc-4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_13"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1307,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 4096
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408165,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp8/ep8/dptrue/nw1) | disagg-true spec-none conc-1024x1536x2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_09"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1307,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 1024
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408165,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp8/ep8/dptrue/nw1) | disagg-true spec-none conc-1024x1536x2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_09"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1307,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 2048
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408165,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp8/ep8/dptrue/nw1) | disagg-true spec-none conc-1024x1536x2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_09"
+      }
+    },
+    {
+      "point": {
+        "config_id": 1307,
+        "isl": 1024,
+        "osl": 1024,
+        "conc": 1536
+      },
+      "job": {
+        "conclusion": "success",
+        "head_sha": "6a5a06901b41cf772641619931ef8f2517470e03",
+        "id": 79216408165,
+        "name": "multi-node 1k1k / (vllm/vllm-openai:v0.20.1, nvidia/MiniMax-M2.5-NVFP4, minimaxm2.5, fp4, dynamo-... / minimaxm2.5_1k1k fp4 b300 dynamo-vllm | P(tp1/ep1/dpfalse/nw2) D(tp8/ep8/dptrue/nw1) | disagg-true spec-none conc-1024x1536x2048x4096",
+        "run_attempt": 3,
+        "run_id": 26857293503,
+        "runner_name": "b300-nv_09"
+      }
+    }
+  ]
+}

@@ -304,6 +304,11 @@ def _verify_collection(
         raise ValueError("saved collection plan differs from the original onboarding profile or identity")
     if frozen.capability.aic_database_version != request.identity.framework_version:
         raise ValueError("saved collection runtime version differs from onboarding")
+    if (
+        request.identity.runtime_framework_version is not None
+        and getattr(frozen, "runtime_backend_version", None) != request.identity.runtime_framework_version
+    ):
+        raise ValueError("saved collection observed runtime version differs from onboarding")
     scheduler = request.scheduler_limits()
     from .fpm import fpm_cli_args
     from .runtime import runtime_probe_manifest, verify_collection_runtime
@@ -428,7 +433,9 @@ def _verify_collection(
                     cell_dir / "raw",
                     expected_plan_sha256=sha,
                     expected_attempt_id=attempt,
-                    expected_backend_version=request.identity.framework_version,
+                    expected_backend_version=(
+                        request.identity.runtime_framework_version or request.identity.framework_version
+                    ),
                     expected_context_length=request.search.context_length,
                     expected_max_num_tokens=scheduler["max_batched_tokens"],
                     expected_max_batch_size=scheduler["max_sequences"],

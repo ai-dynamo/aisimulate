@@ -68,7 +68,7 @@ def add_support_parser(subparsers: Any) -> None:
         description=(
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
-            "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
+            "--model, --model-revision, --model-kind, --gpu, and --interconnect. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
             "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
             "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
@@ -90,7 +90,10 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--model-revision", help="Pinned model revision; moving labels such as main are unsupported.")
     init.add_argument("--model-kind", choices=("dense", "moe"))
     init.add_argument("--framework", choices=("vllm",), help="Collection runtime (default: vllm).")
-    init.add_argument("--framework-version", help="Pinned vLLM version in the collection environment.")
+    init.add_argument(
+        "--framework-version",
+        help="Backend data version label (custom strings accepted); omitted: detect in the collection image.",
+    )
     init.add_argument("--gpu", help="Target GPU system name, for example h200_sxm.")
     init.add_argument("--interconnect", help="Interconnect, for example nvswitch, pcie, or none.")
     init.add_argument(
@@ -254,7 +257,7 @@ def add_deployment_arguments(parser: Any, *, default_executor: str | None = "kub
         default=default_executor,
         help="Collection executor (default: kubernetes); Slurm uses an existing sbatch/salloc allocation.",
     )
-    deployment.add_argument("--dynamo-version", help="Target Dynamo release used to resolve collector templates.")
+    deployment.add_argument("--dynamo-version", help="Optional Dynamo version metadata; does not select templates.")
     deployment.add_argument(
         "--image", help="Collector container image; required for Slurm. Prefer an immutable digest."
     )
@@ -363,13 +366,13 @@ _PROMPTS = {
     "model": ("Model name or path", str),
     "model_revision": ("Pinned model revision (not main/latest)", str),
     "model_kind": ("Model kind (dense/moe)", str),
-    "framework_version": ("Pinned vLLM version", str),
     "gpu": ("Target GPU system name (for example h200_sxm)", str),
     "interconnect": ("GPU interconnect (for example nvswitch, pcie, or none)", str),
     "tensor_parallel": ("Attention tensor-parallel size", int),
 }
 _CORRECTION_PROMPTS = {
     **_PROMPTS,
+    "framework_version": ("Backend data version label", str),
     "input_tokens": ("Input tokens per request", int),
     "output_tokens": ("Output tokens per request", int),
     "concurrency": ("Concurrent requests", int),
@@ -1265,7 +1268,8 @@ def _plan(args: argparse.Namespace) -> int:
     _print(
         {
             "request_id": plan["request_id"],
-            "candidate_count": plan["search"]["candidate_count"],
+            "candidate_count": plan.get("search", {}).get("candidate_count", 0),
+            **({"status": plan["status"]} if "status" in plan else {}),
             "collection_gpus_required": request.worker_gpus,
             "plan": str(root / "support-plan.json"),
             "commands": plan["outputs"]["commands"],

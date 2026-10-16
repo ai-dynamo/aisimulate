@@ -138,6 +138,186 @@ def test_whole_wave_reserves_sum_against_one_live_snapshot(monkeypatch):
         factory.admit_wave([spec])
 
 
+@pytest.fixture(autouse=True)
+def _cold_trace_scan_cache():
+    from aisimulate import resources
+
+    resources._clear_trace_scan_cache()
+    yield
+    resources._clear_trace_scan_cache()
+
+
+@pytest.mark.parametrize(
+    "outcome,peak_mib",
+    [
+        ("replayed", 300),
+        # 1.5x this peak exceeds the headroom of two candidates, and even of one.
+        ("replayed", 6 * 1024),
+        ("failed", 300),
+    ],
+)
+def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeypatch, outcome, peak_mib):
+    from concurrent.futures import Future
+    from pathlib import Path
+
+    from aisimulate import resource_scheduler as scheduler
+    from aisimulate import resources
+
+    trace = tmp_path / "requests.jsonl"
+    trace.write_text('{"input_length":4,"output_length":1,"hash_ids":[1]}\n')
+    specs = [
+        SimpleNamespace(
+            workload={"trace_path": str(trace), "trace_format": "agentic_mooncake", "index": i}, concurrency=None
+        )
+        for i in range(8)
+    ]
+    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(32 * GB, 16 * GB, 8))
+    monkeypatch.setattr(
+        resources,
+        "resolve_budget",
+        lambda *args: {
+            "memory_limit_bytes": 8 * GB,
+            "coordinator_memory_bytes": 320 * resources.MIB,
+            "reserved_host_memory_bytes": GB,
+            "cpu_limit": 8,
+        },
+    )
+    monkeypatch.setattr(resources, "_child_memory_bytes", lambda: 0)
+    phase = "coordinator"
+    scans = {"coordinator": 0, "worker": 0}
+    original_estimate = resources.estimate_workload
+    original_admit = GuardedRunnerFactory.admit_wave
+    attempts, pools = [], []
+
+    def estimate(*args, **kwargs):
+        scans[phase] += 1
+        return original_estimate(*args, **kwargs)
+
+    def admit(factory, wave):
+        attempts.append(len(wave))
+        return original_admit(factory, wave)
+
+    def run(spec):
+        index = spec.workload["index"]
+        # Only a completed replay measures the trace; a failed one keeps waves serial.
+        return index if outcome == "replayed" else SimpleNamespace(outcome=outcome, index=index)
+
+    factory = GuardedRunnerFactory(
+        SimpleNamespace(create=lambda worker: SimpleNamespace(run=run, close=lambda: None)),
+        "engine",
+        ResourceConfig(),
+    )
+
+    def evaluate(spec):
+        nonlocal phase
+        phase = "worker"
+        try:
+            return factory.create(0).run(spec)
+        finally:
+            phase = "coordinator"
+
+    class Pool:
+        def __init__(self, **kwargs):
+            pools.append(kwargs["max_workers"])
+            self._processes = {123: object()}
+            Path(kwargs["initargs"][2], "123").touch()
+
+        def submit(self, evaluate, spec):
+            future = Future()
+            future.set_result(evaluate(spec))
+            return future
+
+    parses = []
+    original_parse = resources.ijson.parse
+
+    def parse(*args, **kwargs):
+        parses.append(None)
+        return original_parse(*args, **kwargs)
+
+    monkeypatch.setattr(resources, "estimate_workload", estimate)
+    monkeypatch.setattr(resources.ijson, "parse", parse)
+    monkeypatch.setattr(GuardedRunnerFactory, "admit_wave", admit)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
+    monkeypatch.setattr(scheduler, "_peak_rss_bytes", lambda: peak_mib * resources.MIB)
+    monkeypatch.setattr(scheduler, "checkpoint", lambda *args: None)
+    monkeypatch.setattr(scheduler, "mark_execution_ready", lambda: None)
+    monkeypatch.setattr(scheduler, "close_pool", lambda pool: None)
+    monkeypatch.setattr(scheduler, "terminate_pool", lambda pool: pytest.fail("no runtime interruption expected"))
+    results = dict(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=evaluate, workers=8, timeout=10))
+    assert {index: getattr(result, "index", result) for index, result in results.items()} == {i: i for i in range(8)}
+    if outcome == "failed":
+        assert attempts == [8] + [1] * 8  # No 4- or 2-candidate attempts, and later waves stay serial.
+        assert pools == [1] * 8
+        assert scans == {"coordinator": 9, "worker": 8}
+    elif peak_mib == 300:
+        # One serial probe measures the trace; the remaining candidates share one wave.
+        assert attempts == [8, 1, 7]
+        assert pools == [1, 7]
+        assert scans == {"coordinator": 9, "worker": 8}
+    else:
+        # The observed margin only narrows parallel waves; each candidate still
+        # runs alone on the baseline plus the lower bound, like the first probe.
+        assert pools == [1] * 8
+    assert len(parses) == 1  # Every coordinator and worker estimate reuses one trace scan.
+
+
+def test_unknown_peak_over_budget_retries_serially_without_workers(tmp_path, monkeypatch):
+    from aisimulate import resource_scheduler as scheduler
+    from aisimulate import resources
+
+    trace = tmp_path / "requests.jsonl"
+    trace.write_text('{"input_length":4,"output_length":1000000000000,"hash_ids":[1]}\n')
+    specs = [
+        SimpleNamespace(workload={"trace_path": str(trace), "trace_format": "agentic_mooncake"}, concurrency=None)
+        for _ in range(8)
+    ]
+    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(32 * GB, 16 * GB, 8))
+    monkeypatch.setattr(
+        resources,
+        "resolve_budget",
+        lambda *args: {
+            "memory_limit_bytes": 8 * GB,
+            "coordinator_memory_bytes": 320 * resources.MIB,
+            "reserved_host_memory_bytes": GB,
+            "cpu_limit": 8,
+        },
+    )
+    scans = 0
+    attempts = []
+    original_estimate = resources.estimate_workload
+    original_admit = GuardedRunnerFactory.admit_wave
+
+    def estimate(*args, **kwargs):
+        nonlocal scans
+        scans += 1
+        return original_estimate(*args, **kwargs)
+
+    def admit(factory, wave):
+        attempts.append(len(wave))
+        return original_admit(factory, wave)
+
+    def unexpected_pool(**kwargs):
+        pytest.fail("over-budget candidates must not create workers")
+
+    monkeypatch.setattr(resources, "estimate_workload", estimate)
+    monkeypatch.setattr(GuardedRunnerFactory, "admit_wave", admit)
+    monkeypatch.setattr(scheduler, "ProcessPoolExecutor", unexpected_pool)
+    factory = GuardedRunnerFactory(object(), "engine", ResourceConfig())
+    results = list(evaluate_waves(specs, factory=factory, initializer=_init, evaluate=_evaluate, workers=8, timeout=10))
+    assert [index for index, _ in results] == list(range(8))
+    for _, result in results:
+        assert isinstance(result, InterruptedEvaluation)
+        assert result.resource_limited
+        assert "candidate lower bound plus worker baseline exceeds available host memory" in result.reason
+        assert result.metadata["status"] == "resource_limited"
+        assert result.metadata["estimate"]["estimated_peak_bytes"] is None
+        assert result.metadata["estimate"]["lower_bound_bytes"] == 4 * (10**12 + 1)  # Outputs plus one hash.
+    assert attempts == [8] + [1] * 8
+    assert scans == 9
+
+
 def test_live_pressure_retries_only_unfinished_work_after_cleanup(monkeypatch):
     from concurrent.futures import Future
 

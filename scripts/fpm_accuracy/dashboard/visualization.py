@@ -21,8 +21,8 @@ from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
-from fpm_accuracy.dashboard.visualization_diagnostics import diagnostic_observations
-from fpm_accuracy.hf.models import MeasurementCase, MeasurementObservation
+from scripts.fpm_accuracy.dashboard.visualization_diagnostics import diagnostic_observations
+from scripts.fpm_accuracy.hf.models import MeasurementCase, MeasurementObservation
 
 POLICY = "native-online-rank-unit-features-v1"
 FEATURE_REVISION = "99d6acb722bf75e2b16119c59c79e1bad73b4efd"

@@ -110,14 +110,14 @@ def test_v2_event_runtime_rejects_unknown_fields(tmp_path):
 def test_v2_retains_collector_runtime_source_and_abi_metadata(tmp_path):
     runtime = {
         "framework": "sglang",
-        "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
-        "source_commit": "02c5a855aceb968c310e6fbc6632270e26edc84b",
-        "abi": {"torch": "2.14.0a0", "cuda": "13.5"},
+        "version": "0.5.13",
+        "source_commit": "a" * 40,
+        "abi": {"torch": "2.7.0", "cuda": "12.8"},
         "live_abi": {"machine": "aarch64"},
         "transport": {"world_size": 4},
-        "backend_capability": {"sm": 107},
-        "backend_abis": {"sglang": {"cuda": "13.5"}},
-        "backend_capabilities": {"sglang": {"sm": 107}},
+        "backend_capability": {"sm": 100},
+        "backend_abis": {"sglang": {"cuda": "12.8"}},
+        "backend_capabilities": {"sglang": {"sm": 100}},
     }
     document = _v2_document([_event(runtime=runtime)])
     document["runtime"] = runtime

@@ -11,11 +11,12 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import accuracy_digest as digest
-import notify_accuracy as notify
-import prepare_e2e_accuracy_pages as pages
 import pytest
 import yaml
+
+import scripts.notifications.accuracy_digest as digest
+import scripts.notifications.notify_accuracy as notify
+import scripts.pages.prepare_e2e_accuracy_pages as pages
 
 
 def snapshot(errors, *, kind="e2e", dataset="data", rules="rules"):
@@ -321,6 +322,9 @@ def test_point_sidecar_must_match_qualified_summary():
 def test_read_only_dry_run_and_guarded_secret_scope():
     workflow = yaml.safe_load((Path(__file__).parents[2] / ".github/workflows/accuracy-digest.yml").read_text())
     triggers = workflow.get("on", workflow.get(True))
+    assert workflow["name"] == "Accuracy Slack Weekly"
+    assert triggers["schedule"] == [{"cron": "0,30 9-11 * * 1", "timezone": "America/Los_Angeles"}]
+    assert "workflow_run" not in triggers
     assert triggers["workflow_dispatch"]["inputs"]["mode"]["default"] == "dry-run"
     assert triggers["workflow_dispatch"]["inputs"]["mode"]["options"] == [
         "dry-run",
@@ -332,6 +336,16 @@ def test_read_only_dry_run_and_guarded_secret_scope():
     assert "workflow_run.head_sha" not in json.dumps(steps)
     prepare = next(s for s in steps if s.get("name") == "Prepare report and preview")
     assert "env.MODE != 'dry-run'" in prepare["env"]["SLACK_ACCURACY_BOT_TOKEN"]
+
+
+def test_weekly_slack_schedule_keeps_daily_producers_and_full_ci_regression_gate():
+    workflows = Path(__file__).parents[2] / ".github/workflows"
+    for name in ("e2e-accuracy.yml", "fpm-accuracy.yml"):
+        producer = yaml.load((workflows / name).read_text(), Loader=yaml.BaseLoader)
+        assert all(entry["cron"].split()[2:] == ["*", "*", "*"] for entry in producer["on"]["schedule"])
+    full = yaml.load((workflows / "ci.yml").read_text(), Loader=yaml.BaseLoader)
+    assert full["jobs"]["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
+    assert "prediction-regression" in full["jobs"]["readiness"]["needs"]
 
 
 def test_corrupt_or_oversized_compressed_points_rejected():

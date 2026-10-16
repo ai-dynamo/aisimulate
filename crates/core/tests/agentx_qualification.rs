@@ -548,3 +548,129 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(restore.first_admit_ms, None);
     assert_eq!(restore.output_length, 0);
 }
+
+fn snapshot_pin_report(
+    graph: &ValidatedAgenticGraph,
+    mode: &str,
+    disaggregated: bool,
+) -> ReplayReport {
+    let prepared = graph
+        .prepare_snapshots(3, AgenticSnapshotOptions { seed: 42 })
+        .unwrap();
+    // "profile" profiles after warmup; "profile-cold" profiles straight from
+    // the snapshot without warmup's timer rebasing.
+    let mut driver = if mode == "snapshot" || mode == "profile-cold" {
+        WorkloadDriver::new_agentic_snapshots(prepared, 4, true, 1.0)
+    } else {
+        WorkloadDriver::new_agentic_warmup(prepared, 4, true, 1.0)
+    }
+    .unwrap();
+    if mode.starts_with("profile") {
+        driver
+            .enable_agentic_profile(AgenticProfileOptions {
+                duration_seconds: 1.0,
+                response_grace_seconds: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let rank = EngineConfig {
+        num_gpu_blocks: 64,
+        block_size: 4,
+        max_num_seqs: 4,
+        max_num_batched_tokens: 64,
+        timing_model: TimingModelConfig::Fixed {
+            prefill_ms: 2.0,
+            decode_ms: 1.0,
+        },
+        ..EngineConfig::for_backend(Backend::Vllm)
+    };
+    let spec = ReplaySpec {
+        version: 1,
+        topology: if disaggregated {
+            ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec::default(),
+                decode: WorkerPoolSpec::default(),
+                handoff_latency_ms: 1.0,
+            }
+        } else {
+            ReplayTopology::aggregated(1)
+        },
+        engine: serde_json::to_value(ReplayEngineConfig {
+            rank,
+            ..Default::default()
+        })
+        .unwrap(),
+        adapters: Default::default(),
+        max_sim_time_ms: None,
+        max_in_flight: None,
+        record_per_request: true,
+        sla: Default::default(),
+        requests: Vec::new(),
+    };
+    run_g2(spec, driver)
+}
+
+/// Snapshot, warmup and recycling-profile replays must stay byte-identical
+/// across changes to how snapshot plays are built and retained.
+#[test]
+fn snapshot_warmup_and_profile_reports_are_pinned() {
+    let graphs = [
+        ("g2", g2_graph()),
+        (
+            "two-plays",
+            load_weka_agentic_graph(fixture("weka-two-plays.jsonl"), Some(4)).unwrap(),
+        ),
+    ];
+    let mut actual = Vec::new();
+    for (name, graph) in &graphs {
+        for mode in ["snapshot", "warmup", "profile", "profile-cold"] {
+            for disaggregated in [false, true] {
+                let report = snapshot_pin_report(graph, mode, disaggregated);
+                if mode.starts_with("profile") {
+                    let profile = report.agentic_profile.as_ref().unwrap();
+                    assert!(profile.plays_started >= 6, "{name}: {profile:?}");
+                }
+                let report_json = serde_json::to_value(report.clone().with_wall_time_ms(0.0))
+                    .unwrap()
+                    .to_string();
+                let per_request = serde_json::to_value(&report.per_request)
+                    .unwrap()
+                    .to_string();
+                let lifecycle = report.agentic_lifecycle.as_ref().unwrap();
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(report_json.as_bytes());
+                hasher.update(per_request.as_bytes());
+                hasher.update(&lifecycle.to_jsonl().unwrap());
+                let topology = if disaggregated { "disagg" } else { "agg" };
+                actual.push(format!(
+                    "{name} {mode} {topology}: {} {}",
+                    report.per_request.len(),
+                    &hasher.finalize().to_hex()[..16]
+                ));
+            }
+        }
+    }
+    // To re-pin, run this test and copy the `left:` list from the failure. A
+    // mismatch the change did not intend must first be diffed semantically
+    // against the previous report, per-request and lifecycle output.
+    let expected = [
+        "g2 snapshot agg: 5 5e02e9f17a77658f",
+        "g2 snapshot disagg: 5 a6573f2379f39c15",
+        "g2 warmup agg: 5 21a10bcd0843bc96",
+        "g2 warmup disagg: 5 a0834d087069f92e",
+        "g2 profile agg: 40 a69d736cdea338aa",
+        "g2 profile disagg: 40 fa167c22cb9d4b34",
+        "g2 profile-cold agg: 40 f63f6e7cf21a4de3",
+        "g2 profile-cold disagg: 40 29b72dc9224ae354",
+        "two-plays snapshot agg: 3 19563e804401e8a2",
+        "two-plays snapshot disagg: 3 88c3919df99f7ce1",
+        "two-plays warmup agg: 3 2bb148e6548bb88a",
+        "two-plays warmup disagg: 3 f784df450822621a",
+        "two-plays profile agg: 821 35351cf48f3958c3",
+        "two-plays profile disagg: 667 6b252248d748175a",
+        "two-plays profile-cold agg: 820 20ee4611dbaa1e83",
+        "two-plays profile-cold disagg: 601 e2d4f4e93360d22e",
+    ];
+    assert_eq!(actual, expected);
+}

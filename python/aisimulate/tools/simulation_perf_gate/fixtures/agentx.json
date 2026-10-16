@@ -1,0 +1,14 @@
+{
+  "path": "fixtures/agentx.jsonl",
+  "sha256": "51fd311c4f00acd6d4d457fba29653af03613cd1ee2611833dc40dfbe988dd60",
+  "plays": 4,
+  "requests": 255,
+  "input_tokens": 27418752,
+  "output_tokens": 286917,
+  "play_ids": [
+    "002001296e8a8c38ad9d7cc436d691afc602",
+    "006c98de37d819e95b0840e25426bb7ca99d",
+    "00ca01c4aaeccee751ae6285beb54dea262f",
+    "0196085d85d2075a50b74cd8795ffbdcea9a"
+  ]
+}

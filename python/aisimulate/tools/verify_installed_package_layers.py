@@ -79,7 +79,7 @@ def _verify_payload() -> None:
             "aisimulate_core/_native.pyi",
             "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
             "aisimulate_core/sdk/engine.py",
-            "aisimulate_core/sdk/memory.py",
+            "aisimulate_core/sdk/memory/kv_cache.py",
             "aisimulate_core/systems/h100_sxm.yaml",
             "collector/__init__.py",
             "collector/model_cases.py",
@@ -149,8 +149,8 @@ def _verify_imports() -> None:
         raise RuntimeError(f"unexpected aisimulate_core.sdk facade: {sdk.__all__!r}")
     for module_name, public_name in (
         ("engine", "EngineHandle"),
-        ("memory", "estimate_kv_cache"),
-        ("state_memory", "estimate_state_cache"),
+        ("memory.kv_cache", "estimate_kv_cache"),
+        ("memory.state", "estimate_state_cache"),
         ("rust_engine_step", "ForwardPassPerfModelConfig"),
         ("rust_engine_step", "ForwardPassPerfOptions"),
     ):

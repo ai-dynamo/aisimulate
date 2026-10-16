@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Protocol-v4 input identity and numeric validation for native timing."""
+"""Input identity and numeric validation for native timing."""
 
 import math
 from pathlib import Path
@@ -25,6 +25,36 @@ MODEL_FIELDS = (
     "comm_quant_mode",
     "kv_block_size",
 )
+
+
+def check_completion(report: dict, case: dict) -> None:
+    if not isinstance(report, dict):
+        raise ValueError("missing replay report")
+    expected = {
+        "num_requests": case["expected_requests"],
+        "completed_requests": case["expected_requests"],
+        "total_output_tokens": case["expected_output_tokens"],
+    }
+    if "expected_input_tokens" in case:
+        expected["total_input_tokens"] = case["expected_input_tokens"]
+    for name, count in expected.items():
+        if type(report.get(name)) is not int or report[name] != count:
+            raise ValueError(f"incomplete {name}")
+    if "expected_plays" in case:
+        outcomes = report.get("agentic_play_outcomes")
+        if (
+            not isinstance(outcomes, list)
+            or len(outcomes) != case["expected_plays"]
+            or any(
+                not isinstance(play, dict)
+                or play.get("status") != "completed"
+                or type(play.get("settled_at_ms")) not in (int, float)
+                or not math.isfinite(play["settled_at_ms"])
+                or play["settled_at_ms"] < 0
+                for play in outcomes
+            )
+        ):
+            raise ValueError("incomplete AgentX plays")
 
 
 def check_finite(value: object) -> None:

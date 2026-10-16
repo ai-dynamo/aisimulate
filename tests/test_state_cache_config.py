@@ -17,6 +17,8 @@ from aisimulate.runner import EngineReplayRunnerFactory, _materialize_engine_rol
 
 pytestmark = [pytest.mark.unit, pytest.mark.pre_merge, pytest.mark.gpu_0]
 
+FLASH = "deepseek-ai/DeepSeek-V4-Flash"
+
 STATE = {"bytes_per_request": 1500}
 KV = {"block_size": 64, "bytes_per_token": 16, "capacity": {"type": "fixed", "bytes": 8192}, "state_cache": STATE}
 RANK = {"block_size": 64, "num_gpu_blocks": 8, "kv_cache_bytes_per_token": 16, "state_cache": STATE}
@@ -170,13 +172,71 @@ def test_public_manual_cache_rejects_other_backends(backend):
         CorePredictionConfig.model_validate(raw)
 
 
-def test_public_manual_cache_rejects_pd():
-    raw = _public()
-    worker = raw["engine"]["workers"]["aggregated"]
-    raw["engine"]["mode"] = "disaggregated"
-    raw["engine"]["workers"] = {"prefill": worker, "decode": {}}
-    with pytest.raises(ValidationError, match="state_cache requires"):
+def _to_pd(raw, **engine_updates):
+    """Run the aggregated worker as identical prefill and decode roles."""
+    engine = raw["engine"]
+    worker = engine["workers"].pop("aggregated")
+    engine.update(
+        mode="disaggregated", workers={"prefill": worker, "decode": json.loads(json.dumps(worker))}, **engine_updates
+    )
+    return raw
+
+
+def _public_pd(**cache_overrides):
+    return _to_pd(_public(**cache_overrides))
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_public_pd_state_cache_requires_both_roles(role):
+    raw = _public_pd()
+    del raw["engine"]["workers"][role]["kv_cache"]["state_cache"]
+    with pytest.raises(ValidationError, match="both prefill and decode"):
         CorePredictionConfig.model_validate(raw)
+
+
+def test_native_pd_state_cache_requires_both_roles():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_public_pd()))
+    decode = {key: value for key, value in spec.backend_deployment.decode_engine_args.items() if key != "state_cache"}
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, decode_engine_args=decode))
+    with pytest.raises(RuntimeError, match="both prefill and decode"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+def test_native_prefill_bandwidth_requires_transfer_bytes():
+    raw = _public_pd(state_cache=None)
+    raw["traffic"]["source"]["output_tokens"] = 2
+    raw["engine"]["kv_transfer"] = {"bytes_per_token": 16, "bandwidth_gb_per_second": 50}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    prefill = dict(spec.backend_deployment.prefill_engine_args)
+    del prefill["kv_transfer_bytes_per_token"]
+    missing = replace(spec, backend_deployment=replace(spec.backend_deployment, prefill_engine_args=prefill))
+    with pytest.raises(RuntimeError, match="kv_transfer_bandwidth requires kv_transfer_bytes_per_token"):
+        EngineReplayRunnerFactory().create(0).run(missing)
+    # Zero bandwidth keeps meaning "no transfer delay".
+    prefill["kv_transfer_bandwidth"] = 0.0
+    disabled = replace(spec, backend_deployment=replace(spec.backend_deployment, prefill_engine_args=prefill))
+    assert EngineReplayRunnerFactory().create(0).run(disabled).metrics["completed_requests"] == 1
+
+
+def test_manual_pd_state_transfer_adds_one_state_to_ttft():
+    def ttft(state):
+        raw = _public_pd() if state else _public_pd(state_cache=None)
+        raw["traffic"]["source"]["output_tokens"] = 2
+        raw["engine"]["kv_transfer"] = {
+            "bytes_per_token": 16,
+            "bandwidth_gb_per_second": 1e-6,
+            "timing_mode": "full_prompt",
+        }
+        spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+        if state:
+            for args in (spec.backend_deployment.prefill_engine_args, spec.backend_deployment.decode_engine_args):
+                assert args["state_cache"] == STATE
+        metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
+        assert metrics["completed_requests"] == 1
+        return metrics["mean_ttft_ms"]
+
+    # The 1500-byte state crosses a 1000 B/s link once, on top of the prompt KV.
+    assert ttft(True) - ttft(False) == pytest.approx(1500.0)
 
 
 def test_recommendation_rejects_manual_cache_instead_of_dropping_it():
@@ -218,10 +278,23 @@ def test_direct_engine_rejects_unsupported_overrides_before_estimating(forbid_es
         _materialize_engine_role("vllm", "", {}, {"rank": raw} if nested else raw, "aggregated")
 
 
-@pytest.mark.parametrize("backend,role", [("sglang", "aggregated"), ("vllm", "prefill"), ("vllm", "decode")])
-def test_direct_engine_rejects_unsupported_topologies_before_estimating(forbid_estimators, backend, role):
+@pytest.mark.parametrize("role", ["aggregated", "prefill"])
+def test_direct_engine_rejects_unsupported_topologies_before_estimating(forbid_estimators, role):
     with pytest.raises(ValueError, match="state_cache requires"):
-        _materialize_engine_role(backend, "", {}, {"state_cache": STATE}, role)
+        _materialize_engine_role("sglang", "", {}, {"state_cache": STATE}, role)
+
+
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+def test_direct_engine_accepts_pd_roles_with_transfer_fields(forbid_estimators, role):
+    transfer = {
+        "kv_transfer_bytes_per_token": 16,
+        "kv_transfer_bandwidth": 50.0,
+        "kv_transfer_timing_mode": "destination_missing",
+        "timing_model": {"type": "fixed", "prefill_ms": 1, "decode_ms": 1},
+    }
+    engine = _materialize_engine_role("vllm", "", {}, {**RANK, **transfer}, role)
+    assert engine["rank"]["state_cache"] == STATE
+    assert engine["rank"]["kv_transfer_bandwidth"] == 50.0
 
 
 @pytest.mark.parametrize("field", ["num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"])
@@ -406,17 +479,74 @@ def test_k3_state_estimator_resolves_attention_geometry(controls, block_size, to
     assert result["padding_bytes_per_request"] == state_bytes - 56171520
 
 
-@pytest.fixture
-def auto_k3_payload():
-    payload = _public(
-        block_size=None,
-        bytes_per_token="auto",
-        capacity={"type": "fixed", "bytes": 8 * 21233664},
-        state_cache={},
-    )
-    payload["engine"]["model"] = "moonshotai/Kimi-K3"
+@pytest.mark.parametrize(
+    "model,controls,row,token_bytes,state_bytes,raw_state_bytes",
+    [
+        (FLASH, {}, 1002240, 3915, 26058240, 15420416),
+        (FLASH, {"tp_size": 4, "kvcache_quant_mode": "fp8"}, 1002240, 3915, 26058240, 15420416),
+        (FLASH, {"indexer_cache_dtype": "mxfp4"}, 917568, 3585, 23856768, 15420416),
+        ("deepseek-ai/DeepSeek-V4-Pro", {"block_size": 256}, 1435968, 5610, 37335168, 23270400),
+    ],
+)
+def test_dsv4_state_estimator_follows_vllm_pool_rows(model, controls, row, token_bytes, state_bytes, raw_state_bytes):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    result = estimate_state_cache(model, **controls)
+    # Each request holds one 256-token row per block plus 26 sliding-window rows:
+    # two SWA groups x 3, the C4 compressor states 3 and the C128 states 17.
+    assert result["block_size"] == 256
+    assert result["bytes_per_block"] == row
+    assert result["kv_bytes_per_token"] == token_bytes == -(-row // 256)
+    assert result["fixed_blocks"] == 26
+    assert result["bytes_per_request"] == state_bytes == 26 * row
+    assert result["raw_bytes_per_request"] == raw_state_bytes
+    assert result["padding_bytes_per_request"] == state_bytes - raw_state_bytes
+    assert result["kv_cache_dtype"] == "fp8_ds_mla"
+    assert result["indexer_cache_dtype"] == controls.get("indexer_cache_dtype", "fp8")
+    json.dumps(result)
+
+
+def test_dsv4_draft_tokens_widen_sliding_windows():
+    from aisimulate_core.sdk import estimate_state_cache
+
+    # vLLM with one MTP draft token keeps 4 + 4 + 4 + 18 sliding-window rows,
+    # one more per group (63 rows at 8,255 tokens on B200 = 33 token rows + 30).
+    result = estimate_state_cache(FLASH, num_speculative_tokens=1)
+    assert (result["fixed_blocks"], result["bytes_per_request"]) == (30, 30 * 1002240)
+    assert result["kv_bytes_per_token"] == 3915
+
+
+@pytest.mark.parametrize(
+    "model,controls,error",
+    [
+        (FLASH, {"pp_size": 2}, "requires vllm and PP=1"),
+        (FLASH, {"backend": "sglang"}, "requires vllm and PP=1"),
+        (FLASH, {"block_size": 128}, "256-token blocks"),
+        (FLASH, {"kv_bytes_per_token": 3915}, "leave bytes_per_token as auto"),
+        (FLASH, {"kvcache_quant_mode": "bfloat16"}, "fp8_ds_mla"),
+        (FLASH, {"mamba_cache_dtype": "float32"}, "Kimi K3 only"),
+        (FLASH, {"indexer_cache_dtype": "bfloat16"}, "auto, fp8 or mxfp4"),
+        ("moonshotai/Kimi-K3", {"tp_size": 8, "indexer_cache_dtype": "fp8"}, "DeepSeek V4 only"),
+        ("deepseek-ai/DeepSeek-V4.1-Flash", {}, "Kimi K3 and DeepSeek V4"),
+    ],
+)
+def test_dsv4_state_estimator_rejects_unsupported_controls(model, controls, error):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match=error):
+        estimate_state_cache(model, **controls)
+
+
+def _auto_payload(model, capacity):
+    payload = _public(block_size=None, bytes_per_token="auto", capacity={"type": "fixed", **capacity}, state_cache={})
+    payload["engine"]["model"] = model
     payload["engine"]["workers"]["aggregated"]["parallelism"] = {"tensor": 8}
     return payload
+
+
+@pytest.fixture
+def auto_k3_payload():
+    return _auto_payload("moonshotai/Kimi-K3", {"bytes": 8 * 21233664})
 
 
 def test_auto_state_geometry_reaches_native_wire_and_fixed_budget(auto_k3_payload, forbid_estimators):
@@ -437,6 +567,78 @@ def test_auto_state_geometry_reaches_native_wire_and_fixed_budget(auto_k3_payloa
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     for field in ("block_size", "kv_cache_bytes_per_token", "num_gpu_blocks", "state_cache"):
         assert rank[field] == args[field]
+
+
+def test_auto_pd_state_resolves_each_role_and_transfer_bytes(auto_k3_payload, forbid_estimators):
+    _to_pd(auto_k3_payload, kv_transfer={"bytes_per_token": "auto", "bandwidth_gb_per_second": 50})
+    decode = auto_k3_payload["engine"]["workers"]["decode"]
+    decode["parallelism"] = {"tensor": 4}
+    decode["kv_cache"]["capacity"] = {"type": "fixed", "blocks": 8}
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_k3_payload)).backend_deployment
+    prefill_args, decode_args = deployment.prefill_engine_args, deployment.decode_engine_args
+    assert (prefill_args["block_size"], prefill_args["state_cache"]) == (768, {"bytes_per_request": 61046784})
+    assert (decode_args["block_size"], decode_args["state_cache"]) == (1472, {"bytes_per_request": 117006336})
+    # MLA token bytes from the state estimate, not the naive all-layer estimate.
+    assert prefill_args["kv_transfer_bytes_per_token"] == decode_args["kv_transfer_bytes_per_token"] == 27648
+    for role in ("prefill", "decode"):
+        assert deployment.performance_model_metadata[role]["state_cache"]["source"] == "inferred"
+
+
+@pytest.fixture
+def auto_dsv4_payload():
+    return _auto_payload(FLASH, {"blocks": 64})
+
+
+@pytest.mark.parametrize(
+    "state_cache,token_bytes,state_bytes",
+    [({}, 3915, 26058240), ({"indexer_cache_dtype": "mxfp4"}, 3585, 23856768)],
+)
+def test_auto_dsv4_geometry_reaches_native_wire(
+    auto_dsv4_payload, forbid_estimators, state_cache, token_bytes, state_bytes
+):
+    auto_dsv4_payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"] = state_cache
+    config = CorePredictionConfig.model_validate(auto_dsv4_payload)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate_json(config.model_dump_json()))
+    args = spec.backend_deployment.agg_engine_args
+    assert (args["block_size"], args["kv_cache_bytes_per_token"], args["num_gpu_blocks"]) == (256, token_bytes, 64)
+    assert args["state_cache"] == {"bytes_per_request": state_bytes}
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    indexer = state_cache.get("indexer_cache_dtype", "fp8")
+    assert (info["source"], info["state_blocks"], info["indexer_cache_dtype"]) == ("inferred", 26, indexer)
+    assert EngineReplayRunnerFactory().create(0).run(spec).metrics["completed_requests"] == 1
+
+
+@pytest.mark.parametrize(("global_dtype", "worker_dtype"), [("bfloat16", "fp8"), ("fp8", "bfloat16")])
+def test_auto_state_sizes_the_worker_kv_dtype(auto_dsv4_payload, forbid_estimators, global_dtype, worker_dtype):
+    # The worker's dtype overrides the global one, as it does for compute.
+    auto_dsv4_payload["engine"].update(hardware="b200_sxm", kvcache_quant_mode=global_dtype)
+    worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
+    worker.update(timing={"type": "default", "kvcache_quant_mode": worker_dtype})
+    worker["parallelism"]["moe_expert"] = 8
+    config = CorePredictionConfig.model_validate(auto_dsv4_payload)
+    if worker_dtype != "fp8":
+        with pytest.raises(ValueError, match="fp8_ds_mla"):
+            prediction_to_replay_spec(config)
+        return
+    args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+    assert args["state_cache"] == {"bytes_per_request": 26058240}
+
+
+def test_auto_dsv4_mtp_state_includes_draft_rows(auto_dsv4_payload, forbid_estimators):
+    # MTP needs default timing; B200 has the DeepSeek V4 vLLM data.
+    auto_dsv4_payload["engine"].update(hardware="b200_sxm", nextn=1, nextn_accepted=1.0)
+    worker = auto_dsv4_payload["engine"]["workers"]["aggregated"]
+    worker.update(timing={"type": "default"}, parallelism={"tensor": 8, "moe_expert": 8})
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload))
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 30067200}
+
+
+def test_auto_dsv4_pd_transfers_rows_and_state(auto_dsv4_payload, forbid_estimators):
+    _to_pd(auto_dsv4_payload, kv_transfer={"bytes_per_token": "auto", "bandwidth_gb_per_second": 50})
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(auto_dsv4_payload)).backend_deployment
+    for args in (deployment.prefill_engine_args, deployment.decode_engine_args):
+        assert args["kv_transfer_bytes_per_token"] == 3915
+        assert args["state_cache"] == {"bytes_per_request": 26058240}
 
 
 @pytest.mark.parametrize(

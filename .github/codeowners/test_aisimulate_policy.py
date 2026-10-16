@@ -85,7 +85,11 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
+    assert _owners("docs/perf-model/api/python.md") == {FPE, MAINTAINERS}
+    assert _owners("docs/replay/features.md") == {REPLAY, MAINTAINERS}
+    assert _owners("docs/adapters/runner-abi.md") == {REPLAY, SWEEPER, FPE, MAINTAINERS}
+    assert _owners("docs/ci/accuracy.md") == {INFRA, FPE, MAINTAINERS}
+    assert _owners("benchmarks/evidence/collector/pr244/manifest.json") == {FPE, REPLAY, INFRA, MAINTAINERS}
 
     # Unified application Replay, Sweeper, and Mocker surface.
     assert _owners("python/aisimulate/src/aisimulate/capacity.py") == {
@@ -142,7 +146,7 @@ def test_representative_routing_contract() -> None:
     assert _owners(".github/workflows/ci.yml") == {INFRA}
     assert _owners(".github/workflows/fast-ci.yml") == {INFRA}
     assert _owners(".gitattributes") == {INFRA, MAINTAINERS}
-    assert _owners("scripts/build_release_artifacts.py") == {INFRA, MAINTAINERS}
+    assert _owners("scripts/release/build_release_artifacts.py") == {INFRA, MAINTAINERS}
     assert _owners("tests/test_source_compliance.py") == {INFRA}
     assert _owners("python/aisimulate/.github/workflows/build-test.yml") == {
         INFRA,
@@ -235,8 +239,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert prerequisite["permissions"] == {"contents": "read", "actions": "read"}
     assert "uses" not in prerequisite
     prerequisite_steps = [
-        step for step in prerequisite["steps"]
-        if step.get("run") == "python scripts/require_fast_ci.py"
+        step for step in prerequisite["steps"] if step.get("run") == "python scripts/ci/require_fast_ci.py"
     ]
     assert len(prerequisite_steps) == 1
     assert prerequisite_steps[0]["env"]["GH_TOKEN"] == "${{ github.token }}"
@@ -255,10 +258,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     assert "name: Fast CI Success" in fast
     assert "name: Full CI Success" in full
     assert "manual Full CI requires a nonempty expected_sha" in full
-    assert (
-        'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then'
-        in full
-    )
+    assert 'if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then' in full
     assert "workflow_dispatch" in full_config["on"]
     dispatch_sha = full_config["on"]["workflow_dispatch"]["inputs"]["expected_sha"]
     assert dispatch_sha["required"] == "true"
@@ -337,9 +337,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     full_readiness_env = full_readiness["steps"][0]["env"]
     assert full_readiness_env["NEEDS_JSON"] == "${{ toJSON(needs) }}"
     assert '"success" if selected == "true" else "skipped"' in full_readiness_script
-    assert (
-        full_readiness_env["PLAN_JSON"] == "${{ toJSON(needs.select-full-ci.outputs) }}"
-    )
+    assert full_readiness_env["PLAN_JSON"] == "${{ toJSON(needs.select-full-ci.outputs) }}"
     assert "stage-application-wheel" not in full_readiness["needs"]
     assert 'payload["result"]' in full_readiness_script
 
@@ -347,15 +345,8 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
 
     application_wheel = full_config["jobs"]["application-wheel"]
     assert "select-full-ci" in application_wheel["needs"]
-    assert (
-        "needs.select-full-ci.outputs.application_wheel == 'true'"
-        in application_wheel["if"]
-    )
-    verify_steps = [
-        step
-        for step in application_wheel["steps"]
-        if step.get("name") == "Verify exact staged wheel"
-    ]
+    assert "needs.select-full-ci.outputs.application_wheel == 'true'" in application_wheel["if"]
+    verify_steps = [step for step in application_wheel["steps"] if step.get("name") == "Verify exact staged wheel"]
     assert len(verify_steps) == 1
     verify_step = verify_steps[0]
     assert verify_step["run"] == ("python python/aisimulate/tools/verify_release_wheels.py dist")
@@ -401,9 +392,7 @@ def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
     passing_results = {name: {"result": "success"} for name in readiness["needs"]}
     passing_pr = {
         "NEEDS_JSON": json.dumps(passing_results),
-        "PLAN_JSON": json.dumps(
-            {name: "true" for name in config["jobs"]["select-full-ci"]["outputs"]}
-        ),
+        "PLAN_JSON": json.dumps(dict.fromkeys(config["jobs"]["select-full-ci"]["outputs"], "true")),
     }
 
     assert _run_readiness_script(script, tmp_path, passing_pr).returncode == 0
@@ -469,7 +458,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
         "set -euo pipefail\n"
         "exit_code=${FAKE_GH_EXIT:-0}\n"
         'if [[ ${exit_code} != 0 ]]; then exit "${exit_code}"; fi\n'
-        "printf '%s\\t%s\\n' \"${FAKE_PR_HEAD:-}\" \"${FAKE_PR_BASE:-}\"\n"
+        'printf \'%s\\t%s\\n\' "${FAKE_PR_HEAD:-}" "${FAKE_PR_BASE:-}"\n'
     )
     fake_gh.chmod(0o755)
     target_sha = "a" * 40

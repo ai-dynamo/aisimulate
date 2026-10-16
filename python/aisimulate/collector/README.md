@@ -11,7 +11,7 @@ If you want to go through the process, you can try belowing commands. However, y
 This process is not well verified, you need to debug sometimes.
 
 For a framework-version or GPU-platform upgrade, follow the
-[Collector Upgrade Playbook](../docs/perf_database/collector-upgrade-playbook.md).
+[Collector Upgrade Playbook](../../../docs/perf-model/collector/upgrade.md).
 The repo-tracked [`aic-auto-collect`](../.claude/skills/aic-auto-collect/SKILL.md)
 skill applies that workflow during long, resumable collection runs.
 SGLang 0.5.14 Hopper/Blackwell follow-up work must also consult the
@@ -154,6 +154,27 @@ python3 -m collector.fpm_forward \
   --fpm-max-gpus 8 \
   --plan-only
 ```
+
+For profile-based FPM collection, the profile's `backend_version` is the dataset
+identity label. It may be a custom string such as `my-vllm-patch-3` and need not
+match the installed vLLM package version. The collector retains the actual
+container version separately in `collector-provenance.json` under
+`runtime.backend_version`; runtime capability, benchmark-schema, topology and
+precision checks still apply. An optional Dynamo version is provenance only and
+does not select FPM templates or resolve the backend version. See the
+[onboarding version contract](../../../docs/perf-model/fpm-self-service/implementation.md#plan-preview-and-explicitly-execute)
+for guided setup, omitted-version detection inside the target image, and
+publication identity.
+
+The low-level entry point also accepts `--fpm-backend-version LABEL` for dataset
+identity and `--fpm-runtime-backend-version VERSION` for an independently observed
+package-version pin. Guided onboarding supplies that pin after its image
+preflight. The low-level collector does not launch this separate CPU preflight:
+without an observed pin it can collect timings and record actual package
+provenance, but it cannot select audited version-specific memory/execution hooks.
+Supply the observed pin or accepted runtime instrumentation when those hooks are
+required. The op-level collector's runtime manifest and version-routing rules
+below are unchanged.
 
 Generation-time admission may omit a topology only when a concrete AIC
 size-vs-capacity estimate proves its configured token envelope cannot fit.
@@ -587,7 +608,7 @@ Large-EP MoE uses stock `moe_perf` for modeled local expert compute and
 `moe_a2a_perf` records latency in microseconds; `load_moe_a2a_data` converts
 leaves to milliseconds. Stock `moe_perf` retains its existing timing contract.
 
-Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/core-api.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
+Stock `moe_perf` also supports optional Boolean `default_eligible` selection metadata. The [Core API contract](../../../docs/perf-model/configuration.md#choosing-a-forward-pass-api) defines automatic and exact-source selection. Finalization validates non-null Boolean flags and the named source required by `false`, excludes the flag from measurement identity, and preserves existing annotations when merging a legacy collection that omits the column. Collectors do not infer eligibility from kernel labels or row order.
 
 **Legacy-overwrite caveats.** A new-schema row replaces a legacy-adapted
 leaf only at the *same* key, and the legacy adapters derive their node/EP

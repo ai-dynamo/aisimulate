@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "build_e2e_accuracy_overview.py"
+SCRIPT = ROOT / "scripts/e2e_accuracy/build_e2e_accuracy_overview.py"
 SPEC = importlib.util.spec_from_file_location("build_e2e_accuracy_overview", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 OVERVIEW = importlib.util.module_from_spec(SPEC)
@@ -157,6 +157,47 @@ def _summary() -> dict[str, object]:
     )
 
 
+def test_local_research_retains_disagg_and_unrun_baselines_without_qualifying_a_branch():
+    predictions, metadata, coverage = _inputs()
+    for document in (predictions, metadata, coverage):
+        document["aic_commit_sha"] = "not-run"
+    metadata["aisimulate_run"]["runtime"]["source_checkout"] = {"clean": True, "commit_sha": "d" * 40}
+    for row in predictions["rows"]:
+        row.update(aic_status="pending", aic_ttft_ms=None, aic_tpot_ms=None, configuration_quality="estimated")
+    predictions["rows"][0]["disagg"] = True
+    original = deepcopy(predictions)
+    options = {
+        "predictions_sha256": "c" * 64,
+        "source_url": OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        "exclude_multinode": False,
+    }
+    with pytest.raises(OVERVIEW.SnapshotError, match="unknown aic_status"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, **options)
+    with pytest.raises(OVERVIEW.SnapshotError, match="cannot qualify"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, branch="main", **options)
+
+    summary = OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, **options)
+    assert predictions == original
+    assert "evaluated_revision" not in summary["snapshot"]
+    assert summary["snapshot"]["research_preview"] == {
+        "source_commit": "d" * 40,
+        "estimated_points": 4,
+        "estimated_successes": 2,
+    }
+    assert summary["totals"]["aic"]["points"] == 0
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    assert any(t["serving"] == "disaggregated" for t in topologies)
+    assert sum(len(t["points"]) for t in topologies) == 4
+    for topology in topologies:
+        for point in topology["points"]:
+            assert point["aic_status"] == "pending"
+            assert point["aic"]["ttft_ms"] is None
+            assert point["configuration"]["configuration_quality"] == "estimated"
+    predictions["rows"][0]["aic_ttft_ms"] = 123
+    with pytest.raises(OVERVIEW.SnapshotError, match="non-success AIC"):
+        OVERVIEW.build_summary(predictions, metadata, coverage, research_preview=True, **options)
+
+
 def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
     predictions, metadata, coverage = _inputs()
     source = {"branch": branch, "commit_sha": "d" * 40, "clean": True}
@@ -173,6 +214,22 @@ def _qualified_inputs(branch: str = "main") -> tuple[dict, dict, dict]:
         document["aic_commit_sha"] = source["commit_sha"]
         document["aic_run"] = deepcopy(run)
     return predictions, metadata, coverage
+
+
+def test_failed_baseline_does_not_remove_successful_replay_from_publication():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0].update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    original = _summary()
+    assert summary["totals"]["rows"] == original["totals"]["rows"]
+    assert summary["totals"]["aic"]["points"] == original["totals"]["aic"]["points"] - 1
+    assert summary["totals"]["aisimulate"]["points"] == original["totals"]["aisimulate"]["points"]
 
 
 def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
@@ -209,7 +266,7 @@ def test_summary_separates_coverage_accuracy_and_multinode_scope() -> None:
 def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     alpha = _summary()["models"][0]
 
-    assert alpha["model"] == "Alpha"
+    assert alpha["model"] == "org/Alpha"
     assert alpha["aic"]["ttft_mape_pct"] == pytest.approx(10.0)
     assert alpha["aic"]["tpot_mape_pct"] == pytest.approx(15.0)
     assert alpha["aic"]["ttft_shape_error_pct"] == pytest.approx(0.0)
@@ -218,6 +275,22 @@ def test_summary_matches_existing_mape_and_shape_error_semantics() -> None:
     assert alpha["aisimulate"]["tpot_mape_pct"] == pytest.approx(10.0)
     assert alpha["aisimulate"]["ttft_shape_error_pct"] == pytest.approx(16.67)
     assert alpha["aisimulate"]["tpot_shape_error_pct"] == pytest.approx(0.0)
+
+
+def test_hf_checkpoint_variants_are_separate_models_without_changing_totals():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][1]["hf_model_path"] = "vendor/Alpha-FP8"
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/fixture",
+    )
+    assert [model["model"] for model in summary["models"]] == ["org/Alpha", "org/Beta", "vendor/Alpha-FP8"]
+    assert all(model["hf_model_paths"] == [model["model"]] for model in summary["models"])
+    assert summary["totals"] == {**_summary()["totals"], "models": 3}
+    assert sum(model["rows"] for model in summary["models"]) == summary["totals"]["rows"]
 
 
 def test_workload_labels_match_the_overview_dashboard() -> None:
@@ -233,6 +306,43 @@ def test_public_summary_omits_raw_measurements_and_internal_provenance() -> None
     assert "silicon_workflow_run_id" not in serialized
     assert "gitlab-master.nvidia.com" not in serialized
     assert "linear.app/nvidia" not in serialized
+
+
+def test_prediction_errors_retain_details_without_local_provenance():
+    row = _inputs()[0]["rows"][0]
+    row.update(
+        aisimulate_status="failed",
+        aisimulate_error_type="RuntimeError",
+        aisimulate_error=(
+            "\x1b[31mMoE data missing\x1b[0m at /tmp/runner/perf.json; see https://internal.example/run\nKV limit=123"
+        ),
+    )
+    point = OVERVIEW._topology_summaries([row])[0]["points"][0]
+    assert point["aisim_error"] == "RuntimeError: MoE data missing at [path]; see [URL] KV limit=123"
+    row["aisimulate_error"] = "x" * 3000
+    assert len(OVERVIEW._prediction_error(row)) == 2048
+    assert OVERVIEW._prediction_error(row).endswith("…")
+    row["aisimulate_status"] = "success"
+    assert OVERVIEW._prediction_error(row) is None
+    row.update(aisimulate_status="unsupported", aisimulate_error=None)
+    assert OVERVIEW._prediction_error(row) is None
+
+
+@pytest.mark.parametrize("run_id", [None, "26696231118", 26696231118])
+def test_chart_points_preserve_public_run_ids_without_internal_id_fallback(run_id):
+    rows = _inputs()[0]["rows"][:1]
+    rows[0].update(silicon_github_run_id=run_id, silicon_workflow_run_id=1961)
+    point = OVERVIEW._topology_summaries(rows)[0]["points"][0]
+    assert point["infx_run_id"] == (str(run_id) if run_id is not None else None)
+    assert "silicon_workflow_run_id" not in point
+
+
+@pytest.mark.parametrize("run_id", [True, 12.5, "", "0", "123/../../other", '<a href="bad">'])
+def test_chart_points_reject_invalid_public_run_ids(run_id):
+    rows = _inputs()[0]["rows"][:1]
+    rows[0]["silicon_github_run_id"] = run_id
+    with pytest.raises(OVERVIEW.SnapshotError, match="InferenceX GitHub run ID"):
+        OVERVIEW._topology_summaries(rows)
 
 
 def test_inconsistent_snapshot_fails_closed() -> None:
@@ -319,8 +429,10 @@ def test_public_page_prioritizes_aisimulate_over_aic_baseline() -> None:
     page = (public_dir / "index.html").read_text()
     script = (public_dir / "app.js").read_text()
 
-    assert page.index("AISim CLI TPOT MAPE") < page.index("AIC CLI TPOT MAPE")
-    assert script.index('accuracyCard("AISim CLI (new) Error"') < script.index('accuracyCard("AIC CLI (legacy) Error"')
+    assert page.index("AISim MAPE") < page.index("AIC (legacy CLI) MAPE")
+    assert script.index('accuracyCard("AISim Error · all configurations"') < script.index(
+        'accuracyCard("AIC (legacy CLI) Error · all configurations"'
+    )
     assert "data-series" not in page
 
 
@@ -376,6 +488,59 @@ def test_drilldown_partitions_topologies_and_uses_one_measured_anchor() -> None:
     assert "private-run" not in json.dumps(result)
     assert "secret" not in json.dumps(result)
     assert "silicon_ttft_ms" not in json.dumps(result)
+
+
+def test_gym_chart_metrics_retain_units_and_missing_predictions() -> None:
+    predictions, metadata, coverage = _inputs()
+    row = predictions["rows"][0]
+    row.update(
+        silicon_e2el_ms=1200,
+        silicon_tput_per_gpu_total=800,
+        aic_request_latency_ms=1500,
+        aic_tput_per_gpu_output=300,
+        dynamo_request_latency_ms=1300,
+        dynamo_tput_per_gpu_output=350,
+        dynamo_tput_per_gpu_total=710,
+    )
+    failed = predictions["rows"][1]
+    failed.update(aic_status="failed", aic_ttft_ms=None, aic_tpot_ms=None, aic_tput_per_gpu_output=999)
+    result = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    topology = result["models"][0]["workloads"][0]["gpus"][0]["topologies"][0]
+    first, second = topology["points"]
+    assert first["measured"]["e2e_ms"] == 1200
+    assert first["measured"]["total_per_gpu"] == 800
+    assert first["measured"]["output_per_gpu"] is None
+    assert first["aic"]["e2e_ms"] == 1500
+    assert first["aic"]["output_per_gpu"] == 300
+    assert first["aic"]["total_per_gpu"] is None
+    assert first["aic"]["unavailable_metrics"]["total_per_gpu"] == "unsupported_by_predictor"
+    assert first["aisimulate"]["e2e_ms"] == 1300
+    assert first["aisimulate"]["output_per_gpu"] == 350
+    assert first["aisimulate"]["total_per_gpu"] == 710
+    assert second["aic"]["ttft_ms"] is None
+    assert second["aic"]["output_per_gpu"] is None
+    assert topology["aic"]["points"] == 1
+
+
+def test_public_chart_metrics_take_precedence_over_gym_aliases() -> None:
+    row = {
+        "aisimulate_status": "success",
+        "dynamo_e2e_ms": 123,
+        "dynamo_request_latency_ms": 456,
+        "dynamo_output_per_gpu": None,
+        "dynamo_tput_per_gpu_output": 789,
+    }
+    assert OVERVIEW._chart_metrics(row, "dynamo") == {
+        "e2e_ms": 123,
+        "output_per_gpu": None,
+        "total_per_gpu": None,
+    }
 
 
 def test_distinct_frameworks_and_parallelism_do_not_share_curves() -> None:
@@ -556,9 +721,9 @@ def test_successful_replay_rejects_zero_latency() -> None:
 
 def test_page_explains_cli_migration_and_aic_deprecation() -> None:
     page = (ROOT / "pages/e2e-accuracy/index.html").read_text()
-    assert "new AISim CLI with the legacy AIC CLI" in page
+    assert "Compare AISim with AIC (legacy CLI)" in page
     assert "confidence" in page
-    assert "deprecate the AIC CLI" in page
+    assert "deprecate AIC (legacy CLI)" in page
     assert "different prediction coverage" in page
 
 
@@ -579,3 +744,97 @@ def test_baseline_provenance_matches_selected_modules(entry, api, adapter):
         document["aic_run"]["runtime"]["config_adapter"] = "foreign.adapter"
     with pytest.raises(OVERVIEW.SnapshotError, match="modules disagree"):
         OVERVIEW._aic_source(predictions, metadata, coverage, None)
+
+
+@pytest.mark.parametrize("run_id", [28196140241, "28196140241", None])
+def test_summary_exports_public_run_id_without_internal_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    for row in predictions["rows"]:
+        row.update(silicon_github_run_id=run_id, silicon_workflow_run_id=1961)
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+    )
+    points = [
+        p
+        for m in summary["models"]
+        for w in m["workloads"]
+        for g in w["gpus"]
+        for t in g["topologies"]
+        for p in t["points"]
+    ]
+    assert points
+    assert all(p["infx_run_id"] == (str(run_id) if run_id is not None else None) for p in points)
+    assert "silicon_workflow_run_id" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("run_id", [True, 0, -1, 1.5, "", "001", "1/2", "https://example.com"])
+def test_summary_rejects_malformed_public_run_id(run_id):
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0]["silicon_github_run_id"] = run_id
+    with pytest.raises(OVERVIEW.SnapshotError, match="InferenceX GitHub run ID"):
+        OVERVIEW.build_summary(
+            predictions,
+            metadata,
+            coverage,
+            predictions_sha256="c" * 64,
+            source_url="https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + predictions["release_tag"],
+        )
+
+
+def test_chart_export_keeps_predictors_distinct_and_absolute_units():
+    predictions, metadata, coverage = _inputs()
+    predictions["rows"][0].update(
+        silicon_e2e_ms=1200,
+        silicon_output_per_gpu=123,
+        silicon_total_per_gpu=300,
+        aic_e2e_ms=1300,
+        aic_output_per_gpu=234,
+        aic_total_per_gpu=500,
+        dynamo_e2e_ms=1400,
+        dynamo_output_per_gpu=345,
+        dynamo_total_per_gpu=700,
+    )
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+        exclude_multinode=False,
+    )
+    topologies = [t for m in summary["models"] for w in m["workloads"] for g in w["gpus"] for t in g["topologies"]]
+    assert all(type(t["is_multinode"]) is bool and t["total_gpus"] > 0 for t in topologies)
+    points = [p for t in topologies for p in t["points"]]
+    assert all(p["measured"]["ttft_ms"] > 0 for p in points)
+    assert any(p["aic"]["ttft_ms"] != p["aisimulate"]["ttft_ms"] for p in points if p["status"] == "success")
+    assert all(p["aisimulate"]["ttft_ms"] is None for p in points if p["status"] != "success")
+    multinode = next(t for t in topologies if t["is_multinode"])
+    assert multinode["total_gpus"] == 16
+    for series, expected in (
+        ("measured", (1200, 123, 300)),
+        ("aic", (1300, 234, 500)),
+        ("aisimulate", (1400, 345, 700)),
+    ):
+        assert tuple(points[0][series][key] for key in ("e2e_ms", "output_per_gpu", "total_per_gpu")) == expected
+        assert all(points[1][series][key] is None for key in ("e2e_ms", "output_per_gpu", "total_per_gpu"))
+
+
+def test_recorded_integral_float_gpu_count_is_published_as_integer():
+    predictions, metadata, coverage = _inputs()
+    for row in predictions["rows"]:
+        row["aisimulate_total_gpus"] = 8.0
+    summary = OVERVIEW.build_summary(
+        predictions,
+        metadata,
+        coverage,
+        predictions_sha256="c" * 64,
+        source_url=OVERVIEW.INFERENCEX_RELEASE_URL_PREFIX + predictions["release_tag"],
+    )
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            for gpu in workload["gpus"]:
+                assert all(type(topology["total_gpus"]) is int for topology in gpu["topologies"])

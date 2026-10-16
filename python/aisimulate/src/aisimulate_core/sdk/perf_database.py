@@ -88,8 +88,6 @@ _DATABASE_VERSION_METADATA_FILES = {
     INCOMPLETE_MARKER,
     REUSE_YAML_MARKER,
     COLLECTION_META_MARKER,
-    # The graph-profile contract is validated separately by the native loader.
-    "sglang_glm52_nvfp4_vr200_tp4_graph_v1.profile.json",
 }
 
 
@@ -197,6 +195,14 @@ def _version_sort_tuple(version_str: str) -> tuple:
 
 _QUERY_VERSIONS_BASENAME = "query_versions.yaml"
 _SLOT_ALIASES = ("current", "previous", "next")
+
+
+class UnlistedQueryVersionError(ValueError):
+    """A requested backend version exists outside the queryable slots.
+
+    A ValueError subclass so existing callers keep working; wrappers use the
+    type to surface the slot guidance unchanged instead of re-labelling it.
+    """
 
 
 @functools.cache
@@ -338,13 +344,17 @@ def resolve_query_version(
     # production use; the fixture-discipline follow-up retires it.
     if os.environ.get("AIC_ALLOW_UNLISTED_VERSIONS", "").lower() in ("1", "true", "yes"):
         return version
-    raise ValueError(
-        f"{backend}/{version!r} looks like an old-style raw version query; "
-        f"{system} now resolves versions through queryable slots. "
-        f"New way: use an alias ('current'/'previous'/'next') or one of the "
-        f"slot versions {slots}. "
-        f"Old way (raw data-coordinate access, data outside these slots is "
-        f"not maintained to the queryable bar): re-run with the environment "
+    accepted = ", ".join(f"{slot} = {slots[slot]}" for slot in _SLOT_ALIASES if slot in slots)
+    raise UnlistedQueryVersionError(
+        f"{backend} version {version!r} is not a queryable version on {system}. "
+        f"Accepted versions for {system}/{backend}: {accepted}. "
+        f"Fix: set the backend version to one of these or to an alias, "
+        f"for example `backend_version: current` in an aisimulate config, or "
+        f"`--backend-version current` for aiconfigurator cli. "
+        f"Support-matrix rows at other versions record performance-data "
+        f"coverage, not versions that predict or recommend accept. "
+        f"To query {version!r} anyway (data outside these versions is not "
+        f"maintained to the queryable bar), re-run with the environment "
         f"variable AIC_ALLOW_UNLISTED_VERSIONS=1, or pass "
         f"allow_unlisted_version=True in SDK code."
     )

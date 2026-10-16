@@ -32,6 +32,7 @@ import hashlib
 import json
 import logging
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
@@ -59,7 +60,7 @@ class SpeculationConfig:
         """Resolve a scheme compatible with the existing chain replay executor."""
         from .eagle import EagleScheme
 
-        scheme = build_spec_scheme(None, resolve_draft_config(self))
+        scheme = build_spec_scheme(None, resolve_speculation_config(self))
         depth = scheme.verify_width() - 1
         if isinstance(scheme, EagleScheme) and (scheme.is_tree or depth != len(scheme.tree_shape)):
             raise ValueError("speculative replay requires an EAGLE chain with one verification token per draft")
@@ -84,16 +85,37 @@ class SpeculationConfig:
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
-    """Load missing draft geometry once, retaining its checkpoint identity.
+def resolve_speculation_config(config: SpeculationConfig) -> SpeculationConfig:
+    """Validate and snapshot a cost identity before estimator selection.
 
-    Resolved configurations carry both the source path and its parsed config,
-    so applying this to a saved configuration is deliberately idempotent.
+    Scheme constructors validate parameters and checkpoint geometry without a
+    target model. Model/backend capability checks remain at graph construction.
+    Learned drafts retain their source path and resolved content; a saved
+    standalone ``draft_model`` still uses its path to build the draft graph, so
+    its injected content must agree with that path's parsed configuration.
     """
-    if config.kind in {"none", "mtp", "ngram"}:
-        if config.draft_model_path is not None or config.draft_config is not None:
-            raise ValueError(f"speculation kind {config.kind!r} does not accept a draft checkpoint")
-        return config
+    if not isinstance(config.kind, str) or not config.kind.strip():
+        raise ValueError("speculation kind must be a nonempty string")
+    if not isinstance(config.params, dict) or any(not isinstance(key, str) for key in config.params):
+        raise ValueError("speculation params must be an object with string keys")
+    if config.draft_model_path is not None and (
+        not isinstance(config.draft_model_path, str) or not config.draft_model_path.strip()
+    ):
+        raise ValueError("draft_model_path must be a nonempty string")
+    if config.draft_config is not None and not isinstance(config.draft_config, dict):
+        raise ValueError("draft_config must be an object")
+
+    cls = get_spec_scheme_cls(config.kind)
+    if cls.supported_params is not None:
+        unknown = config.params.keys() - cls.supported_params
+        if unknown:
+            raise ValueError(f"Unknown parameters for speculative scheme {config.kind!r}: {sorted(unknown)}")
+    if config.kind in {"none", "mtp", "ngram"} and (
+        config.draft_model_path is not None or config.draft_config is not None
+    ):
+        raise ValueError(f"speculation kind {config.kind!r} does not accept a draft checkpoint")
+
+    resolved = deepcopy(config)
     if config.draft_model_path and (config.draft_config is None or config.kind == "draft_model"):
         from aisimulate_core.sdk.utils import _load_model_config_from_model_path, get_model_config_from_model_path
 
@@ -104,13 +126,12 @@ def resolve_draft_config(config: SpeculationConfig) -> SpeculationConfig:
         )
         if config.kind == "draft_model" and config.draft_config is not None and config.draft_config != raw:
             raise ValueError("draft_model draft_config must match the draft_model_path model configuration")
-        return replace(
-            config,
-            # Draft architectures are validated by their scheme; target-model
-            # parsing would reject genuine Eagle/DFlash checkpoint classes.
-            draft_config=dict(raw),
-        )
-    return config
+        resolved = replace(resolved, draft_config=deepcopy(raw))
+
+    # Built-in scheme constructors do not need a target model. Do not call
+    # validate(), materialize ops, or impose a replay executor's width limits.
+    cls.from_configs(None, resolved)
+    return resolved
 
 
 def positive_integer(value: Any, name: str) -> int:

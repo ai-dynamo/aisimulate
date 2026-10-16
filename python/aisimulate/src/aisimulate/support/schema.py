@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from packaging.version import Version
 from pydantic import Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
@@ -25,7 +24,8 @@ class SupportIdentity(StrictModel):
     model_revision: str
     model_kind: Literal["dense", "moe"]
     framework: Literal["vllm"] = "vllm"
-    framework_version: str
+    framework_version: str | None = None
+    runtime_framework_version: str | None = None
     gpu: str
     interconnect: str
     sm: PositiveStrictInt | None = None
@@ -37,6 +37,7 @@ class SupportIdentity(StrictModel):
         "model",
         "model_revision",
         "framework_version",
+        "runtime_framework_version",
         "gpu",
         "interconnect",
         "tokenizer_revision",
@@ -60,6 +61,22 @@ class SupportIdentity(StrictModel):
         if value is not None and value.lower() in {"main", "master", "latest", "head"}:
             raise ValueError("declare a pinned revision or version rather than a mutable default")
         return value
+
+    @field_validator("framework_version", "runtime_framework_version")
+    @classmethod
+    def _version_label(cls, value: str | None) -> str | None:
+        if value is not None and (
+            value in {".", ".."} or any(c.isspace() for c in value) or any(c in value for c in ("/", "\\", "\x00"))
+        ):
+            raise ValueError("backend version must be a literal, path-safe version label")
+        return value
+
+    @model_serializer(mode="wrap")
+    def _preserve_legacy_identity(self, handler):
+        values = handler(self)
+        if self.runtime_framework_version is None:
+            values.pop("runtime_framework_version", None)
+        return values
 
     @field_validator("gpu")
     @classmethod
@@ -221,8 +238,8 @@ class FPMDeployment(StrictModel):
     @field_validator("dynamo_version")
     @classmethod
     def _release_version(cls, value: str | None) -> str | None:
-        if value is not None:
-            Version(value)
+        if value is not None and (not value.strip() or "\x00" in value):
+            raise ValueError("dynamo_version must be nonempty metadata without NUL characters")
         return value
 
     @field_validator("model_cache")
@@ -264,6 +281,21 @@ class SupportRequest(StrictModel):
     @classmethod
     def _legacy_allocation(cls, values: Any) -> Any:
         if isinstance(values, Mapping):
+            identity = values.get("identity")
+            supplied_profile = values.get("fpm_profile")
+            if isinstance(identity, Mapping) and identity.get("framework_version") is None and supplied_profile:
+                profile = FpmModelProfile.model_validate(supplied_profile)
+                versions = {
+                    dep.backend_version
+                    for dep in profile.deployments
+                    if dep.system == identity.get("gpu")
+                    and dep.backend == identity.get("framework", "vllm")
+                    and dep.backend_version is not None
+                }
+                if len(versions) > 1:
+                    raise ValueError("select --framework-version for a profile with multiple backend version labels")
+                if versions:
+                    values = {**values, "identity": {**identity, "framework_version": next(iter(versions))}}
             obsolete = []
             for section, fields in (
                 ("identity", ("gpu_count", "node_count", "gpus_per_node")),

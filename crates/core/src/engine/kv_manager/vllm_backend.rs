@@ -135,6 +135,7 @@ pub(crate) struct BlockRequestLease {
     pending_capacity_writes: Option<Box<PendingCapacityWrites>>,
     grouped: Option<GroupedLease>,
     state: Option<Box<StateRequest>>,
+    pub(crate) session_id: Option<String>,
 }
 
 impl BlockRequestLease {
@@ -154,6 +155,7 @@ impl BlockRequestLease {
             pending_capacity_writes: None,
             grouped: None,
             state: None,
+            session_id: None,
         }
     }
 
@@ -304,12 +306,17 @@ pub(crate) struct DecodeBlockReservation {
 pub(crate) struct DestinationReservation {
     request_id: Uuid,
     block_count: usize,
+    /// Fresh blocks for the transferred recurrent state; not prompt tokens.
+    state_blocks: usize,
     pool: BlockReservation,
 }
 
 impl DestinationReservation {
     pub(crate) fn transferable_prompt_tokens(&self, block_size: usize) -> usize {
-        self.pool.fresh_len().saturating_mul(block_size)
+        self.pool
+            .fresh_len()
+            .saturating_sub(self.state_blocks)
+            .saturating_mul(block_size)
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -562,7 +569,7 @@ impl VllmKvManager {
         }
     }
 
-    fn state_cache_blocks(&self) -> usize {
+    pub(crate) fn state_cache_blocks(&self) -> usize {
         self.state_cache
             .as_ref()
             .map_or(0, |state| state.blocks_per_state)
@@ -1026,7 +1033,7 @@ impl VllmKvManager {
             sequence.discard_completed_block(position);
         }
         if let Some(stores) = stores {
-            self.publish_store_sequence(stores);
+            self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
         let computed_state_hash = lease.state_hash(computed_after, self.block_size);
         if let (Some(manager), Some(state)) = (&mut self.state_cache, &mut lease.state) {
@@ -1092,15 +1099,20 @@ impl VllmKvManager {
             .num_input_tokens()
             .div_ceil(self.block_size)
             .min(lease.entries.len());
+        // Token reuse is unchanged. The transferred state always takes fresh
+        // blocks: vLLM's NIXL path sends it even after a local token hit.
+        let state_blocks = self.state_cache_blocks();
         let outcome = match mode {
             super::DestinationReservationMode::ReuseResidentPrefix => {
                 let prefix_candidates = lease.entries[..prompt_blocks]
                     .iter()
                     .map_while(|entry| entry.identity.sequence_hash);
                 self.pool
-                    .reserve_resident_prefix(prefix_candidates, prompt_blocks)
+                    .reserve_resident_prefix(prefix_candidates, prompt_blocks + state_blocks)
             }
-            super::DestinationReservationMode::FreshOnly => self.pool.reserve(&[], prompt_blocks),
+            super::DestinationReservationMode::FreshOnly => {
+                self.pool.reserve(&[], prompt_blocks + state_blocks)
+            }
         };
         let Some(outcome) = outcome else {
             return VllmAcquire::CapacityExhausted;
@@ -1109,6 +1121,7 @@ impl VllmKvManager {
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count: prompt_blocks,
+            state_blocks,
             pool: outcome.reservation,
         })
     }
@@ -1166,6 +1179,7 @@ impl VllmKvManager {
         VllmAcquire::Ready(DestinationReservation {
             request_id: owner,
             block_count,
+            state_blocks: 0,
             pool: outcome.reservation,
         })
     }
@@ -1291,6 +1305,18 @@ impl VllmKvManager {
             },
         );
         lease.allocated_tokens = (prompt_blocks * self.block_size).min(sequence.num_input_tokens());
+        if let Some(manager) = &self.state_cache {
+            // The transferred state already covers the prompt.
+            let prompt = sequence.num_input_tokens();
+            let state = lease.state.get_or_insert_with(Default::default);
+            state.working = (0..manager.blocks_per_state)
+                .map(|_| self.pool.allocate_private(&mut reservation.pool))
+                .collect();
+            state.computed_tokens = prompt;
+            if self.prefix_match_unit.is_some() {
+                state.working_slot = Some(prompt.saturating_sub(1) / self.block_size);
+            }
+        }
         assert_eq!(
             reservation.pool.len(),
             0,
@@ -1460,7 +1486,7 @@ impl VllmKvManager {
             }));
         }
         if let Some(stores) = stores {
-            self.publish_store_sequence(stores);
+            self.publish_store_sequence(stores, lease.session_id.as_deref());
         }
     }
 
@@ -1601,28 +1627,32 @@ impl VllmKvManager {
         !self.kv_event_publishers.is_empty() || *kv_cache_trace::KV_CACHE_TRACE_ENABLED
     }
 
-    fn publish_store_sequence(&mut self, stores: Vec<Option<StoredBlock>>) {
+    fn publish_store_sequence(
+        &mut self,
+        stores: Vec<Option<StoredBlock>>,
+        session_id: Option<&str>,
+    ) {
         let mut group: Option<StoreGroup> = None;
         for store in stores {
             let Some(store) = store else {
-                self.flush_store_group(&mut group);
+                self.flush_store_group(&mut group, session_id);
                 continue;
             };
             if group
                 .as_ref()
                 .is_some_and(|current| !current.can_append(&store))
             {
-                self.flush_store_group(&mut group);
+                self.flush_store_group(&mut group, session_id);
             }
             match &mut group {
                 Some(current) => current.push(store),
                 None => group = Some(StoreGroup::from_block(store)),
             }
         }
-        self.flush_store_group(&mut group);
+        self.flush_store_group(&mut group, session_id);
     }
 
-    fn flush_store_group(&mut self, group: &mut Option<StoreGroup>) {
+    fn flush_store_group(&mut self, group: &mut Option<StoreGroup>, session_id: Option<&str>) {
         let Some(group) = group.take() else {
             return;
         };
@@ -1632,12 +1662,13 @@ impl VllmKvManager {
             group.parent_hash,
             true,
             group.token_ids,
+            session_id,
         );
     }
 
     fn publish_removed(&mut self, hashes: Vec<SequenceHash>) {
         if !hashes.is_empty() {
-            self.publish_kv_event(hashes, &[], None, false, None);
+            self.publish_kv_event(hashes, &[], None, false, None, None);
         }
     }
 
@@ -1648,6 +1679,7 @@ impl VllmKvManager {
         parent_hash: Option<SequenceHash>,
         is_store: bool,
         token_ids: Option<Vec<Vec<u32>>>,
+        session_id: Option<&str>,
     ) {
         if !self.enable_prefix_caching || full_blocks.is_empty() {
             return;
@@ -1685,6 +1717,7 @@ impl VllmKvManager {
                         token_ids: token_ids.as_ref().and_then(|ids| ids.get(index).cloned()),
                     })
                     .collect(),
+                session_id: session_id.map(str::to_owned),
             })
         } else {
             KvEventData::Removed {

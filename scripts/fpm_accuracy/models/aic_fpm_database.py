@@ -15,8 +15,8 @@ from typing import Any, Protocol
 
 import yaml
 
-from fpm_accuracy.contract import strict_json
-from fpm_accuracy.exceptions import ConfigurationError, DependencyError
+from scripts.fpm_accuracy.contract import strict_json
+from scripts.fpm_accuracy.exceptions import ConfigurationError, DependencyError
 
 
 class FpmArtifactSource(Protocol):

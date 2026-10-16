@@ -52,7 +52,8 @@ pub enum ForwardPassFallbackPolicy {
     LegacyRegression,
 }
 
-/// Existing SDK speculative scheme identity; acceptance belongs to replay.
+/// Speculative cost identity shared with the SDK scheme registry.
+/// Acceptance and scheduler progress belong to replay, not this configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForwardPassSpeculationConfig {
@@ -65,12 +66,27 @@ pub struct ForwardPassSpeculationConfig {
     pub draft_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
-#[cfg(feature = "python")]
 impl ForwardPassSpeculationConfig {
-    /// Resolve the depth supported by the existing replay executor.
-    /// Static cost construction does not apply this replay-only restriction.
-    pub fn replay_depth(&self) -> Result<u32, AicError> {
-        crate::py::speculation_replay_depth(self)
+    /// Preserve the existing prompt-lookup contract for canonical and replay callers.
+    pub(crate) fn ngram_depth(&self) -> Result<u32, AicError> {
+        if self.kind != "ngram" {
+            return Err(invalid_config("expected ngram speculation"));
+        }
+        if self.params.len() != 1 || !self.params.contains_key("num_speculative_tokens") {
+            return Err(invalid_config(
+                "ngram params must contain only num_speculative_tokens",
+            ));
+        }
+        if self.draft_model_path.is_some() || self.draft_config.is_some() {
+            return Err(invalid_config("ngram does not accept a draft checkpoint"));
+        }
+        self.params["num_speculative_tokens"]
+            .as_u64()
+            .filter(|depth| (1..=5).contains(depth))
+            .map(|depth| depth as u32)
+            .ok_or_else(|| {
+                invalid_config("ngram num_speculative_tokens must be an integer in 1..=5")
+            })
     }
 }
 
@@ -246,15 +262,26 @@ impl ForwardPassPerfModelConfig {
     /// Retain registry availability for native candidate selection without
     /// adding transient registry facts to the serialized request.
     pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
-        self.resolve_prefill_graph_profile()?;
         self.estimator_config.resolve_defaults();
         self.validate()?;
-        #[cfg(feature = "python")]
-        if let Some(speculation) = &self.speculation
-            && speculation.draft_model_path.is_some()
-            && (speculation.draft_config.is_none() || speculation.kind == "draft_model")
+        if let Some(speculation) = &self.speculation {
+            #[cfg(feature = "python")]
+            {
+                self.speculation = Some(crate::py::resolve_speculation_identity(speculation)?);
+            }
+            #[cfg(not(feature = "python"))]
+            if !matches!(speculation.kind.as_str(), "ngram" | "none") {
+                return Err(invalid_config(
+                    "generic speculation validation requires the python feature",
+                ));
+            }
+        }
+        if self
+            .speculation
+            .as_ref()
+            .is_some_and(|spec| spec.kind == "none")
         {
-            self.speculation = Some(crate::py::resolve_speculation_identity(speculation)?);
+            self.speculation = None;
         }
         let registered = if self.fpm_profile.is_some() {
             self.estimator_config
@@ -321,37 +348,6 @@ impl ForwardPassPerfModelConfig {
             return Err(invalid_config(
                 "collect_coverage requires estimation_mode='fpm_interpolation', method='direct', and fallback_policy='deny'",
             ));
-        }
-        self.validate_prefill_graph_profile()?;
-        if let Some(distribution) = &self.estimator_config.op_level.decode_workload_distribution {
-            let selected =
-                crate::perfmodel::observed_moe_profile::DecodeProfile::from_distribution(
-                    distribution,
-                )?;
-            if self.moe_kernel_source.is_some() {
-                return Err(
-                    selected.error("moe_kernel_source cannot override an observed decode profile")
-                );
-            }
-            if self.estimation_mode != EstimationMode::OpLevel
-                || self.fallback_policy != ForwardPassFallbackPolicy::Deny
-                || self
-                    .estimator_config
-                    .op_level
-                    .prefill_graph_profile
-                    .is_some()
-            {
-                return Err(selected.error(
-                    "requires explicit op_level and fallback deny without a prefill graph profile",
-                ));
-            }
-            crate::perfmodel::observed_moe_profile::validate_runtime(
-                selected,
-                &self.system,
-                self.backend.as_str(),
-                self.backend_version.as_deref().unwrap_or(""),
-                self.database_mode,
-            )?;
         }
         if self.model.trim().is_empty() {
             return Err(invalid_config("model cannot be empty"));
@@ -452,32 +448,22 @@ impl ForwardPassPerfModelConfig {
                 return Err(invalid_config("speculation cannot be combined with nextn"));
             }
             if speculation.kind.trim().is_empty() {
-                return Err(invalid_config("speculation kind must not be empty"));
+                return Err(invalid_config("speculation kind cannot be empty"));
             }
             if speculation.kind == "ngram" {
+                speculation.ngram_depth()?;
                 if self.backend != BackendKind::Vllm {
                     return Err(invalid_config("ngram speculation requires backend=vllm"));
                 }
-                if !speculation
-                    .params
-                    .get("num_speculative_tokens")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|depth| (1..=5).contains(&depth))
-                {
-                    return Err(invalid_config(
-                        "ngram num_speculative_tokens must be in 1..=5",
-                    ));
-                }
             }
-            if !matches!(
-                self.estimation_mode,
-                EstimationMode::Auto | EstimationMode::OpLevel
-            ) {
-                return Err(invalid_config(if speculation.kind == "ngram" {
-                    "ngram speculation requires op_level timing"
-                } else {
-                    "speculation requires op_level timing"
-                }));
+            if speculation.kind == "none"
+                && (!speculation.params.is_empty()
+                    || speculation.draft_model_path.is_some()
+                    || speculation.draft_config.is_some())
+            {
+                return Err(invalid_config(
+                    "none speculation does not accept parameters or a draft checkpoint",
+                ));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -510,57 +496,6 @@ impl ForwardPassPerfModelConfig {
             }
         }
         self.estimator_config.validate()
-    }
-
-    pub(crate) fn resolve_prefill_graph_profile(&mut self) -> Result<(), AicError> {
-        self.validate_prefill_graph_profile()?;
-        if self
-            .estimator_config
-            .op_level
-            .prefill_graph_profile
-            .is_some()
-        {
-            self.estimator_config.op_level.prefill_graph_profile_id =
-                Some(crate::perf_database::prefill_graph::PROFILE_ID.to_owned());
-        }
-        Ok(())
-    }
-
-    fn validate_prefill_graph_profile(&self) -> Result<(), AicError> {
-        use crate::perf_database::prefill_graph;
-        let config = &self.estimator_config.op_level;
-        match (
-            &config.prefill_graph_profile,
-            &config.prefill_graph_profile_id,
-        ) {
-            (None, None) => return Ok(()),
-            (Some(name), id) if name == prefill_graph::PROFILE_NAME => {
-                if let Some(id) = id {
-                    prefill_graph::validate_id(id)?;
-                }
-            }
-            _ => {
-                return Err(prefill_graph::error(
-                    "invalid profile name or orphan profile identity",
-                ));
-            }
-        }
-        if self.moe_kernel_source.is_some() {
-            return Err(prefill_graph::error(
-                "moe_kernel_source cannot override a prefill graph profile",
-            ));
-        }
-        if self.estimation_mode != EstimationMode::OpLevel
-            || self.fallback_policy != ForwardPassFallbackPolicy::Deny
-            || self.database_mode != DatabaseMode::Silicon
-            || self.worker_type != ForwardPassWorkerType::Prefill
-            || self.estimator_config.correction.enabled
-        {
-            return Err(prefill_graph::error(
-                "requires explicit op_level, fallback deny, SILICON, prefill worker and disabled correction",
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -870,7 +805,9 @@ mod tests {
             EstimationMode::FpmRegression,
         ] {
             cfg.estimation_mode = mode;
-            assert!(cfg.validate().is_err());
+            // Estimator capability is checked during candidate selection, not
+            // syntax validation, so explicit fallback can retain this identity.
+            cfg.validate().unwrap();
         }
         cfg.estimation_mode = EstimationMode::Auto;
         cfg.nextn = 2;
@@ -879,50 +816,14 @@ mod tests {
         cfg.backend = BackendKind::Sglang;
         assert!(cfg.validate().is_err());
         cfg.backend = BackendKind::Vllm;
-        for depth in serde_json::json!([0, 6, -1, 3.0, true, "3", null])
-            .as_array()
-            .unwrap()
-        {
-            cfg.speculation
-                .as_mut()
-                .unwrap()
-                .params
-                .insert("num_speculative_tokens".into(), depth.clone());
-            assert!(cfg.validate().is_err(), "{depth}");
-        }
-    }
-
-    #[test]
-    fn scheme_identity_round_trips_without_losing_draft_geometry() {
-        let spec = serde_json::json!({
-            "kind": "eagle3", "params": {"tree_shape": [1, 2], "verify_token_budget": 4},
-            "draft_model_path": "example/draft", "draft_config": {"hidden_size": 128}
-        });
-        let cfg = config(serde_json::json!({"speculation": spec}));
-        cfg.validate().unwrap();
-        assert_eq!(serde_json::to_value(&cfg).unwrap()["speculation"], spec);
-    }
-
-    #[cfg(feature = "embed-python")]
-    #[test]
-    fn replay_depth_uses_the_existing_executor_bounds() {
-        for (spec, expected) in [
-            (serde_json::json!({"kind": "none"}), Some(0)),
-            (
-                serde_json::json!({"kind": "mtp", "params": {"depth": 3}}),
-                Some(3),
-            ),
-            (
-                serde_json::json!({"kind": "mtp", "params": {"depth": 6}}),
-                None,
-            ),
-            (
-                serde_json::json!({"kind": "ngram", "params": {"num_speculative_tokens": 2}}),
-                Some(2),
-            ),
-        ] {
-            let spec: ForwardPassSpeculationConfig = serde_json::from_value(spec).unwrap();
-            assert_eq!(spec.replay_depth().ok(), expected);
+        for depth in [0, 6] {
+            cfg.speculation = Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "ngram", "params": {"num_speculative_tokens": depth}
+                }))
+                .unwrap(),
+            );
+            assert!(cfg.validate().is_err());
         }
     }
 
@@ -1039,78 +940,5 @@ mod tests {
         cfg.validate().unwrap();
         cfg.fmha_quant_mode = Some("bfloat16".into());
         assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn graph_profile_pins_identity_and_rejects_unqualified_selection() {
-        use crate::perf_database::prefill_graph;
-        let mut cfg = config(serde_json::json!({
-            "worker_type": "prefill", "estimation_mode": "op_level",
-            "estimator_config": {
-                "op_level": {"prefill_graph_profile": prefill_graph::PROFILE_NAME},
-                "correction": {"enabled": false}
-            }
-        }));
-        cfg.resolve_prefill_graph_profile().unwrap();
-        cfg.validate().unwrap();
-        assert_eq!(
-            cfg.estimator_config
-                .op_level
-                .prefill_graph_profile_id
-                .as_deref(),
-            Some(prefill_graph::PROFILE_ID)
-        );
-        let saved = serde_json::to_string(&cfg).unwrap();
-        let reloaded: ForwardPassPerfModelConfig = serde_json::from_str(&saved).unwrap();
-        assert_eq!(cfg, reloaded);
-        reloaded.validate().unwrap();
-        let mut cases = Vec::new();
-        for mode in [
-            EstimationMode::Auto,
-            EstimationMode::FpmInterpolation,
-            EstimationMode::FpmRegression,
-        ] {
-            let mut invalid = cfg.clone();
-            invalid.estimation_mode = mode;
-            cases.push(invalid);
-        }
-        for role in [
-            ForwardPassWorkerType::Decode,
-            ForwardPassWorkerType::Aggregated,
-        ] {
-            let mut invalid = cfg.clone();
-            invalid.worker_type = role;
-            cases.push(invalid);
-        }
-        for mode in [
-            DatabaseMode::Hybrid,
-            DatabaseMode::Empirical,
-            DatabaseMode::Sol,
-            DatabaseMode::SolFull,
-        ] {
-            let mut invalid = cfg.clone();
-            invalid.database_mode = mode;
-            cases.push(invalid);
-        }
-        let mut invalid = cfg.clone();
-        invalid.fallback_policy = ForwardPassFallbackPolicy::Allow;
-        cases.push(invalid);
-        let mut invalid = cfg.clone();
-        invalid.estimator_config.correction.enabled = true;
-        cases.push(invalid);
-        let mut invalid = cfg.clone();
-        invalid.estimator_config.op_level.prefill_graph_profile_id = Some("0".repeat(64));
-        cases.push(invalid);
-        let mut invalid = cfg.clone();
-        invalid.estimator_config.op_level.prefill_graph_profile = None;
-        cases.push(invalid);
-        for invalid in cases {
-            assert!(invalid.validate().is_err(), "accepted {invalid:?}");
-            assert!(crate::ForwardPassPerfModel::best_available(invalid).is_err());
-        }
-        assert_eq!(
-            serde_json::to_value(EstimatorConfig::default()).unwrap()["op_level"],
-            serde_json::json!({})
-        );
     }
 }

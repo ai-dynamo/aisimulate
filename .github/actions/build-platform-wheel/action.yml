@@ -100,7 +100,7 @@ runs:
     - name: Exercise installed public CLI round trip
       shell: bash
       run: |
-        python scripts/verify_installed_cli.py --wheel wheelhouse/aisimulate-*.whl --output installed-cli-verification.json
+        python scripts/release/verify_installed_cli.py --wheel wheelhouse/aisimulate-*.whl --output installed-cli-verification.json
 
     - name: Retain installed CLI evidence
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

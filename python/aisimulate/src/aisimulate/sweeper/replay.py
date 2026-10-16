@@ -335,6 +335,7 @@ class RunnerCapabilities:
     supports_state_cache: bool = False
     supports_agentic_profile: bool = False
     supports_grouped_kv_cache: bool = False
+    supports_generic_speculation: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -406,6 +407,11 @@ class RunnerCapabilities:
             if not isinstance(identity, Mapping):
                 # The timing validator handles malformed identities; still inspect flat controls.
                 identity = {}
+            for selection in (rank.get("speculation"), identity.get("speculation")):
+                if selection is not None and not isinstance(selection, Mapping):
+                    raise ValueError("speculation must be a mapping")
+                if isinstance(selection, Mapping) and not isinstance(selection.get("params", {}), Mapping):
+                    raise ValueError("speculation params must be a mapping")
             profile = identity.get("fpm_profile") or rank.get("aic_fpm_profile") or rank.get("fpm_profile")
             grouped_profile = False
             if not self.supports_grouped_kv_cache and profile is not None:
@@ -453,6 +459,14 @@ class RunnerCapabilities:
                     f"runner does not support engine model controls {unsupported_controls}; use --stack engine"
                 )
             requested_speculation = rank.get("speculation")
+            if any(
+                isinstance(selection, Mapping) and selection.get("kind") not in (None, "none", "ngram")
+                for selection in (requested_speculation, identity.get("speculation"))
+            ):
+                if is_afd:
+                    raise ValueError("generic speculation is unsupported for AFD")
+                if not self.supports_generic_speculation:
+                    raise ValueError("runner does not support generic speculation; use --stack engine")
             explicit_mtp = isinstance(requested_speculation, Mapping) and requested_speculation.get("kind") == "mtp"
             if explicit_mtp or any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
                 if is_afd:
@@ -562,7 +576,11 @@ class RunnerCapabilities:
                 selections = (rank.get("speculation"), timing_config.get("speculation"))
                 has_sd = (
                     any(rank.get(key) not in (None, 0) for key in ("aic_nextn", "nextn"))
-                    or any(selection is not None for selection in selections)
+                    or any(
+                        selection is not None
+                        and (not isinstance(selection, Mapping) or selection.get("kind") != "none")
+                        for selection in selections
+                    )
                     or timing_config.get("nextn") not in (None, 0)
                 )
                 if has_sd and not self.supports_agentic_speculative_decoding:

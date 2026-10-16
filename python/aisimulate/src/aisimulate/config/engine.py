@@ -210,6 +210,9 @@ class StateCacheConfig(StrictModel):
 # Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
 # https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
 MambaCacheDtype = Literal["auto", "float16", "float32"]
+# Accepted values adapted from vLLM's indexer_kv_dtype (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/c5c116138267ac738bc262495326d28ffff834a2/vllm/config/attention.py
+IndexerCacheDtype = Literal["auto", "fp8", "mxfp4"]
 
 
 class StateCachePredictionConfig(StrictModel):
@@ -217,6 +220,7 @@ class StateCachePredictionConfig(StrictModel):
 
     bytes_per_request: PositiveU64 | None = None
     mamba_cache_dtype: MambaCacheDtype = "auto"
+    indexer_cache_dtype: IndexerCacheDtype = "auto"
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:
@@ -309,9 +313,9 @@ class SchemeSpeculationConfig(StrictModel):
 
     @model_validator(mode="after")
     def _resolve_scheme(self) -> SchemeSpeculationConfig:
-        from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_draft_config
+        from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_speculation_config
 
-        resolved = resolve_draft_config(SpeculationConfig(**self.cost_config()))
+        resolved = resolve_speculation_config(SpeculationConfig(**self.cost_config()))
         self.params = resolved.params
         self.draft_config = resolved.draft_config
         self._num_speculative_tokens = resolved.replay_depth()
@@ -408,6 +412,7 @@ class TimingConfig(StrictModel):
 
 class WorkerPredictionConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
     scheduler: SchedulerPredictionConfig = Field(default_factory=SchedulerPredictionConfig)
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
@@ -744,6 +749,7 @@ class KvCacheRecommendationConfig(StrictModel):
 
 class WorkerRecommendationConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
     scheduler: SchedulerRecommendationConfig = Field(default_factory=SchedulerRecommendationConfig)
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
@@ -818,6 +824,8 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_fpm_profile(self, modes, backends)
+        if self.workers.aggregated is not None and self.workers.aggregated.context_length is not None:
+            raise ValueError("workers.aggregated.context_length must be set as engine.context_length")
         _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
             if modes != {"afd"}:
@@ -912,7 +920,7 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
     kind = engine.speculation.kind
     if engine.nextn or engine.nextn_accepted is not None:
         raise ValueError("speculation cannot be combined with nextn or nextn_accepted")
-    supported_backends = {"vllm"} if isinstance(engine.speculation, NgramSpeculationConfig) else {"vllm", "sglang"}
+    supported_backends = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
     if not backends <= supported_backends or "afd" in modes or engine.workers.encoder is not None:
         raise ValueError(
             f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
@@ -928,7 +936,7 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
         if kind == "ngram" and (worker.timing.forward_model != "op_level" or mode not in (None, "auto", "op_level")):
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
-            raise ValueError("speculation requires explicit fixed KV capacity")
+            raise ValueError(f"{kind} speculation requires explicit fixed KV capacity on workers.{role}")
         if kind != "ngram" and worker.timing.type != "default":
             raise ValueError(f"{kind} speculation requires default timing to preserve draft costs")
 
@@ -1031,14 +1039,20 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
+    roles = []
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        roles.append(role)
         if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
             raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
-        if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
-            raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
+        supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
+        if engine.backend != "vllm" or not supported:
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")
+    # Both roles run the same hybrid model, and decode resumes from the transferred state.
+    if engine.mode == "disaggregated" and roles and roles != ["prefill", "decode"]:
+        raise ValueError("disaggregated state_cache must be set on both prefill and decode workers")
 
 
 def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) -> None:

@@ -6,6 +6,7 @@
 from .api import adapt_config, to_cli_estimate_kwargs
 from .dynamo import DynamoRecipeSource
 from .inferencex import InferenceXSource
+from .resolved import ResolvedInferenceXSource
 from .schema import (
     AdaptationDiagnostic,
     AdaptationOutcome,
@@ -23,6 +24,7 @@ __all__ = [
     "DynamoRecipeSource",
     "EstimateRequestV1",
     "InferenceXSource",
+    "ResolvedInferenceXSource",
     "WorkloadPointOverride",
     "adapt_config",
     "to_cli_estimate_kwargs",

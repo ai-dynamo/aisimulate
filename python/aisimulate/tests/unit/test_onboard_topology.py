@@ -70,7 +70,13 @@ _OPTIONS = {
 
 def _inputs(tmp_path, config=None, overrides=None):
     source = tmp_path / "config.json"
-    source.write_text(json.dumps(_SMALL if config is None else config))
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir(exist_ok=True)
+    payload = {**(_SMALL if config is None else config), "_name_or_path": str(checkpoint)}
+    source.write_text(json.dumps(payload))
+    # Intake inputs may be removed after saving the profile; collection still
+    # resolves the checkpoint's runtime geometry through its model identity.
+    (checkpoint / "config.json").write_text(json.dumps(payload))
     resources = tmp_path / "resources.yaml"
     resources.write_text(yaml.safe_dump(_PRECISION if overrides is None else overrides))
     return source, resources
@@ -379,7 +385,7 @@ def test_preview_requires_a_model_config_and_real_target_identity(tmp_path):
     )
     assert result.returncode == 2
     assert "--model-revision" in result.stderr
-    assert "--framework-version" in result.stderr
+    assert "--framework-version" not in result.stderr
     assert not result.stdout
     assert not output.parent.exists()
 
@@ -802,7 +808,7 @@ def test_implicit_context_defaults_survive_candidate_identity_corrections(monkey
         )
         == 0
     )
-    assert sum(prompt.startswith("Pinned vLLM version") for prompt in prompts) == 2
+    assert sum(prompt.startswith("Backend data version label") for prompt in prompts) == 2
     assert not any(prompt.startswith("Runtime per-request context") for prompt in prompts)
     source.unlink()
     resources.unlink()
@@ -1067,7 +1073,7 @@ def test_late_identity_corrections_and_pending_profiles_are_independent(monkeypa
     assert [request.worker_gpus for request in requests] == [1, 2]
     assert [request.identity.framework_version for request in requests] == ["0.25.1", "0.25.2"]
     assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
-    assert sum(prompt.startswith("Pinned vLLM version") for prompt in prompts) == 2
+    assert sum(prompt.startswith("Backend data version label") for prompt in prompts) == 2
 
 
 def test_topology_correction_cannot_publish_duplicate_configurations(monkeypatch, tmp_path, capsys):

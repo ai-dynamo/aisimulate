@@ -113,7 +113,6 @@ _AIC_TIMING_FIELD_ALIASES = {
     "database_mode": ("database_mode", "aic_database_mode"),
     "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
     "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
-    "decode_workload_distribution": ("decode_workload_distribution", "aic_decode_workload_distribution"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -196,8 +195,6 @@ class AICAFDCompanionPerformanceModel:
 
         timing_model = args.get("timing_model")
         if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
-            if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["decode_workload_distribution"]):
-                raise ValueError("decode_workload_distribution is not supported by fixed AFD companion timing")
             if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["moe_kernel_source"]):
                 raise ValueError("moe_kernel_source is not supported by fixed AFD companion timing")
             key = "prefill_ms" if role == "prefill" else "decode_ms"
@@ -285,10 +282,6 @@ class AICAFDCompanionPerformanceModel:
                     if fpm_parquet_path is not None
                     else {}
                 )
-                if "decode_workload_distribution" in timing_overrides:
-                    estimator_config["op_level"] = {
-                        "decode_workload_distribution": timing_overrides["decode_workload_distribution"]
-                    }
                 config = ForwardPassPerfModelConfig(
                     model=model_name,
                     system=hardware,
@@ -334,10 +327,6 @@ class AICAFDCompanionPerformanceModel:
                 raw = {metric: latency}
                 source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
             else:
-                if "decode_workload_distribution" in timing_overrides:
-                    raise ValueError(
-                        "decode_workload_distribution is not supported by the AFD companion legacy estimator"
-                    )
                 if timing_overrides.get("moe_kernel_source") is not None:
                     raise ValueError("moe_kernel_source is not supported by the AFD companion legacy estimator")
                 result = estimator(model_name, hardware, **kwargs)
@@ -377,6 +366,9 @@ class EngineReplayRunnerFactory:
 
     trace_block_size: int = 512
     determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
+    # Keep each loaded trace graph for later candidates in the same worker.
+    # Only worth its retained memory when one process runs many candidates.
+    trace_graph_cache: bool = field(default=False, kw_only=True)
     runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
     afd_companion_model: AFDCompanionPerformanceModel | None = field(
         default=None,
@@ -392,6 +384,7 @@ class EngineReplayRunnerFactory:
             supports_analytical_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
+            supports_generic_speculation=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
@@ -420,6 +413,7 @@ class EngineReplayRunnerFactory:
             capabilities=self.capabilities(),
             trace_block_size=self.trace_block_size,
             determinism=self.determinism,
+            trace_graph_cache=self.trace_graph_cache,
             runtime=self.runtime,
             afd_companion_model=self.afd_companion_model,
         )
@@ -433,6 +427,7 @@ class EngineReplayRunner:
     capabilities: RunnerCapabilities
     trace_block_size: int = 512
     determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
+    trace_graph_cache: bool = field(default=False, kw_only=True)
     runtime: EngineReplayRuntime | None = None
     afd_companion_model: AFDCompanionPerformanceModel | None = None
 
@@ -557,6 +552,8 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["determinism"] = self.determinism
+        if self.trace_graph_cache and "traffic" in execution_spec:
+            execution_spec["traffic"]["trace_graph_cache"] = True
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -581,6 +578,9 @@ class EngineReplayRunner:
             report = json.loads(report_json)
         except json.JSONDecodeError as exc:
             raise InvalidRunnerError("AISimulate engine replay runtime returned invalid report JSON") from exc
+        # The parsed report replaces the transport string, which can be as large as
+        # the per-request records it carries.
+        del report_json
         if not isinstance(report, Mapping):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON object")
         resolved_basis = report.get("weka_nested_timestamp_basis")
@@ -1206,8 +1206,6 @@ def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target == "decode_workload_distribution" and value is None:
-            continue
         if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots", "cp_size", "dcp"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif target == "fpm_profile":
@@ -1413,10 +1411,15 @@ def _materialize_engine_role(
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
         selections = (requested_rank.get("speculation"), canonical)
-        if requested_rank.get("num_gpu_blocks") is None and any(
-            isinstance(spec, Mapping) and spec.get("kind") != "ngram" for spec in selections
-        ):
-            raise ValueError("speculation requires explicit fixed KV capacity")
+        for spec in selections:
+            if spec is not None and not isinstance(spec, Mapping):
+                raise ValueError("speculation must be a mapping")
+            if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
+                raise ValueError("speculation params must be a mapping")
+        if requested_rank.get("num_gpu_blocks") is None:
+            for spec in selections:
+                if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
+                    raise ValueError(f"{spec.get('kind')} speculation requires explicit fixed KV capacity on {role}")
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
@@ -1626,6 +1629,7 @@ def _materialize_engine_role(
             memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
+    prefill_context_parallel_size = aic_timing_overrides.get("cp_size", 1)
     for target in ("cp_size", "dcp"):
         if target in aic_timing_overrides:
             # Same contract as tp / attention_dp: a directly supplied deployment
@@ -1704,8 +1708,6 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
-        if "decode_workload_distribution" in aic_timing_overrides:
-            raise ValueError(f"engine provider {role} decode_workload_distribution requires an AIC timing model")
         if any(
             is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
         ):
@@ -1722,7 +1724,7 @@ def _materialize_engine_role(
         from .config.engine import NgramSpeculationConfig, SpeculationConfig
 
         speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
-        supported = {"vllm"} if isinstance(speculation, NgramSpeculationConfig) else {"vllm", "sglang"}
+        supported = {"vllm"} if speculation.kind == "ngram" else {"vllm", "sglang"}
         if backend not in supported or rank.get("native_host_offload") is not None:
             raise ValueError(f"{speculation.kind} speculation requires a supported backend without host_offload")
         if any(
@@ -1873,9 +1875,18 @@ def _materialize_engine_role(
     ):
         rank["native_host_offload"] = {**host_offload, "kv_layout_id": _kv_layout_id(rank, model, tensor_parallel_size)}
 
+    timing = rank.get("timing_model", {})
+    timing_config = timing.get("config", {}) if isinstance(timing, dict) and timing.get("provider") == "aic" else {}
+    if timing_config.get("cp_size") is not None:
+        prefill_context_parallel_size = timing_config["cp_size"]
+    prefill_context_parallel_size = _positive_int(
+        prefill_context_parallel_size,
+        f"engine provider {role} prefill context parallel size",
+    )
     return {
         "dp_size": dp_size,
         "tensor_parallel_size": tensor_parallel_size,
+        "prefill_context_parallel_size": prefill_context_parallel_size,
         "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }
@@ -1912,27 +1923,23 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     state_cache = StateCacheConfig.model_validate(raw)
     if rank.get("prefix_match_unit") is not None and rank.get("aic_nextn") is not None:
         raise ValueError("prefix_match_unit does not support speculative decoding")
-    if backend != "vllm" or role != "aggregated":
-        raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
+    if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
+        raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
     if rank.get("native_host_offload") is not None:
         raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
     if rank.get("g3_offload") is not None:
         raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    # Only prefill and decode roles transfer KV.
+    transfer = ("kv_transfer_bytes_per_token", "kv_transfer_bandwidth") if role == "aggregated" else ()
     conflicts = [
         name
-        for name in (
-            "gpu_memory_utilization",
-            "mem_fraction_static",
-            "free_gpu_memory_fraction",
-            "kv_transfer_bytes_per_token",
-            "kv_transfer_bandwidth",
-        )
+        for name in ("gpu_memory_utilization", "mem_fraction_static", "free_gpu_memory_fraction", *transfer)
         if rank.get(name) is not None
     ]
     if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
         conflicts.append("cuda_graph_reserved_bytes")
     # Rust serializes this default explicitly; it does not enable PD transfer.
-    if rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+    if role == "aggregated" and rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
         conflicts.append("kv_transfer_timing_mode")
     if conflicts:
         raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")
@@ -2137,6 +2144,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     metadata = {
         key: payload[key]
         for key in (
+            "prediction_provenance",
             "state_cache",
             "agentic_qualification",
             "agentic_input_format",

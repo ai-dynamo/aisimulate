@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .test_fpm_profile_collection import no_models_or_timing_data  # noqa: F401
 
@@ -99,6 +100,31 @@ def _inputs(tmp_path, *, graph_policy="runtime"):
         },
     }
     return launch, manifest, marker
+
+
+@pytest.mark.parametrize("mode", [None, "NONE"])
+def test_probe_automatically_selects_eager_from_v41_config(tmp_path, mode):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, marker = _inputs(tmp_path)
+    # Keep the arbitrary model identifier: selection must use actual config metadata.
+    config = Path(launch["model_config"]["path"])
+    payload = json.loads(config.read_text())
+    payload["architectures"] = ["DeepseekV41ForCausalLM"]
+    config.write_text(json.dumps(payload))
+    launch["model_config"]["sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    launch["worker_type"] = "aggregated"
+    launch["collection"]["cudagraph_mode"] = mode
+    bundle = load_instrumentation(manifest)
+    plan = runtime_probe.build_runtime_probe_plan("v41", launch, bundle)
+    assert plan.launch["collection"]["enforce_eager"] is True
+    assert runtime_probe.build_runtime_probe_plan("v41", plan.launch, bundle).sha256 == plan.sha256
+    for cell in plan.cells:
+        request = runner._cell_generator_overrides(plan, cell, {})
+        assert "--enforce-eager" in request["params"]["agg"]["extra_cli_args"]
+    assert not marker.exists()
+    assert "enforce_eager" not in launch["collection"]
 
 
 class _SyntheticExecutor:
@@ -851,7 +877,6 @@ def test_instrumented_saved_plan_hash_round_trip(tmp_path, version, pending):
 def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_path, monkeypatch, mutation):
     import shutil
 
-    import yaml
     from collector.fpm_forward import runner, runtime_probe
 
     launch, manifest, _marker = _inputs(tmp_path)
@@ -1147,3 +1172,46 @@ def test_formal_resume_archives_recovered_native_evidence_before_skip(
     assert runner.run_collection(plan, **kwargs) == []
     assert index_path.read_bytes() == before
     assert executions == [("tp4", "decode")]
+
+
+def test_probe_uses_observed_runtime_and_ignores_dynamo_release_for_compatibility(tmp_path):
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+    from collector.fpm_forward.runtime_probe import build_runtime_probe_plan
+
+    launch, manifest, _ = _inputs(tmp_path)
+    launch["identity"].update(framework_version="custom-vllm-build", runtime_framework_version="0.28.0")
+    bundle = load_instrumentation(manifest)
+    plan = build_runtime_probe_plan("custom", launch, bundle)
+    assert plan.capability.aic_database_version == "custom-vllm-build"
+    assert plan.runtime_backend_version == "0.28.0"
+    launch["deployment"]["dynamo_version"] = "unknown-dynamo-build"
+    assert build_runtime_probe_plan("custom", launch, bundle).sha256 == plan.sha256
+    launch["identity"]["runtime_framework_version"] = "0.27.0"
+    with pytest.raises(ValueError, match="instrumentation runtime version"):
+        build_runtime_probe_plan("custom", launch, bundle)
+
+
+def test_custom_probe_label_without_observed_version_stays_pending_in_preview(tmp_path):
+    from collector.fpm_forward.runtime_probe import probe_runtime
+
+    launch, _manifest, _ = _inputs(tmp_path)
+    launch["identity"]["framework_version"] = "custom-vllm-build"
+    result = probe_runtime({"custom": launch}, output_dir=tmp_path / "preview")
+    assert result["status"] == "pending_runtime_version"
+    assert not (tmp_path / "preview").exists()
+    with pytest.raises(ValueError, match="target-container version detection"):
+        probe_runtime({"custom": launch}, output_dir=tmp_path / "execute", execute=True)
+
+
+def test_pending_probe_launch_validates_other_facts_before_runtime_resolution(tmp_path):
+    from collector.fpm_forward.runtime_probe import normalize_probe_launch
+
+    launch, _manifest, _ = _inputs(tmp_path)
+    launch["identity"].pop("framework_version")
+    pending = normalize_probe_launch(launch, allow_pending_version=True)
+    assert "framework_version" not in pending["identity"]
+    with pytest.raises(ValueError, match="identity.framework_version"):
+        normalize_probe_launch(launch)
+    launch["topology"]["tp"] = 0
+    with pytest.raises(ValueError, match="topology.tp"):
+        normalize_probe_launch(launch, allow_pending_version=True)

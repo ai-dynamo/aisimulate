@@ -322,7 +322,6 @@ mod tests {
             attention_dp_size: 1,
             quant_mode: MoeQuantMode::Fp8Block,
             workload_distribution: "power_law_1.2".into(),
-            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
             moe_kernel_source: Some("sglang_flashinfer_trtllm_moe".into()),
@@ -775,20 +774,65 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
-            OpSpec::SglangPrefillAttentionSequence(
-                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
-                    name: "context_attention_sequence".into(),
-                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
-                    weight_bytes: 123456.0,
-                },
-            ),
-            OpSpec::SglangPrefillCommNormBoundary(
-                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
-                    name: "context_post_attention_boundary".into(),
-                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
-                    boundary_role: "post_attention".into(),
-                },
-            ),
+            OpSpec::Glm53Attention(crate::operators::glm53flash::tests::attention("kda")),
+            OpSpec::Glm53Mhc(crate::operators::Glm53MhcOp {
+                name: "mhc_pre_attn_0".into(),
+                role: "pre".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
+                name: "router_3".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                num_experts: 288,
+                topk: 8,
+            }),
+            OpSpec::Glm53Ffn(crate::operators::Glm53FfnOp {
+                name: "ffn_0".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                is_context: true,
+                is_dense: true,
+                hidden_size: 4096,
+                intermediate_size: 12288,
+                num_experts: 288,
+                topk: 8,
+                tp_size: 2,
+                n_shared_experts: 1,
+                swiglu_limit: 10.0,
+                scoring_func: "sigmoid".into(),
+                routed_scaling_factor: 2.5,
+                n_group: 1,
+                topk_group: 1,
+                norm_topk_prob: true,
+                gemm_quant_mode: GemmQuantMode::Nvfp4,
+                shared_quant_mode: GemmQuantMode::Bfloat16,
+                moe_quant_mode: MoeQuantMode::Nvfp4,
+                children: vec![OpSpec::Gemm(gemm())],
+                measured: vec![],
+            }),
+            OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
+                name: "embedding".into(),
+                role: "embedding".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                vocab_size: 154880,
+                token_selection: "all_scheduled".into(),
+                output_dtype: "bfloat16".into(),
+                collective: "none".into(),
+                children: vec![],
+                measured: vec![],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -834,10 +878,13 @@ mod tests {
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
+                | OpSpec::Glm53Attention(_)
+                | OpSpec::Glm53Mhc(_)
+                | OpSpec::Glm53Router(_)
+                | OpSpec::Glm53Ffn(_)
+                | OpSpec::Glm53Primitive(_)
                 | OpSpec::Dsv41Linear(_)
-                | OpSpec::TokenScale(_)
-                | OpSpec::SglangPrefillAttentionSequence(_)
-                | OpSpec::SglangPrefillCommNormBoundary(_) => {}
+                | OpSpec::TokenScale(_) => {}
             }
         }
         ops
@@ -854,8 +901,6 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
-            prefill_graph_profile: None,
-            prefill_graph_profile_id: None,
             moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
@@ -900,8 +945,6 @@ mod tests {
         const MOE_ALL_TO_ALL_INDEX: u32 = 33;
         const MOE_EXPERT_COMPUTE_INDEX: u32 = 34;
         const TOKEN_SCALE_INDEX: u32 = 35;
-        const PREFILL_ATTENTION_INDEX: u32 = 41;
-        const PREFILL_BOUNDARY_INDEX: u32 = 42;
 
         let index_of = |op: &OpSpec| -> u32 {
             let bytes = bincode::serialize(op).expect("serialize op");
@@ -933,28 +976,6 @@ mod tests {
             TOKEN_SCALE_INDEX,
             "TokenScale index moved"
         );
-        assert_eq!(
-            index_of(&OpSpec::SglangPrefillAttentionSequence(
-                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
-                    name: "context_attention_sequence".into(),
-                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
-                    weight_bytes: 123456.0,
-                },
-            )),
-            PREFILL_ATTENTION_INDEX,
-            "SglangPrefillAttentionSequence index moved"
-        );
-        assert_eq!(
-            index_of(&OpSpec::SglangPrefillCommNormBoundary(
-                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
-                    name: "context_post_attention_boundary".into(),
-                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
-                    boundary_role: "post_attention".into(),
-                },
-            )),
-            PREFILL_BOUNDARY_INDEX,
-            "SglangPrefillCommNormBoundary index moved"
-        );
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
@@ -970,8 +991,15 @@ mod tests {
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
+        // GLM-5.3-Flash variants append after the V41 variants.
+        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).map(index_of).collect();
         assert_eq!(
-            PREFILL_BOUNDARY_INDEX as usize + 1,
+            glm_appended,
+            vec![41, 42, 43, 44, 45],
+            "GLM appended indices moved"
+        );
+        assert_eq!(
+            46,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -1153,10 +1181,9 @@ mod tests {
         let selector = bytes.len() - 14;
         assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
         // Recreate both branches' incompatible payloads, not just their stamps.
-        for version in [20u32, 21, 22, 23, 24, 25] {
+        for version in [20u32, 21, 22, 23, 24, 25, 26] {
             let mut stale = bytes.clone();
-            // The decoupling branch's 21 and the merged 25 both carried the selector.
-            if !matches!(version, 21 | 25) {
+            if !matches!(version, 21 | 25 | 26) {
                 stale.drain(selector..selector + 4);
             }
             if version < 24 {
@@ -1403,53 +1430,68 @@ mod tests {
             })
         ));
     }
+    /// GLM `measured` compositions are positional: they round-trip under the
+    /// current schema and a schema-27 stamp is rejected before decoding.
     #[test]
-    fn merged_schema_preserves_fpm_selectors_and_pilot_payloads() {
+    fn glm53_measured_round_trip_and_stale_v27_rejection() {
+        let measured = vec![OpSpec::Gemm(gemm())];
+        let ops: Vec<OpSpec> = all_op_variants()
+            .into_iter()
+            .filter_map(|op| match op {
+                OpSpec::Glm53Attention(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Attention(o))
+                }
+                OpSpec::Glm53Ffn(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Ffn(o))
+                }
+                OpSpec::Glm53Primitive(mut o) => {
+                    o.measured = measured.clone();
+                    Some(OpSpec::Glm53Primitive(o))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops.len(), 3);
+        let spec = EngineSpec::new(sample_engine_config(), ops, vec![]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        bytes[..4].copy_from_slice(&27u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 27,
+                expected: ENGINE_SPEC_SCHEMA_VERSION
+            })
+        ));
+    }
+
+    #[test]
+    fn merged_schema_preserves_fpm_selectors() {
         let mut fpm_config = sample_engine_config();
         fpm_config.forward_model = Some("fpm".into());
         fpm_config.parallel.dcp_size = Some(2);
         fpm_config.quantization.fpm_fmha_dtype = Some(DataType::Fp8);
         let mut fpm_op = fpm_forward();
         fpm_op.dcp_size = Some(2);
-        let fpm_spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_op)], vec![]);
+        let spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_op)], vec![]);
 
-        let mut pilot_config = sample_engine_config();
-        pilot_config.prefill_graph_profile =
-            Some(crate::perf_database::prefill_graph::PROFILE_NAME.into());
-        pilot_config.prefill_graph_profile_id =
-            Some(crate::perf_database::prefill_graph::PROFILE_ID.into());
-        let mut observed_moe = moe();
-        observed_moe.require_exact_workload_distribution = true;
-        let pilot_ops = all_op_variants()
-            .into_iter()
-            .filter(|op| {
-                matches!(
-                    op,
-                    OpSpec::SglangPrefillAttentionSequence(_)
-                        | OpSpec::SglangPrefillCommNormBoundary(_)
-                )
-            })
-            .collect();
-        let pilot_spec = EngineSpec::new(pilot_config, pilot_ops, vec![OpSpec::Moe(observed_moe)]);
-
-        for spec in [fpm_spec, pilot_spec] {
-            let bytes = spec.to_bincode().unwrap();
-            assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-            for previous_version in [20u32, 21, 22, 23, 24, 25] {
-                let mut stale = bytes.clone();
-                stale[..4].copy_from_slice(&previous_version.to_le_bytes());
-                // DCP and the pilot claimed 22 for different layouts.
-                // Reject all older versions before decoding even a missing payload.
-                for input in [stale.as_slice(), &stale[..4]] {
-                    assert!(matches!(
-                        EngineSpec::from_bincode(input),
-                        Err(AicError::UnsupportedSchemaVersion {
-                            kind: "EngineSpec",
-                            got,
-                            expected: ENGINE_SPEC_SCHEMA_VERSION,
-                        }) if got == previous_version
-                    ));
-                }
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        for previous_version in [20u32, 21, 22, 23, 24, 25, 26, 27] {
+            let mut stale = bytes.clone();
+            stale[..4].copy_from_slice(&previous_version.to_le_bytes());
+            for input in [stale.as_slice(), &stale[..4]] {
+                assert!(matches!(
+                    EngineSpec::from_bincode(input),
+                    Err(AicError::UnsupportedSchemaVersion {
+                        kind: "EngineSpec",
+                        got,
+                        expected: ENGINE_SPEC_SCHEMA_VERSION,
+                    }) if got == previous_version
+                ));
             }
         }
     }
