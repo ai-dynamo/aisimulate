@@ -1547,6 +1547,23 @@ impl WorkloadDriver {
             .agentic_snapshots
             .as_ref()
             .context("missing live snapshots")?;
+        let states_by_request: FxHashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                Ok((
+                    (
+                        state.node_to_play[index],
+                        session.turns[0]
+                            .request_id
+                            .as_deref()
+                            .context("live warmup requires source request IDs")?,
+                    ),
+                    state.node_states[index],
+                ))
+            })
+            .collect::<Result<_>>()?;
         let mut offsets = Vec::new();
         let mut first = if fresh_origin { 0.0 } else { f64::INFINITY };
         for (index, node) in state.node_states.iter().enumerate() {
@@ -1558,6 +1575,34 @@ impl WorkloadDriver {
             else {
                 bail!("live warmup requires immutable snapshot prompts");
             };
+            // Only the immediate conversation frontier carries a source-clock
+            // deadline across handoff. A pending join/barrier retains its gate,
+            // but future continuations and unspawned children must create their
+            // timers from actual dependency events, including after idle caps.
+            if *node == AgenticNodeState::Blocked
+                && context.graph.nodes[source_index]
+                    .dependencies
+                    .iter()
+                    .filter(|edge| {
+                        matches!(
+                            edge.relation,
+                            AgenticDependencyRelation::Sequence | AgenticDependencyRelation::Spawn
+                        )
+                    })
+                    .any(|edge| {
+                        states_by_request
+                            .get(&(state.node_to_play[index], edge.request_id.as_str()))
+                            .is_some_and(|source| {
+                                matches!(
+                                    source,
+                                    AgenticNodeState::Blocked | AgenticNodeState::Ready
+                                ) || (edge.trigger == AgenticDependencyTrigger::Completion
+                                    && *source == AgenticNodeState::Emitted)
+                            })
+                    })
+            {
+                continue;
+            }
             let offset = (context.recorded_start_ms(source_index)
                 - snapshots[state.node_to_play[index]].t_star_ms)
                 .max(0.0)

@@ -1107,8 +1107,8 @@ mod tests {
         );
     }
 
-    fn linear_live_driver(nodes: usize, rootless: bool) -> WorkloadDriver {
-        let rows = (0..nodes)
+    fn linear_live_rows(nodes: usize, rootless: bool) -> Vec<AgenticMooncakeRow> {
+        (0..nodes)
             .map(|index| AgenticMooncakeRow {
                 request_id: format!("n{index}"),
                 play_id: "linear".into(),
@@ -1144,7 +1144,15 @@ mod tests {
                 },
                 ..Default::default()
             })
-            .collect();
+            .collect()
+    }
+
+    fn rows_live_driver(
+        rows: Vec<AgenticMooncakeRow>,
+        lanes: usize,
+        cut: f64,
+        speedup: f64,
+    ) -> WorkloadDriver {
         let graph = ValidatedAgenticGraph::from_agentic_mooncake_rows(
             AgenticMooncakeHeader {
                 schema: AGENTIC_MOONCAKE_SCHEMA.into(),
@@ -1160,17 +1168,16 @@ mod tests {
         )
         .unwrap();
         let prepared = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
-        let play = prepared
-            .context()
-            .prepare_play(0, 0, Some(if rootless { 0.5 } else { 0.0 }))
-            .unwrap();
+        let plays = (0..lanes)
+            .map(|lane| prepared.context().prepare_play(lane, 0, Some(cut)).unwrap())
+            .collect();
         let mut driver = WorkloadDriver::new_agentic_warmup_with_policy(
-            PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
+            PreparedAgenticSnapshots::from_plays(plays).unwrap(),
             64,
             true,
-            1.0,
+            speedup,
             AgenticWarmupPolicy::LiveTrajectoryV1,
             10_000.0,
         )
@@ -1179,6 +1186,181 @@ mod tests {
             .enable_agentic_profile(super::super::AgenticProfileOptions::default())
             .unwrap();
         driver
+    }
+
+    fn linear_live_driver(nodes: usize, rootless: bool) -> WorkloadDriver {
+        rows_live_driver(
+            linear_live_rows(nodes, rootless),
+            1,
+            if rootless { 0.5 } else { 0.0 },
+            1.0,
+        )
+    }
+
+    fn finish_ten_live_rounds(driver: &mut WorkloadDriver, lanes: usize) -> f64 {
+        driver.finish_agentic_preparation(0.0).unwrap();
+        for round in 0..10 {
+            let now = round as f64;
+            driver.advance_agentic_profile(now).unwrap();
+            let ready = driver.pop_ready(now, lanes);
+            assert_eq!(ready.len(), lanes);
+            for turn in ready {
+                driver.on_output_token(turn.request_uuid, 0).unwrap();
+                driver
+                    .on_terminal(
+                        turn.request_uuid,
+                        now + 1.0,
+                        ReplayTerminalStatus::Completed,
+                    )
+                    .unwrap();
+            }
+        }
+        assert_eq!(
+            driver.finish_agentic_preparation(10.0).unwrap(),
+            Some(AgenticPreparationTransition::OpenProfile)
+        );
+        10.0
+    }
+
+    #[test]
+    fn live_handoff_idle_cap_does_not_restore_future_continuation_timestamps() {
+        let mut rows = linear_live_rows(13, false);
+        rows[11].not_before_ms = 601_000.0;
+        rows[11].dependencies[0].delay_ms = 600_000.0;
+        rows[12].not_before_ms = 605_001.0;
+        rows[12].dependencies[0].delay_ms = 4_000.0;
+        let mut driver = rows_live_driver(rows, 2, 0.0, 1.0);
+        let start = finish_ten_live_rounds(&mut driver, 2);
+        let frontier = driver.pop_ready(start, 2);
+        assert_eq!(frontier.len(), 2);
+        assert!(
+            frontier
+                .iter()
+                .all(|turn| turn.authored_request_id.as_deref() == Some("n10"))
+        );
+        // Keep the second lane busy so only the 300-second per-tree guard fires.
+        driver
+            .on_terminal(
+                frontier[0].request_uuid,
+                start + 1.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        let capped = start + 1.0 + 300_000.0;
+        assert_eq!(driver.next_ready_time_ms(), Some(capped));
+        driver.advance_agentic_profile(capped).unwrap();
+        let delayed = driver.pop_ready(capped, 1).pop().unwrap();
+        assert_eq!(delayed.authored_request_id.as_deref(), Some("n11"));
+        driver
+            .on_terminal(
+                delayed.request_uuid,
+                capped + 1.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        let continuation = capped + 1.0 + 4_000.0;
+        assert_eq!(driver.next_ready_time_ms(), Some(continuation));
+        let ready = driver.pop_ready(continuation, 1).pop().unwrap();
+        assert_eq!(ready.authored_request_id.as_deref(), Some("n12"));
+        assert_eq!(
+            driver.agentic_profile_report().unwrap().idle_shifts.len(),
+            1
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::join(AgenticDependencyRelation::Join)]
+    #[case::replay_barrier(AgenticDependencyRelation::ReplayBarrier)]
+    fn live_handoff_preserves_blocked_frontier_but_not_later_turns(
+        #[case] relation: AgenticDependencyRelation,
+    ) {
+        let mut rows = linear_live_rows(12, false);
+        rows[10].not_before_ms = 5_000.0;
+        rows[10].recorded_api_time_ms = Some(10_000.0);
+        rows[10].dependencies.push(AgenticDependency {
+            request_id: "child".into(),
+            delay_ms: 0.0,
+            relation,
+            trigger: AgenticDependencyTrigger::Completion,
+        });
+        rows[11].not_before_ms = 19_000.0;
+        rows[11].dependencies[0].delay_ms = 4_000.0;
+        let mut child = rows[0].clone();
+        child.request_id = "child".into();
+        child.session_id = "child".into();
+        child.not_before_ms = 1_000.0;
+        child.dependencies = vec![AgenticDependency {
+            request_id: "n9".into(),
+            delay_ms: 100.0,
+            relation: AgenticDependencyRelation::Spawn,
+            trigger: AgenticDependencyTrigger::Dispatch,
+        }];
+        rows.push(child.clone());
+        child.request_id = "future-child".into();
+        child.session_id = "future-child".into();
+        child.not_before_ms = 21_000.0;
+        child.dependencies[0].request_id = "n11".into();
+        child.dependencies[0].delay_ms = 2_000.0;
+        rows.push(child);
+
+        let mut driver = rows_live_driver(rows, 1, 0.0, 1.0);
+        let start = finish_ten_live_rounds(&mut driver, 1);
+        let ready = driver.pop_ready(start, 1).pop().unwrap();
+        assert_eq!(ready.authored_request_id.as_deref(), Some("child"));
+        driver
+            .on_terminal(
+                ready.request_uuid,
+                start + 1.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        // The parent was already waiting at a join/barrier when warmup ended:
+        // keep its recorded deadline even if the remaining child finishes early.
+        let parent_at = start + 4_000.0;
+        assert_eq!(driver.next_ready_time_ms(), Some(parent_at));
+        let parent = driver.pop_ready(parent_at, 1).pop().unwrap();
+        assert_eq!(parent.authored_request_id.as_deref(), Some("n10"));
+        driver
+            .on_terminal(
+                parent.request_uuid,
+                parent_at + 1.0,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        let next_at = parent_at + 1.0 + 4_000.0;
+        assert_eq!(driver.next_ready_time_ms(), Some(next_at));
+        let next = driver.pop_ready(next_at, 1).pop().unwrap();
+        assert_eq!(next.authored_request_id.as_deref(), Some("n11"));
+        // A child whose spawning turn was still blocked at handoff is not a
+        // pending handoff stream. Its timer starts only on actual dispatch.
+        assert_eq!(driver.next_ready_time_ms(), Some(next_at + 2_000.0));
+        let spawned = driver.pop_ready(next_at + 2_000.0, 1).pop().unwrap();
+        assert_eq!(spawned.authored_request_id.as_deref(), Some("future-child"));
+    }
+
+    #[test]
+    fn live_handoff_fresh_root_preserves_other_lanes_scaled_frontier_offset() {
+        let mut rows = linear_live_rows(10, false);
+        let mut other = linear_live_rows(12, false);
+        for row in &mut other {
+            row.play_id = "other".into();
+            row.request_id = format!("other-{}", row.request_id);
+            for edge in &mut row.dependencies {
+                edge.request_id = format!("other-{}", edge.request_id);
+            }
+        }
+        rows.extend(other);
+        let mut driver = rows_live_driver(rows, 2, 0.0, 2.0);
+        let start = finish_ten_live_rounds(&mut driver, 2);
+        // One lane finished exactly at its quota. Its new incarnation anchors
+        // the phase at zero, without also bursting the other lane's frontier.
+        let root = driver.pop_ready(start, 2);
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].authored_request_id.as_deref(), Some("n0"));
+        assert_eq!(driver.next_ready_time_ms(), Some(start + 5.0));
+        let other = driver.pop_ready(start + 5.0, 2);
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].authored_request_id.as_deref(), Some("other-n10"));
     }
 
     #[test]
