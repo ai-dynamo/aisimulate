@@ -1,27 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Torch fixture adapted and modified from the AIConfigurator PR #1606 helper:
+# https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/_real_torch.py
 """Numerical input preparation without importing vLLM or requiring CUDA."""
 
 import ast
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
+
+from tests.unit.collector._real_torch import real_torch
 
 pytestmark = pytest.mark.unit
 SOURCE = Path(__file__).resolve().parents[3] / "collector/vllm/collect_mla_module.py"
 
 
 @pytest.fixture
-def torch(monkeypatch):
-    # Resolve optional tensors at execution time so CPU-only CI can still
-    # inventory every test. Other collector suites may retain a torch mock.
-    with monkeypatch.context() as context:
-        if isinstance(sys.modules.get("torch"), MagicMock):
-            context.delitem(sys.modules, "torch")
-        yield pytest.importorskip("torch")
+def torch():
+    # Reuse the process-wide real module while preserving other collectors' mock.
+    # Resolve at execution time so CPU-only CI can still inventory every test.
+    with real_torch() as module:
+        yield module
 
 
 def _load_function(name, torch=None):

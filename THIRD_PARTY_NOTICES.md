@@ -1338,6 +1338,10 @@ AIConfigurator contribution at immutable commit `a97c69677af23190eada7ee893afa6a
 - `python/aisimulate/tests/unit/collector/test_sglang_moe_ep_routing.py` from
   https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_sglang_moe_ep_routing.py
 
+- `python/aisimulate/tests/unit/collector/test_vllm_mla_input_population.py`
+  adapts the shared borrow context in
+  https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/_real_torch.py
+
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 The contribution was submitted by xinjun.jiang. Licensed under Apache-2.0;
 the license text is included in the repository and Python distribution.
