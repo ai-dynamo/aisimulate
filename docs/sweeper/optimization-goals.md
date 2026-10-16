@@ -157,12 +157,18 @@ For a single positive inter-token latency, `TPOT_ms <= limit_ms` is equivalent t
 boundary, and feasible points are at or to the right of that threshold when the
 x-axis is the reciprocal of the same TPOT value.
 
-The unified Sweeper's `throughput_per_user` objective is instead the **mean of
-per-token-gap reciprocals**, `mean(1000 / ITL_ms)`. It is not generally
+With native text Replay, the Sweeper's `throughput_per_user` objective is the
+**mean of positive per-token-gap reciprocals**, `mean(1000 / ITL_ms)`. It is not generally
 `1000 / mean_tpot_ms`: averaging and reciprocation do not commute. For example,
 5 ms and 15 ms gaps have a 10 ms mean latency but a mean reciprocal rate of
-about 133.3 tokens/s/user. Do not use an x-axis cutoff as a substitute for the
-aggregate TPOT SLA. Configure `goal.sla.itl_ms` with `goal.strict_sla: true` in the SDK
+about 133.3 tokens/s/user.
+
+Analytical AFD replay uses a different aggregation: `1000 / mean_tpot_ms`,
+where `mean_tpot_ms` averages request TPOT values. Two requests with TPOTs of
+5 ms and 15 ms therefore produce 100 tokens/s/user in that executor. Check the
+executor's report rather than assuming these two aggregation rules are
+interchangeable. For native Replay, do not use an x-axis cutoff as a substitute
+for the aggregate TPOT SLA. Configure `goal.sla.itl_ms` with `goal.strict_sla: true` in the SDK
 (or `evaluation.sla.itl_ms` with `optimization.strict_sla: true` in
 the unified CLI) to apply the inclusive aggregate-mean constraint before the
 Pareto front is selected. Choose a feasible candidate from that filtered front

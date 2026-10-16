@@ -624,7 +624,7 @@ tokens/s/gpu                        tokens/s/user
 ```
 The Pareto frontier shows the trade-off between generation speed `tokens/s/user` and throughput `tokens/s/gpu`. In this compatibility CLI example, generation speed is `1000 / TPOT_ms`, so a TPOT limit of 10 ms requires at least 100 tokens/s/user. Select the highest-throughput point at or to the right of that threshold; the boundary at 100 tokens/s/user qualifies. Points to its left exceed the TPOT limit. Changing the limit can change the selected configuration or whether aggregated or disaggregated serving has higher throughput.
 
-Without `--strict-sla`, the plotted frontier can include points that violate the TPOT limit; the final top-N selection still applies the constraint. See [strict SLA filtering](#strict-sla-filtering). The unified Sweeper uses a different aggregate per-user metric; see [Pareto objectives](../sweeper/optimization-goals.md#pareto) before interpreting its x-axis as a TPOT threshold.
+Without `--strict-sla`, the plotted frontier can include points that violate the TPOT limit; the final top-N selection prefers configurations within the limit, but returns the closest configurations when none meet it. See [strict SLA filtering](#strict-sla-filtering). The unified Sweeper uses a different aggregate per-user metric; see [Pareto objectives](../sweeper/optimization-goals.md#pareto) before interpreting its x-axis as a TPOT threshold.
 
 3. Worker setup
 ```
