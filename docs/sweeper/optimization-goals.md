@@ -163,7 +163,7 @@ per-token-gap reciprocals**, `mean(1000 / ITL_ms)`. It is not generally
 5 ms and 15 ms gaps have a 10 ms mean latency but a mean reciprocal rate of
 about 133.3 tokens/s/user. Do not use an x-axis cutoff as a substitute for the
 aggregate TPOT SLA. Configure `goal.sla.itl_ms` with `goal.strict_sla: true` in the SDK
-(or `evaluation.sla.itl_ms` with `optimization.constraints.strict_sla: true` in
+(or `evaluation.sla.itl_ms` with `optimization.strict_sla: true` in
 the unified CLI) to apply the inclusive aggregate-mean constraint before the
 Pareto front is selected. Choose a feasible candidate from that filtered front
 for [deployment generation](deployment-generation.md#3-render-the-selected-candidate).
