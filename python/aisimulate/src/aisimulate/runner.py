@@ -1717,6 +1717,9 @@ def _materialize_engine_role(
             memory_fraction_overrides.clear()
 
     speculation_raw = rank.pop("speculation", None)
+    timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
+    canonical_speculation = timing_config.get("speculation")
+    canonical_kind = canonical_speculation.get("kind") if isinstance(canonical_speculation, Mapping) else None
     speculation = None
     if speculation_raw is not None:
         from pydantic import TypeAdapter
@@ -1724,9 +1727,6 @@ def _materialize_engine_role(
         from .config.engine import NgramSpeculationConfig, SpeculationConfig
 
         speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
-        supported = {"vllm"} if speculation.kind == "ngram" else {"vllm", "sglang"}
-        if backend not in supported or rank.get("native_host_offload") is not None:
-            raise ValueError(f"{speculation.kind} speculation requires a supported backend without host_offload")
         if any(
             rank.get(key) is not None
             for key in (
@@ -1748,6 +1748,12 @@ def _materialize_engine_role(
             rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
         rank["aic_mtp_seed"] = speculation.seed
 
+    kind = speculation.kind if speculation is not None else canonical_kind
+    if kind not in (None, "none"):
+        supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
         nextn = _positive_int(nextn, f"engine provider {role} aic_nextn")
@@ -1761,7 +1767,9 @@ def _materialize_engine_role(
         ("aic_nextn_accept_rates", "nextn_accept_rates"),
     )
     if accept_rates is not None:
-        if nextn is None:
+        # Canonical timing resolves depth in native replay. Keep the authored
+        # rates intact instead of requiring the same depth on the rank too.
+        if nextn is None and canonical_kind in (None, "none"):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
         if not isinstance(accept_rates, str):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")

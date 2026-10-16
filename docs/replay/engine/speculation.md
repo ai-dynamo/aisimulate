@@ -75,7 +75,10 @@ they are excluded from the cost configuration passed to
 identity are preserved through that constructor and saved configuration.
 Direct replay descriptors using a generic canonical timing identity must also
 provide explicit `aic_nextn_accept_rates` on the worker rank. They do not inherit
-the legacy `nextn` acceptance defaults.
+the legacy `nextn` acceptance defaults. The rank may omit `aic_nextn`; native
+replay derives it from the canonical scheme. An explicit rank depth must match.
+The legacy `aic_nextn_accepted` shorthand still requires an explicit rank depth
+to convert the expected count to acceptance rates.
 
 For a linear EAGLE3 draft, use `kind: eagle3`,
 `params: {num_speculative_tokens: 3}`, and the draft checkpoint path or validated
@@ -150,6 +153,10 @@ Supported: vLLM aggregated or disaggregated workers with `op_level`, `fixed` or
 or G3 offload. HBM-only agentic traffic is supported with the same functional-only
 qualification as ordinary AgentX replay. The Dynamo stack is not supported for ngram.
 Deployment artifacts are not generated for ngram candidates.
+
+An engine-level FPM `estimation_mode` request with `fallback_policy: allow` can
+fall back to OP timing through the canonical estimator. With `deny`, that
+unsupported request fails instead.
 
 Prompt lookup is unrelated to `kv_cache.prefix_caching`.
 

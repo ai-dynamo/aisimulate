@@ -932,8 +932,7 @@ def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> Non
             continue
         if worker.kv_cache.host_offload is not None:
             raise ValueError(f"{kind} speculation does not support host_offload")
-        mode = worker.timing.estimation_mode or engine.estimation_mode
-        if kind == "ngram" and (worker.timing.forward_model != "op_level" or mode not in (None, "auto", "op_level")):
+        if kind == "ngram" and worker.timing.forward_model != "op_level":
             raise ValueError(f"{kind} speculation requires op_level timing")
         if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
             raise ValueError(f"{kind} speculation requires explicit fixed KV capacity on workers.{role}")

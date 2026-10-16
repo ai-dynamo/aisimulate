@@ -382,13 +382,24 @@ def test_generic_speculation_fixed_capacity_error_identifies_scheme_and_role(rol
 
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
 @pytest.mark.parametrize("fallback", ["allow", "deny"])
-def test_generic_replay_preserves_canonical_estimator_selection(mode, fallback):
+@pytest.mark.parametrize(
+    "speculation",
+    [
+        {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5},
+        _SPEC,
+        {**_COST, "expected_accepted_tokens": 1.5},
+    ],
+    ids=["mtp", "ngram", "generic_ngram"],
+)
+def test_replay_preserves_canonical_estimator_selection(mode, fallback, speculation):
     raw = _prediction(timing="default")
     raw["engine"].update(
         estimation_mode=mode,
         fallback_policy=fallback,
-        speculation={"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5},
+        speculation=deepcopy(speculation),
     )
+    # Availability and fallback belong to the canonical estimator, after input validation.
+    CorePredictionConfig.model_validate(raw)
     if fallback == "deny":
         with pytest.raises(ValueError, match="speculat.*op_level|op_level.*speculat"):
             _run(raw)
@@ -396,6 +407,9 @@ def test_generic_replay_preserves_canonical_estimator_selection(mode, fallback):
         report = _run(raw)
         assert report.metrics["completed_requests"] == 1
         assert report.metadata["prediction_provenance"]["aggregated"]["estimator"] == "op_level"
+        raw["engine"].update(estimation_mode="op_level", fallback_policy="deny")
+        baseline = _run(raw)
+        assert report.metrics["mean_e2e_latency_ms"] == baseline.metrics["mean_e2e_latency_ms"]
 
 
 def test_ngram_rejects_mtp_combination_before_compilation():

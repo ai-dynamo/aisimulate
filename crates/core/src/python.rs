@@ -395,6 +395,18 @@ impl AicTimingConfig {
     fn speculative_depth(&self) -> Result<u32> {
         if let Some(speculation) = &self.speculation {
             ensure!(self.nextn == 0, "speculation cannot be combined with nextn");
+            match speculation.kind.as_str() {
+                "none" => {}
+                "ngram" => ensure!(
+                    self.backend == "vllm",
+                    "ngram speculation requires backend=vllm"
+                ),
+                _ => ensure!(
+                    matches!(self.backend.as_str(), "vllm" | "sglang"),
+                    "{} speculative replay requires backend=vllm or backend=sglang",
+                    speculation.kind
+                ),
+            }
             return Ok(crate::py::speculation_replay_depth(speculation)?);
         }
         Ok(self.nextn)
@@ -3994,6 +4006,66 @@ mod tests {
             let mut config = aic_config();
             config.speculation = Some(serde_json::from_value(payload).unwrap());
             assert!(config.validate_parallel_shape().is_err());
+        }
+    }
+
+    #[test]
+    fn replay_capacity_enforces_scheme_backend_scope_without_restricting_legacy() {
+        for (backend, native_backend) in [
+            ("vllm", Backend::Vllm),
+            ("sglang", Backend::Sglang),
+            ("trtllm", Backend::Trtllm),
+        ] {
+            let mut config = aic_config();
+            config.backend = backend.into();
+            config.speculation = Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "mtp", "params": {"depth": 2}
+                }))
+                .unwrap(),
+            );
+            let mut role = aggregated_role(&ReplayEngineConfig::default());
+            role.rank.backend = native_backend;
+            role.rank.aic_nextn = Some(2);
+            let generic = materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!());
+            if backend == "trtllm" {
+                assert!(
+                    generic
+                        .unwrap_err()
+                        .to_string()
+                        .contains("mtp speculative replay requires backend=vllm or backend=sglang")
+                );
+            } else {
+                generic.unwrap();
+            }
+
+            config.speculation = Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "ngram", "params": {"num_speculative_tokens": 2}
+                }))
+                .unwrap(),
+            );
+            let ngram = materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!());
+            if backend == "vllm" {
+                ngram.unwrap();
+            } else {
+                assert!(
+                    ngram
+                        .unwrap_err()
+                        .to_string()
+                        .contains("ngram speculation requires backend=vllm")
+                );
+            }
+
+            config.speculation = None;
+            config.nextn = 2;
+            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
+
+            config.speculation =
+                Some(serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap());
+            config.nextn = 0;
+            role.rank.aic_nextn = None;
+            materialize_aic_capacity(&config, &mut role, true, |_, _| unreachable!()).unwrap();
         }
     }
 

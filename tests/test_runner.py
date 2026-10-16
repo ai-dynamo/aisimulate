@@ -177,15 +177,16 @@ def test_generic_speculation_requires_explicit_runner_capability(location, neste
         replace(capabilities, supports_generic_speculation=False).require_compatible(spec)
 
 
-def _canonical_speculation_deployment(speculation):
+def _canonical_speculation_deployment(speculation, *, backend="vllm"):
+    version = {"vllm": "0.24.0", "sglang": "0.5.14", "trtllm": "1.3.0rc20"}[backend]
     timing = {
         "type": "external",
         "provider": "aic",
         "config": {
             "model": "meta-llama/Meta-Llama-3.1-8B",
             "system": "h200_sxm",
-            "backend": "vllm",
-            "backend_version": "0.24.0",
+            "backend": backend,
+            "backend_version": version,
             "worker_type": "aggregated",
             "tp": 2,
             "speculation": speculation,
@@ -193,9 +194,9 @@ def _canonical_speculation_deployment(speculation):
     }
     return BackendDeploymentSpec(
         deployment_mode="agg",
-        backend="vllm",
-        backend_version="0.24.0",
-        agg_engine_args=_engine_args(timing=timing),
+        backend=backend,
+        backend_version=version,
+        agg_engine_args=_engine_args(backend=backend, timing=timing),
         num_workers=1,
     )
 
@@ -226,9 +227,12 @@ def test_native_replay_rejects_malformed_canonical_speculation(speculation, entr
 
 
 @pytest.mark.parametrize("accept_rates", [None, "", "  ", "1,0.5"])
-def test_native_canonical_speculation_requires_authored_acceptance(accept_rates):
+@pytest.mark.parametrize("explicit_depth", [False, True])
+def test_native_canonical_speculation_requires_authored_acceptance(accept_rates, explicit_depth):
     deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
-    args = {**deployment.agg_engine_args, "aic_nextn": 2}
+    args = dict(deployment.agg_engine_args)
+    if explicit_depth:
+        args["aic_nextn"] = 2
     if accept_rates is not None:
         args["aic_nextn_accept_rates"] = accept_rates
     spec = _spec(deployment=replace(deployment, agg_engine_args=args))
@@ -238,6 +242,77 @@ def test_native_canonical_speculation_requires_authored_acceptance(accept_rates)
     else:
         with pytest.raises(RuntimeError, match="acceptance|accept_rates"):
             runner.run(spec)
+
+
+@pytest.mark.parametrize(
+    "backend,speculation",
+    [
+        ("vllm", {"kind": "mtp", "params": {"depth": 2}}),
+        ("sglang", {"kind": "mtp", "params": {"depth": 2}}),
+        ("vllm", {"kind": "ngram", "params": {"num_speculative_tokens": 2}}),
+    ],
+)
+def test_public_runner_infers_canonical_depth_without_duplicate_rank_input(backend, speculation):
+    deployment = _canonical_speculation_deployment(speculation, backend=backend)
+    args = {**deployment.agg_engine_args, "aic_nextn_accept_rates": "1,0.5", "aic_mtp_seed": 42}
+    spec = _spec(
+        deployment=replace(deployment, agg_engine_args=args),
+        workload={"isl": 8, "osl": 16, "concurrency": 1, "num_request_ratio": 1},
+    )
+    runner = EngineReplayRunnerFactory().create(0)
+    inferred = runner.run(spec)
+    explicit = runner.run(
+        replace(spec, backend_deployment=replace(deployment, agg_engine_args={**args, "aic_nextn": 2}))
+    )
+    assert inferred.metrics["completed_requests"] == 1
+    assert inferred.metrics["total_output_tokens"] == 16
+    for metric in ("mean_e2e_latency_ms", "mean_ttft_ms", "mean_tpot_ms", "output_throughput_tok_s"):
+        assert inferred.metrics[metric] == explicit.metrics[metric]
+    with pytest.raises(RuntimeError, match="aic_nextn conflicts with resolved speculative depth 2"):
+        runner.run(replace(spec, backend_deployment=replace(deployment, agg_engine_args={**args, "aic_nextn": 1})))
+
+
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+def test_public_runner_rejects_generic_trtllm_in_both_representations(location):
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}}, backend="trtllm")
+    args = dict(deployment.agg_engine_args)
+    if location == "rank":
+        args["speculation"] = {**args["timing_model"]["config"].pop("speculation"), "expected_accepted_tokens": 1.5}
+    else:
+        args.update(aic_nextn=2, aic_nextn_accept_rates="1,0.5")
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="mtp speculation requires a supported backend"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(deployment=replace(deployment, agg_engine_args=args))
+        )
+    assert runtime.execution_spec is None
+
+
+def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy():
+    from aisimulate import _runtime
+
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
+    args = {**deployment.agg_engine_args, "aic_nextn": 2, "aic_nextn_accept_rates": "1,0.5"}
+    recording = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=recording).create(0).run(
+        _spec(
+            deployment=replace(deployment, agg_engine_args=args),
+            workload={"isl": 8, "osl": 16, "concurrency": 1, "num_request_ratio": 1},
+        )
+    )
+    execution = recording.execution_spec
+    rank = execution["engine"]["rank"]
+    rank["backend"] = "trtllm"
+    timing = rank["timing_model"]["config"]
+    timing.update(backend="trtllm", backend_version="1.3.0rc20")
+    with pytest.raises(RuntimeError, match="mtp speculative replay requires backend=vllm or backend=sglang"):
+        _runtime.run_replay_json(json.dumps(execution))
+
+    timing.pop("speculation")
+    timing["nextn"] = 2
+    legacy = json.loads(_runtime.run_replay_json(json.dumps(execution)))
+    assert legacy["completed_requests"] == 1
+    assert legacy["total_output_tokens"] == 16
 
 
 @pytest.mark.parametrize("failure", ["download", "validation"])
