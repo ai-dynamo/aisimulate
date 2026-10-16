@@ -368,6 +368,11 @@ is mounted at `/work`. Mount the complete model cache root read-only when a
 checkpoint snapshot contains symlinks to sibling blobs. Every worker receives a
 slice of Slurm's actual `CUDA_VISIBLE_DEVICES`, including nonzero IDs or GPU UUIDs.
 Each job starts its own etcd/NATS with separate ports and data directories.
+SGLang P/D workers listen on `0.0.0.0` so their bootstrap endpoints are reachable
+at the node address Dynamo advertises. Their `--host` launch option cannot be
+overridden through `Workers.<role>.extra_cli_args`. The generator does not force
+`SGLANG_HOST_IP` to loopback; a site-specific override must be reachable by both
+workers in the container's network namespace.
 Model discovery can precede frontend route registration. Readiness therefore
 requires a successful inference request, retrying temporary HTTP 404/503 responses
 and transport errors such as disconnects, connection refusal and timeouts within
