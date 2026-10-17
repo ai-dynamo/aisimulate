@@ -5,9 +5,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # GLM-5.3-Flash FPM
 
-Whole-forward (FPM) profiles for GLM-5.3-Flash on GB300, collected with
-engine-native timing on the default serving configuration (prefix/radix cache
-on). Text only, pure TP, DP = PP = EP = 1.
+Whole-forward (FPM) profiles for GLM-5.3-Flash, collected with engine-native
+timing on the default serving configuration (prefix/radix cache on). Text
+only, pure TP1/2/4/8, DP = PP = EP = 1. The producer and client have no system
+gate: whether a deployment fits a system (for example H100, H200, B300, GB200
+or GB300) is decided when the runtime loads weights and allocates KV, and a
+deployment that does not fit fails observably.
+
+Published GB300 profiles:
 
 | Backend | Runtime | Deployments |
 |---|---|---|
@@ -16,7 +21,7 @@ on). Text only, pure TP, DP = PP = EP = 1.
 
 Checkpoints: `zai-org/GLM-5.3-Flash@eb9eb208eb0d988989d07a6a12d0fdeb5f52574a`
 and `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
-FP8 TP1 does not fit on one GB300.
+FP8 TP1 does not fit on one GPU of any of these systems.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
 repository. They are published in `nvidia/aisimulate-fpm-dataset`
@@ -24,7 +29,7 @@ repository. They are published in `nvidia/aisimulate-fpm-dataset`
 [`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
 pins the nine profiles to its merge commit
 `08771888388a1ce9cd8d421b2e42f353fd5e2abb` and records each file's SHA-256.
-Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
+Profile keys are `<system>-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `gb300-vllm-nvfp4-tp1` or `gb300-sglang-fp8-tp2`. Materialize one with
 `python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
 `materialize_fpm_profile`) and pass the printed root as `systems_paths`, with
@@ -92,8 +97,20 @@ forward interval.
 
 Usage, with `python/aisimulate` on `PYTHONPATH`:
 `python3 -m collector.fpm_forward.sglang_native_fpm --model <dir>
---model-revision <rev> --tp {2,4} --quant {fp8,nvfp4} --mem-fraction <f>
---phase {prefill,decode} --points <manifest.json> --out <dir>`.
+--model-revision <rev> --tp {1,2,4,8} --quant {fp8,nvfp4} --mem-fraction <f>
+--phase {prefill,decode} --points <manifest.json> --out <dir>
+[--kv-cache-dtype {fp8_e4m3,bfloat16}] [--port <p>] [--ipc <name>]`.
+
+- `--kv-cache-dtype` defaults to `fp8_e4m3`. The client checks that the
+  server resolved the requested dtype and records it in
+  `serving_config.kv_cache_dtype` (`fp8` or `bfloat16`). BF16 KV is a distinct
+  identity and is never mixed with FP8-KV rows.
+- The resolved attention, MoE and other `*_backend` server arguments are
+  recorded in `serving_config.resolved_server_args` and are not asserted. The
+  resolved page size must equal the 64-token hit unit of the request plans;
+  otherwise the run fails at startup (`failed.json` lists the failed checks).
+- Servers packed on one node need distinct `--port` values and GPUs
+  (`CUDA_VISIBLE_DEVICES`). The default IPC name includes the run id and port.
 
 The published SGLang 0.5.20 tables were collected with an earlier client
 revision that took its request tokens from a text corpus. That input
