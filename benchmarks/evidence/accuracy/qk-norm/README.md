@@ -92,3 +92,47 @@ The Rust checks cover SILICON, HYBRID, EMPIRICAL, SOL and SOL_FULL, three batch
 sizes and three KV lengths, layer/imbalance scaling, energy/provenance, SOL
 memory components, local heads under DCP, FP8 KV with BF16 Q/K activations,
 real speculative query widths, and fractional FPM inputs.
+
+Validation on corrected model revision
+`66327986403c1d6ef9ccf345e8d9d3eaeec176b3`:
+
+```bash
+# 318 passed
+cargo test -p aisimulate-core --lib perfmodel::operators
+
+# 100 passed
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisimulate/tests/unit/sdk/database/test_attention_lanes.py \
+  python/aisimulate/tests/unit/sdk/test_forward_pass_speculation.py \
+  python/aisimulate/tests/cross_package/test_single_oracle_contract.py
+
+# 26 passed, 65 deselected
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisimulate/tests/unit/sdk/test_rust_engine_step.py -k canonical
+
+# 390 passed, after the deliberate golden refresh
+python/aisimulate/.venv/bin/python -m pytest -q -n 4 -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+```
+
+The first parity run reported 125 failures and 265 passes. The selective
+`pin_goldens.py --refresh` run updates 119 engine-step records, 21 compiled
+references and five per-op records; this includes affected predictions below
+the existing parity tolerance. Each refreshed key is identified by the above
+source revision in the golden files' `post_freeze_pins` maps. Test matrices and
+tolerances are unchanged. A fresh parity run passes all 390 tests.
+
+[golden-review.json](golden-review.json) records the value audit, build hashes
+and the two Qwen3.8 vLLM prefill controls. Among the five per-op cases, only
+`generation_attention` latency changes; op names, other latencies, source tags
+and all energies remain identical. The complete engine-step audit preserves
+error records and energies.
+
+The refresh also picks up four pre-existing discrepancies in the two Qwen3.8
+vLLM records: 3 us in each `static_ctx` value and 5 us in each `disagg_ttft`
+value. These were checked using an isolated debug build of the original
+`c9e7363b` source and the corrected release extension, in separate processes
+with identical current Python code and profiles. Both builds return exactly
+the same prefill values. The audit records both results and the old golden
+numbers; these small prefill shifts are unrelated to the decode correction.
