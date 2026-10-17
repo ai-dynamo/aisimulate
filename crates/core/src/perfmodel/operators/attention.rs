@@ -483,9 +483,11 @@ pub struct GenerationAttentionOp {
     /// the memory-bound decode regime this never fires (arithmetic intensity
     /// ≈ 2·n/(n_kv·kv_bytes)·w FLOP/byte — w would need to exceed ~75 on
     /// H100 GQA-4 to cross the roofline); it exists to keep the short-s /
-    /// extreme-width corner honest without collected wide-query data. No
-    /// fitted constants anywhere on this channel: the sequence-basis floor
-    /// and the ideal-peak guard are both physical bounds.
+    /// extreme-width corner honest without collected wide-query data. The
+    /// sequence-basis floor and ideal-peak guard use physical bounds without
+    /// fitted constants. Also scales optional Q/K-normalization traffic by
+    /// the actual new query tokens per request; that traffic retains the
+    /// four-pass BF16 allowance and 1.1 factor described in the module docs.
     #[serde(default)]
     pub verify_query_tokens: u32,
     /// Decode context parallelism (vLLM `-dcp` / SGLang `--dcp-size`). The
