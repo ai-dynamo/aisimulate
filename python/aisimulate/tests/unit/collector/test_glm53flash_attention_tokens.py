@@ -123,6 +123,11 @@ def test_launcher_freezes_the_generator_and_needs_no_corpus(tmp_path, backend):
         account="acct",
         partition="batch",
         time="01:00:00",
+        system="gb300",
+        systems_dir=None,
+        arch="arm64",
+        gpus_per_node=None,
+        kv_cache_dtype="fp8",
     )
     attempt = prepare(args)
     manifest = json.loads((attempt / "manifest.json").read_text())

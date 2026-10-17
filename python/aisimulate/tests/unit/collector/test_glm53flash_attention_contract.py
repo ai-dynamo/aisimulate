@@ -21,12 +21,14 @@ from collector.glm53flash_attention_contract import (
     aggregate_rank_samples,
     attention_body,
     build_plan,
+    check_runtime_arch,
     context_class_sets,
     geometry,
     geometry_key,
     load_attempt,
     projection_quant_mode,
     representative_layer_is_uniform,
+    runtime_arch,
     seed_chunk,
     sha256_json,
     target_keys,
@@ -101,7 +103,7 @@ def test_fp8_representative_layer_rejects_a_differently_quantized_layer():
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("checkpoint", ["fp8", "nvfp4"])
-@pytest.mark.parametrize("tp", [1, 2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4, 8])
 def test_geometry_key_is_the_model_operator_body(backend, checkpoint, tp):
     from aisimulate_core.sdk import common
     from aisimulate_core.sdk.config import ModelConfig
@@ -204,11 +206,11 @@ def test_plan_rejects_budget_overflow_and_reports_unaligned_targets():
         build_plan(long)
 
 
-def _flat(backend="vllm", checkpoint="fp8", tp=2):
-    return geometry(config(checkpoint), backend, checkpoint, tp)
+def _flat(backend="vllm", checkpoint="fp8", tp=2, kv_cache_dtype="fp8"):
+    return geometry(config(checkpoint), backend, checkpoint, tp, kv_cache_dtype)
 
 
-def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra=None, method=None):
+def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra=None, method=None, arch="arm64"):
     method = method or {"context": KERNEL_PREFILL, "generation": KERNEL_DECODE}[phase]
     graph = TIMING_METHODS[phase][method]
     key = {
@@ -222,7 +224,7 @@ def _records(flat, phase, batch, prefix, x, latencies_by_rank, source=SHA, extra
         "source_sha256": source,
         "config_sha256": sha256_json(config(flat["checkpoint_format"])),
         "checkpoint_revision": "rev",
-        "runtime_digest": RUNTIME_IMAGES[flat["backend"]],
+        "runtime_digest": RUNTIME_IMAGES[(flat["backend"], arch)],
         "layer_id": 3,
     }
     target = f"{phase}-b{batch}-p{prefix}-x{x}"
@@ -344,6 +346,65 @@ def test_rows_the_reader_would_reject_fail_before_publication():
             validate_row(dict(row, geometry=geometry_key(dict(body, **change))))
 
 
+def test_runtime_digest_is_pinned_per_backend_and_architecture(tmp_path):
+    assert {arch for _, arch in RUNTIME_IMAGES} == {"arm64", "amd64"}
+    assert len(set(RUNTIME_IMAGES.values())) == 4
+    flat = _flat()
+    arm = _aggregate(_records(flat, "generation", 1, 0, 4096, [[1.0], [1.0]]), 2)[0]
+    amd = _aggregate(_records(flat, "generation", 1, 0, 4096, [[1.0], [1.0]], arch="amd64"), 2)[0]
+    validate_row(arm)
+    validate_row(amd)
+    assert runtime_arch("vllm", amd["runtime_digest"]) == "amd64"
+    # Another backend's digest is not this backend's pinned image.
+    with pytest.raises(ValueError, match="pinned"):
+        validate_row(dict(arm, runtime_digest=RUNTIME_IMAGES[("sglang", "arm64")]))
+    # One table is one image: arm64 and amd64 rows never mix.
+    with pytest.raises(ValueError, match="one backend/runtime"):
+        write_parquet([arm, dict(amd, batch_size=2)], tmp_path / "arch.parquet")
+    manifest = {"geometry": flat, "runtime_digest": amd["runtime_digest"], "runtime_arch": "amd64"}
+    assert check_runtime_arch(manifest, "x86_64") == "amd64"
+    with pytest.raises(RuntimeError, match="aarch64"):
+        check_runtime_arch(manifest, "aarch64")
+    with pytest.raises(RuntimeError):
+        check_runtime_arch(dict(manifest, runtime_arch="arm64"), "x86_64")
+
+
+def test_kv_cache_dtype_is_a_key_and_never_mixes_within_a_table(tmp_path):
+    with pytest.raises(ValueError, match="does not serve"):
+        _flat(backend="vllm", kv_cache_dtype="int8")
+    fp8 = _flat(backend="sglang", tp=8)
+    bf16 = _flat(backend="sglang", tp=8, kv_cache_dtype="bfloat16")
+    assert bf16["num_heads"] == 8 and bf16["kv_cache_dtype"] == "bfloat16"
+    assert attention_body(fp8, True) != attention_body(bf16, True)
+    rows = {
+        kv: _aggregate(_records(flat, "generation", 1, 0, 4096, [[1.0]] * 8, arch="amd64"), 8)
+        for kv, flat in (("fp8", fp8), ("bfloat16", bf16))
+    }
+    assert validate_row(rows["bfloat16"][0])["kv_cache_dtype"] == "bfloat16"
+    assert _table(tmp_path, rows["bfloat16"]).num_rows == 1
+    with pytest.raises(ValueError, match="KV-dtype"):
+        write_parquet(rows["fp8"] + rows["bfloat16"], tmp_path / "mixed-kv.parquet")
+    vllm = _aggregate(_records(_flat(), "generation", 1, 0, 4096, [[1.0], [1.0]]), 2)[0]
+    body = dict(json.loads(vllm["geometry"]), kv_cache_dtype="int8")
+    with pytest.raises(ValueError, match="KV dtype"):
+        validate_row(dict(vllm, geometry=geometry_key(body)))
+
+
+def test_vllm_hopper_rows_are_bf16_kv_and_never_mix_with_fp8(tmp_path):
+    # Stock vLLM 0.31.0 serves only BF16 KV on SM90 (FlashInfer SM90 sparse MLA
+    # rejects the uint8 FP8 storage), so H100/H200 rows carry kv bfloat16.
+    fp8 = _flat(backend="vllm", checkpoint="fp8", tp=8)
+    bf16 = _flat(backend="vllm", checkpoint="fp8", tp=8, kv_cache_dtype="bfloat16")
+    rows = {
+        kv: _aggregate(_records(flat, "context", 1, 0, 2048, [[1.0]] * 8, arch="amd64"), 8)
+        for kv, flat in (("fp8", fp8), ("bfloat16", bf16))
+    }
+    assert validate_row(rows["bfloat16"][0])["kv_cache_dtype"] == "bfloat16"
+    assert _table(tmp_path, rows["bfloat16"]).num_rows == 1
+    with pytest.raises(ValueError, match="KV-dtype"):
+        write_parquet(rows["fp8"] + rows["bfloat16"], tmp_path / "mixed.parquet")
+
+
 def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_len=None):
     flat = _flat()
     sweep_spec = sweep_spec or SMALL
@@ -354,7 +415,7 @@ def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_l
         "geometry": flat,
         "checkpoint_revision": "rev",
         "framework_version": RUNTIME_VERSIONS["vllm"],
-        "runtime_digest": RUNTIME_IMAGES["vllm"],
+        "runtime_digest": RUNTIME_IMAGES[("vllm", "arm64")],
         "layer_id": 3,
         "sweep": sweep_spec,
         "plan": plan,
@@ -409,7 +470,9 @@ def test_regular_and_long_context_attempts_finalize_into_one_table(tmp_path, mon
     assert pq.read_table(out).num_rows == len(target_keys(plan))
     meta = yaml.safe_load((out.parent / "collection_meta.yaml").read_text())
     table = meta["tables"]["glm53_attention_module_perf"]
-    assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES["vllm"]
+    assert meta["runtime"]["image_digest"] == RUNTIME_IMAGES[("vllm", "arm64")]
+    assert meta["runtime"]["image_arch"] == "arm64"
+    assert meta["tables"]["glm53_attention_module_perf"]["kv_cache_dtype"] == "fp8"
     assert table["rows"] == len(target_keys(plan)) and len(table["data_sha256"]) == 64
     assert table["input_tokens"] == {"source": "seeded_random_tokens", **input_token_spec(plan)}
     assert table["timing_method"] == {"context": [KERNEL_PREFILL], "generation": [KERNEL_DECODE]}
@@ -477,6 +540,11 @@ def _launch_args(tmp_path, name, **overrides):
         "account": "acct",
         "partition": "batch",
         "time": "01:00:00",
+        "system": "gb300",
+        "systems_dir": None,
+        "arch": "arm64",
+        "gpus_per_node": None,
+        "kv_cache_dtype": "fp8",
     }
     return Namespace(**{**values, **overrides})
 
@@ -499,6 +567,115 @@ def test_launch_selects_one_context_class_and_guards_vllm_alignment(tmp_path):
     unaligned.write_text(yaml.safe_dump({"common_case_values": {"glm53flash_attention": spec}}))
     with pytest.raises(SystemExit, match="kpool_align4"):
         prepare(_launch_args(tmp_path, "v", sweep=unaligned))
+
+
+def test_launch_follows_the_system_yaml_and_image_architecture(tmp_path):
+    from collector.glm53flash_attention_launch import prepare
+
+    def launch(name, **overrides):
+        attempt = prepare(_launch_args(tmp_path, name, **overrides))
+        return json.loads((attempt / "manifest.json").read_text()), (attempt / "run.sbatch").read_text()
+
+    # GB300 (NVL72, 4 GPUs/node, arm64): the NVL72 vLLM serving environment.
+    manifest, run = launch("gb300")
+    assert "#SBATCH --gres=gpu:4" in run and "NCCL_MNNVL_ENABLE=1" in run
+    assert "PYTHONNOUSERSITE=1" in run and "--no-container-mount-home" in run
+    assert manifest["serving_env"]["VLLM_USE_NCCL_SYMM_MEM"] == "1"
+    assert manifest["serving_env"]["NCCL_MNNVL_ENABLE"] == "1"
+    assert manifest["runtime_digest"] == RUNTIME_IMAGES[("vllm", "arm64")] and manifest["runtime_arch"] == "arm64"
+    assert (manifest["system"], manifest["gpus_per_node"]) == ("gb300", 4)
+    # HGX H200 (8 GPUs/node, x86): TP8 FP8; NVLS and symmetric memory stay on,
+    # MNNVL is off (the NVLink domain is one node).
+    manifest, run = launch("h200", system="h200_sxm", arch="amd64", checkpoint="fp8", config=CONFIGS["fp8"], tp=8)
+    assert "#SBATCH --gres=gpu:8" in run and "--account=acct" in run
+    assert manifest["serving_env"] == {
+        "NCCL_CUMEM_ENABLE": "1",
+        "NCCL_NVLS_ENABLE": "1",
+        "NCCL_P2P_LEVEL": "NVL",
+        "VLLM_USE_NCCL_SYMM_MEM": "1",
+    }
+    assert "NCCL_MNNVL_ENABLE" not in run and "NCCL_NVLS_ENABLE=1" in run and "VLLM_USE_NCCL_SYMM_MEM=1" in run
+    assert manifest["runtime_digest"] == RUNTIME_IMAGES[("vllm", "amd64")]
+    assert manifest["geometry"]["tp_size"] == 8 and manifest["geometry"]["num_heads"] == 8
+    assert launch("gpn", system="h200_sxm", arch="amd64", gpus_per_node=4, tp=4)[1].count("--gres=gpu:4") == 1
+    # SGLang on Hopper serves BF16 KV: the flag and the key follow the manifest.
+    manifest, run = launch(
+        "sgl",
+        backend="sglang",
+        system="h100_sxm",
+        arch="amd64",
+        checkpoint="fp8",
+        config=CONFIGS["fp8"],
+        tp=8,
+        kv_cache_dtype="bfloat16",
+    )
+    assert "--kv-cache-dtype bfloat16" in run and "fp8_e4m3" not in run
+    assert "PYTHONNOUSERSITE=1" in run
+    assert manifest["geometry"]["kv_cache_dtype"] == "bfloat16" and manifest["serving_env"] == {}
+    assert manifest["runtime_digest"] == RUNTIME_IMAGES[("sglang", "amd64")]
+    assert "--kv-cache-dtype fp8_e4m3" in launch("sgl-gb", backend="sglang", tp=2)[1]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        # FP8 weights (305.8 GiB) exceed one GB300, B300 or GB200 GPU.
+        ({"checkpoint": "fp8", "tp": 1}, "exceed one gb300 GPU"),
+        ({"checkpoint": "fp8", "tp": 1, "system": "b300_sxm", "arch": "amd64"}, "exceed one b300_sxm"),
+        # NVFP4 (190.4 GiB) exceeds one GB200 (185 GiB); FP8 TP2 exceeds H100.
+        ({"system": "gb200"}, "exceed one gb200"),
+        ({"checkpoint": "fp8", "tp": 2, "system": "h100_sxm", "arch": "amd64"}, "exceed one h100_sxm"),
+        # One attempt is one node: TP8 needs two 4-GPU NVL72 trays.
+        ({"tp": 8, "system": "gb200"}, "exceeds the 4 GPUs"),
+    ],
+)
+def test_launch_rejects_capacity_and_topology_impossibilities(tmp_path, overrides, message):
+    from collector.glm53flash_attention_launch import prepare
+
+    with pytest.raises(SystemExit, match=message):
+        prepare(_launch_args(tmp_path, "x", **overrides))
+
+
+def test_vllm_hopper_launch_serves_bf16_kv(tmp_path):
+    from collector.glm53flash_attention_launch import prepare
+
+    attempt = prepare(
+        _launch_args(
+            tmp_path,
+            "vllm-h100",
+            system="h100_sxm",
+            arch="amd64",
+            checkpoint="fp8",
+            config=CONFIGS["fp8"],
+            tp=8,
+            kv_cache_dtype="bfloat16",
+        )
+    )
+    manifest = json.loads((attempt / "manifest.json").read_text())
+    assert manifest["geometry"]["kv_cache_dtype"] == "bfloat16"
+    assert manifest["runtime_digest"] == RUNTIME_IMAGES[("vllm", "amd64")]
+
+
+def test_vllm_runner_and_worker_pass_the_key_kv_dtype_to_the_engine():
+    # The runner builds engine_args from the manifest key; the worker refuses
+    # an engine whose resolved cache_dtype differs from it.
+    runner = (ROOT / "collector/vllm/glm53flash_attention_runner.py").read_text()
+    worker = (ROOT / "collector/vllm/glm53flash_attention_worker.py").read_text()
+    assert '"kv_cache_dtype": SERVING_KV_CACHE_DTYPE[expected["kv_cache_dtype"]]' in runner
+    assert '"fp8_e4m3"' not in runner
+    assert "cache_config.cache_dtype" in worker and 'SERVING_KV_CACHE_DTYPE[expected["kv_cache_dtype"]]' in worker
+    from collector.glm53flash_attention_contract import SERVING_KV_CACHE_DTYPE
+
+    assert SERVING_KV_CACHE_DTYPE == {"fp8": "fp8_e4m3", "bfloat16": "bfloat16"}
+
+
+def test_tp1_admission_is_per_system_capacity(tmp_path):
+    from collector.glm53flash_attention_launch import prepare
+
+    # NVFP4 fits one B300 or GB300 GPU on either backend; no backend rule.
+    for name, overrides in (("b300", {"system": "b300_sxm", "arch": "amd64"}), ("sgl", {"backend": "sglang"})):
+        manifest = json.loads((prepare(_launch_args(tmp_path, name, **overrides)) / "manifest.json").read_text())
+        assert manifest["geometry"]["tp_size"] == 1
 
 
 def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
