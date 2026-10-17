@@ -186,9 +186,9 @@ nested paths. The supported namespaces are:
   fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
   rebuilding after that many retained-sample mutations.
-- `correction`: `enabled` (true), independent `sampling`, `min_observations`
+- `correction`: `enabled` (true), `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
-  (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
+  (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
 - `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
   SOL for a registered architecture, or direct interpolation for a verified
   architecture without a registered class when a profile is supplied. Without
@@ -267,14 +267,30 @@ logical store. Rectangular grids were already supported. Regression's
 `[attention, moe]`; `bins_per_axis` must have the same length, contain positive
 integers, and have a representable product. The dimension is the number of
 selected axes, independent of how many features the fit uses. Regression uses
-dynamic `log1p` retention coordinates and fits standardized feature values. Correction
-uses fixed raw workload coordinates; its one-dimensional prefill grid uses
-the product of the two axis counts. Retention evicts the oldest sample from
-the most populated cell when the store exceeds its budget.
+dynamic `log1p` retention coordinates and fits standardized feature values. Correction's
+one-dimensional prefill grid uses the product of the two axis counts. Its coordinate
+transform and bounds depend on the policy below. Balanced retention evicts the oldest
+sample from the most populated cell when the store exceeds its budget.
 
-Correction explicitly reports `feature_space: legacy_workload`. Its existing
-prefill/decode/mixed stores and median-ratio calculation remain unchanged at
-default settings. A shared role-based correction space requires separate
+| Correction field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects dynamic local correction for learned forests. `fixed` and `dynamic_local` explicitly select either policy. |
+| `estimator_config.correction.sampling.max_observations` | `64` | Maximum retained sample slots per workload kind. Dynamic local updates take `O(M log M)` time and `O(M)` temporary storage in this capacity `M`; measure update cost before increasing it. |
+
+The fixed policy uses raw workload coordinates and the configured fixed limits.
+The dynamic local policy expands `log1p` bounds as valid feedback arrives, balances
+local samples across the grid, and blends local median ratios with a recent-global
+median. Empty cells and out-of-range queries use that recent-global fallback.
+At the default capacity of 64, it reserves 48 local and 16 recent slots and expires
+samples after 128 admissions. Bounds and cached factors change only on feedback.
+See [learned-model calibration](fpm_ml/learned-forward-pass-model.md#online-correction)
+for the readiness thresholds, shrinkage, and custom-capacity behavior. The existing
+learned-model SDK adapter accepts the equivalent legacy option `correction_mode`;
+canonical native configurations use `estimator_config.correction.mode`.
+
+Correction explicitly reports `feature_space: legacy_workload` for both policies
+and retains separate prefill/decode/mixed stores. Native AIC's default policy
+and median-ratio calculation remain unchanged. A shared role-based correction space requires separate
 accuracy validation and is not accepted as a configuration value in this release.
 
 Use `regression_store_diagnostics()` for per-store counts/readiness. Summary

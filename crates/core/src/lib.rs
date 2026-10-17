@@ -35,17 +35,18 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 // the explicit `ReplayEngineConfig` alias above.
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
-    AicError, BackendKind, CorrectionConfig, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
-    ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION,
-    ForwardPassFallbackPolicy, ForwardPassMetrics, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
-    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics, ForwardPassWorkerType,
-    FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
-    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, LEARNED_SCHEMA_VERSION,
-    MemoryBreakdown, ParallelMapping, QuantizationConfig, QueuedRequestMetrics,
-    RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
+    AicError, BackendKind, CorrectionConfig, CorrectionMode, DataType, DatabaseMode,
+    ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, EstimationMode,
+    EstimatorConfig, FPM_VERSION, ForwardPassFallbackPolicy, ForwardPassMetrics,
+    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
+    ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassSplineDiagnostics,
+    ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted,
+    KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction,
+    LEARNED_SCHEMA_VERSION, MemoryBreakdown, ParallelMapping, QuantizationConfig,
+    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
+    SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,

@@ -354,9 +354,11 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
    active rank; idle steps return `Some(0.0)`. Regression-store weights never affect the
    learned path (`classify_regression_workload` is weight-independent).
 
-The online correction grid (`tune_with_fpms`) sits on top of the learned base exactly
-as on top of the native model, so a constant run-to-run offset is absorbed at run
-time.
+Online calibration (`tune_with_fpms`) multiplies the learned base by a correction
+factor. Learned models default to an expanding log-coordinate grid with local
+medians and a recent-global fallback; native AIC retains its fixed grid. See
+[the calibration contract](learned-forward-pass-model.md#online-correction) for retention,
+readiness, and the `correction_mode="fixed"` compatibility option.
 
 ## 5. Evaluation method
 

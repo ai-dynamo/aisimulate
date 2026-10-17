@@ -26,6 +26,7 @@
 mod config;
 mod correction;
 pub(crate) mod coverage;
+mod dynamic_correction;
 mod estimator;
 mod evidence;
 mod learned;
@@ -55,7 +56,7 @@ pub use model::{
     ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
-pub use options::ForwardPassPerfOptions;
+pub use options::{CorrectionMode, ForwardPassPerfOptions};
 pub use regression::ForwardPassSplineDiagnostics;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,

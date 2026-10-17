@@ -228,6 +228,7 @@ class ForwardPassPerfOptions:
     regression_ffn_token_weight: float = 1.0
     bucket_shape: tuple[int, int] | None = None
     regression_ridge_scale: float = 1e-9
+    correction_mode: str = "auto"
 
     def __new__(cls, *args: Any, **kwargs: Any) -> ForwardPassPerfOptions:
         instance = super().__new__(cls)
@@ -328,12 +329,23 @@ class RustForwardPassPerfModel:
     iter1_rank1]]``. Each backend derives its own cross-rank features, and the
     maximum positive ``wall_time`` across ranks is the latency target.
 
-    Correction grids use fixed constructor-time ranges from
+    ``config.estimator_config["correction"]["mode"]`` selects the correction
+    policy. ``"auto"`` keeps fixed correction for native estimates and selects
+    dynamic local correction for learned forests; ``"fixed"`` and
+    ``"dynamic_local"`` select either policy explicitly. The existing learned
+    adapter accepts the equivalent legacy option ``correction_mode``.
+
+    Fixed correction uses constructor-time ranges from
     ``config.estimator_config["correction"]``:
     ``max_num_tokens`` bounds ``sum_prefill_tokens`` and defaults to ``8192``,
     ``max_batch_size`` bounds ``num_decode_requests`` and defaults to ``512``,
     and ``max_kv_tokens`` bounds ``sum_decode_kv_tokens`` and defaults to
-    ``2000000``. ``min_faster_correction_factor`` places an absolute lower bound
+    ``2000000``. Dynamic local correction instead expands ``log1p`` bounds from
+    admitted feedback and uses recent global feedback for empty regions or
+    queries outside those bounds. Prediction queries do not change the grid.
+
+    Both policies apply the configured correction-factor bounds. The legacy
+    option ``min_faster_correction_factor`` places an absolute lower bound
     on corrections below ``1.0`` and must be finite and in ``(0.0, 1.0]``.
     It defaults to ``0.5``, limiting learned speedups to ``2x``.
     ``max_slower_correction_factor`` independently places an absolute upper
@@ -414,8 +426,11 @@ class RustForwardPassPerfModel:
         ``aisimulate_core.sdk.fpm_learned``). ``source`` is an artifact path,
         the artifact JSON text, or the already-parsed artifact mapping. The
         artifact binds the worker type and the ordered feature ABI; estimation is
-        the learned prediction times the native-style online correction factor
-        accumulated through ``tune_with_fpms()``. Iterations whose workload kind
+        the learned prediction times a dynamic local correction factor
+        accumulated through ``tune_with_fpms()``. Bounds expand from admitted
+        observations; out-of-domain queries use recent global feedback. Pass
+        ``options={"correction_mode": "fixed"}`` to retain the legacy fixed grid.
+        Iterations whose workload kind
         has no trained store return ``None``.
         """
         _configure_default_data_roots()

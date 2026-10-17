@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Online native-correction grid for the forward-pass perf model.
+//! Online correction policies for the forward-pass perf model.
 //!
 //! Buckets observed `(workload feature, observed_ms / native_ms)` correction
-//! samples into a fixed-bound grid and applies the local median ratio on top of
-//! the native AIC estimate.
+//! samples into the legacy fixed grid or an expanding local calibrator. The
+//! fixed policy retains its original admission and prediction behavior.
 
-use super::options::ForwardPassPerfOptions;
+use super::dynamic_correction::DynamicCorrection;
+use super::options::{CorrectionMode, ForwardPassPerfOptions};
 use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions, median_ratio};
 
 #[derive(Clone, Debug)]
-pub(crate) struct CorrectionBuckets {
+pub(crate) struct FixedCorrectionBuckets {
     samples: BucketedSamples<CorrectionObservation>,
     min_observations: usize,
     min_faster_correction_factor: Option<f64>,
@@ -23,7 +24,7 @@ struct CorrectionObservation {
     correction_factor: f64,
 }
 
-impl WithOptions for CorrectionBuckets {
+impl WithOptions for FixedCorrectionBuckets {
     fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
         Self {
             samples: BucketedSamples::new_fixed(options, axis_ranges),
@@ -34,7 +35,7 @@ impl WithOptions for CorrectionBuckets {
     }
 }
 
-impl StoreStats for CorrectionBuckets {
+impl StoreStats for FixedCorrectionBuckets {
     fn observation_count(&self) -> usize {
         self.samples.total_observations
     }
@@ -48,7 +49,7 @@ impl StoreStats for CorrectionBuckets {
     }
 }
 
-impl CorrectionBuckets {
+impl FixedCorrectionBuckets {
     pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, native_ms: f64) {
         if native_ms.is_finite() && native_ms > 0.0 && observed_ms.is_finite() && observed_ms > 0.0
         {
@@ -120,5 +121,72 @@ impl CorrectionBuckets {
                 )
             })
             .collect()
+    }
+}
+
+/// Dispatch keeps native fixed calibration unchanged while allowing learned
+/// forests to retain and calibrate observations beyond the old grid limits.
+#[derive(Clone, Debug)]
+pub(crate) enum CorrectionBuckets {
+    Fixed(FixedCorrectionBuckets),
+    Dynamic(DynamicCorrection),
+}
+
+impl WithOptions for CorrectionBuckets {
+    fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
+        match options.correction_mode {
+            CorrectionMode::DynamicLocal => {
+                Self::Dynamic(DynamicCorrection::new(options, axis_ranges.len()))
+            }
+            CorrectionMode::Auto | CorrectionMode::Fixed => {
+                Self::Fixed(FixedCorrectionBuckets::with_options(options, axis_ranges))
+            }
+        }
+    }
+}
+
+impl StoreStats for CorrectionBuckets {
+    fn observation_count(&self) -> usize {
+        match self {
+            Self::Fixed(value) => value.observation_count(),
+            Self::Dynamic(value) => value.observation_count(),
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::Fixed(value) => value.is_ready(),
+            Self::Dynamic(value) => value.is_ready(),
+        }
+    }
+}
+
+impl CorrectionBuckets {
+    pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, base_ms: f64) {
+        match self {
+            Self::Fixed(value) => value.add_observation(x, observed_ms, base_ms),
+            Self::Dynamic(value) => value.add_observation(x, observed_ms, base_ms),
+        }
+    }
+
+    pub(crate) fn correction_factor_for(&self, x: &[f64]) -> f64 {
+        match self {
+            Self::Fixed(value) => value.correction_factor_for(x),
+            Self::Dynamic(value) => value.correction_factor_for(x),
+        }
+    }
+
+    pub(crate) fn ready_bucket_count(&self) -> usize {
+        match self {
+            Self::Fixed(value) => value.ready_bucket_count(),
+            Self::Dynamic(value) => value.ready_bucket_count(),
+        }
+    }
+
+    pub(crate) fn correction_factors(&self) -> Vec<f64> {
+        match self {
+            Self::Fixed(value) => value.correction_factors(),
+            Self::Dynamic(value) => value.correction_factors(),
+        }
     }
 }
