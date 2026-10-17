@@ -365,7 +365,7 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
     let mut latency = sol_math.max(sol_mem);
     if op.use_qk_norm {
-        // Same four bf16 passes as the op-level decode extra. FPM keeps
+        // Same four-pass bf16 traffic allowance as the op-level decode extra. FPM keeps
         // fractional coordinates; speculative widths count new Q/K tokens,
         // while DCP does not multiply the local heads being normalized.
         let query_tokens =

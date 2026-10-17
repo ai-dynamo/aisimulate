@@ -942,7 +942,7 @@ def test_generation_qk_norm_is_present_in_rust_wire_spec():
     assert spec["use_qk_norm"] is True
 
 
-@pytest.mark.parametrize("batch, expected_extra_ms", [(1, 0.0033117333333333335), (8, 0.003393866666666667)])
+@pytest.mark.parametrize("batch, expected_extra_ms", [(1, 0.000011733333333333334), (8, 0.00009386666666666667)])
 def test_generation_qk_norm_contributes_latency_through_python_query(batch, expected_extra_ms):
     from aisimulate.sdk import common
     from aisimulate_core.sdk.operations.attention import GenerationAttention
@@ -956,6 +956,6 @@ def test_generation_qk_norm_contributes_latency_through_python_query(batch, expe
     normalized_result = normalized._engine_query(database, batch_size=batch, s=576, beam_width=1)
 
     # Hand-counted H200 / Qwen3-8B: 40,960 bytes/token over four bf16 Q/K
-    # passes at 3.84 TB/s plus one 3 us launch, with the existing 1.1 factor.
+    # passes at 3.84 TB/s, with the existing 1.1 factor and no fixed intercept.
     assert float(normalized_result) - float(plain_result) == pytest.approx(expected_extra_ms)
     assert normalized_result.energy == pytest.approx(plain_result.energy)

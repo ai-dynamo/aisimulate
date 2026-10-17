@@ -63,6 +63,23 @@ pub(crate) fn query_mem_op(db: &PerfDatabase, mem_bytes: f64) -> PerformanceResu
     }
 }
 
+/// Memory-traffic contribution without the generic per-op intercept. Decode
+/// Q/K normalization has fused and unfused backend paths, but the collected
+/// attention rows do not identify or time those norms. Do not turn their
+/// memory-pass count into an unsupported fixed kernel-count surcharge.
+fn query_mem_traffic(db: &PerfDatabase, mem_bytes: f64) -> PerformanceResult {
+    match db.database_mode {
+        DatabaseMode::Sol | DatabaseMode::SolFull => query_mem_op(db, mem_bytes),
+        _ => PerformanceResult::new(
+            mem_bytes
+                / (db.system_spec.gpu.mem_bw.max(1.0)
+                    * db.system_spec.gpu.mem_bw_empirical_scaling_factor.max(1e-9))
+                * 1000.0,
+            Source::Empirical,
+        ),
+    }
+}
+
 fn prefix_correction(full_s: u32, prefix: u32) -> f64 {
     if full_s == 0 {
         return 0.0;
@@ -577,10 +594,11 @@ impl GenerationAttentionOp {
             }
         }
         if self.use_qk_norm {
-            // Four bf16 memory passes over the new Q/K activations (two
-            // before the norm, two for the norm). Passes and query tokens
-            // scale bytes, not kernel launches: query the combined fused
-            // extra once so the empirical constant is not multiplied by 8.
+            // Retain the existing four-pass bf16 traffic allowance for new
+            // Q/K activations. Passes and query tokens scale bytes.
+            // Norms are outside the measured attention kernel;
+            // model their traffic without assuming a backend kernel count
+            // or reusing the generic memory-op intercept for every pass.
             // Normalize local heads before the DCP gather, and count the
             // actual query width rather than the one-KV-read sequence basis.
             let query_tokens = seq_batch as f64 * self.verify_query_tokens.max(1) as f64;
@@ -589,7 +607,7 @@ impl GenerationAttentionOp {
                 * self.head_size as f64
                 * 2.0
                 * 4.0;
-            let qk_norm = query_mem_op(db, qk_bytes).scaled(1.1);
+            let qk_norm = query_mem_traffic(db, qk_bytes).scaled(1.1);
             result = result.plus(qk_norm);
         }
         if gen_seq_imbalance_correction_scale != 1.0 {
@@ -1689,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_qk_norm_counts_one_launch_and_all_query_tokens() {
+    fn generation_qk_norm_counts_traffic_without_a_launch_intercept() {
         let root = PathBuf::from(REPO_ROOT_HINT)
             .join("../../python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&root, "h200_sxm", "vllm", "0.24.0").unwrap();
@@ -1706,8 +1724,8 @@ mod tests {
 
         // Hand calculation for H200 / Qwen3-8B: each token has 5,120 Q+K
         // bf16 elements. Four memory passes move 40,960 bytes. At 3.84 TB/s
-        // effective bandwidth, the 1.1-corrected byte term is 11.7333 ns/token;
-        // the single 3 us launch becomes 3.3 us, independent of batch/KV.
+        // effective bandwidth, the 1.1-corrected byte term is 11.7333 ns/token.
+        // No fixed intercept is inferred from the number of memory passes.
         for mode in [
             DatabaseMode::Silicon,
             DatabaseMode::Hybrid,
@@ -1717,6 +1735,11 @@ mod tests {
         ] {
             db.database_mode = mode;
             let is_sol = matches!(mode, DatabaseMode::Sol | DatabaseMode::SolFull);
+            assert_eq!(query_mem_traffic(&db, 0.0).latency_ms, 0.0);
+            if !is_sol {
+                // Standalone memory ops retain their existing intercept.
+                assert_eq!(query_mem_op(&db, 0.0).latency_ms, 0.003);
+            }
             for batch in [1, 8, 32] {
                 for kv in [64, 576, 4096] {
                     let plain = base.query(&db, batch, kv, 1.25).unwrap();
@@ -1724,7 +1747,7 @@ mod tests {
                     let per_layer = if is_sol {
                         batch as f64 * 0.000009386666666666667
                     } else {
-                        0.0033 + batch as f64 * 0.000011733333333333334
+                        batch as f64 * 0.000011733333333333334
                     };
                     assert!(
                         (with_norm.latency_ms - plain.latency_ms - per_layer * 36.0 * 1.25).abs()

@@ -5,64 +5,107 @@ SPDX-License-Identifier: Apache-2.0
 
 # Decode Q/K normalization accounting
 
-This CPU-only reproduction addresses [AISimulate issue #434](https://github.com/ai-dynamo/aisimulate/issues/434).
-The base is `c9e7363bf5983b980fe6622f7b064ee7adff5f5d`. Both runs use the checked-in
-H200/vLLM 0.24.0 profiles, BF16 activations/KV, tensor parallelism 1, and the
-canonical `RustForwardPassPerfModel.best_available` interface with explicit
-`op_level` estimation. No GPU experiment or model weights are required.
+CPU-only reproduction and source audit for [AISimulate issue #434](https://github.com/ai-dynamo/aisimulate/issues/434).
+The baseline is `c9e7363bf5983b980fe6622f7b064ee7adff5f5d`. Both prediction runs
+use checked-in H200/vLLM 0.24.0 profiles, BF16 activations/KV, tensor parallelism
+1, and `RustForwardPassPerfModel.best_available` with explicit `op_level`
+estimation. No GPU experiments or model weights are needed.
 
-## Accounting
+## Backend audit
 
-The old decode extra multiplies the complete empirical memory-op latency,
-including its constant, by memory-pass counts. Two Q/K contributions, each
-scaled by 2, then by 2 and 1.1, charge the constant 8.8 times. On H200 this
-alone adds 26.4 us per layer. Its byte term also omits the query-token count.
+A universal one-kernel assumption is **not supported**:
 
-The corrected model retains the existing four BF16 memory passes and 1.1
-correction. It combines their traffic before making one memory-op query:
+| Backend and immutable source | Q/K normalization path |
+| --- | --- |
+| [vLLM 0.24.0](https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/vllm/model_executor/models/qwen3.py#L147) | Qwen3 makes separate Q and K RMSNorm calls. The optional Q/K-norm + RoPE fusion is [off by default](https://github.com/vllm-project/vllm/blob/ee0da84ab9e04ac7610e28580af62c365e898389/docs/design/fusions.md#qk-norm--rope-enable_qk_norm_rope_fusion). |
+| [vLLM 0.31.0](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/config/vllm.py#L267) | Q/K-norm + RoPE fusion remains disabled in the optimization defaults. This tag is an adjacent source reference; the issue's 0.31.1-dev runtime has no exact source SHA. |
+| [SGLang 0.5.14](https://github.com/sgl-project/sglang/blob/49e384ce9d304648e9959666ecb8ce8cd98d0deb/python/sglang/srt/models/utils.py#L438) | `apply_qk_norm` can call a fused in-place Q/K kernel on eligible CUDA inputs. Deterministic inference, compiler choice, dtype/head size and other eligibility checks affect selection. Its fallback calls Q and K norms separately, optionally on different streams. |
+| [TensorRT-LLM 1.3.0rc20](https://github.com/NVIDIA/TensorRT-LLM/blob/c25c23f71786bad54d192893d696ce8043426eca/tensorrt_llm/_torch/modules/qk_norm_attention.py#L154) | `QKNormRoPEAttention` defaults to fused Q/K norm + RoPE. Disabling fusion takes a separate-Q/K path, which may execute the calls in parallel. |
+
+CUDA-graph replay does not establish a single normalization kernel or zero
+normalization execution time. These implementations provide fused and unfused
+paths; a backend name and version alone do not identify the active path.
+[backend-review.json](backend-review.json) retains immutable commits, inspected
+source-file fingerprints and the profile evidence boundary. No upstream code
+is copied into this change.
+
+The vLLM collector times its low-level attention closure with already-produced
+Q/K/V inputs (`collector/vllm/collect_attn.py`, `run`), optionally including KV
+cache update. The SGLang and TensorRT-LLM collectors likewise pass Q/K/V to
+attention rather than timing the enclosing Qwen normalization layers. The
+shared helper defaults to CUDA-graph timing. These describe the inspected
+collector code, not an assertion that a legacy parquet records its exact
+historical collector revision or graph mode.
+
+The H200 attention parquet has 63,500 rows, legacy collection provenance,
+shape/dtype/kernel-source coordinates and latency. It has no Q/K-normalization
+or fusion-policy coordinate, per-norm timing, or norm launch count. The issue
+reports whole-step H200 measurements, not a per-kernel normalization trace.
+Neither source can calibrate one generic memory-op intercept per physical norm
+kernel.
+
+## Correction and boundary
+
+The old decode extra charges the empirical memory-op intercept 8.8 times per
+layer, giving 26.4 us on H200 before accounting for bytes. Its byte term omits
+the query-token count.
+
+The corrected extra models **bandwidth-only normalization traffic**:
 
 ```text
 query_tokens = sequence_batch * max(verify_query_tokens, 1)
 bytes = query_tokens * (local_query_heads + local_kv_heads) * head_dim * 2 * 4
-extra_ms = 1.1 * (bytes / effective_bandwidth + constant_seconds) * 1000
+extra_ms = 1.1 * bytes / effective_bandwidth * 1000
 ```
 
-One constant models the combined fused Q/K extra per layer. Memory passes and
-query tokens multiply bytes, rather than launches. This is an analytical
-one-launch assumption, not a measured claim about every backend's kernel
-fusion. The common decode formula changes for every backend; there is no
-Qwen-, H200-, or vLLM-specific fitted offset. Maintainer review may prefer a
-backend-specific kernel-count policy when such data becomes available.
+The existing four-pass BF16 traffic allowance and 1.1 correction are retained.
+They are analytical modeling choices, not a claim that the source audit proves
+four physical DRAM passes. Passes and tokens scale bytes. No fixed intercept
+is inferred from an unknown normalization kernel count. This uses the issue's
+suggested option of dropping the generic constant for the decode extra.
 
-Q/K activations are normalized on local heads before the DCP query gather.
-Speculative attention counts every real new query token even though KV reads
-use the request count. The FPM SOL leaf retains fractional coordinates and the
-same byte count, with peak bandwidth and no empirical constant. Prefill and
-standalone memory-op accounting are unchanged.
+The component is deliberately incomplete: it does not predict separate fixed
+norm-kernel execution costs or distinguish fused/unfused runtime configurations.
+It does not assert that those costs are zero. A calibrated residual term would
+need normalization-specific timing and execution identity. No model-, system-
+or backend-specific fitted offset is introduced, and the common formula applies
+to each backend. These results are prediction changes, not certification of
+whole-model accuracy on every backend.
 
-## Reproduction and interpretation
+Normalization uses local heads before the DCP query gather and counts all real
+new speculative query tokens. The FPM SOL leaf keeps fractional inputs and the
+same traffic allowance at peak bandwidth. Prefill and standalone memory-op
+intercepts are unchanged. No schema, public config field or profile data changes.
 
-From the repository root, build each matching source revision and run:
+Host-cost assessment: the changed path performs one bounded scalar traffic
+calculation per generation-attention query, replacing the baseline's two
+memory-op queries and extra result composition. It adds no allocations,
+caches, indexes, preparation or retained memory; its host work does not loop
+over tokens. Normalization-disabled paths do not call the new helper. This is
+a source-level cost bound, not a measured host speedup. Table lookup and
+preparation, first-query and warm-query cache boundaries remain unchanged.
+
+## Reproduction
+
+Build each matching revision, then run from the repository root:
 
 ```bash
 uv sync --project python/aisimulate --extra dev --reinstall-package aisimulate
 python/aisimulate/.venv/bin/python benchmarks/evidence/accuracy/qk-norm/reproduce.py
 ```
 
-`before.jsonl` and `after.jsonl` retain all 12 paired points: two Qwen3 models,
-batch sizes 1 and 8, and KV lengths 64, 576 and 4096. The base predates this
-script, so save the script outside the checkout before switching revisions.
+The baseline predates the script; save it outside the checkout before switching
+revisions. `before.jsonl` and `after.jsonl` retain 12 paired points: two Qwen3
+models, batches 1 and 8, and KV lengths 64, 576 and 4096.
 
-`attention_ms` and `decode_step_ms` are simulator predictions. The
-`nearest_kernel_ms` reference comes from the first collected attention-table
-step at or above KV-1, multiplied by layer count. It excludes Q/K norm and
-other model operations, and is not the exact interpolated/smoothed table query.
-In particular KV 576 uses table step 1023. Differences from this reference
-must not be interpreted as full-model prediction error or exact norm cost.
-The issue's serving measurements use a different vLLM runtime and a workload
-distribution; these fixed-shape CPU results do not reproduce its serving MAPE.
+`attention_ms` and `decode_step_ms` are predictions. `nearest_kernel_ms` is the
+first attention-table row at or above KV-1 times layer count, excluding Q/K
+norm and other model ops. It is not the exact smoothed/interpolated query; KV
+576 uses table step 1023. Its difference from a prediction is not a measured
+full-model error or exact norm cost. The issue's serving runtime/workload differ
+from these fixed-shape vLLM 0.24.0 queries.
 
-Profile SHA-256 fingerprints (unchanged between runs):
+Profile SHA-256 (unchanged):
 
 ```text
 h200_sxm.yaml
@@ -71,68 +114,28 @@ generation_attention_perf.parquet (h200_sxm/attention/vllm/0.24.0)
 ea1b6f802bb7b0792a6eaa9b533d5728c2b230749b9673f6553743ddb78837b9
 ```
 
-At batch 1 and KV 576, the full decode prediction changes as follows:
-
-| Model | Before (ms) | After (ms) | Reduction (ms) |
-| --- | ---: | ---: | ---: |
-| Qwen3-8B | 6.0058218615 | 5.1742218615 | 0.8316 |
-| Qwen3-0.6B | 2.2804456185 | 1.6336456185 | 0.6468 |
-
-Across all 12 points, changes to the full decode prediction equal the changes
-to `generation_attention`; the nearest table rows and source tags are unchanged.
-
 ## Regression checks
 
-Before the correction, both new Rust Q/K norm tests and both parametrized
-Python binding cases fail. The binding observes 0.0264117333 ms per layer at
-both batch sizes, instead of the independently counted 0.0033117333 ms (batch
-1) and 0.0033938667 ms (batch 8).
+The expected norm traffic is hand-counted independently: Qwen3-8B has 5,120 Q+K
+BF16 elements per new token. The four-pass allowance moves 40,960 bytes/token;
+at H200's 3.84 TB/s effective bandwidth and the 1.1 factor, this is
+0.0000117333333333 ms/token. There is no fixed intercept. Standalone memory
+operations retain their 0.003 ms intercept at zero bytes.
 
-The Rust checks cover SILICON, HYBRID, EMPIRICAL, SOL and SOL_FULL, three batch
-sizes and three KV lengths, layer/imbalance scaling, energy/provenance, SOL
-memory components, local heads under DCP, FP8 KV with BF16 Q/K activations,
-real speculative query widths, and fractional FPM inputs.
+The Rust checks cover SILICON, HYBRID, EMPIRICAL, SOL and SOL_FULL; three batches
+and three KV lengths; layer/imbalance scaling; energy/provenance; SOL memory
+components; DCP local heads; FP8 KV with BF16 Q/K; speculative query widths;
+and fractional FPM inputs. Python checks exercise the real native bindings,
+canonical configuration round trips and speculative consumers.
 
-Validation on corrected model revision
-`66327986403c1d6ef9ccf345e8d9d3eaeec176b3`:
+The golden refresh uses `pin_goldens.py --refresh`; record source commits are
+retained in `post_freeze_pins`, with no test-matrix or tolerance changes.
+[golden-review.json](golden-review.json) records the complete value audit and
+validation counts. In the five per-op cases, only generation-attention latency
+changes; op sets, other latencies, source tags and energies are identical.
 
-```bash
-# 318 passed
-cargo test -p aisimulate-core --lib perfmodel::operators
-
-# 100 passed
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
-  python/aisimulate/tests/unit/sdk/database/test_attention_lanes.py \
-  python/aisimulate/tests/unit/sdk/test_forward_pass_speculation.py \
-  python/aisimulate/tests/cross_package/test_single_oracle_contract.py
-
-# 26 passed, 65 deselected
-python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
-  python/aisimulate/tests/unit/sdk/test_rust_engine_step.py -k canonical
-
-# 390 passed, after the deliberate golden refresh
-python/aisimulate/.venv/bin/python -m pytest -q -n 4 -p no:timeout \
-  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
-  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
-```
-
-The first parity run reported 125 failures and 265 passes. The selective
-`pin_goldens.py --refresh` run updates 119 engine-step records, 21 compiled
-references and five per-op records; this includes affected predictions below
-the existing parity tolerance. Each refreshed key is identified by the above
-source revision in the golden files' `post_freeze_pins` maps. Test matrices and
-tolerances are unchanged. A fresh parity run passes all 390 tests.
-
-[golden-review.json](golden-review.json) records the value audit, build hashes
-and the two Qwen3.8 vLLM prefill controls. Among the five per-op cases, only
-`generation_attention` latency changes; op names, other latencies, source tags
-and all energies remain identical. The complete engine-step audit preserves
-error records and energies.
-
-The refresh also picks up four pre-existing discrepancies in the two Qwen3.8
-vLLM records: 3 us in each `static_ctx` value and 5 us in each `disagg_ttft`
-value. These were checked using an isolated debug build of the original
-`c9e7363b` source and the corrected release extension, in separate processes
-with identical current Python code and profiles. Both builds return exactly
-the same prefill values. The audit records both results and the old golden
-numbers; these small prefill shifts are unrelated to the decode correction.
+The refreshed Qwen3.8 vLLM records also contain four pre-existing discrepancies:
+3 us in each `static_ctx` value and 5 us in each `disagg_ttft` value. An isolated
+build of the original source and the corrected release return identical prefill
+values. The audit retains both values and the old goldens; these small shifts
+are unrelated to the decode correction.
