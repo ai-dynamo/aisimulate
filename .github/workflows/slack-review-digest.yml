@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Slack weekly review digest
+name: Slack review digest
 
 on:
   schedule:
-    - cron: '7 17 * * 1'
+    - cron: '0 9 * * 1,4'
       timezone: America/Los_Angeles
   workflow_dispatch:
     inputs:
@@ -37,6 +37,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SLACK_REVIEW_DIGEST_WEBHOOK_URL: ${{ secrets.SLACK_REVIEW_DIGEST_WEBHOOK_URL }}
+          SLACK_REVIEW_ROTATION: ${{ vars.SLACK_REVIEW_ROTATION }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: |
           args=()

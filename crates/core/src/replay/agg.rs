@@ -27,7 +27,8 @@ use super::telemetry::{
 use super::{
     components::{
         AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode, ReplayAdmissionMetadata,
-        ReplayEngineObservation, ReplayReadyArrival, TrafficAccumulators,
+        ReplayEngineObservation, ReplayReadyArrival, TokenizationLatency, TokenizationStage,
+        TrafficAccumulators,
     },
     state::AggRequestState,
 };
@@ -66,6 +67,8 @@ where
     evidence: ReplayEvidenceCollector,
     events: BinaryHeap<SimulationEvent<Observation::Batch>>,
     placement: PlacementPolicyImpl,
+    /// Optional per-worker tokenization between placement and the engine.
+    tokenization: Option<TokenizationStage<(DirectRequest, Uuid, usize)>>,
     progress: ReplayProgress,
     stats: AggRuntimeStats,
     /// Latest forward pass metric per worker/rank since the previous scaling tick.
@@ -153,6 +156,7 @@ where
             evidence: ReplayEvidenceCollector::default(),
             events: BinaryHeap::new(),
             placement,
+            tokenization: None,
             progress,
             stats: AggRuntimeStats::default(),
             fpm_buffer: LatestFpmBuffer::default(),
@@ -220,6 +224,12 @@ where
         self
     }
 
+    /// Tokenize each placed request on its worker before the engine sees it.
+    pub(crate) fn with_tokenization(mut self, latency: Option<TokenizationLatency>) -> Self {
+        self.tokenization = latency.map(TokenizationStage::new);
+        self
+    }
+
     /// Attach a scaling policy and enable tick-scoped FPM collection.
     pub(crate) fn with_scaling_policy(mut self, policy: Box<dyn ReplayScalingPolicy>) -> Self {
         self.collect_fpm = true;
@@ -245,7 +255,9 @@ where
 
     /// Count all requests currently consuming cluster capacity, including router-queued ones.
     pub(crate) fn cluster_in_flight(&self) -> usize {
-        self.engine.in_flight() + self.placement.pending_count()
+        self.engine.in_flight()
+            + self.placement.pending_count()
+            + self.tokenization.as_ref().map_or(0, TokenizationStage::len)
     }
 
     /// Preserve the live `(worker_id, dp_rank)` identity when forwarding a
@@ -271,7 +283,24 @@ where
         uuid: Uuid,
         worker_idx: usize,
     ) -> anyhow::Result<()> {
-        self.engine.dispatch(worker_idx, request, self.now_ms)?;
+        if let Some(tokenization) = &mut self.tokenization {
+            let (logical_worker_id, _) =
+                self.engine.rank_identity(worker_idx).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "offline replay placement references unknown scheduler {worker_idx}"
+                    )
+                })?;
+            let input_tokens = request.tokens.len();
+            tokenization.enter(
+                self.now_ms,
+                logical_worker_id,
+                input_tokens,
+                uuid,
+                (request, uuid, worker_idx),
+            )?;
+        } else {
+            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+        }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
         // worker that served the request; prefill_worker_idx stays None,
@@ -468,8 +497,13 @@ where
                     (deadline > self.now_ms).then_some(deadline)
                 });
         let next_arrival_ms = choose_next_timestamp(
-            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-            profile_deadline,
+            choose_next_timestamp(
+                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                profile_deadline,
+            ),
+            self.tokenization
+                .as_ref()
+                .and_then(TokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -722,6 +756,20 @@ where
         Ok(released_any)
     }
 
+    /// Hand every request whose tokenization has finished to its worker's engine.
+    fn release_tokenized(&mut self) -> anyhow::Result<bool> {
+        let Some(tokenization) = &mut self.tokenization else {
+            return Ok(false);
+        };
+        let released = tokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (tokenized_ms, (request, uuid, worker_idx)) in released {
+            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+            self.collector.on_tokenized(uuid, tokenized_ms);
+        }
+        Ok(changed)
+    }
+
     /// Start passes on every idle worker that can make progress at the current timestamp.
     fn drive_ready_workers(&mut self) -> anyhow::Result<bool> {
         let mut changed = false;
@@ -887,6 +935,7 @@ where
                 return Ok(());
             }
             changed |= self.release_ready_arrivals()?;
+            changed |= self.release_tokenized()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
                 return Ok(());
@@ -1036,12 +1085,20 @@ where
                 .get(&uuid)
                 .context("profile cancellation lost request state")?;
             let scheduler_id = state.scheduler_id();
-            let busy = if let Some(scheduler_id) = scheduler_id {
+            // A request still being tokenized has not reached its engine.
+            let tokenizing = self
+                .tokenization
+                .as_mut()
+                .is_some_and(|tokenization| tokenization.cancel(uuid));
+            let busy = if tokenizing {
+                false
+            } else if let Some(scheduler_id) = scheduler_id {
                 self.engine.request_has_committed_pass(scheduler_id, uuid)?
             } else {
                 false
             };
-            if let Some(scheduler_id) = scheduler_id {
+            if tokenizing {
+            } else if let Some(scheduler_id) = scheduler_id {
                 let effects = self.engine.apply_command(
                     scheduler_id,
                     Command::CancelRequest {
@@ -2744,6 +2801,11 @@ where
                     bail!("offline replay queued request {uuid} was absent from its router");
                 }
             }
+            super::state::AggRequestPhase::Running
+                if self
+                    .tokenization
+                    .as_mut()
+                    .is_some_and(|tokenization| tokenization.cancel(uuid)) => {}
             super::state::AggRequestPhase::Running => {
                 let scheduler_id = scheduler_id.ok_or_else(|| {
                     anyhow::anyhow!("offline replay running request {uuid} has no scheduler")

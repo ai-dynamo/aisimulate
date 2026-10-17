@@ -198,6 +198,20 @@ agentic traces it scales root-node timestamps and the combined dependency delay 
 `speedup` is deliberately rejected with `load.type: concurrency`: concurrency replaces authored
 first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 
+<a id="same-timestamp-admission"></a>
+
+### Same-timestamp admission
+
+Rows with the same timestamp are admitted in file order. More exactly, requests that become ready at
+the same virtual time reach placement ordered by the file position of their session's first row, then
+by turn. Placement and each engine's scheduler then see them in that order. Nothing reorders a burst
+by prompt length, so a long prompt early in a burst is scheduled before the short prompts behind it.
+
+A serving engine tokenizes each request before its scheduler sees it, and longer prompts take
+longer. To model this, set [`engine.tokenization`](engine/README.md#tokenization). Depending on how
+many requests the engine tokenizes at once, a burst then reaches the engine either spread out in
+arrival order, or with short prompts ahead of long ones.
+
 <a id="trace-format-compatibility"></a>
 
 ## Trace Format Compatibility

@@ -625,6 +625,7 @@ struct TraceRequestStats {
     authored_id: Option<String>,
     play_id: Option<String>,
     dispatched_at_ms: Option<f64>,
+    tokenized_ms: Option<f64>,
     metadata: Value,
     agentic: Option<AgenticRuntimeIdentity>,
     detail: Option<Box<PerRequestDetail>>,
@@ -844,6 +845,10 @@ pub struct PerRequestRecord {
     pub uuid: String,
     pub arrival_time_ms: f64,
     pub dispatched_at_ms: Option<f64>,
+    /// When tokenization finished and the request reached its worker's
+    /// engine. Present only when tokenization latency is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokenized_ms: Option<f64>,
     pub first_admit_ms: Option<f64>,
     pub terminal_time_ms: f64,
     pub first_token_ms: Option<f64>,
@@ -1271,6 +1276,7 @@ impl TraceCollector {
                 authored_id: None,
                 play_id: None,
                 dispatched_at_ms: None,
+                tokenized_ms: None,
                 metadata: Value::Null,
                 agentic: None,
                 first_admission_reused_input_tokens: 0,
@@ -1311,6 +1317,15 @@ impl TraceCollector {
             stats.authored_id = Some(request_id);
             stats.play_id = Some(play_id);
             stats.dispatched_at_ms = Some(dispatched_at_ms);
+        }
+    }
+
+    pub fn on_tokenized(&mut self, uuid: Uuid, tokenized_ms: f64) {
+        if !self.capture_per_request {
+            return;
+        }
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.tokenized_ms = Some(tokenized_ms);
         }
     }
 
@@ -2047,6 +2062,7 @@ impl TraceCollector {
                 uuid: uuid.to_string(),
                 arrival_time_ms: stats.arrival_time_ms,
                 dispatched_at_ms: stats.dispatched_at_ms,
+                tokenized_ms: stats.tokenized_ms,
                 first_admit_ms: stats.first_admit_ms,
                 terminal_time_ms,
                 first_token_ms,
@@ -2100,6 +2116,7 @@ impl TraceCollector {
                 record.terminal_time_ms -= origin;
                 for timestamp in [
                     &mut record.dispatched_at_ms,
+                    &mut record.tokenized_ms,
                     &mut record.first_admit_ms,
                     &mut record.first_token_ms,
                     &mut record.last_token_ms,

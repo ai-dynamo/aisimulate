@@ -45,8 +45,26 @@ enum ExecutionPayload {
         capture_performance_diagnostics: bool,
         #[serde(default)]
         determinism: ReplayDeterminism,
+        #[serde(default)]
+        tokenization: Option<TokenizationPayload>,
     },
     Legacy(ReplaySpec),
+}
+
+/// Per-worker tokenization applied between placement and the engine.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenizationPayload {
+    #[serde(default = "default_tokenization_workers")]
+    workers: usize,
+    #[serde(default)]
+    base_ms: f64,
+    #[serde(default)]
+    per_input_token_ms: f64,
+}
+
+fn default_tokenization_workers() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1802,8 +1820,9 @@ fn run_with_input(
     input: Option<ReplayRuntimeInput>,
     capture_artifacts: bool,
     determinism: ReplayDeterminism,
+    tokenization: Option<TokenizationPayload>,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
-    let replayer = match input {
+    let mut replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
         None => Replayer::new(spec, factory)?,
     }
@@ -1811,6 +1830,13 @@ fn run_with_input(
         determinism,
         ..ReplayCaptureOptions::default()
     });
+    if let Some(tokenization) = tokenization {
+        replayer = replayer.with_tokenization(
+            tokenization.workers,
+            tokenization.base_ms,
+            tokenization.per_input_token_ms,
+        )?;
+    }
     if capture_artifacts {
         let (report, artifacts) =
             replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
@@ -2290,20 +2316,24 @@ fn replay_fpm_coverage(
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics, determinism) =
+    let (mut spec, mut traffic, capture_performance_diagnostics, determinism, tokenization) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
                 spec,
                 traffic,
                 capture_performance_diagnostics,
                 determinism,
+                tokenization,
             } => (
                 spec,
                 traffic.map(|t| *t),
                 capture_performance_diagnostics,
                 determinism,
+                tokenization,
             ),
-            ExecutionPayload::Legacy(spec) => (spec, None, false, ReplayDeterminism::default()),
+            ExecutionPayload::Legacy(spec) => {
+                (spec, None, false, ReplayDeterminism::default(), None)
+            }
         };
     ensure!(
         spec.max_sim_time_ms.is_none()
@@ -2403,7 +2433,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input, capture_artifacts, determinism)
+            run_with_input(spec, factory, input, capture_artifacts, determinism, tokenization)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -2527,6 +2557,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 input,
                 capture_artifacts,
                 determinism,
+                tokenization,
             )
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }

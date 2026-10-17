@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
@@ -22,6 +22,8 @@ from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
+# Dataclass field metadata: leave the field out of canonical JSON while it is None.
+OMIT_IF_NONE = "aisimulate.omit_if_none"
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,9 @@ class BackendDeploymentSpec:
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
     forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
+    # Per-worker tokenization: ``{"workers", "base_ms", "per_input_token_ms"}``.
+    # Omitted from canonical JSON when unset, so existing spec identities hold.
+    tokenization: dict[str, JSONValue] | None = field(default=None, metadata={OMIT_IF_NONE: True})
 
 
 @dataclass(frozen=True)
@@ -336,6 +341,7 @@ class RunnerCapabilities:
     supports_agentic_profile: bool = False
     supports_grouped_kv_cache: bool = False
     supports_generic_speculation: bool = False
+    supports_tokenization: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -484,6 +490,11 @@ class RunnerCapabilities:
                     raise ValueError(
                         "runner does not support state_cache; select a stack that advertises this capability"
                     )
+        if deployment.tokenization is not None:
+            if not self.supports_tokenization:
+                raise ValueError("runner does not support engine.tokenization; use --stack engine")
+            if spec.execution_mode != "offline":
+                raise ValueError("engine.tokenization requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:
@@ -621,7 +632,11 @@ def _jsonable(value: Any) -> JSONValue:
     if isinstance(value, BaseModel):
         return _jsonable(value.model_dump(mode="json"))
     if is_dataclass(value) and not isinstance(value, type):
-        return _jsonable(asdict(value))
+        return {
+            item.name: _jsonable(getattr(value, item.name))
+            for item in fields(value)
+            if not (item.metadata.get(OMIT_IF_NONE) and getattr(value, item.name) is None)
+        }
     if isinstance(value, Enum):
         return _jsonable(value.value)
     if isinstance(value, Mapping):

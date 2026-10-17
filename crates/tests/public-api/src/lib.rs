@@ -773,6 +773,7 @@ pub fn rebuild_replay_report_literals(
             uuid: record.uuid,
             arrival_time_ms: record.arrival_time_ms,
             dispatched_at_ms: record.dispatched_at_ms,
+            tokenized_ms: record.tokenized_ms,
             first_admit_ms: record.first_admit_ms,
             terminal_time_ms: record.terminal_time_ms,
             first_token_ms: record.first_token_ms,
