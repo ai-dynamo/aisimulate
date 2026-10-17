@@ -413,7 +413,10 @@ engine cache block size can produce zero hits.
 
 ### AFD translation
 
-AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
+The legacy compatibility CLI no longer supports `--estimate-mode afd` or
+`--serving-mode afd`; `--serving-mode all` now includes only agg and disagg.
+Use the unified `aisimulate recommend` and `aisimulate predict` commands for AFD.
+The former AIC AFD batch-size limits map to an explicit `engine.afd.a_batch_size`.
 `phase: decode` and `combined_with_pd: true` select decode-side AFD with a regular
 prefill companion. The total GPU budget includes attention, FFN, and companion
 pools. This is analytical fixed-length synthetic traffic, not event-level AFD.
@@ -560,12 +563,17 @@ metadata does not load the native extension.
 
 | Previous interface | Current interface | Required caller change |
 | --- | --- | --- |
-| Legacy `sweep_agg`, `sweep_disagg`, `sweep_afd` | `aisimulate.sweeper.Sweeper(...).run(config)` | All three remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_agg`, `sweep_disagg` | `aisimulate.sweeper.Sweeper(...).run(config)` | Both remain callable as deprecated compatibility APIs. For new code, supply a runner factory and typed search configuration; workload/search semantics differ. See the [Sweeper guide](../sweeper/README.md). |
+| Legacy `sweep_afd`, `afd_pareto`, and AFD `Task` fields | Unified CLI with `engine.afd` | These legacy interfaces are removed. Use the [AFD workflow](#afd-translation). |
 | Flat Rust `build_aic_engine` adapter | `aisimulate_core::perfmodel::AicEngineBuilder` | Construct through the builder; the flat adapter is removed. |
 | Positional worker/options and separate estimator constructors | `RustForwardPassPerfModel.best_available(config)` / Rust `ForwardPassPerfModel::best_available(config)` | Pass one complete `ForwardPassPerfModelConfig`; use its Rust constructor or Python SDK config class. |
 | Flat `EngineConfig` plus `ForwardPassPerfOptions` | Canonical `ForwardPassPerfModelConfig` | Convert saved legacy values with the explicit migration helper below. |
 
 ### Saved performance-model configuration
+
+Saved agg/disagg `exp_config.yaml` files remain loadable: `Task.from_yaml()`
+ignores removed legacy `afd_*` fields with a deprecation warning.
+Other unknown keys remain errors.
 
 Use `ForwardPassPerfModelConfig.from_legacy_engine_config(old_config,
 worker_type, old_options, allow_regression=False)` to convert a saved flat

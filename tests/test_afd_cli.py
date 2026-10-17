@@ -20,6 +20,39 @@ from aisimulate.runner import AFDCompanionTiming, AICAFDCompanionPerformanceMode
 from aisimulate.sweeper import AFDLayerTimes
 
 
+def test_afd_recommendation_preserves_oom_context_guidance(monkeypatch) -> None:
+    from aisimulate import supervision
+    from aisimulate.sweeper import afd_measure
+
+    # Keep the measurement stub in this process; no replay runs for an OOM candidate.
+    monkeypatch.setattr(supervision, "in_supervised_process", lambda: True)
+    monkeypatch.setattr(
+        afd_measure.AFDInferenceSession,
+        "run_afd",
+        lambda *args, **kwargs: SimpleNamespace(check_oom=lambda: True),
+    )
+    raw = _pure_prediction()
+    raw["engine"]["afd"].pop("n_a_nodes")
+    raw["engine"]["afd"].pop("n_f_nodes")
+    raw["engine"]["backend_version"] = "1.3.0rc20"
+    raw["optimization"] = {"constraints": {"max_candidate_gpus": 16}}
+    raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1}
+    result = run_recommendation(
+        CoreRecommendationConfig.model_validate(raw),
+        stack="engine",
+        runner_factory=EngineReplayRunnerFactory(),
+        show_progress=False,
+    )
+
+    assert result.counts.evaluated == 1
+    assert result.counts.feasible == 0
+    assert len(result.candidates) == 1
+    reason = result.candidates[0].reason
+    assert "out_of_memory" in reason
+    assert "Check engine.context_length" in reason
+    assert "reduce KV memory" in reason
+
+
 class _AFDPerformanceModel:
     def __init__(self) -> None:
         self.requests = []
