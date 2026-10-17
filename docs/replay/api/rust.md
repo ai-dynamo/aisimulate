@@ -60,6 +60,18 @@ aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
 
+A request may author `kv_hints: {"source_worker": W, "source_dp_rank": R}`, the
+worker and attention-DP rank that hold a prefix of its prompt, as when a client
+attaches a `kv.fetch` hint. It is omitted when absent. When replay starts, an
+`R` outside the `dp_size` of the pool that places the request (aggregated, or
+prefill in P/D) fails with `ReplayError::InvalidSpec`. The built-in round-robin
+placement ignores a hint whose source worker is unknown, not yet ready, draining
+or removed, and the P/D decode pool ignores every hint. Only a pool that
+configures `kvcr` acts on hints ([KV cache](../engine/kv-cache.md#kvcr-peer-fetch));
+elsewhere they change nothing. Engines receive the resolved source as
+`engine::Request::kv_hint` (`KvHintSource { worker_id, dp_rank }`), which never
+names the receiving rank.
+
 `ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce
 feature combinations beyond the generic spec validator. Grouped-cache, G2/G3,

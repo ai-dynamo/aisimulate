@@ -14,18 +14,17 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::g3_offload::G3Restore;
 use crate::engine::common::protocols::PrefillCost;
 use crate::engine::common::sequence::RequestSequence;
 use crate::engine::host_offload::{
     CompletedTransfer, G2Binding, HostBlockKey, HostBlockMeta, HostClient, HostOffloadObservation,
-    HostOffloadObservationData, HostStoreBlockMapping, LoadOutcome, Lookup, StoreOutcome,
-    TransferId,
+    HostOffloadObservationData, HostStoreBlockMapping, HostTierHandle, LoadOutcome, Lookup,
+    StoreOutcome, TransferId,
 };
 use crate::engine::kv_manager::{
     BlockRequestLease, DestinationReservation, G1Acquire, G1Manager, SourceReuseDependency,
 };
-use crate::engine::{HostOffloadObserver, NativeHostOffloadConfig};
+use crate::engine::{HostOffloadObserver, KvHintSource, NativeHostOffloadConfig};
 
 struct LoadingPrefix {
     transfer_id: TransferId,
@@ -49,13 +48,53 @@ enum LoadState {
     Activated(ActivatedPrefix),
 }
 
+/// Restore rounds (lookups that submit G3 promotions or KVCR pulls) a waiting
+/// request may make while its DP rank schedules no work and emits no output. A
+/// prefix larger than G2 can evict its own restored blocks forever; past this
+/// bound the request stops restoring and computes what G2 cannot supply. A
+/// request merely waiting behind running work never reaches it.
+pub(super) const MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS: usize = 1024;
+
+/// Request-local G3 or KVCR restore progress.
+#[derive(Default)]
+pub(super) struct RestoreRounds {
+    pub(super) rounds_without_progress: usize,
+    /// The rank's progress count at this request's last round.
+    rank_progress: u64,
+}
+
+impl RestoreRounds {
+    pub(super) fn bypassed(&self) -> bool {
+        self.rounds_without_progress >= MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS
+    }
+
+    /// The request was scheduled or preempted: its restores start over.
+    pub(super) fn reset(&mut self) {
+        self.rounds_without_progress = 0;
+    }
+
+    /// Count one restore round; the count restarts whenever the rank made
+    /// progress. Returns true when this round reaches the bound.
+    pub(super) fn record_round(&mut self, rank_progress: u64) -> bool {
+        if self.rank_progress != rank_progress {
+            self.rank_progress = rank_progress;
+            self.rounds_without_progress = 0;
+        }
+        self.rounds_without_progress += 1;
+        self.bypassed()
+    }
+}
+
 /// Request-local connector cursor and transient load ownership.
 pub(super) struct VllmHostRequestState {
     owner: Uuid,
     prompt_keys: Vec<HostBlockKey>,
     /// Router identities, retained only for `HostPinned` residency events.
     prompt_meta: Option<Vec<HostBlockMeta>>,
-    g3_restore: G3Restore,
+    /// Peer rank the router named as holding a prefix of this prompt.
+    kv_hint: Option<KvHintSource>,
+    /// G3 or KVCR restore rounds; the two are exclusive in v1.
+    restore_rounds: RestoreRounds,
     next_store_block: usize,
     latest_store: Option<TransferId>,
     load: Option<LoadState>,
@@ -68,6 +107,7 @@ impl VllmHostRequestState {
         lease: &BlockRequestLease,
         block_size: usize,
         retain_meta: bool,
+        kv_hint: Option<KvHintSource>,
     ) -> Self {
         let prompt_blocks = sequence.num_input_tokens() / block_size;
         let prompt_keys: Vec<_> = (0..prompt_blocks)
@@ -98,7 +138,8 @@ impl VllmHostRequestState {
             owner: lease.owner(),
             prompt_keys,
             prompt_meta,
-            g3_restore: G3Restore::default(),
+            kv_hint,
+            restore_rounds: RestoreRounds::default(),
             next_store_block: 0,
             latest_store: None,
             load: None,
@@ -171,6 +212,7 @@ pub(super) struct VllmHostOffloadAdapter {
     /// The rank publishes G2 residency as `HostPinned` KV events.
     publishes_residency: bool,
     g3: Option<super::g3_offload::VllmG3OffloadAdapter>,
+    kvcr: Option<super::kvcr::VllmKvcrAdapter>,
     load_epoch: u64,
     load_by_key: FxHashMap<HostBlockKey, TransferId>,
     compute_not_before_ms: f64,
@@ -189,13 +231,35 @@ impl VllmHostOffloadAdapter {
         self.g3 = Some(super::g3_offload::VllmG3OffloadAdapter::new(registry, node));
     }
 
-    pub(super) fn g3_epoch(&self) -> Option<u64> {
-        self.g3.as_ref().map(|g3| g3.epoch + self.load_epoch)
+    /// Returns this rank's G2, which peers pull from when a hint names it.
+    pub(super) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> HostTierHandle {
+        self.kvcr = Some(super::kvcr::VllmKvcrAdapter::new(registry, rank));
+        self.host.tier_handle()
+    }
+
+    /// Changes whenever G3 or KVCR stages, lands or loads; drives
+    /// same-timestamp retries. `None` without G3 until this rank's first KVCR
+    /// pull, so an idle KVCR schedules exactly like G2 alone.
+    pub(super) fn retry_epoch(&self) -> Option<u64> {
+        let kvcr_epoch = self.kvcr.as_ref().map_or(0, |kvcr| kvcr.epoch);
+        (self.g3.is_some() || kvcr_epoch > 0)
+            .then(|| self.g3.as_ref().map_or(0, |g3| g3.epoch) + kvcr_epoch + self.load_epoch)
+    }
+
+    pub(super) fn has_g3(&self) -> bool {
+        self.g3.is_some()
     }
 
     pub(super) fn note_rank_progress(&mut self) {
         if let Some(g3) = &mut self.g3 {
             g3.note_rank_progress();
+        }
+        if let Some(kvcr) = &mut self.kvcr {
+            kvcr.note_rank_progress();
         }
     }
 
@@ -223,6 +287,7 @@ impl VllmHostOffloadAdapter {
             shared,
             publishes_residency: subscribe,
             g3: None,
+            kvcr: None,
             load_epoch: 0,
             load_by_key: FxHashMap::default(),
             compute_not_before_ms: 0.0,
@@ -259,6 +324,7 @@ impl VllmHostOffloadAdapter {
         let Self {
             host,
             g3,
+            kvcr,
             load_by_key,
             ..
         } = self;
@@ -276,14 +342,35 @@ impl VllmHostOffloadAdapter {
             if let Some(g3) = g3 {
                 g3.release(request.owner);
             }
+            if let Some(kvcr) = kvcr {
+                kvcr.release(request.owner);
+            }
             HostLookup::Miss
         } else if let Some(g3) = g3
-            && !request.g3_restore.bypassed()
+            && !request.restore_rounds.bypassed()
             && g3.stage(
                 &mut tier,
                 host.id(),
                 request.owner,
-                &mut request.g3_restore,
+                &mut request.restore_rounds,
+                &request.prompt_keys[base_g1_blocks..],
+                request
+                    .prompt_meta
+                    .as_deref()
+                    .map(|meta| &meta[base_g1_blocks..]),
+                now_ms,
+            )
+        {
+            HostLookup::Deferred
+        } else if let Some(kvcr) = kvcr
+            && let Some(source) = request.kv_hint
+            && !request.restore_rounds.bypassed()
+            && kvcr.stage(
+                &mut tier,
+                host.id(),
+                request.owner,
+                source,
+                &mut request.restore_rounds,
                 &request.prompt_keys[base_g1_blocks..],
                 request
                     .prompt_meta
@@ -381,6 +468,9 @@ impl VllmHostOffloadAdapter {
                     return StartLoad::Retry;
                 }
             };
+        if let Some(kvcr) = &self.kvcr {
+            kvcr.note_loaded(tier.take_kvcr_origin(&hit.keys));
+        }
         drop(tier);
 
         for key in &hit.keys {
@@ -388,6 +478,9 @@ impl VllmHostOffloadAdapter {
         }
         if let Some(g3) = &mut self.g3 {
             g3.release(uuid);
+        }
+        if let Some(kvcr) = &mut self.kvcr {
+            kvcr.release(uuid);
         }
         self.load_epoch += 1;
         request.load = Some(LoadState::Loading(LoadingPrefix {
@@ -430,8 +523,11 @@ impl VllmHostOffloadAdapter {
         if let Some(g3) = &mut self.g3 {
             completed_any |= g3.advance(&mut tier, now_ms);
         }
-        // Drain after G3: a promotion landing in G2 above publishes residency
-        // that no later deadline would otherwise deliver.
+        if let Some(kvcr) = &mut self.kvcr {
+            completed_any |= kvcr.advance(&mut tier, now_ms);
+        }
+        // Drain after G3 and KVCR: a promotion or pull landing in G2 above
+        // publishes residency that no later deadline would otherwise deliver.
         for event in tier.take_events(client) {
             kv_manager.publish_host_pinned_event(event);
         }
@@ -526,7 +622,7 @@ impl VllmHostOffloadAdapter {
         reused_tokens: usize,
         block_size: usize,
     ) -> Option<(usize, usize)> {
-        request.g3_restore.reset();
+        request.restore_rounds.reset();
         let attribution = match request.load.take() {
             Some(LoadState::Activated(load)) => {
                 assert!(reused_tokens / block_size <= load.loaded_prefix_blocks);
@@ -658,7 +754,7 @@ impl VllmHostOffloadAdapter {
     /// capacity. A shared pool instead holds the capacity until each copy
     /// completes.
     pub(super) fn preempt_request(&mut self, request: &mut VllmHostRequestState) {
-        request.g3_restore.reset();
+        request.restore_rounds.reset();
         if let Some(transfer_id) = request.latest_store
             && let Some(deadline) = self.host.lock().transfer_deadline(transfer_id)
         {
@@ -673,9 +769,13 @@ impl VllmHostOffloadAdapter {
         mutation_now_ms: f64,
         observed_at_ms: f64,
     ) -> bool {
-        let detached_g3 = self.g3.as_mut().is_some_and(|g3| g3.release(request.owner));
+        let detached = self.g3.as_mut().is_some_and(|g3| g3.release(request.owner))
+            | self
+                .kvcr
+                .as_mut()
+                .is_some_and(|kvcr| kvcr.release(request.owner));
         let Some(load) = request.load.take() else {
-            return detached_g3;
+            return detached;
         };
         let LoadState::Loading(load) = load else {
             return false;
@@ -703,6 +803,7 @@ impl VllmHostOffloadAdapter {
             .next_deadline(self.host.id())
             .into_iter()
             .chain(self.g3.as_ref().and_then(|g3| g3.next_deadline()))
+            .chain(self.kvcr.as_ref().and_then(|kvcr| kvcr.next_deadline()))
             .min_by(f64::total_cmp)
     }
 
@@ -713,6 +814,7 @@ impl VllmHostOffloadAdapter {
     pub(super) fn has_work(&self) -> bool {
         self.host.lock().has_pending_work(self.host.id())
             || self.g3.as_ref().is_some_and(|g3| g3.has_work())
+            || self.kvcr.as_ref().is_some_and(|kvcr| kvcr.has_work())
     }
 }
 
@@ -754,7 +856,7 @@ mod tests {
         let (sequence, identities) =
             RequestSequence::new(owner, tokens, 0, 0, 4, true, false, false, None);
         let lease = BlockRequestLease::new(owner, identities);
-        let host = VllmHostRequestState::new(&sequence, &lease, 4, false);
+        let host = VllmHostRequestState::new(&sequence, &lease, 4, false, None);
         (sequence, lease, host)
     }
 
@@ -1589,7 +1691,7 @@ mod tests {
             RequestSequence::new(owner, vec![1, 2, 3, 4, 5], 0, 0, 4, true, true, false, None);
         let mut lease = BlockRequestLease::new(owner, identities);
         lease.session_id = Some("restoring-session".into());
-        let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true);
+        let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true, None);
         let key = host.prompt_keys[0];
         let registry = G3Tier::new(
             G3OffloadConfig {
@@ -1723,5 +1825,179 @@ mod tests {
         assert_eq!(adapter.host.lock().lookup(key), Lookup::Hit);
         assert_eq!(manager.num_active_blocks(), 0);
         assert!(adapter.next_deadline().is_none());
+    }
+
+    /// Single-rank workers 0 and 1 with private G2s of `blocks` blocks, both
+    /// registered with one KVCR registry.
+    fn kvcr_workers(
+        config: crate::engine::KvcrConfig,
+        blocks: [usize; 2],
+    ) -> (
+        crate::engine::kvcr::SharedKvcrRegistry,
+        [KvHintSource; 2],
+        [VllmHostOffloadAdapter; 2],
+    ) {
+        let registry = crate::engine::kvcr::KvcrRegistry::new(config);
+        let ranks = [0, 1].map(|worker_id| KvHintSource {
+            worker_id,
+            dp_rank: 0,
+        });
+        let adapters = [0, 1].map(|index| {
+            let mut adapter = adapter(blocks[index]);
+            let g2 = adapter.set_kvcr(Arc::clone(&registry), ranks[index]);
+            registry
+                .lock()
+                .unwrap()
+                .register_worker(ranks[index].worker_id, vec![g2], 1)
+                .unwrap();
+            adapter
+        });
+        (registry, ranks, adapters)
+    }
+
+    #[test]
+    fn hinted_lookup_pulls_a_peer_prefix_and_counts_only_its_first_load() {
+        let config = crate::engine::KvcrConfig {
+            latency_to_first_byte_ms: 1.0,
+            bandwidth_gbps: 1.0,
+        };
+        // Worker 1 pulls from worker 0.
+        let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [4, 4]);
+        let owner = Uuid::from_u128(910);
+        let tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let (sequence, lease, mut host) = request(owner, tokens.clone());
+        for key in host.prompt_keys.clone() {
+            seed_host(&mut source, key);
+        }
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let cost = raw_cost(&manager, &sequence, &lease);
+
+        // Without a hint the target misses exactly as G2 alone does.
+        assert!(matches!(
+            target.lookup(&mut host, &sequence, &cost, 4, 0.0),
+            HostLookup::Miss
+        ));
+        assert_eq!(target.retry_epoch(), None);
+        host.kv_hint = Some(ranks[0]);
+        assert!(matches!(
+            target.lookup(&mut host, &sequence, &cost, 4, 0.0),
+            HostLookup::Deferred
+        ));
+        assert!(target.retry_epoch().is_some());
+        // Replay starts the pull once the instant's passes have run.
+        registry.lock().unwrap().start_parked();
+        // The deferred request wakes at the first byte (1 ms), then when two
+        // 1 MB blocks at 1 GB/s have landed; both workers stay busy until then.
+        assert!(source.has_work() && target.has_work());
+        assert_eq!(target.next_deadline(), Some(1.0));
+        assert!(!target.advance(&mut manager, 1.0).completed_any);
+        assert_eq!(target.next_deadline(), Some(3.0));
+        assert!(target.advance(&mut manager, 3.0).completed_any);
+        assert_eq!(target.next_deadline(), None);
+        assert!(!source.has_work() && !target.has_work());
+        let HostLookup::Hit(hit) = target.lookup(&mut host, &sequence, &cost, 4, 3.0) else {
+            panic!("the pulled prefix must hit G2");
+        };
+        assert_eq!(hit.keys, host.prompt_keys);
+        assert!(matches!(
+            target.start_load(owner, &mut host, &lease, hit, &mut manager, 3.0),
+            StartLoad::Queued
+        ));
+        let loaded_blocks = || registry.lock().unwrap().stats().loaded_blocks;
+        assert_eq!(loaded_blocks(), 2);
+
+        // A second request loading the same blocks does not count them again.
+        assert!(target.cancel_request(&mut host, &mut manager, 3.0, 3.0));
+        let other = Uuid::from_u128(911);
+        let (sequence, lease, mut host) = request(other, tokens);
+        let cost = raw_cost(&manager, &sequence, &lease);
+        let HostLookup::Hit(hit) = target.lookup(&mut host, &sequence, &cost, 4, 3.0) else {
+            panic!("the pulled prefix stays in G2");
+        };
+        assert!(matches!(
+            target.start_load(other, &mut host, &lease, hit, &mut manager, 3.0),
+            StartLoad::Queued
+        ));
+        assert_eq!(loaded_blocks(), 2);
+    }
+
+    #[test]
+    fn a_thrashing_hinted_prefix_stops_pulling_after_rounds_without_rank_progress() {
+        let config = crate::engine::KvcrConfig {
+            latency_to_first_byte_ms: 0.0,
+            bandwidth_gbps: 0.0,
+        };
+        // The target's one-block G2 cannot hold the two-block prefix, so each
+        // round's pull evicts the block the previous round pulled.
+        let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [2, 1]);
+        let owner = Uuid::from_u128(912);
+        let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        for key in host.prompt_keys.clone() {
+            seed_host(&mut source, key);
+        }
+        host.kv_hint = Some(ranks[0]);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let cost = raw_cost(&manager, &sequence, &lease);
+        // Rank progress before round 10 starts the count over.
+        let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
+        for round in 0..rounds {
+            if round == 10 {
+                target.note_rank_progress();
+            }
+            let now = round as f64;
+            let lookup = target.lookup(&mut host, &sequence, &cost, 4, now);
+            assert!(matches!(lookup, HostLookup::Deferred), "round {round}");
+            registry.lock().unwrap().start_parked();
+            assert!(target.advance(&mut manager, now).completed_any);
+        }
+        // Past the bound the request computes instead of pulling again.
+        let now = rounds as f64;
+        assert!(matches!(
+            target.lookup(&mut host, &sequence, &cost, 4, now),
+            HostLookup::Miss
+        ));
+        let stats = registry.lock().unwrap().stats();
+        assert_eq!(stats.bypassed, 1);
+        assert_eq!(stats.pulls.success + stats.pulls.partial, rounds as u64);
+    }
+
+    #[test]
+    fn a_load_that_must_retry_keeps_the_kvcr_origin_marks() {
+        let config = crate::engine::KvcrConfig {
+            latency_to_first_byte_ms: 0.0,
+            bandwidth_gbps: 0.0,
+        };
+        let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [2, 2]);
+        let owner = Uuid::from_u128(913);
+        let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        for key in host.prompt_keys.clone() {
+            seed_host(&mut source, key);
+        }
+        host.kv_hint = Some(ranks[0]);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let cost = raw_cost(&manager, &sequence, &lease);
+        assert!(matches!(
+            target.lookup(&mut host, &sequence, &cost, 4, 0.0),
+            HostLookup::Deferred
+        ));
+        registry.lock().unwrap().start_parked();
+        assert!(target.advance(&mut manager, 0.0).completed_any);
+        let HostLookup::Hit(hit) = target.lookup(&mut host, &sequence, &cost, 4, 0.0) else {
+            panic!("the pulled prefix must hit G2");
+        };
+        // Another reservation evicts the second block, which the lookup touched
+        // least recently, before the H2D starts.
+        let other = [HostBlockKey::new(99)];
+        let evicting = target
+            .host
+            .lock()
+            .reserve_external(C, Uuid::nil(), &other, None, 0.0);
+        assert!(matches!(evicting, StoreOutcome::Prepared { .. }));
+        assert!(matches!(
+            target.start_load(owner, &mut host, &lease, hit, &mut manager, 0.0),
+            StartLoad::Retry
+        ));
+        assert_eq!(registry.lock().unwrap().stats().loaded_blocks, 0);
+        assert_eq!(target.host.lock().take_kvcr_origin(&host.prompt_keys), 1);
     }
 }

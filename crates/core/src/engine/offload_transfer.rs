@@ -110,6 +110,30 @@ impl FairTransfers {
             .min_by(f64::total_cmp)
     }
 
+    /// Earliest first-byte or completion event among `client`'s jobs, without
+    /// allocating. With an unlimited `shared_rate`, only the client's own jobs
+    /// set their rates, so no other client's event can move this one earlier.
+    pub(crate) fn next_client_event(&self, client: u64) -> Option<f64> {
+        let jobs = || self.jobs.iter().filter(move |job| job.client == client);
+        let mut ready = [0usize; 2];
+        for job in jobs().filter(|job| job.ready <= self.now) {
+            ready[job.direction as usize] += 1;
+        }
+        jobs()
+            .map(|job| {
+                debug_assert!(job.shared_rate.is_infinite());
+                if job.ready > self.now {
+                    job.ready
+                } else {
+                    // Same arithmetic as `ReadyCounts::rate`, so the event
+                    // matches the boundary `advance` selects.
+                    let rate = job.client_rate / ready[job.direction as usize].max(1) as f64;
+                    self.now + job.bytes / rate
+                }
+            })
+            .min_by(f64::total_cmp)
+    }
+
     /// Move service to `target`, returning `(job id, completion time)` in
     /// event order and, within one event, submission order.
     pub(crate) fn advance(&mut self, target: f64) -> Vec<(u64, f64)> {
@@ -264,5 +288,23 @@ mod tests {
         assert_eq!((visits.get(), counts.total), (64, [16, 16]));
         assert_eq!(counts.rate(&jobs[0]), MB / 8.0);
         assert_eq!(ReadyCounts::new(jobs.iter(), 1.0).rate(&jobs[0]), MB / 16.0);
+    }
+
+    #[test]
+    fn a_client_event_ignores_other_clients_under_an_unlimited_shared_rate() {
+        let mut transfers = FairTransfers::default();
+        // Client 0: two 1 MB reads share 1 GB/s; client 1: one read ready at 0.5.
+        for id in 0..2 {
+            transfers.submit(job(id, 0, Direction::Read, 0.0, (1.0, 0.0)));
+        }
+        transfers.submit(job(2, 1, Direction::Read, 0.5, (1.0, 0.0)));
+        assert_eq!(transfers.next_event(), Some(0.5));
+        assert_eq!(transfers.next_client_event(0), Some(2.0));
+        assert_eq!(transfers.next_client_event(1), Some(0.5));
+        assert_eq!(transfers.next_client_event(7), None);
+        // Each prediction is the boundary `advance` selects.
+        assert_eq!(transfers.advance(1.0), []);
+        assert_eq!(transfers.next_client_event(1), Some(1.5));
+        assert_eq!(transfers.advance(2.0), [(2, 1.5), (0, 2.0), (1, 2.0)]);
     }
 }

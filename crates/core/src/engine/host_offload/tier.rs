@@ -121,10 +121,13 @@ enum EntryState {
     Resident,
 }
 
+/// Kept at 24 bytes by a `const` assertion in the test module.
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     state: EntryState,
-    load_pins: usize,
+    load_pins: u32,
+    /// Filled by a KVCR peer fetch rather than a local store.
+    kvcr_origin: bool,
 }
 
 /// Declaration order is the same-timestamp completion order.
@@ -571,6 +574,7 @@ impl HostTier {
                         Entry {
                             state: EntryState::PendingStore { transfer_id },
                             load_pins: 0,
+                            kvcr_origin: false,
                         },
                     )
                     .is_none()
@@ -637,6 +641,15 @@ impl HostTier {
     }
 
     pub(crate) fn complete_external(&mut self, id: TransferId) {
+        self.complete_external_with(id, false);
+    }
+
+    /// Complete a KVCR peer fetch, marking each block as filled by it.
+    pub(crate) fn complete_external_from_kvcr(&mut self, id: TransferId) {
+        self.complete_external_with(id, true);
+    }
+
+    fn complete_external_with(&mut self, id: TransferId, kvcr_origin: bool) {
         let transfer = self
             .transfers
             .remove(&id)
@@ -646,12 +659,27 @@ impl HostTier {
             let entry = self.entries.get_mut(key).unwrap();
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
             entry.state = EntryState::Resident;
+            entry.kvcr_origin = kvcr_origin;
             if entry.load_pins == 0 {
                 self.lru.touch(*key);
             }
         }
         self.mark_resident(&transfer.blocks);
         self.notify_peers(transfer.client);
+    }
+
+    /// Count the `keys` a KVCR peer fetch filled and clear their mark, so each
+    /// pulled block counts once, at its first load.
+    pub(crate) fn take_kvcr_origin(&mut self, keys: &[HostBlockKey]) -> usize {
+        let mut count = 0;
+        for key in keys {
+            if let Some(entry) = self.entries.get_mut(key)
+                && std::mem::take(&mut entry.kvcr_origin)
+            {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Roll back an unsubmitted reservation.
@@ -690,13 +718,19 @@ impl HostTier {
         }
     }
 
-    #[cfg(test)]
+    /// Hold resident `keys` outside the LRU until [`Self::unpin_external`]. The
+    /// caller must have just seen each one report [`Lookup::Hit`].
     pub(crate) fn pin_external(&mut self, keys: &[HostBlockKey]) {
         for key in keys {
-            self.entries
+            let entry = self
+                .entries
                 .get_mut(key)
-                .expect("G3 pin requires G2 ownership")
-                .load_pins += 1;
+                .expect("pin requires a resident G2 entry");
+            debug_assert_eq!(entry.state, EntryState::Resident);
+            entry.load_pins = entry
+                .load_pins
+                .checked_add(1)
+                .expect("host pin count overflow");
             self.lru.remove(*key);
         }
     }
@@ -1023,7 +1057,7 @@ impl HostTier {
                     .expect("completed store lost its pending entry");
                 assert_eq!(entry.state, EntryState::PendingStore { transfer_id });
                 entry.state = EntryState::Resident;
-                entry.load_pins += usize::from(hold);
+                entry.load_pins += u32::from(hold);
             }
             if !hold {
                 self.lru.touch_cohort(&blocks);
@@ -1120,6 +1154,10 @@ impl HostTier {
 
     pub(crate) fn capacity_blocks(&self) -> usize {
         self.config.capacity_blocks
+    }
+
+    pub(crate) fn block_bytes(&self) -> usize {
+        self.config.block_bytes
     }
 
     /// `(resident, used)` blocks; used includes pending destinations.
@@ -1313,7 +1351,9 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn pins(&self, key: HostBlockKey) -> usize {
-            self.entries.get(&key).map_or(0, |entry| entry.load_pins)
+            self.entries
+                .get(&key)
+                .map_or(0, |entry| entry.load_pins as usize)
         }
 
         fn used_blocks(&self) -> usize {
@@ -1447,6 +1487,65 @@ pub(crate) mod tests {
                 (owner, at, vec![key(3), key(4)], Some(true)),
             ]
         );
+    }
+
+    const _: () = assert!(std::mem::size_of::<Entry>() == 24);
+
+    #[test]
+    fn kvcr_origin_counts_each_pulled_block_once() {
+        let mut tier = private(2, 0.0, 0.0);
+        let owner = Uuid::from_u128(1);
+        let (a, b, c) = (key(1), key(2), key(3));
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[a, b], None, 0.0)
+        else {
+            panic!("reservation")
+        };
+        tier.complete_external_from_kvcr(transfer_id);
+        assert_eq!(tier.take_kvcr_origin(&[a]), 1);
+        assert_eq!(tier.take_kvcr_origin(&[a, b, c]), 1); // only `b` was left
+        assert_eq!(tier.take_kvcr_origin(&[a, b, c]), 0);
+        assert_eq!(tier.block_bytes(), 1_000_000);
+
+        // A completion that is not a KVCR peer fetch never carries the mark.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[c], None, 0.0)
+        else {
+            panic!("reservation")
+        };
+        tier.complete_external(transfer_id);
+        assert_eq!(tier.take_kvcr_origin(&[c]), 0);
+    }
+
+    #[test]
+    fn pinned_resident_block_survives_eviction_and_unpins_to_mru() {
+        let mut tier = private(2, 0.0, 0.0);
+        let owner = Uuid::from_u128(1);
+        let (a, b, c) = (key(1), key(2), key(3));
+        for (k, t) in [(a, 0.0), (b, 1.0)] {
+            let StoreOutcome::Prepared { transfer_id, .. } =
+                tier.reserve_external(0, owner, &[k], None, t)
+            else {
+                panic!()
+            };
+            tier.complete_external(transfer_id);
+        }
+        tier.pin_external(&[a]);
+        assert!(tier.lru.oldest_first.iter().all(|&(_, k)| k != a));
+        // `a` is LRU but pinned, so `c` evicts `b`.
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            tier.reserve_external(0, owner, &[c], None, 2.0)
+        else {
+            panic!()
+        };
+        tier.complete_external(transfer_id);
+        assert!(matches!(tier.lookup(a), Lookup::Hit));
+        assert!(matches!(tier.lookup(b), Lookup::Miss));
+        tier.unpin_external(&[a]);
+        assert_eq!(tier.pins(a), 0);
+        // Unpinning re-enters the LRU as the newest block, after `c`.
+        let order: Vec<_> = tier.lru.oldest_first.iter().map(|&(_, k)| k).collect();
+        assert_eq!(order, [c, a]);
     }
 
     fn tier(capacity_blocks: usize) -> HostTier {

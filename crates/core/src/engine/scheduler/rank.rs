@@ -15,12 +15,12 @@ use crate::engine::common::protocols::{
     PreemptionMode as CorePreemptionMode, SglangArgs, WorkerType as CoreWorkerType,
 };
 use crate::engine::generalized::{CommandContext, RankEngine, RankIdentity, RankPass};
-use crate::engine::host_offload::G2Binding;
+use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::{
     Admission, Backend, Command, CommandEffects, CommandResult, EngineConfig, ForwardPassMetrics,
-    HandoffId, HostOffloadObserver, LifecycleEvent, Metrics, Output, PassCompletionEffects,
-    PassStartEffects, PendingPass, PreemptionMode, Request, TimingModel, TransferTimingMode,
-    WorkerType,
+    HandoffId, HostOffloadObserver, KvHintSource, LifecycleEvent, Metrics, Output,
+    PassCompletionEffects, PassStartEffects, PendingPass, PreemptionMode, Request, TimingModel,
+    TransferTimingMode, WorkerType,
 };
 
 use super::{
@@ -60,6 +60,16 @@ impl SchedulerRank {
         self.core.set_g3_offload(registry, node);
     }
 
+    /// Pull hinted prefixes from peer ranks' G2. Returns this rank's own G2,
+    /// or `None` for an engine without KVCR.
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> Option<HostTierHandle> {
+        self.core.set_kvcr(registry, rank)
+    }
+
     pub(crate) fn set_host_offload_observer(&mut self, observer: Arc<dyn HostOffloadObserver>) {
         self.core.set_host_offload_observer(observer);
     }
@@ -85,6 +95,10 @@ impl SchedulerRank {
         ensure!(
             config.g3_offload.is_none(),
             "g3_offload is Replay-owned; construct it through ReplaySpec"
+        );
+        ensure!(
+            config.kvcr.is_none(),
+            "kvcr is Replay-owned; construct it through ReplaySpec"
         );
         let mut args = core_args(config, timing);
         if config.backend == Backend::Sglang {
@@ -510,6 +524,7 @@ fn core_request(request: Request) -> DirectRequest {
         uuid: Some(request.request_id),
         arrival_timestamp_ms: None,
         session_id: request.session_id,
+        kv_hint: request.kv_hint,
     }
 }
 
@@ -707,6 +722,29 @@ mod tests {
     }
 
     #[test]
+    fn kvcr_is_replay_owned() {
+        let config = EngineConfig {
+            kv_cache_bytes_per_token: Some(250_000),
+            native_host_offload: Some(NativeHostOffloadConfig::new(4)),
+            kvcr: Some(crate::engine::KvcrConfig::default()),
+            ..EngineConfig::default()
+        };
+        let identity = RankIdentity {
+            worker_id: 1,
+            dp_rank: 0,
+            dp_size: NonZeroU32::MIN,
+        };
+        let timing = config.built_in_timing_model().unwrap();
+        let error = SchedulerRank::new_with_g2(identity, &config, timing, 0, None)
+            .err()
+            .expect("a bare rank must reject kvcr");
+        assert_eq!(
+            error.to_string(),
+            "kvcr is Replay-owned; construct it through ReplaySpec"
+        );
+    }
+
+    #[test]
     fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {
         let args = MockEngineArgs::builder()
             .engine_type(EngineType::Sglang)
@@ -768,6 +806,7 @@ mod tests {
                     max_output_tokens: 20,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -789,6 +828,7 @@ mod tests {
                     max_output_tokens: 1,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: first_end_ms,
@@ -929,6 +969,7 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms,
@@ -974,6 +1015,7 @@ mod tests {
                         max_output_tokens: 0,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1003,6 +1045,7 @@ mod tests {
                     max_output_tokens: output_token_ids.len(),
                     output_token_ids: Some(output_token_ids),
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -1121,6 +1164,7 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1143,6 +1187,7 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 0.5,
@@ -1201,6 +1246,7 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 1.0,
@@ -1258,6 +1304,7 @@ mod tests {
                         max_output_tokens: 0,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     }),
                     CommandContext {
                         now_ms,
@@ -1296,6 +1343,7 @@ mod tests {
                     max_output_tokens: 0,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1388,6 +1436,7 @@ mod tests {
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1457,6 +1506,7 @@ mod tests {
                         max_output_tokens: 8,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     }),
                     CommandContext {
                         now_ms: 0.0,
@@ -1513,6 +1563,7 @@ mod tests {
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 CommandContext {
@@ -1606,6 +1657,7 @@ mod tests {
                         max_output_tokens: 2,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 0.0,
@@ -1655,6 +1707,7 @@ mod tests {
                         max_output_tokens: 1,
                         output_token_ids: None,
                         session_id: None,
+                        kv_hint: None,
                     },
                 },
                 now_ms,

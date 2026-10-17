@@ -80,6 +80,7 @@ pub(crate) struct DirectRequest {
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    pub kv_hint: Option<crate::engine::KvHintSource>,
 }
 
 impl DirectRequest {

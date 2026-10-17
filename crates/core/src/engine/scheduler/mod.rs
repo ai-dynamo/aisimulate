@@ -18,8 +18,10 @@ use crate::engine::common::protocols::DirectRequest;
 pub(crate) use crate::engine::common::protocols::ForwardPassSnapshot;
 use crate::engine::common::protocols::OutputSignal;
 use crate::engine::generalized::SameTimestampRetry;
+use crate::engine::host_offload::HostTierHandle;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, PressureEvent,
+    CacheTierAttribution, DecodeAcceptance, HostOffloadObserver, KvEvent, KvHintSource,
+    PressureEvent,
 };
 pub(crate) use kv_event_sink::{CapturedKvEventBuffer, capture_kv_event_sink};
 pub(crate) use source_holds::{
@@ -319,6 +321,18 @@ impl EngineCore {
     ) {
         if let Self::Vllm(core) = self {
             core.set_g3_offload(registry, node);
+        }
+    }
+
+    /// The rank's own G2 for peers to pull from; `None` for SGLang.
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> Option<HostTierHandle> {
+        match self {
+            Self::Vllm(core) => Some(core.set_kvcr(registry, rank)),
+            Self::Sglang(_) => None,
         }
     }
 

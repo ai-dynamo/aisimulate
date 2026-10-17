@@ -5080,6 +5080,7 @@ mod tests {
                 output_token_ids: None,
                 dp_rank: None,
                 prefill_dp_rank: None,
+                kv_hints: None,
                 session_id: Some("session-a".into()),
                 turn_index: Some(2),
                 metadata: serde_json::json!({"caller_tag": "binding"}),

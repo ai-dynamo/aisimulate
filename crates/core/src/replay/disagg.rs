@@ -4,7 +4,7 @@
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use crate::engine::{Backend, Command, CommandResult, LifecycleEvent};
+use crate::engine::{Backend, Command, CommandResult, KvHintSource, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
 use uuid::Uuid;
 
@@ -913,6 +913,9 @@ impl DisaggFlowState {
 pub(crate) type RoundRobinDisaggRuntime =
     DisaggRuntimeImpl<PoolRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
 
+/// A placed prefill waiting for tokenization: id, worker, handoff action and resolved KV hint.
+type TokenizingPrefill = (Uuid, usize, IssuedHandoffAction, Option<KvHintSource>);
+
 pub(crate) struct DisaggRuntimeImpl<PlacementPolicyImpl, Observation, Metadata>
 where
     Observation: ReplayEngineObservation,
@@ -943,7 +946,7 @@ where
     /// any in-flight requests as incomplete in the report.
     max_sim_time_ms: Option<f64>,
     /// Optional per-worker tokenization between prefill placement and the prefill engine.
-    tokenization: Option<TokenizationStage<(Uuid, usize, IssuedHandoffAction)>>,
+    tokenization: Option<TokenizationStage<TokenizingPrefill>>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
@@ -1303,9 +1306,10 @@ where
         uuid: Uuid,
         worker_idx: usize,
         action: IssuedHandoffAction,
+        kv_hint: Option<KvHintSource>,
     ) -> Result<()> {
         if self.tokenization.is_none() {
-            return self.submit_prefill(uuid, worker_idx, action);
+            return self.submit_prefill(uuid, worker_idx, action, kv_hint);
         }
         let (logical_worker_id, _) =
             self.prefill_engine
@@ -1323,7 +1327,7 @@ where
             logical_worker_id,
             input_tokens,
             uuid,
-            (uuid, worker_idx, action),
+            (uuid, worker_idx, action, kv_hint),
         )?;
         Ok(())
     }
@@ -1335,9 +1339,10 @@ where
         };
         let released = tokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
-        for (tokenized_ms, (uuid, worker_idx, action)) in released {
+        for (tokenized_ms, (uuid, worker_idx, action, kv_hint)) in released {
+            let kv_hint = self.prefill_engine.live_kv_hint(kv_hint);
             self.collector.on_tokenized(uuid, tokenized_ms);
-            self.submit_prefill(uuid, worker_idx, action)?;
+            self.submit_prefill(uuid, worker_idx, action, kv_hint)?;
         }
         Ok(changed)
     }
@@ -1347,13 +1352,14 @@ where
         uuid: Uuid,
         worker_idx: usize,
         action: IssuedHandoffAction,
+        kv_hint: Option<KvHintSource>,
     ) -> Result<()> {
         let (request, handoff_id) = self.flow.prepare_prefill_submission(uuid)?;
         let effects = match self.prefill_engine.apply_command(
             worker_idx,
             Command::SubmitHandoffPrefill {
                 handoff_id,
-                request: direct_to_native(request)?,
+                request: direct_to_native(request, kv_hint)?,
             },
             self.now_ms,
         ) {
@@ -1393,7 +1399,7 @@ where
             worker_idx,
             Command::ReserveDestination {
                 handoff_id,
-                request: direct_to_native(request)?,
+                request: direct_to_native(request, None)?,
             },
             self.now_ms,
         ) {
@@ -1451,6 +1457,7 @@ where
                         placement.scheduler_id
                     )
                 })?;
+            let kv_hint = self.prefill_engine.kv_hint_source(&placement)?;
             self.collector.on_route_released(
                 placement.request_id,
                 ReplayRequestPool::Prefill,
@@ -1467,7 +1474,7 @@ where
                 &mut self.traffic,
                 &mut self.collector,
             )?;
-            self.dispatch_prefill(uuid, worker_idx, action)?;
+            self.dispatch_prefill(uuid, worker_idx, action, kv_hint)?;
         }
         Ok(())
     }
@@ -1530,6 +1537,7 @@ where
                             placement.scheduler_id
                         )
                     })?;
+                let kv_hint = self.prefill_engine.kv_hint_source(&placement)?;
                 self.collector.on_route_immediate(
                     uuid,
                     ReplayRequestPool::Prefill,
@@ -1541,7 +1549,7 @@ where
                     placement.placement_replica_id,
                 );
                 self.record_prefill_placement(placement)?;
-                self.dispatch_prefill(uuid, placement.scheduler_id, action)?;
+                self.dispatch_prefill(uuid, placement.scheduler_id, action, kv_hint)?;
             }
             PlacementDecision::Queued => {
                 self.collector
@@ -2664,6 +2672,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.prefill_engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -2710,6 +2719,7 @@ where
                     WorkerTopology {
                         worker_id: *worker_id,
                         scheduler_ids: Vec::new(),
+                        router_hint: self.decode_engine.accepts_kv_hints(),
                     },
                     self.now_ms,
                 )?;
@@ -3252,6 +3262,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.prefill_engine.accepts_kv_hints(),
                 });
             let placements = self
                 .prefill_placement
@@ -3268,6 +3279,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.prefill_engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -3335,6 +3347,7 @@ where
                 .unwrap_or(WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.decode_engine.accepts_kv_hints(),
                 });
             let placements = self
                 .decode_placement
@@ -3350,6 +3363,7 @@ where
                 WorkerTopology {
                     worker_id: id,
                     scheduler_ids: Vec::new(),
+                    router_hint: self.decode_engine.accepts_kv_hints(),
                 },
                 self.now_ms,
             )?;
@@ -3667,6 +3681,8 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        // Only the prefill pool can configure KVCR.
+        self.collector.kvcr = self.prefill_engine.kvcr_stats();
         // Both roles reference the same deployment pool; report it once.
         self.collector.g2_domains = match self.prefill_engine.g2_domains() {
             domains if domains.is_empty() => self.decode_engine.g2_domains(),
@@ -3729,7 +3745,10 @@ fn command_cleanup_outcome(result: CommandResult) -> Result<HandoffActionOutcome
     }
 }
 
-fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
+fn direct_to_native(
+    request: DirectRequest,
+    kv_hint: Option<KvHintSource>,
+) -> Result<crate::engine::Request> {
     Ok(crate::engine::Request {
         request_id: request
             .uuid
@@ -3740,6 +3759,7 @@ fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
         session_id: request
             .replay_context
             .and_then(|context| context.session_id().map(str::to_owned)),
+        kv_hint,
     })
 }
 

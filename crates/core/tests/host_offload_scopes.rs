@@ -454,6 +454,7 @@ fn serve_prompt(engine: &mut Engine, id: u128, now_ms: &mut f64) -> usize {
                     max_output_tokens: 1,
                     output_token_ids: None,
                     session_id: None,
+                    kv_hint: None,
                 }),
             ),
             *now_ms,

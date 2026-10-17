@@ -8,6 +8,18 @@ use uuid::Uuid;
 
 use super::{HandoffId, HandoffTransferTiming};
 
+/// Rank named by a router's `kv.fetch` hint as the holder of a prompt prefix.
+///
+/// It stands in for the hint's `source_control_endpoint`, which identifies one
+/// worker and attention-DP rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KvHintSource {
+    /// Logical worker owning the source rank.
+    pub worker_id: u64,
+    /// Attention-DP rank within that worker.
+    pub dp_rank: u32,
+}
+
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -25,6 +37,10 @@ pub struct Request {
     /// Optional session attribution; does not affect scheduling or cache identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Optional router hint naming another rank that may hold a prefix of
+    /// `tokens`. Never the receiving rank itself. Engines without KVCR ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hint: Option<KvHintSource>,
 }
 
 /// Commands supported by the standalone scheduler.

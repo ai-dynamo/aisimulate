@@ -943,6 +943,7 @@ mod trtllm {
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
             session_id: None,
+            kv_hint: None,
         });
     }
 

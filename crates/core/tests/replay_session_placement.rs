@@ -414,6 +414,7 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                         turn_index: None,
                         metadata: serde_json::Value::Null,
                         session_id: (attributed && i < 2).then(|| format!("session-{i}")),
+                        kv_hints: None,
                     })
                     .collect();
                 let events = Rc::new(RefCell::new(Vec::new()));

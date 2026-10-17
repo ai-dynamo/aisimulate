@@ -123,8 +123,8 @@ pub use components::{NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObse
 pub use core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 pub use core::{EngineEventBatch, NoEngineEvents};
 pub use core::{
-    Placement, PlacementCacheSample, PlacementDecision, PlacementEffects, PlacementPolicy,
-    RequestIdentity, WorkerTopology,
+    KvFetchAction, KvHints, Placement, PlacementCacheSample, PlacementDecision, PlacementEffects,
+    PlacementPolicy, RequestIdentity, WorkerTopology,
 };
 #[doc(hidden)]
 pub use engine::ReplayRoleFactory;
@@ -151,11 +151,11 @@ pub use handoff::{
     HandoffCoordinatorCore, expected_normalized_handoff, validate_transfer_delay_ms,
     validate_transfer_timing,
 };
-pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
 pub use protocol::{
     AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
 };
+pub use protocol::{AuthoredKvHints, ForwardPassSnapshot};
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
 pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};

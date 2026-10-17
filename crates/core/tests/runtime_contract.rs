@@ -9,12 +9,13 @@ use std::sync::{Arc, Mutex};
 use aisimulate_core::engine::{Backend, EngineConfig, TimingModel, TimingModelConfig};
 use aisimulate_core::replay::loadgen::ReplayRequestPayload;
 use aisimulate_core::replay::{
-    AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, Placement, PlacementEffects,
-    PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions,
-    ReplayComposition, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayError,
-    ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec,
-    ReplayTelemetryObserver, ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTopology,
-    Replayer, WorkerLifecycleTransitionKind, WorkerPool, WorkerPoolSpec, WorkerTopology,
+    AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
+    PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
+    ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
+    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy,
+    ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySampleKind,
+    ReplayTelemetrySnapshot, ReplayTopology, Replayer, WorkerLifecycleTransitionKind, WorkerPool,
+    WorkerPoolSpec, WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -33,6 +34,7 @@ fn request(
         output_token_ids: None,
         dp_rank: None,
         prefill_dp_rank: None,
+        kv_hints: None,
         session_id: None,
         turn_index: None,
         metadata: serde_json::Value::Null,
@@ -970,6 +972,39 @@ fn authored_rank_is_validated_by_the_default_aggregated_runtime() {
 }
 
 #[test]
+fn authored_kv_hint_in_a_replay_spec_does_not_change_the_report() {
+    let run = |kv_hints: Option<AuthoredKvHints>| {
+        let requests = (0..4)
+            .map(|index| ReplayRequest {
+                kv_hints,
+                ..request(&format!("request-{index}"), f64::from(index) * 5.0, 8, 3)
+            })
+            .collect();
+        let mut spec = aggregated_spec(Backend::Vllm, 2, 0.0, requests);
+        spec.engine["dp_size"] = serde_json::json!(2);
+        let mut report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .with_capture_options(canonical_options())
+            .run()
+            .unwrap();
+        report.throughput.wall_time_ms = 0.0;
+        // The compact summary omits per-request records, so compare them too.
+        (
+            serde_json::to_value(&report).unwrap(),
+            serde_json::to_value(&report.per_request).unwrap(),
+        )
+    };
+
+    // Without `kvcr` no engine acts on a hint, so a valid hint changes nothing.
+    let hinted = run(Some(AuthoredKvHints {
+        source_worker: 1,
+        source_dp_rank: 0,
+    }));
+    assert_eq!(hinted, run(None));
+    assert_eq!(hinted.0["completed_requests"], 4);
+}
+
+#[test]
 fn max_sim_time_is_a_soft_cap_for_the_aggregated_runtime() {
     let requests = (0..5)
         .map(|index| {
@@ -1037,6 +1072,7 @@ impl ReleaseOnTopologyCallbacks {
                     scheduler_id,
                     reported_overlap_tokens: 0,
                     cache_sample: None,
+                    kv_hints: None,
                     placement_replica_id: None,
                 }]
             })

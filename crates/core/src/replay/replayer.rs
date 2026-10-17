@@ -671,14 +671,28 @@ fn validate_request_dp_ranks(
     spec: &ReplaySpec,
     engine_config: &ReplayEngineConfig,
 ) -> ReplayResult<()> {
+    const PREFERRED: &str = "preferred attention-DP";
+    const HINT_SOURCE: &str = "kv_hints source";
+    // `role` clones the rank config, so read each stage's dp_size once.
+    let [aggregated, prefill, decode] = [
+        WorkerStage::Aggregated,
+        WorkerStage::Prefill,
+        WorkerStage::Decode,
+    ]
+    .map(|stage| engine_config.role(stage).dp_size);
     let validate = |request: &ReplayRequest,
                     stage: WorkerStage,
+                    label: &str,
                     rank: Option<u32>|
      -> ReplayResult<()> {
         let Some(rank) = rank else {
             return Ok(());
         };
-        let dp_size = engine_config.role(stage).dp_size;
+        let dp_size = match stage {
+            WorkerStage::Aggregated => aggregated,
+            WorkerStage::Prefill => prefill,
+            WorkerStage::Decode => decode,
+        };
         if rank >= dp_size {
             let stage = match stage {
                 WorkerStage::Aggregated => "aggregated",
@@ -686,7 +700,7 @@ fn validate_request_dp_ranks(
                 WorkerStage::Decode => "decode",
             };
             return Err(ReplayError::InvalidSpec(format!(
-                "request {:?} {stage} placement: preferred attention-DP rank {rank} is out of range for dp_size {dp_size}",
+                "request {:?} {stage} placement: {label} rank {rank} is out of range for dp_size {dp_size}",
                 request.id
             )));
         }
@@ -694,17 +708,23 @@ fn validate_request_dp_ranks(
     };
 
     for request in &spec.requests {
+        // A peer-fetch hint's source worker is not checked: workers come and go under
+        // scaling, so placement drops a hint whose source worker is not live instead.
+        let hint_rank = request.kv_hints.map(|hints| hints.source_dp_rank);
         match spec.topology {
             ReplayTopology::Aggregated { .. } => {
-                validate(request, WorkerStage::Aggregated, request.dp_rank)?;
+                validate(request, WorkerStage::Aggregated, PREFERRED, request.dp_rank)?;
+                validate(request, WorkerStage::Aggregated, HINT_SOURCE, hint_rank)?;
             }
             ReplayTopology::Disaggregated { .. } => {
                 validate(
                     request,
                     WorkerStage::Prefill,
+                    PREFERRED,
                     request.prefill_dp_rank.or(request.dp_rank),
                 )?;
-                validate(request, WorkerStage::Decode, request.dp_rank)?;
+                validate(request, WorkerStage::Decode, PREFERRED, request.dp_rank)?;
+                validate(request, WorkerStage::Prefill, HINT_SOURCE, hint_rank)?;
             }
         }
     }
@@ -776,6 +796,7 @@ fn lower_requests(
                 dp_rank: 0,
                 preferred_dp_rank: request.dp_rank,
                 preferred_prefill_dp_rank: request.prefill_dp_rank,
+                kv_hints: request.kv_hints,
                 arrival_timestamp_ms: Some(request.arrival_time_ms),
                 priority: routing.priority,
                 strict_priority: routing.strict_priority,
@@ -828,6 +849,7 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay::protocol::AuthoredKvHints;
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
@@ -918,6 +940,7 @@ mod tests {
                     output_token_ids: None,
                     dp_rank: Some(2),
                     prefill_dp_rank: Some(1),
+                    kv_hints: None,
                     session_id: Some("session-a".into()),
                     turn_index: Some(4),
                     metadata: serde_json::json!({
@@ -936,6 +959,7 @@ mod tests {
                     output_token_ids: None,
                     dp_rank: None,
                     prefill_dp_rank: None,
+                    kv_hints: None,
                     session_id: None,
                     turn_index: None,
                     metadata: serde_json::Value::Null,
@@ -985,6 +1009,7 @@ mod tests {
                 output_token_ids: None,
                 dp_rank: None,
                 prefill_dp_rank: None,
+                kv_hints: None,
                 session_id: None,
                 turn_index: None,
                 metadata: serde_json::Value::Null,
@@ -996,6 +1021,93 @@ mod tests {
             .pop_front()
             .unwrap();
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
+    }
+
+    #[test]
+    fn authored_kv_hints_round_trip_and_are_omitted_when_absent() {
+        let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 2}},
+            "requests": [
+                {
+                    "id": "hinted",
+                    "arrival_time_ms": 0.0,
+                    "input_tokens": 4,
+                    "output_tokens": 1,
+                    "kv_hints": {"source_worker": 0, "source_dp_rank": 1},
+                },
+                {"id": "plain", "arrival_time_ms": 1.0, "input_tokens": 4, "output_tokens": 1},
+            ],
+        }))
+        .unwrap();
+        let hints = AuthoredKvHints {
+            source_worker: 0,
+            source_dp_rank: 1,
+        };
+        assert_eq!(spec.requests[0].kv_hints, Some(hints));
+        assert_eq!(spec.requests[1].kv_hints, None);
+
+        // The field round-trips, and a request without it serializes exactly as before.
+        let value = serde_json::to_value(&spec).unwrap();
+        assert_eq!(
+            value["requests"][0]["kv_hints"],
+            serde_json::json!({"source_worker": 0, "source_dp_rank": 1})
+        );
+        assert_eq!(
+            value["requests"][1],
+            serde_json::json!({
+                "id": "plain",
+                "arrival_time_ms": 1.0,
+                "input_tokens": 4,
+                "output_tokens": 1,
+            })
+        );
+        assert_eq!(serde_json::from_value::<ReplaySpec>(value).unwrap(), spec);
+    }
+
+    #[test]
+    fn authored_kv_hint_rank_outside_dp_size_is_rejected_at_spec_load() {
+        let run = |topology: serde_json::Value, engine: serde_json::Value| {
+            let spec: ReplaySpec = serde_json::from_value(serde_json::json!({
+                "topology": topology,
+                "engine": engine,
+                "requests": [{
+                    "id": "hinted",
+                    "arrival_time_ms": 0.0,
+                    "input_tokens": 4,
+                    "output_tokens": 1,
+                    "kv_hints": {"source_worker": 0, "source_dp_rank": 1},
+                }],
+            }))
+            .unwrap();
+            match Replayer::new(spec, ReplayEngineFactory::new())
+                .unwrap()
+                .run()
+            {
+                Err(ReplayError::InvalidSpec(message)) => message,
+                other => panic!("an out-of-range hint rank must be an invalid spec: {other:?}"),
+            }
+        };
+        let aggregated = run(
+            serde_json::json!({"kind": "aggregated", "workers": {"initial_workers": 2}}),
+            serde_json::json!({"dp_size": 1}),
+        );
+        // P/D checks the prefill pool, even when the decode pool has the rank.
+        let disaggregated = run(
+            serde_json::json!({
+                "kind": "disaggregated",
+                "prefill": {"initial_workers": 1},
+                "decode": {"initial_workers": 1},
+            }),
+            serde_json::json!({"prefill": {"dp_size": 1}, "decode": {"dp_size": 2}}),
+        );
+        for (message, pool) in [(aggregated, "aggregated"), (disaggregated, "prefill")] {
+            assert!(message.contains("request \"hinted\""), "{message}");
+            assert!(message.contains(&format!("{pool} placement")), "{message}");
+            assert!(
+                message.contains("rank 1 is out of range for dp_size 1"),
+                "{message}"
+            );
+        }
     }
 }
 

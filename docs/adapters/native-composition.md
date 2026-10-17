@@ -53,6 +53,26 @@ observation, not actual engine cache reuse. Policies own pending placement
 state; engines own admission, allocation and execution. Lifecycle callbacks
 must not dispatch to retired ranks or release a request twice.
 
+`Placement.kv_hints` optionally carries a router hint for the receiving engine.
+`KvHints { fetch: KvFetchAction { source_scheduler_id } }` is the `kv.fetch`
+hint (vLLM `kv_hints`, Dynamo `kv_hint`). `source_scheduler_id` is in the
+placing pool's scheduler-ID space and names the worker and attention-DP rank
+that hold a prefix of the prompt. `WorkerTopology.router_hint` is true for the
+workers of a pool that configures
+[`kvcr`](../replay/engine/kv-cache.md#kvcr-peer-fetch), whose engines act on
+hints (vLLM `router_capabilities: ["router_hint"]`). Attach hints only toward
+such workers. Replay resolves the source when it dispatches. It ignores a hint
+in a pool without `kvcr` (including the P/D decode pool), a hint that names the
+receiving rank and a hint whose source worker is draining or has been removed.
+It fails the run for a source scheduler ID that never existed.
+
+`RequestIdentity::authored_kv_hints()` (default `None`) returns a hint authored
+on the request. The built-in round-robin policies never create hints. They
+forward an authored hint only while its source worker is live in the pool (ready
+and not draining), advertises `router_hint` and has the named rank. They drop
+any other authored hint: a source worker that is unknown, not yet ready,
+draining or removed is not an error.
+
 All callbacks run synchronously at Replay's virtual time. The runtime owns
 the event queue and settles engine/transfer/admission work before telemetry
 and scaling. A policy must not advance time or implement a parallel replay loop.

@@ -291,6 +291,38 @@ impl G3OffloadConfig {
     }
 }
 
+/// KVCR peer G2 fetch timing. Replay-owned, like `g3_offload`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct KvcrConfig {
+    /// Fixed delay before a pull moves bytes: control round trip plus source pin.
+    pub latency_to_first_byte_ms: f64,
+    /// Per-source-rank bandwidth in decimal GB/s, shared by the rank's GPUs
+    /// and by concurrent pulls from it. Zero is unlimited.
+    pub bandwidth_gbps: f64,
+}
+
+impl KvcrConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        for value in [self.latency_to_first_byte_ms, self.bandwidth_gbps] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "kvcr timing must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Default for KvcrConfig {
+    fn default() -> Self {
+        Self {
+            latency_to_first_byte_ms: 1.0,
+            bandwidth_gbps: 50.0,
+        }
+    }
+}
+
 /// Ownership of the native G2 host cache. G3 has its own [`G3Scope`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", try_from = "String")]
@@ -565,6 +597,9 @@ pub struct EngineConfig {
     pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub g3_offload: Option<crate::engine::G3OffloadConfig>,
+    /// Optional KVCR peer G2 fetch. Replay-owned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kvcr: Option<crate::engine::KvcrConfig>,
     /// Optional manual vLLM G1 token/state cache configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_cache: Option<StateCacheConfig>,
@@ -652,6 +687,8 @@ struct EngineConfigWire {
     #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
+    kvcr: Option<crate::engine::KvcrConfig>,
+    #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
     #[serde(default)]
     kv_transfer_timing_mode: TransferTimingMode,
@@ -708,6 +745,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
+            kvcr: wire.kvcr,
             state_cache: wire.state_cache,
             prefix_match_unit: wire.prefix_match_unit,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
@@ -751,6 +789,7 @@ impl Default for EngineConfig {
             kv_cache_capacity_bytes: None,
             native_host_offload: None,
             g3_offload: None,
+            kvcr: None,
             state_cache: None,
             prefix_match_unit: None,
             kv_transfer_bandwidth: None,
@@ -952,6 +991,25 @@ impl EngineConfig {
             ensure!(
                 self.worker_type == WorkerType::Aggregated,
                 "g3_offload is supported only for worker_type=aggregated"
+            );
+        }
+        if let Some(kvcr) = &self.kvcr {
+            kvcr.validate()?;
+            let host = self
+                .native_host_offload
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("kvcr requires native_host_offload"))?;
+            ensure!(
+                host.scope == G2Scope::DpRankLocal,
+                "kvcr requires host_offload.scope=dp_rank_local"
+            );
+            ensure!(
+                self.g3_offload.is_none(),
+                "kvcr cannot be combined with g3_offload"
+            );
+            ensure!(
+                self.worker_type != WorkerType::Decode,
+                "kvcr supports aggregated and prefill workers only"
             );
         }
         if let Some(host_offload) = &self.native_host_offload {
@@ -1613,6 +1671,104 @@ mod tests {
         ];
         for &(mutate, expected) in cases {
             assert_invalid_host_config(mutate, expected);
+        }
+    }
+
+    #[test]
+    fn kvcr_defaults_round_trip_and_are_omitted_when_absent() {
+        let config: KvcrConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(
+            config,
+            KvcrConfig {
+                latency_to_first_byte_ms: 1.0,
+                bandwidth_gbps: 50.0
+            }
+        );
+        assert_eq!(config, KvcrConfig::default());
+        let unknown = serde_json::from_value::<KvcrConfig>(serde_json::json!({"policy": "x"}));
+        assert!(unknown.unwrap_err().to_string().contains("unknown field"));
+
+        // Absent KVCR leaves the rank descriptor unchanged.
+        let mut wire = serde_json::to_value(native_host_offload_config()).unwrap();
+        assert!(wire.get("kvcr").is_none());
+        assert!(
+            serde_json::to_value(EngineConfig::default())
+                .unwrap()
+                .get("kvcr")
+                .is_none()
+        );
+
+        // Both knobs serialize, so an explicit descriptor decodes to itself.
+        wire["kvcr"] = serde_json::json!({});
+        let engine: EngineConfig = serde_json::from_value(wire).unwrap();
+        assert_eq!(engine.kvcr, Some(KvcrConfig::default()));
+        engine.validate().unwrap();
+        let encoded = serde_json::to_value(&engine).unwrap();
+        assert_eq!(
+            encoded["kvcr"],
+            serde_json::json!({"latency_to_first_byte_ms": 1.0, "bandwidth_gbps": 50.0})
+        );
+        assert_eq!(
+            serde_json::from_value::<EngineConfig>(encoded).unwrap(),
+            engine
+        );
+    }
+
+    #[test]
+    fn kvcr_requires_private_g2_and_rejects_unsupported_combinations() {
+        let base = || EngineConfig {
+            kvcr: Some(KvcrConfig::default()),
+            ..native_host_offload_config()
+        };
+        base().validate().unwrap();
+        let mut prefill = base();
+        prefill.worker_type = WorkerType::Prefill;
+        prefill.validate().unwrap();
+
+        let cases: &[InvalidHostConfigCase] = &[
+            (
+                |config| config.native_host_offload = None,
+                "kvcr requires native_host_offload",
+            ),
+            (
+                |config| {
+                    config.native_host_offload =
+                        Some(NativeHostOffloadConfig::new(8).cluster_shared("tp1"))
+                },
+                "kvcr requires host_offload.scope=dp_rank_local",
+            ),
+            (
+                |config| config.worker_type = WorkerType::Decode,
+                "kvcr supports aggregated and prefill workers only",
+            ),
+            (
+                |config| {
+                    config.g3_offload = Some(G3OffloadConfig {
+                        scope: G3Scope::WorkerLocal,
+                        num_g3_blocks: 8,
+                        latency_to_first_byte_ms: 0.1,
+                        read_bandwidth_gbps: 10.0,
+                        write_bandwidth_gbps: 10.0,
+                        shared_read_bandwidth_gbps: 80.0,
+                        shared_write_bandwidth_gbps: 80.0,
+                    })
+                },
+                "kvcr cannot be combined with g3_offload",
+            ),
+            (
+                |config| config.kvcr.as_mut().unwrap().bandwidth_gbps = -1.0,
+                "kvcr timing must be finite and non-negative",
+            ),
+            (
+                |config| config.kvcr.as_mut().unwrap().latency_to_first_byte_ms = f64::INFINITY,
+                "kvcr timing must be finite and non-negative",
+            ),
+        ];
+        for &(mutate, expected) in cases {
+            let mut config = base();
+            mutate(&mut config);
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{expected:?} not in {error:?}");
         }
     }
 

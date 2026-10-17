@@ -12,7 +12,7 @@ use crate::engine::{
 };
 use crate::replay::core::RequestIdentity;
 use crate::replay::loadgen::ReplayRequestPayload;
-use crate::replay::protocol::DirectRequest;
+use crate::replay::protocol::{AuthoredKvHints, DirectRequest};
 use crate::replay::telemetry::ReplayTrafficMetricsSnapshot;
 
 impl RequestIdentity for DirectRequest {
@@ -23,6 +23,10 @@ impl RequestIdentity for DirectRequest {
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.preferred_dp_rank
     }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.kv_hints
+    }
 }
 
 impl RequestIdentity for ReplayRequestPayload {
@@ -32,6 +36,10 @@ impl RequestIdentity for ReplayRequestPayload {
 
     fn preferred_dp_rank(&self) -> Option<u32> {
         self.metadata().preferred_dp_rank
+    }
+
+    fn authored_kv_hints(&self) -> Option<AuthoredKvHints> {
+        self.metadata().kv_hints
     }
 }
 

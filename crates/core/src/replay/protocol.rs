@@ -76,6 +76,19 @@ impl ReplayRequestContext {
     }
 }
 
+/// Authored `kv.fetch` hint naming the rank that holds a prefix of a request's
+/// prompt, as when a client attaches a hint directly.
+///
+/// The source is named by its logical worker and attention-DP rank. A
+/// placement policy resolves it to a scheduler id in its own topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthoredKvHints {
+    /// Logical worker that holds the prefix.
+    pub source_worker: usize,
+    /// Attention-DP rank of that worker.
+    pub source_dp_rank: u32,
+}
+
 /// One materialized replay request before it enters a generalized engine.
 #[doc(hidden)]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -95,6 +108,9 @@ pub struct DirectRequest {
     /// fallback when this is absent, matching Dynamo's request-routing contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_prefill_dp_rank: Option<u32>,
+    /// Optional authored peer-fetch hint, as `ReplayRequest::kv_hints` describes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hints: Option<AuthoredKvHints>,
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub priority: i32,

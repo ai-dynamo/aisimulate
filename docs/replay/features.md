@@ -23,6 +23,7 @@ is a separate [performance-model question](../perf-model/support-matrix.md).
 | G2 host offload | vLLM | Aggregated and token-only P/D, any attention-DP size | Prefix caching, no native MTP/Belady/state-cache offload; local or layout-compatible shared pool |
 | Agentic G2 | vLLM | One aggregated worker or 1P1D, attention DP1 on every role | Static pools, no speculation/G3; each role may omit G2 or use local/shared scope |
 | G3 offload | vLLM | Aggregated, attention DP1; fixed or scaled pools | Requires G2; no speculation, AgentX, P/D, recommendation or hardware integration |
+| KVCR peer fetch | vLLM | Aggregated with any attention-DP size, or P/D prefill ranks; fixed or scaled pools | Requires private G2 and hints from a placement policy or ReplaySpec requests (CLI traffic has none); no G3, decode-role KVCR or recommendation; idle under AgentX |
 | Best-effort Belady | All three native backends | Fixed aggregated, DP1, complete open-loop input trace | Native descriptor; prefix caching required; rejects closed-loop/generated/agentic/delta inputs, scaling and offload |
 | Agentic dependency graph | vLLM, SGLang | Offline aggregated or P/D; Weka, Agentic Mooncake and agentic Dynamo traces | One target model for P/D; speculation requires HBM-only; no agentic TensorRT-LLM; HBM or qualified vLLM G2 |
 | Seeded snapshots and warmup | Same agentic boundary | Timestamp load, positive lanes, unsigned 64-bit seed | Request-boundary history, not a physical engine checkpoint; warmup preserves snapshot frontier |

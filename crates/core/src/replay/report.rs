@@ -47,6 +47,8 @@ pub struct ReplayReport {
     /// from cache reuse ratios; an unfinished pass at a replay cutoff is excluded.
     pub committed_prefill_tokens: u64,
     pub g3_offload: Option<crate::engine::G3Stats>,
+    /// Pulls of the pool that configures `kvcr`: aggregated, or prefill in P/D.
+    pub kvcr: Option<crate::engine::KvcrStats>,
     /// Cluster-shared G2 pools; private G2 caches are not listed.
     pub g2_domains: Vec<G2DomainStats>,
     pub request_counts: TraceRequestCounts,
@@ -426,6 +428,9 @@ impl Serialize for ReplayReport {
         map.serialize_entry("committed_prefill_tokens", &self.committed_prefill_tokens)?;
         if let Some(g3) = &self.g3_offload {
             map.serialize_entry("g3_offload", g3)?;
+        }
+        if let Some(kvcr) = &self.kvcr {
+            map.serialize_entry("kvcr", kvcr)?;
         }
         if !self.g2_domains.is_empty() {
             map.serialize_entry("g2_domains", &self.g2_domains)?;
@@ -987,6 +992,7 @@ impl SlaThresholds {
 #[derive(Debug, Default)]
 pub struct TraceCollector {
     pub(crate) g3_offload: Option<crate::engine::G3Stats>,
+    pub(crate) kvcr: Option<crate::engine::KvcrStats>,
     pub(crate) g2_domains: Vec<G2DomainStats>,
     committed_prefill_tokens: u64,
     requests: FxHashMap<Uuid, TraceRequestStats>,
@@ -1969,6 +1975,7 @@ impl TraceCollector {
             g3_offload: self
                 .g3_offload
                 .map(|stats| g3_since(stats, self.g3_profile_baseline.as_ref())),
+            kvcr: self.kvcr,
             g2_domains: self.g2_domains.clone(),
             request_counts: TraceRequestCounts {
                 num_requests: request_count,

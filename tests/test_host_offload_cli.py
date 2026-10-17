@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,12 +20,15 @@ from pydantic import ValidationError
 from aisimulate import main as cli
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.engine import KvCachePredictionConfig
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper.deploy import build_backend_deployment
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
-from aisimulate.sweeper.replay import ReplaySpec
+from aisimulate.sweeper.replay import ReplayOutputRequirements, ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _prediction_worker(*, tp: int = 1, attention_dp: int = 1) -> dict:
@@ -426,3 +430,223 @@ def test_native_speculative_field_is_not_part_of_public_engine_schema() -> None:
 
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         CorePredictionConfig.model_validate({"engine": engine})
+
+
+def _kvcr_defaults() -> dict:
+    return {"latency_to_first_byte_ms": 1.0, "bandwidth_gbps": 50.0}
+
+
+@pytest.mark.parametrize(
+    ("cache", "message"),
+    [
+        ({"kvcr": {}}, "kvcr requires host_offload with scope dp_rank_local"),
+        (
+            {"host_offload": {"num_host_blocks": 8, "scope": "cluster_shared"}, "kvcr": {}},
+            "kvcr requires host_offload with scope dp_rank_local",
+        ),
+        (
+            {
+                "host_offload": {"num_host_blocks": 8},
+                "g3_offload": {"scope": "worker_local", "num_g3_blocks": 8},
+                "kvcr": {},
+            },
+            "kvcr cannot be combined with g3_offload",
+        ),
+        ({"host_offload": {"num_host_blocks": 8}, "kvcr": {"bandwidth_gbps": -1}}, "greater than or equal to 0"),
+        (
+            {"host_offload": {"num_host_blocks": 8}, "kvcr": {"policy": "x"}},
+            r"kvcr\.policy\s+Extra inputs are not permitted",
+        ),
+    ],
+)
+def test_kvcr_requires_private_host_offload_and_no_g3(cache, message) -> None:
+    with pytest.raises(ValueError, match=message):
+        KvCachePredictionConfig.model_validate(cache)
+
+
+def test_kvcr_defaults_and_overrides() -> None:
+    cache = {"host_offload": {"num_host_blocks": 8}, "kvcr": {}}
+    assert KvCachePredictionConfig.model_validate(cache).kvcr.model_dump() == _kvcr_defaults()
+    cache["kvcr"] = {"latency_to_first_byte_ms": 0, "bandwidth_gbps": 0}
+    assert KvCachePredictionConfig.model_validate(cache).kvcr.model_dump() == {
+        "latency_to_first_byte_ms": 0.0,
+        "bandwidth_gbps": 0.0,
+    }
+
+
+def test_kvcr_defaults_match_the_rust_runtime() -> None:
+    from aisimulate import _runtime
+    from aisimulate.config.engine import KvcrConfig
+
+    # Rust fills the fields an empty `kvcr` block omits; Python must default to the same values.
+    role = {"rank": {"kv_cache_bytes_per_token": 256, "native_host_offload": {"num_host_blocks": 8}, "kvcr": {}}}
+    launch = json.loads(_runtime.engine_launch_from_replay_role_json(json.dumps(role)))
+    assert launch["engine"]["kvcr"] == KvcrConfig().model_dump() == _kvcr_defaults()
+
+
+def test_kvcr_supports_the_prefill_role_and_rejects_the_decode_role() -> None:
+    engine = _prediction_engine(mode="disaggregated")
+    engine["kv_transfer"] = {"bytes_per_token": 131_072}
+    prefill, decode = (engine["workers"][role]["kv_cache"] for role in ("prefill", "decode"))
+    prefill.update(bytes_per_token=131_072, host_offload=_host_offload(), kvcr={"bandwidth_gbps": 25})
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    assert deployment.prefill_engine_args["kvcr"] == {**_kvcr_defaults(), "bandwidth_gbps": 25.0}
+    assert "kvcr" not in deployment.decode_engine_args
+
+    decode.update(bytes_per_token=131_072, host_offload=_host_offload(), kvcr={})
+    with pytest.raises(ValidationError, match="kvcr supports aggregated and prefill workers only"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_kvcr_rejects_pipeline_parallelism() -> None:
+    engine = _prediction_engine()
+    worker = engine["workers"]["aggregated"]
+    worker["kv_cache"].update(host_offload=_host_offload(), kvcr={})
+    worker["parallelism"] = {**worker.get("parallelism", {}), "pipeline": 2}
+    with pytest.raises(ValidationError, match="kvcr does not support pipeline parallelism"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+def test_kvcr_recommendation_is_rejected_not_silently_dropped() -> None:
+    engine = _recommendation_engine()
+    engine["workers"]["aggregated"]["kv_cache"].update(host_offload=_host_offload(), kvcr={})
+    with pytest.raises(ValidationError, match="kvcr"):
+        CoreRecommendationConfig.model_validate({"engine": engine})
+
+
+def test_predict_cli_runs_kvcr_through_the_real_runtime(tmp_path, capsys) -> None:
+    from aisimulate import _runtime
+
+    assert callable(_runtime.run_replay_json)
+    engine = _prediction_engine()
+    engine["workers"]["aggregated"]["kv_cache"].update(bytes_per_token=256, host_offload=_host_offload(), kvcr={})
+    config = {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 33, "output_tokens": 1},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+    }
+    path = tmp_path / "prediction.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    argv = ["predict", "--stack", "engine", "--config", str(path), "--format", "json"]
+    assert cli.main([*argv, "--output-dir", str(tmp_path / "kvcr")]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["completed_requests"] == 1
+    # CLI traffic carries no hints, so KVCR is idle; `bypassed` is reported only when nonzero.
+    assert report["kvcr"] == {
+        "pulls": {"success": 0, "partial": 0},
+        "blocks": 0,
+        "bytes": 0,
+        "remote_deliver_ms": 0.0,
+        "source_wait_ms": 0.0,
+        "loaded_blocks": 0,
+    }
+
+
+def _hinted_replay(*, kvcr: bool) -> dict:
+    """Run a ReplaySpec with an authored hint directly on the Rust runtime. Request `a`
+    computes four blocks on DP rank 0; `b` extends them on DP rank 1 and names rank 0."""
+    from aisimulate import _runtime
+
+    rank = {
+        "num_gpu_blocks": 64,
+        "block_size": 4,
+        "max_num_seqs": 4,
+        "max_num_batched_tokens": 128,
+        "kv_cache_bytes_per_token": 250_000,
+        "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+        "native_host_offload": {"num_host_blocks": 64, "d2h_bandwidth_gbps": 32.0, "h2d_bandwidth_gbps": 32.0},
+    }
+    if kvcr:
+        rank["kvcr"] = {}
+
+    def request(request_id: str, arrival_ms: float, dp_rank: int, tokens: list[int], **fields) -> dict:
+        return {
+            "id": request_id,
+            "arrival_time_ms": arrival_ms,
+            "input_tokens": len(tokens),
+            "input_token_ids": tokens,
+            "output_tokens": 1,
+            "dp_rank": dp_rank,
+            **fields,
+        }
+
+    spec = {
+        "version": 1,
+        "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+        "engine": {"dp_size": 2, "rank": rank},
+        "requests": [
+            request("a", 0.0, 0, list(range(1, 17))),
+            request("b", 10.0, 1, list(range(1, 20)), kv_hints={"source_worker": 0, "source_dp_rank": 0}),
+        ],
+        "record_per_request": True,
+    }
+    report = json.loads(_runtime.run_replay_json(json.dumps(spec)))
+    report["per_request"] = {record["request_id"]: record for record in report["per_request"]}
+    return report
+
+
+def test_authored_kv_hints_pull_through_the_python_runtime() -> None:
+    report = _hinted_replay(kvcr=True)
+    kvcr = report["kvcr"]
+    assert kvcr["pulls"] == {"success": 1, "partial": 0}
+    # Four blocks of 4 tokens at 250,000 bytes per token.
+    assert (kvcr["blocks"], kvcr["bytes"]) == (4, 4_000_000)
+    # Default timing: the pull starts at b's arrival (rank 0 is idle), waits 1 ms
+    # for its first byte, then moves 4 MB at 50 GB/s.
+    assert kvcr["source_wait_ms"] == 0.0
+    assert kvcr["remote_deliver_ms"] == 1.08
+    assert kvcr["loaded_blocks"] == 4
+    assert "bypassed" not in kvcr
+    # b reuses all four blocks from its own G2, where the pull put them.
+    assert report["per_request"]["b"]["first_admission_host_reused_input_tokens"] == 16
+
+    # Without KVCR the same hint is ignored silently, and b computes its whole prompt.
+    plain = _hinted_replay(kvcr=False)
+    assert "kvcr" not in plain
+    assert plain["per_request"]["b"]["first_admission_host_reused_input_tokens"] == 0
+    assert plain["per_request"]["b"]["admission_history"][0]["reused_input_tokens"] == 0
+
+
+def test_agentx_accepts_kvcr_and_stays_idle() -> None:
+    config = yaml.safe_load((ROOT / "examples/cli/agentx-g2-local.yaml").read_text(encoding="utf-8"))
+    config["traffic"]["source"]["paths"] = [
+        str(ROOT / "tests/e2e/configs/unified_cli/fixtures/traces/weka-g2-restore.jsonl")
+    ]
+    config["engine"]["model"] = str(ROOT / "tests/e2e/configs/unified_cli/fixtures/tiny-model")
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["kvcr"] = {}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(config))
+    result = (
+        EngineReplayRunnerFactory()
+        .create(0)
+        .run(
+            spec,
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        )
+    )
+    report = result.metadata["native_report"]
+    assert report["completed_requests"] == 4
+    # One aggregated rank has no peer, and the trace carries no hints.
+    assert report["kvcr"]["pulls"] == {"success": 0, "partial": 0}
+    # G2 still restores the parent's evicted prefix.
+    assert sum(row["first_admission_host_reused_input_tokens"] for row in report["per_request"]) == 8
+
+
+def test_kvcr_docs_example_validates(monkeypatch) -> None:
+    text = (ROOT / "docs/replay/engine/kv-cache.md").read_text(encoding="utf-8")
+    host = text.split('<a id="native-vllm-host-offload-prediction"></a>', 1)[1]
+    config = yaml.safe_load(host.split("```yaml\n", 1)[1].split("```", 1)[0])
+    section = text.split('<a id="kvcr-peer-fetch"></a>', 1)[1]
+    extension = yaml.safe_load(section.split("```yaml\n", 1)[1].split("```", 1)[0])
+    assert list(extension) == ["kvcr"]
+    cache = config["engine"]["workers"]["aggregated"]["kv_cache"]
+    assert cache["host_offload"].get("scope", "dp_rank_local") == "dp_rank_local"
+    cache.update(extension)
+    prediction = CorePredictionConfig.model_validate(config)
+    # Validate lowering without downloading the example's gated model metadata.
+    monkeypatch.setattr("aisimulate.compiler.estimate_kv_bytes_per_token", lambda *_args, **_kwargs: 256)
+    deployment = prediction_to_replay_spec(prediction).backend_deployment
+    # The documented values are the defaults in the knob table.
+    assert deployment.agg_engine_args["kvcr"] == _kvcr_defaults()

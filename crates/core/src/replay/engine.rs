@@ -228,6 +228,10 @@ pub struct ReplayRoleFactory {
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
+    /// Replay-owned KVCR timing, taken out of the rank config like `g3_config`.
+    pub(crate) kvcr_config: Option<crate::engine::KvcrConfig>,
+    /// The pool's KVCR registry, which its `EngineComponent` creates.
+    pub(crate) kvcr: Option<crate::engine::kvcr::SharedKvcrRegistry>,
     /// Deployment pool of a cluster-shared G2 role, once bound.
     g2_registry: Option<Arc<G2Registry>>,
     shared_g2: bool,
@@ -277,6 +281,11 @@ impl ReplayRoleFactory {
                 "g3_offload requires a Replay deployment registry".into(),
             ));
         }
+        if self.kvcr_config.is_some() && self.kvcr.is_none() {
+            return Err(ReplayError::InvalidSpec(
+                "kvcr requires a Replay deployment registry".into(),
+            ));
+        }
         let worker_id = u64::try_from(worker_id).map_err(|_| {
             ReplayError::Engine(format!(
                 "worker id {worker_id} exceeds the native engine range"
@@ -295,6 +304,27 @@ impl ReplayRoleFactory {
             for rank in engine.ranks_mut() {
                 rank.set_g3_offload(Arc::clone(registry), worker_id as usize);
             }
+        }
+        if let Some(registry) = &self.kvcr {
+            let mut handles = Vec::new();
+            for (dp_rank, rank) in engine.ranks_mut().enumerate() {
+                let key = crate::engine::KvHintSource {
+                    worker_id,
+                    dp_rank: u32::try_from(dp_rank).expect("dp_size fits u32"),
+                };
+                handles.push(rank.set_kvcr(Arc::clone(registry), key).ok_or_else(|| {
+                    ReplayError::InvalidSpec("kvcr requires vLLM ranks with host_offload".into())
+                })?);
+            }
+            let tensor_parallel_size =
+                usize::try_from(self.tensor_parallel_size).map_err(|_| {
+                    ReplayError::InvalidSpec("tensor_parallel_size overflows usize".into())
+                })?;
+            registry
+                .lock()
+                .unwrap()
+                .register_worker(worker_id, handles, tensor_parallel_size)
+                .map_err(|error| ReplayError::Engine(error.to_string()))?;
         }
         Ok(engine)
     }
@@ -416,6 +446,12 @@ impl ReplayEngineFactory {
             .as_ref()
             .is_some_and(|host| host.scope == G2Scope::ClusterShared);
         let g3_config = role.rank.g3_offload.take();
+        let kvcr_config = role.rank.kvcr.take();
+        if kvcr_config.is_some() && pipeline_parallel_size(&role.rank.timing_model)? > 1 {
+            return Err(ReplayError::InvalidSpec(
+                "kvcr does not support pipeline parallelism (pp must be 1)".into(),
+            ));
+        }
         if g3_config.is_some() && dp_size.get() != 1 {
             return Err(ReplayError::InvalidSpec(
                 "g3_offload supports only dp_size=1".into(),
@@ -443,6 +479,8 @@ impl ReplayEngineFactory {
             g3_config,
             g3_block_bytes,
             g3_tier: None,
+            kvcr_config,
+            kvcr: None,
             g2_registry: None,
             shared_g2,
         })
@@ -562,6 +600,29 @@ pub fn run_engine_handoff_conformance(
     .map_err(runtime_error)?
     .run_handoff_conformance(backend)
     .map_err(runtime_error)
+}
+
+/// Pipeline-parallel size of an `aic`/`ais` timing provider (`pp`, alias
+/// `pp_size`, default 1). Other providers model one stage. A present value that
+/// is not a positive integer is rejected rather than read as 1.
+fn pipeline_parallel_size(timing: &crate::engine::TimingModelConfig) -> Result<u64, ReplayError> {
+    let crate::engine::TimingModelConfig::External { provider, config } = timing else {
+        return Ok(1);
+    };
+    if !matches!(provider.as_str(), "aic" | "ais") {
+        return Ok(1);
+    }
+    let Some((key, value)) = ["pp", "pp_size"]
+        .iter()
+        .find_map(|key| config.get(key).map(|value| (key, value)))
+    else {
+        return Ok(1);
+    };
+    value.as_u64().filter(|size| *size > 0).ok_or_else(|| {
+        ReplayError::InvalidSpec(format!(
+            "timing provider `{key}` must be a positive integer, got {value}"
+        ))
+    })
 }
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
@@ -705,6 +766,117 @@ mod belady_tests {
 }
 
 #[cfg(test)]
+mod kvcr_tests {
+    use super::*;
+    use crate::engine::kvcr::KvcrRegistry;
+    use crate::engine::{KvcrConfig, NativeHostOffloadConfig};
+
+    fn rank(kvcr: Option<KvcrConfig>) -> EngineConfig {
+        EngineConfig {
+            kv_cache_bytes_per_token: Some(250_000),
+            native_host_offload: Some(NativeHostOffloadConfig::new(4)),
+            kvcr,
+            ..Default::default()
+        }
+    }
+
+    fn role_factory(
+        config: &ReplayEngineConfig,
+        stage: WorkerStage,
+    ) -> ReplayResult<ReplayRoleFactory> {
+        ReplayEngineFactory::new().role_factory(config, stage, false)
+    }
+
+    #[test]
+    fn role_factory_takes_kvcr_out_of_the_rank_config() {
+        let config = ReplayEngineConfig {
+            rank: rank(Some(KvcrConfig::default())),
+            ..Default::default()
+        };
+        for stage in [WorkerStage::Aggregated, WorkerStage::Prefill] {
+            let mut factory = role_factory(&config, stage).unwrap();
+            assert_eq!(factory.kvcr_config, Some(KvcrConfig::default()));
+            let Err(error) = factory.build(0) else {
+                panic!("a KVCR worker builds only with its pool's registry");
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("kvcr requires a Replay deployment registry")
+            );
+            // Replay owns it: the rank factory no longer sees the block.
+            factory.kvcr = Some(KvcrRegistry::new(KvcrConfig::default()));
+            assert!(factory.build(0).is_ok());
+        }
+
+        let off = ReplayEngineConfig {
+            rank: rank(None),
+            ..Default::default()
+        };
+        let factory = role_factory(&off, WorkerStage::Aggregated).unwrap();
+        assert_eq!(factory.kvcr_config, None);
+    }
+
+    #[test]
+    fn kvcr_rejects_a_pipeline_parallel_timing_provider() {
+        let config_with = |kvcr, pp: &str, value: serde_json::Value| {
+            let mut rank = rank(kvcr);
+            rank.timing_model = crate::engine::TimingModelConfig::External {
+                provider: "aic".into(),
+                config: serde_json::json!({"model": "m", "system": "s", pp: value}),
+            };
+            ReplayEngineConfig {
+                rank,
+                ..Default::default()
+            }
+        };
+        let config = |kvcr, pp| config_with(kvcr, pp, serde_json::json!(2));
+        for pp in ["pp", "pp_size"] {
+            let Err(error) = role_factory(
+                &config(Some(KvcrConfig::default()), pp),
+                WorkerStage::Aggregated,
+            ) else {
+                panic!("kvcr with {pp}=2 must be rejected");
+            };
+            assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("kvcr does not support pipeline parallelism"),
+                "{error}"
+            );
+        }
+        // A size KVCR cannot read is rejected rather than taken as one stage.
+        for value in [
+            serde_json::json!("2"),
+            serde_json::json!(2.0),
+            serde_json::json!(0),
+        ] {
+            let Err(error) = role_factory(
+                &config_with(Some(KvcrConfig::default()), "pp", value.clone()),
+                WorkerStage::Aggregated,
+            ) else {
+                panic!("kvcr with pp={value} must be rejected");
+            };
+            assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("`pp` must be a positive integer"),
+                "{error}"
+            );
+        }
+        // Pipeline parallelism alone is not KVCR's to reject.
+        let plain = role_factory(&config(None, "pp"), WorkerStage::Aggregated);
+        assert!(
+            !matches!(&plain, Err(error) if error.to_string().contains("kvcr")),
+            "{:?}",
+            plain.err()
+        );
+    }
+}
+
+#[cfg(test)]
 mod observation_tests {
     use std::sync::Mutex;
 
@@ -735,6 +907,7 @@ mod observation_tests {
             scheduler_id,
             reported_overlap_tokens: 0,
             cache_sample: None,
+            kv_hints: None,
             placement_replica_id: None,
         }
     }

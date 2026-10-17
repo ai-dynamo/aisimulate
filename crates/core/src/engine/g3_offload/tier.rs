@@ -41,7 +41,7 @@ pub struct G3Stats {
     pub bypassed_restores: u64,
 }
 
-fn is_zero(value: &u64) -> bool {
+pub(crate) fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 

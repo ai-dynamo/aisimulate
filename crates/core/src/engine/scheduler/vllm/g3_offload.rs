@@ -3,38 +3,13 @@
 
 //! G3 writes own G2 source pins; promotions own pending G2 destinations.
 //! Request termination detaches from admitted promotions rather than aborting I/O.
+use super::host_offload::{MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS, RestoreRounds};
 use crate::engine::g3_offload::{Direction, Probe, SharedG3Tier};
 use crate::engine::host_offload::{
     HostBlockKey, HostBlockMeta, HostTier, Lookup, StoreOutcome, TransferId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-
-/// Restore rounds (lookups that submit G3 promotions) a waiting request may
-/// make while its DP rank schedules no work and emits no output. A prefix
-/// larger than G2 can evict its own promotions forever; past this bound the
-/// request stops restoring from G3 and computes what G2 cannot supply. A
-/// request merely waiting behind running work never reaches it.
-const MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS: usize = 1024;
-
-/// Request-local G3 restore progress.
-#[derive(Default)]
-pub(super) struct G3Restore {
-    rounds_without_progress: usize,
-    /// The rank's progress count at this request's last round.
-    rank_progress: u64,
-}
-
-impl G3Restore {
-    pub(super) fn bypassed(&self) -> bool {
-        self.rounds_without_progress >= MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS
-    }
-
-    /// The request was scheduled or preempted: its restores start over.
-    pub(super) fn reset(&mut self) {
-        self.rounds_without_progress = 0;
-    }
-}
 
 struct G3StagingState {
     owner: Option<Uuid>,
@@ -98,7 +73,7 @@ impl VllmG3OffloadAdapter {
         tier: &mut HostTier,
         client: u64,
         owner: Uuid,
-        restore: &mut G3Restore,
+        restore: &mut RestoreRounds,
         keys: &[HostBlockKey],
         meta: Option<&[HostBlockMeta]>,
         now: f64,
@@ -158,12 +133,7 @@ impl VllmG3OffloadAdapter {
             }
             return deferred;
         };
-        if restore.rank_progress != self.rank_progress {
-            restore.rank_progress = self.rank_progress;
-            restore.rounds_without_progress = 0;
-        }
-        restore.rounds_without_progress += 1;
-        if restore.bypassed() {
+        if restore.record_round(self.rank_progress) {
             registry.stats.bypassed_restores += 1;
             tracing::warn!(
                 %owner,
@@ -297,7 +267,7 @@ mod tests {
             keys: &[HostBlockKey],
             now: f64,
         ) -> bool {
-            self.stage(tier, C, owner, &mut G3Restore::default(), keys, None, now)
+            self.stage(tier, C, owner, &mut Default::default(), keys, None, now)
         }
     }
 
@@ -625,7 +595,7 @@ mod tests {
         let (mut g3, mut tier, registry) = fixture(1);
         let [a, b] = [1, 2].map(HostBlockKey::new);
         let mut now = seed_secondary(&registry, &mut tier, &[a, b]);
-        let mut restore = G3Restore::default();
+        let mut restore = RestoreRounds::default();
         // Rank progress before round 10 starts the count over.
         let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
         for round in 0..rounds {

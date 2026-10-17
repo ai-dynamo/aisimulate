@@ -175,6 +175,10 @@ impl HostClient {
     pub(crate) fn lock(&self) -> MutexGuard<'_, HostTier> {
         self.tier.lock().unwrap()
     }
+
+    pub(crate) fn tier_handle(&self) -> HostTierHandle {
+        HostTierHandle(Arc::clone(&self.tier))
+    }
 }
 
 impl Drop for HostClient {
@@ -182,6 +186,25 @@ impl Drop for HostClient {
         if let Ok(mut tier) = self.tier.lock() {
             tier.retire(self.id);
         }
+    }
+}
+
+/// Shared handle on one private G2 tier for KVCR peer reads; dropping it does not
+/// retire the rank. Lock the rank's own tier, then the KVCR registry, then a source
+/// rank's tier. Of the registry's own methods, only `register_worker` locks tiers,
+/// before the new worker's ranks run. This is deadlock-free only because Replay
+/// drives all ranks on one thread.
+#[derive(Clone)]
+pub(crate) struct HostTierHandle(Arc<Mutex<HostTier>>);
+
+impl HostTierHandle {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, HostTier> {
+        self.0.lock().unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(tier: HostTier) -> Self {
+        Self(Arc::new(Mutex::new(tier)))
     }
 }
 
@@ -294,5 +317,13 @@ mod tests {
         // Private caches never join the deployment pool.
         let private = join(Some(&binding), GEOMETRY, |c| c.scope = G2Scope::DpRankLocal).unwrap();
         assert!(!Arc::ptr_eq(&private.tier, &first.tier));
+    }
+
+    #[test]
+    fn dropping_a_tier_handle_does_not_retire_the_rank() {
+        let client = join(None, GEOMETRY, |c| c.scope = G2Scope::DpRankLocal).unwrap();
+        drop(client.tier_handle());
+        // A retired rank would panic here: "host client is not registered".
+        client.lock().tick(client.id(), 0.0);
     }
 }

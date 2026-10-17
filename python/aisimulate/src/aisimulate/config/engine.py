@@ -184,6 +184,13 @@ class G3OffloadConfig(StrictModel):
     shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
 
 
+class KvcrConfig(StrictModel):
+    """KVCR peer G2 fetch: pull a hinted prefix from another rank's private G2."""
+
+    latency_to_first_byte_ms: NonNegativeFloat = 1.0
+    bandwidth_gbps: NonNegativeFloat = 50.0
+
+
 def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> int:
     """Validate explicit byte geometry without invoking model inference."""
     for name, value in (("block_size", block_size), ("bytes_per_token", bytes_per_token)):
@@ -236,6 +243,7 @@ class KvCachePredictionConfig(StrictModel):
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
+    kvcr: KvcrConfig | None = None
     state_cache: StateCachePredictionConfig | None = None
 
     @field_validator("state_cache", mode="before")
@@ -249,6 +257,16 @@ class KvCachePredictionConfig(StrictModel):
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_kvcr(self):
+        if self.kvcr is None:
+            return self
+        if self.host_offload is None or self.host_offload.scope != "dp_rank_local":
+            raise ValueError("kvcr requires host_offload with scope dp_rank_local")
+        if self.g3_offload is not None:
+            raise ValueError("kvcr cannot be combined with g3_offload")
         return self
 
     @model_validator(mode="after")
@@ -998,6 +1016,10 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
             raise ValueError("host_offload requires prefix_caching=true")
         if worker.kv_cache.g3_offload is not None and (role != "aggregated" or worker.parallelism.attention_data != 1):
             raise ValueError("g3_offload is supported only for the aggregated worker with attention_data=1")
+        if worker.kv_cache.kvcr is not None and role == "decode":
+            raise ValueError("kvcr supports aggregated and prefill workers only")
+        if worker.kv_cache.kvcr is not None and worker.parallelism.pipeline > 1:
+            raise ValueError("kvcr does not support pipeline parallelism (parallelism.pipeline must be 1)")
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:

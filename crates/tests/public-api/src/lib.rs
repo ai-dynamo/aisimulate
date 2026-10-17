@@ -742,6 +742,7 @@ pub fn rebuild_replay_report_literals(
             kv_eviction_assumption: report.kv_eviction_assumption,
             committed_prefill_tokens: report.committed_prefill_tokens,
             g3_offload: report.g3_offload,
+            kvcr: report.kvcr,
             g2_domains: report.g2_domains,
             request_counts: report.request_counts,
             throughput: report.throughput,

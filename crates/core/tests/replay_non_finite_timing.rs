@@ -88,6 +88,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                                 output_token_ids: None,
                                 dp_rank: None,
                                 prefill_dp_rank: None,
+                                kv_hints: None,
                                 session_id: None,
                                 turn_index: None,
                                 metadata: serde_json::Value::Null,
