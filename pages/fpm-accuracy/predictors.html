@@ -134,7 +134,7 @@ latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details
           </article>
           <article class="predictor-card predictor-learned" aria-labelledby="learned-heading">
             <h3 id="learned-heading">Learned (fpm5)</h3>
-            <p>Gradient-boosted trees over the five FPM v1 counts and sums, fitted once. Within each workload kind every
+            <p>Gradient-boosted trees (150 trees, at most 15 leaves each) over the five FPM v1 counts and sums, fitted once. Within each workload kind every
               other observation trains the model and the rest are scored: this measures interpolation within the
               measured range, and coverage is about half by design.</p>
             <dl><dt>Input</dt><dd>Alternate worker observations</dd><dt>Mode</dt><dd><code>learned</code></dd></dl>
@@ -143,6 +143,9 @@ latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details
     training_iterations,
     worker_type="decode",
     features=fpm_learned.FEATURE_PRESETS["fpm5"],
+    max_iter=150,
+    max_leaf_nodes=15,
+    learning_rate=0.2,
 )
 model = RustForwardPassPerfModel.from_learned(artifact)
 latency_ms = model.estimate_forward_pass_time_ms(workload)</code></pre></details>

@@ -158,7 +158,8 @@ denominator; FPM evaluation continues. An older regression policy is not
 substituted for the Gym contract.
 Learned (fpm5) is the offline gradient-boosted model of
 `aisimulate_core.sdk.fpm_learned` with the `fpm5` preset (the five FPM v1 counts
-and sums, no variances or per-request lists). It is fitted once per case: within
+and sums, no variances or per-request lists), 150 trees of at most 15 leaves at
+learning rate 0.2. It is fitted once per case: within
 each workload kind, observations alternate in stream order between training
 (the 1st, 3rd, ...) and scoring (the others). Training observations count as
 unavailable, so coverage is about half by design. The split measures
