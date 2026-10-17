@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Dynamo-neutral, deterministic offline replay.
+//! Engine-neutral, deterministic offline replay.
 //!
 //! [`Replayer`] owns virtual time, the event queue, logical-worker lifecycle,
 //! placement/scaling policy composition, and report collection. Engine
 //! scheduling and timing are supplied by [`crate::engine`] through its
-//! generalized-engine contract. Dynamo integrations depend on `aisimulate-core` and
-//! provide placement/scaling policies; replay never depends back on Dynamo.
+//! generalized-engine contract. Optional native routing links only Dynamo's
+//! production policy primitives; AISimulate owns its adapter and execution loop.
 
 mod agg;
 mod artifact;
@@ -154,11 +154,14 @@ pub use handoff::{
 pub use protocol::ForwardPassSnapshot;
 #[doc(hidden)]
 pub use protocol::{
-    AgenticRuntimeIdentity, DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
+    AGENTIC_CONVERSATION_LINEAGE_SCHEMA_V1, AgenticConversationLineage, AgenticRuntimeIdentity,
+    DirectRequest, ReplayPromptTokenSource, ReplayRequestContext,
 };
 #[doc(hidden)]
 pub use replayer::ReplayRuntimeInput;
-pub use replayer::{ReplayComposition, Replayer, RoundRobinComposition};
+pub use replayer::{
+    ReplayComposition, Replayer, RoundRobinComposition, run_replay_with_composition,
+};
 #[doc(hidden)]
 pub use report::TraceCollector;
 pub use report::{

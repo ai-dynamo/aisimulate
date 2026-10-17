@@ -14,10 +14,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready, settle_internal_work,
+    DispatchFailure, ReplayStepOutcome, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready, settle_internal_work, validate_policy_wakeup,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -56,6 +56,7 @@ where
     PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
 {
     now_ms: f64,
+    dispatch_failure: DispatchFailure,
     dp_size: u32,
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
@@ -145,6 +146,7 @@ where
 
         Ok(Self {
             now_ms: 0.0,
+            dispatch_failure: DispatchFailure::default(),
             dp_size,
             next_event_seq: 0,
             next_scaling_tick_ordinal: 0,
@@ -299,13 +301,44 @@ where
                 (request, uuid, worker_idx),
             )?;
         } else {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx)?;
         }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
         // worker that served the request; prefill_worker_idx stays None,
         // signaling "no separate prefill pool".
         self.collector.on_decode_assigned(uuid, worker_idx);
+        Ok(())
+    }
+
+    /// Commit policy state only after the engine accepts the tokenized request.
+    fn submit_to_engine(
+        &mut self,
+        request: DirectRequest,
+        uuid: Uuid,
+        worker_idx: usize,
+    ) -> anyhow::Result<()> {
+        if let Err(error) = self.engine.dispatch(worker_idx, request, self.now_ms) {
+            // A rejected duplicate still belongs to the original submission;
+            // only an accepted dispatch may be rolled back here.
+            let abort = self.placement.dispatch_aborted(uuid, self.now_ms);
+            self.requests.remove(&uuid);
+            return Err(self.dispatch_failure.record(error, Ok(()), abort));
+        }
+        if let Err(error) = self.placement.dispatch_committed(uuid, self.now_ms) {
+            let rollback = self.engine.rollback_dispatch(
+                worker_idx,
+                uuid,
+                Command::CancelRequest {
+                    request_id: uuid,
+                    discard_pending_output: true,
+                },
+                self.now_ms,
+            );
+            let abort = self.placement.dispatch_aborted(uuid, self.now_ms);
+            self.requests.remove(&uuid);
+            return Err(self.dispatch_failure.record(error, rollback, abort));
+        }
         Ok(())
     }
 
@@ -511,7 +544,10 @@ where
         } else {
             next_event_ms
         };
-        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.engine.next_internal_deadline_ms(),
+            self.placement.next_wakeup_ms(),
+        );
         (
             choose_next_timestamp(
                 choose_next_timestamp(next_arrival_ms, next_event_ms),
@@ -764,7 +800,7 @@ where
         let released = tokenization.release_due(self.now_ms);
         let changed = !released.is_empty();
         for (tokenized_ms, (request, uuid, worker_idx)) in released {
-            self.engine.dispatch(worker_idx, request, self.now_ms)?;
+            self.submit_to_engine(request, uuid, worker_idx)?;
             self.collector.on_tokenized(uuid, tokenized_ms);
         }
         Ok(changed)
@@ -909,6 +945,7 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        self.dispatch_failure.ensure_healthy()?;
         #[cfg(test)]
         {
             self.stats.semantic_drain_count += 1;
@@ -916,9 +953,18 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
-            // Settle idle deadlines first: a completion below may release a
-            // queued placement and submit it to that same idle worker.
+            validate_policy_wakeup(
+                self.placement.next_wakeup_ms(),
+                self.now_ms,
+                "aggregated",
+                false,
+            )?;
+            // Settle idle deadlines before policy wakeups or completions can
+            // release a queued placement to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
+            let placements = self.placement.advance_clock(self.now_ms)?;
+            changed |= !placements.is_empty();
+            self.dispatch_placements(placements)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
@@ -1000,6 +1046,12 @@ where
                 changed |= self.apply_scaling_ticks()?;
             }
 
+            validate_policy_wakeup(
+                self.placement.next_wakeup_ms(),
+                self.now_ms,
+                "aggregated",
+                !changed,
+            )?;
             if !changed {
                 break;
             }
@@ -1523,6 +1575,7 @@ where
     }
 
     fn ensure_drive_started(&mut self) -> anyhow::Result<bool> {
+        self.dispatch_failure.ensure_healthy()?;
         if self.drive_started {
             return Ok(false);
         }
@@ -2516,6 +2569,7 @@ mod host_offload_tests {
 
     struct ReleaseToIdleWorker {
         pending: Option<Uuid>,
+        release_at_ms: Option<f64>,
     }
 
     impl PlacementPolicy<ReplayRequestPayload> for ReleaseToIdleWorker {
@@ -2571,12 +2625,24 @@ mod host_offload_tests {
             }
         }
 
+        fn next_wakeup_ms(&self) -> Option<f64> {
+            self.pending.and(self.release_at_ms)
+        }
+
+        fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            if self.release_at_ms.is_some_and(|at_ms| at_ms <= now_ms) {
+                self.release_at_ms = None;
+                return self.request_terminal(COMPLETING_A, now_ms);
+            }
+            Ok(Vec::new())
+        }
+
         fn request_terminal(
             &mut self,
             request_id: Uuid,
             _now_ms: f64,
         ) -> anyhow::Result<Vec<Placement>> {
-            if request_id != COMPLETING_A {
+            if request_id != COMPLETING_A || self.release_at_ms.is_some() {
                 return Ok(Vec::new());
             }
             Ok(self
@@ -2644,8 +2710,13 @@ mod host_offload_tests {
         }
     }
 
-    #[test]
-    fn idle_internal_deadline_settles_before_completion_releases_placement() {
+    #[rstest::rstest]
+    #[case::completion(None)]
+    #[case::coincident_wakeup(Some(5.0))]
+    #[case::later_wakeup(Some(5.25))]
+    fn idle_internal_deadline_settles_before_releasing_placement(
+        #[case] release_at_ms: Option<f64>,
+    ) {
         let config = ReplayEngineConfig {
             rank: EngineConfig {
                 num_gpu_blocks: 1,
@@ -2691,7 +2762,10 @@ mod host_offload_tests {
                         .collect::<Vec<_>>(),
                     vec![&[0][..], &[1][..]]
                 );
-                Ok(ReleaseToIdleWorker { pending: None })
+                Ok(ReleaseToIdleWorker {
+                    pending: None,
+                    release_at_ms,
+                })
             },
         )
         .unwrap()
@@ -2715,7 +2789,7 @@ mod host_offload_tests {
             .find(|request| request.uuid == QUEUED_FOR_B.to_string())
             .expect("released request record");
         assert_eq!(released.decode_worker_idx, Some(1));
-        assert_eq!(released.first_admit_ms, Some(5.0));
+        assert_eq!(released.first_admit_ms, Some(release_at_ms.unwrap_or(5.0)));
         assert_eq!(released.terminal_status, ReplayTerminalStatus::Completed);
     }
 }
@@ -2766,8 +2840,11 @@ where
     }
 
     /// Admit `request` at the current simulated time. The returned id
-    /// correlates the request with later measurements.
+    /// correlates the request with later measurements. A dispatch failure
+    /// poisons this runtime: its policy/collector may have changed even after
+    /// engine rollback. Construct a new runtime instead of retrying submission.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        self.dispatch_failure.ensure_healthy()?;
         let arrival_time_ms = self.now_ms;
         let uuid = self.assign_request(
             ReplayRequestPayload::materialized(request),
@@ -2787,6 +2864,7 @@ where
         &mut self,
         uuid: Uuid,
     ) -> anyhow::Result<Option<ReplayTerminalStatus>> {
+        self.dispatch_failure.ensure_healthy()?;
         let Some((phase, scheduler_id)) = self
             .requests
             .get(&uuid)
@@ -2900,6 +2978,7 @@ where
     /// bypasses the terminal would break the invariant silently instead of
     /// failing a test.
     pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> anyhow::Result<f64> {
+        self.dispatch_failure.ensure_healthy()?;
         if until_ms.is_nan() || until_ms < self.now_ms {
             bail!(
                 "aggregated step deadline {until_ms}ms precedes runtime time {}ms",
@@ -2948,6 +3027,7 @@ where
         &mut self,
         wall_ms: f64,
     ) -> anyhow::Result<crate::replay::ReplayReport> {
+        self.dispatch_failure.ensure_healthy()?;
         anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
         anyhow::ensure!(
             self.is_workload_done(),

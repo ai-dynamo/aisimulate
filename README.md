@@ -53,7 +53,8 @@ on `main` can describe features newer than the latest published wheel.
 ### Engine-only
 
 Install AISimulate by itself to use the built-in simulation engine without a
-Dynamo dependency. Use a fresh virtual environment for each installation profile.
+Dynamo Python package or service. Use a fresh virtual environment for each
+installation profile.
 These commands install published releases; for the examples on `main`, use
 [Develop from source](#develop-from-source):
 
@@ -427,9 +428,13 @@ Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
 [Python source migration](docs/aic-backward-compatibility/migration.md#python-imports-and-resources) for removed imports.
 
-The AISimulate wheel does not declare Dynamo as an installation dependency.
-Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
-consume AISimulate through optional adapters.
+The AISimulate wheel does not require a Dynamo Python package or service.
+It compiles source-pinned Dynamo routing crates through the unpublished
+`aisimulate-python` host crate for standalone conversation-aware simulation;
+the published `aisimulate-core` crate remains independent of Dynamo. See the
+[AgentX quickstart](docs/replay/agentic/quickstart.md) for source and package status.
+Dynamo's optional Planner, runtime, transport, and live-Mocker integrations
+consume AISimulate through adapters.
 
 ### Packaged legal-file copies
 

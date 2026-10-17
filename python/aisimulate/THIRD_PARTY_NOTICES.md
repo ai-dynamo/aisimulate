@@ -67,6 +67,39 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
 
+## NVIDIA Dynamo native routing adapter
+
+The following repository-root files adapt and modify NVIDIA Dynamo source at
+immutable revision `6d6d36d7bfa63d80a0302df637c08f85523aa5b6`:
+
+| AISimulate file | Original Dynamo file |
+| --- | --- |
+| `crates/python/src/native_router/affinity.rs` | `lib/mocker/src/replay/offline/extensions/kv_router/affinity.rs` |
+| `crates/python/src/native_router/composition.rs` | `lib/mocker/src/replay/offline/extensions/kv_router/composition.rs` |
+| `crates/python/src/native_router/router.rs` | `lib/mocker/src/replay/offline/extensions/kv_router/mod.rs` |
+| `crates/python/src/native_router/helpers.rs` | `lib/mocker/src/replay/router_shared.rs` |
+| `crates/python/src/native_router/observation.rs` | `lib/mocker/src/replay/offline/extensions/kv_events/mod.rs` and `lib/mocker/src/engine_observations.rs` |
+| `python/aisimulate/src/aisimulate/router.py` | `components/src/dynamo/router/simulation/config.py` and `components/src/dynamo/router/simulation/provider.py` |
+
+Source repository and revision:
+https://github.com/ai-dynamo/dynamo/tree/6d6d36d7bfa63d80a0302df637c08f85523aa5b6
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The original per-file copyright years are retained in the derived files.
+The files are modified to use AISimulate-owned execution, configuration, engine
+observations, and reporting. Admission, queueing, booking, worker selection,
+and affinity acquisition call Dynamo's native implementations; the adapter
+translates simulation inputs and lifecycle events. The upstream libraries are
+pinned separately in the Python extension's Cargo manifest.
+
+These sources are licensed under the Apache License, Version 2.0:
+https://github.com/ai-dynamo/dynamo/blob/6d6d36d7bfa63d80a0302df637c08f85523aa5b6/LICENSE
+
+The full Apache-2.0 license text is reproduced in `LICENSE`. No separate upstream
+NOTICE applies to these source files. The upstream license's notice concerning
+DeepSeek test fixtures does not apply; those fixtures are not included here.
+This records cross-repository provenance for NVIDIA-authored code.
+
 ## Dynamo V4.1 FPM collection adapter
 
 `collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py` is modified code

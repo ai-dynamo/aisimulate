@@ -97,17 +97,23 @@ The following rules apply:
 
 ## Choose an execution stack
 
-`--stack engine` is the default and uses the built-in offline runner. To use Dynamo-owned
-routing and Planner behavior, install a [matched integration](../getting-started/installation.md#optional-dynamo-integration) and select it explicitly:
+The built-in `engine` runner is the default, including when YAML contains a
+`router` section. Its built-in `engine.router` adapter calls Dynamo's native
+policy through the AISimulate runtime. The [AgentX quickstart](../replay/agentic/quickstart.md)
+shows standalone conversation routing without installing Dynamo Python packages.
+An explicit `--stack` remains authoritative.
+
+For Dynamo-specific integration such as Planner, install compatible packages as
+described in [installation](../getting-started/installation.md#optional-dynamo-integration)
+and select that stack explicitly:
 
 ```bash
 aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
 aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
 ```
 
-A config containing `router` or `planner` requires the corresponding installed adapters; the
-Dynamo integration provides them. Use the same stack when predicting a configuration saved by
-that stack's recommendation run. See the complete [Dynamo prediction](../replay/dynamo.md#complete-dynamo-prediction-example)
+Use the same stack when predicting a configuration saved by its recommendation
+run. See the complete [Dynamo prediction](../replay/dynamo.md#complete-dynamo-prediction-example)
 and [recommendation](../replay/dynamo.md#dynamo-scalar-recommendation-example) examples.
 
 `predict --online` requests wall-clock-paced execution from a stack that supports it.
@@ -370,7 +376,7 @@ Check KV capacity against request lengths, context limits, and traffic stop limi
 | Installation reports an unsupported Python version | AISimulate requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
 | Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
 | Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
-| Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install a matched pair from the [installation guide](../getting-started/installation.md#optional-dynamo-integration) and use `--stack dynamo`. |
+| Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `engine.router` is built in; `planner` requires the Dynamo integration. | Install a matched pair from the [installation guide](../getting-started/installation.md#optional-dynamo-integration) and use `--stack dynamo`. |
 | `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
 | `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |

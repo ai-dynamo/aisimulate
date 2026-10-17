@@ -11,7 +11,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from .config.common import CONFIG_ADAPTER_ENTRY_POINT_GROUP
+from .config.common import BUILTIN_CONFIG_ADAPTER_NAMES, CONFIG_ADAPTER_ENTRY_POINT_GROUP
 from .sweeper.provider import API_VERSION as SWEEP_PROVIDER_API_VERSION
 from .sweeper.provider import (
     AdapterReplaySpec,
@@ -153,19 +153,26 @@ def resolve_config_adapters(
 
     requested = list(dict.fromkeys(names))
     injected = injected or {}
-    installed = (
-        list(entry_points)
-        if entry_points is not None
-        else list(importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP))
-    )
+    installed = None
     resolved: dict[str, SimulationConfigAdapter] = {}
     for name in requested:
         if name in injected:
             resolved[name] = validate_config_adapter(injected[name], requested_name=name)
             continue
+        if name == "engine.router":
+            from .router import EngineRouterConfigAdapter
+
+            resolved[name] = validate_config_adapter(EngineRouterConfigAdapter(), requested_name=name)
+            continue
+        if installed is None:
+            installed = (
+                list(entry_points)
+                if entry_points is not None
+                else list(importlib.metadata.entry_points().select(group=CONFIG_ADAPTER_ENTRY_POINT_GROUP))
+            )
         matches = [entry for entry in installed if entry.name == name]
         if not matches:
-            available = sorted(set(injected) | {entry.name for entry in installed})
+            available = sorted(set(injected) | BUILTIN_CONFIG_ADAPTER_NAMES | {entry.name for entry in installed})
             raise ConfigAdapterResolutionError(
                 f"config adapter {name!r} is unavailable; installed adapters: "
                 f"{', '.join(available) if available else '<none>'}"

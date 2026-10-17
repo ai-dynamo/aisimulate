@@ -27,10 +27,13 @@ worker readiness, transfers and admission, then telemetry and scaling. A
 logical worker can contain multiple attention-DP rank schedulers; the grouped
 pass completes at the slowest rank's latency.
 
-The built-in `engine` stack provides offline execution with round-robin
-placement and fixed worker pools. Dynamo supplies its own Router and Planner
-composition through neutral contracts. Importing a Dynamo trace is a workload
-operation and does not require the Dynamo execution stack.
+The built-in `engine` stack provides offline execution with fixed worker pools,
+round-robin placement, and native Dynamo routing through `engine.router`.
+Conversation-aware routing runs within AISimulate using Dynamo's routing
+crates; it requires no Dynamo Python package or service. The optional Dynamo
+stack supplies Planner and downstream integration through neutral contracts.
+Importing a Dynamo trace is a workload operation and does not require the
+Dynamo execution stack.
 
 Native token replay and the analytical AFD/EPD paths have different support and
 reporting boundaries. A successful run does not establish silicon accuracy.
@@ -43,6 +46,8 @@ Agentic results explicitly retain `functional_only` qualification.
   [agentic lanes, snapshots, warmup and profiles](workloads.md#agentic-load-controls).
 - [Agentic warmup](agentic/warmup.md) and [continuous profiles](agentic/continuous-profiles.md):
   detailed preparation, barrier, lane-recycling and reporting contracts.
+- [Conversation lineage](agentic/conversation-lineage.md): ancestry, snapshot identities
+  and routing lifecycle contracts.
 - [Engine](engine/README.md): the `engine` block, with pages for
   [workers](engine/workers.md), [KV cache](engine/kv-cache.md),
   [P/D KV transfer](engine/kv-transfer.md),

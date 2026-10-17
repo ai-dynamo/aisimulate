@@ -16,7 +16,14 @@ from typing import Any
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
-from .cli_args import _apply_overrides, _CliConfigError, _extract_output_configs, _load_mapping, build_parser
+from .cli_args import (
+    _apply_overrides,
+    _CliConfigError,
+    _extract_output_configs,
+    _load_mapping,
+    build_parser,
+    select_stack,
+)
 from .config.cli import (
     CorePredictionConfig,
     CoreRecommendationConfig,
@@ -165,7 +172,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         raise ValueError("ngram speculation requires offline --stack engine without adapters")
     if config.engine.speculation is not None and args.online:
         raise ValueError("speculation requires offline execution")
-    plan = _resource_plan(args, config, factory)
+    plan = _resource_plan(args, config, factory, adapter_raw)
     require_plan(plan)
     from .supervision import checkpoint, mark_execution_ready, mark_shutdown
 
@@ -378,13 +385,14 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     return 0
 
 
-def _resource_plan(args, config, factory) -> dict[str, Any]:
+def _resource_plan(args, config, factory, adapter_configs=None) -> dict[str, Any]:
     return build_plan(
         workload_bounds(config),
         stack=args.stack,
         policy=config.execution.resources,
         requested_parallelism=config.optimizer.parallelism if isinstance(config, CoreRecommendationConfig) else 1,
         factory=factory,
+        native_router=args.stack == "engine" and (adapter_configs or {}).get("router", {}).get("policy") == "kv_router",
     )
 
 
@@ -404,20 +412,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         except KeyboardInterrupt:
             return 130
-    # Stack resolution deliberately precedes opening the configuration file.
+    # An explicit stack retains its error ordering and is never silently replaced.
     try:
-        factory = resolve_runner_factory(args.stack)
+        factory = resolve_runner_factory(args.stack) if args.stack is not None else None
     except StackResolutionError as exc:
         parser.error(str(exc))
     try:
         raw = _load_mapping(args.config)
         _apply_overrides(raw, args.overrides, command=args.command)
+        args.stack = select_stack(args.stack, raw)
+        if factory is None:
+            factory = resolve_runner_factory(args.stack)
         if args.command == "predict":
             return _predict(args, raw, factory)
         return _recommend(args, raw, factory)
     except (
         _CliConfigError,
         ConfigAdapterResolutionError,
+        StackResolutionError,
         OutputAdapterResolutionError,
         ValidationError,
         ValueError,

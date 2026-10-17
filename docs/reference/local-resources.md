@@ -151,6 +151,12 @@ supervision when their reservation fits available headroom. Known lower bounds
 still reject impossible workloads before allocation. The low-level Runner
 protocol itself remains an execution primitive.
 
+With `engine.router` and `router.policy: kv_router`, native routing retains
+state beyond the engine estimate. Initial CLI planning, per-run admission and
+wave admission therefore require supervised serial execution, including finite
+and snapshot workloads. Initial materialization checks and lower bounds still
+apply; an observed trace peak does not qualify parallel native-router runs.
+
 When wave admission encounters an unknown peak without an observation, it stops
 estimating the remaining candidates and signals serial execution directly. The
 scheduler keeps that limit, without repeated wave halving, until a completed

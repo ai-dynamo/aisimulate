@@ -164,12 +164,19 @@ def test_aisimulate_source_versions_are_synchronized():
     project = tomllib.loads((root / "pyproject.toml").read_text())
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
+    extension = tomllib.loads((repo_root / "crates/python/Cargo.toml").read_text())
 
     workspace_version = workspace["workspace"]["package"]["version"]
     assert project["project"]["version"] == workspace_version
     assert core["package"]["version"] == workspace_version
-    assert workspace["workspace"]["members"] == ["crates/core"]
-    assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
+    assert workspace["workspace"]["members"] == ["crates/core", "crates/python"]
+    assert extension["package"]["version"] == {"workspace": True}
+    assert extension["package"]["publish"] is False
+    assert project["tool"]["maturin"]["manifest-path"] == "../../crates/python/Cargo.toml"
+    assert project["tool"]["maturin"]["module-name"] == "aisimulate._runtime"
+    assert extension["dependencies"]["aisimulate-core"]["path"] == "../core"
+    assert not any(name.startswith("dynamo-") for name in core["dependencies"])
+    assert all(not isinstance(value, dict) or "git" not in value for value in core["dependencies"].values())
 
 
 def test_profiler_does_not_publish_or_reexport_sweeper():

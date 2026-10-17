@@ -22,6 +22,12 @@ pub mod engine;
 pub mod perfmodel;
 #[cfg(feature = "python")]
 mod python;
+#[cfg(feature = "python")]
+pub use python::{
+    ReplayExecutionResult, TokenizationPayload, execute_replay_json_with_composition,
+    execute_replay_with_composition, execute_replay_with_dispatch, register_python_module,
+    replay_python_error, run_prepared_replay,
+};
 pub mod replay;
 
 pub use engine::{
@@ -29,6 +35,9 @@ pub use engine::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
 };
 pub use replay::{ReplayReport, ReplaySpec, Replayer};
+
+/// Version of the core linked into a consumer.
+pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Preserve the former published AIC crate-root surface. Replay's conflicting
 // engine configuration remains available as `engine::EngineConfig` and under

@@ -611,6 +611,53 @@ fn snapshot_pin_report(
     run_g2(spec, driver)
 }
 
+fn assert_snapshot_lineage(name: &str, report: &ReplayReport) {
+    let identities = report
+        .agentic_snapshots
+        .as_ref()
+        .unwrap()
+        .iter()
+        .flat_map(|snapshot| snapshot.requests.iter().map(|request| &request.identity))
+        .chain(
+            report
+                .agentic_phases
+                .iter()
+                .flat_map(|phase| phase.requests.iter().map(|request| &request.identity)),
+        )
+        .chain(
+            report
+                .per_request
+                .iter()
+                .map(|request| request.agentic.as_ref().expect("agentic request identity")),
+        );
+    for identity in identities {
+        let prefix = format!("{}:conversation:", identity.play_id);
+        let conversation = identity.conversation_id.strip_prefix(&prefix).unwrap();
+        // Derive the expected ancestry from the authored fixtures, independently
+        // of the graph/snapshot lineage implementation, including historical roots.
+        let (root, child) = match name {
+            "g2" => {
+                assert!(matches!(conversation, "parent" | "child"));
+                ("parent".to_string(), conversation == "child")
+            }
+            "two-plays" => {
+                if let Some(play) = conversation.strip_suffix(":session:subagent:1:worker") {
+                    (format!("{play}:session:root"), true)
+                } else {
+                    assert!(conversation.ends_with(":session:root"));
+                    (conversation.to_string(), false)
+                }
+            }
+            _ => unreachable!("unknown fixture"),
+        };
+        let root = format!("{prefix}{root}");
+        let lineage = identity.lineage.as_ref().expect("conversation lineage");
+        assert_eq!(lineage.schema, "aisimulate.agentic.conversation-lineage.v1");
+        assert_eq!(lineage.root_conversation_id, root);
+        assert_eq!(lineage.parent_conversation_id, child.then_some(root));
+    }
+}
+
 /// Snapshot, warmup and recycling-profile replays must stay byte-identical
 /// across changes to how snapshot plays are built and retained.
 #[test]
@@ -627,6 +674,7 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         for mode in ["snapshot", "warmup", "profile", "profile-cold"] {
             for disaggregated in [false, true] {
                 let report = snapshot_pin_report(graph, mode, disaggregated);
+                assert_snapshot_lineage(name, &report);
                 if mode.starts_with("profile") {
                     let profile = report.agentic_profile.as_ref().unwrap();
                     assert!(profile.plays_started >= 6, "{name}: {profile:?}");
@@ -651,26 +699,30 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
             }
         }
     }
+    // These pins include conversation lineage. Comparing all 16 scenarios with
+    // main 88c7d426 and pre-merge PR b8692dc8 established that lineage was the
+    // only added JSON field; lifecycle bytes and every previous field were
+    // unchanged, and the merged output matched the pre-merge PR byte-for-byte.
     // To re-pin, run this test and copy the `left:` list from the failure. A
     // mismatch the change did not intend must first be diffed semantically
     // against the previous report, per-request and lifecycle output.
     let expected = [
-        "g2 snapshot agg: 5 5e02e9f17a77658f",
-        "g2 snapshot disagg: 5 a6573f2379f39c15",
-        "g2 warmup agg: 5 21a10bcd0843bc96",
-        "g2 warmup disagg: 5 a0834d087069f92e",
-        "g2 profile agg: 40 a69d736cdea338aa",
-        "g2 profile disagg: 40 fa167c22cb9d4b34",
-        "g2 profile-cold agg: 40 f63f6e7cf21a4de3",
-        "g2 profile-cold disagg: 40 29b72dc9224ae354",
-        "two-plays snapshot agg: 3 19563e804401e8a2",
-        "two-plays snapshot disagg: 3 88c3919df99f7ce1",
-        "two-plays warmup agg: 3 2bb148e6548bb88a",
-        "two-plays warmup disagg: 3 f784df450822621a",
-        "two-plays profile agg: 821 35351cf48f3958c3",
-        "two-plays profile disagg: 667 6b252248d748175a",
-        "two-plays profile-cold agg: 820 20ee4611dbaa1e83",
-        "two-plays profile-cold disagg: 601 e2d4f4e93360d22e",
+        "g2 snapshot agg: 5 20ab2cfe1f97cb15",
+        "g2 snapshot disagg: 5 8c6c217a93820def",
+        "g2 warmup agg: 5 e5a8dda39159fa01",
+        "g2 warmup disagg: 5 2dea629178c141df",
+        "g2 profile agg: 40 68e2b208e87b3cad",
+        "g2 profile disagg: 40 131164177078405b",
+        "g2 profile-cold agg: 40 dd3790d0738a7d50",
+        "g2 profile-cold disagg: 40 879186a642482fab",
+        "two-plays snapshot agg: 3 c1d26ce77a455ecf",
+        "two-plays snapshot disagg: 3 1dc21fce69c7690a",
+        "two-plays warmup agg: 3 3d0cc958afd8216d",
+        "two-plays warmup disagg: 3 263766310612fe41",
+        "two-plays profile agg: 821 ef8276602d9df84b",
+        "two-plays profile disagg: 667 ae91137630178cc3",
+        "two-plays profile-cold agg: 820 bd322ba76617e24a",
+        "two-plays profile-cold disagg: 601 f8d9ba58ae29ec49",
     ];
     assert_eq!(actual, expected);
 }

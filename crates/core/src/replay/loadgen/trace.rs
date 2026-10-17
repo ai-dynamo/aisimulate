@@ -1630,6 +1630,7 @@ impl AgenticTraceBuilder {
         let hash_values = renumber_hash_ids(&mut self.nodes, self.hash_ids);
         let graph_digest =
             canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes, &hash_values)?;
+        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
 
         Ok(AgenticTrace {
             block_size: self.header.block_size,
@@ -1637,6 +1638,7 @@ impl AgenticTraceBuilder {
             graph_digest,
             nodes: self.nodes,
             plays,
+            conversation_lineage,
             hash_values,
         })
     }

@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "aisimulate-python"
+description = "AISimulate Python extension and native routing adapters"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "aisimulate_python"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+aisimulate-core = { path = "../core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+rustc-hash = "2"
+pyo3 = { version = "0.23.4", features = ["abi3-py311"], optional = true }
+# These source dependencies belong to the wheel, not the published core crate.
+dynamo-kv-router = { version = "=1.6.0", git = "https://github.com/ai-dynamo/dynamo.git", rev = "f24c59b936ba23c933cc35d2f8c7f9ff71f54c3d" }
+dynamo-custom-policy-builtin = { version = "=1.6.0", git = "https://github.com/ai-dynamo/dynamo.git", rev = "f24c59b936ba23c933cc35d2f8c7f9ff71f54c3d" }
+dynamo-tokens = { version = "=1.6.0", git = "https://github.com/ai-dynamo/dynamo.git", rev = "f24c59b936ba23c933cc35d2f8c7f9ff71f54c3d" }
+tokio = { version = "1", features = ["rt", "sync", "time", "test-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[features]
+default = []
+python = ["aisimulate-core/python", "dep:pyo3"]
+extension-module = ["python", "pyo3/extension-module"]
+embed-python = ["python", "aisimulate-core/embed-python", "pyo3/auto-initialize"]
+replay-bench = ["aisimulate-core/replay-bench", "dynamo-kv-router/bench"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

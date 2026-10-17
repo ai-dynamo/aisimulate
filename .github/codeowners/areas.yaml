@@ -52,6 +52,7 @@ areas:
       - crates/core/src/replay/
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
+      - python/aisimulate/src/aisimulate/router.py
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
       - tests/test_epd_cli.py
@@ -73,6 +74,7 @@ areas:
       - tests/test_shared_g2_cli.py
       - tests/test_agentx_g2.py
       - tests/test_runner.py
+      - tests/test_native_router_cli.py
       - tests/test_traffic.py
       - tests/e2e/
   - label: mocker
@@ -273,6 +275,8 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
+  - glob: tests/test_native_router_cli.py
+    owners: [replay, maintainers]
   - glob: tests/test_traffic.py
     owners: [replay, maintainers]
   - glob: tests/e2e/
@@ -281,6 +285,8 @@ shared:
     owners: [mocker, maintainers]
   - glob: crates/core/src/engine/timing.rs
     owners: [mocker, forward-pass-engine, maintainers]
+  - glob: crates/python/
+    owners: [replay, mocker, infra, maintainers]
   - glob: crates/core/Cargo.toml
     owners: [mocker, replay, forward-pass-engine, infra, maintainers]
   - glob: crates/core/deny.toml

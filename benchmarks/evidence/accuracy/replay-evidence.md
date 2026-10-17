@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Replay qualification evidence
 
-Source revision: `acaca5d1`. These are historical, scoped qualification records,
+Unless otherwise stated, source revision: `acaca5d1`. These are historical, scoped qualification records,
 not general support claims. Source documents and full provenance remain
 recoverable at the pinned revision.
 
@@ -203,3 +203,39 @@ Dynamo integration and qualification belong to
 Use that consumer's dependency requirements and installation instructions once
 its AgentX support is qualified. AISimulate's Engine acceptance results do not
 qualify a Dynamo installation.
+
+
+## AgentX native routing source qualification
+
+These are historical measurements from October 5, 2026, carried forward from
+[the AgentX quickstart at `339497d9beb4e6cc933e896788f14e1c8bf265a9`](https://github.com/ai-dynamo/aisimulate/blob/339497d9beb4e6cc933e896788f14e1c8bf265a9/docs/agentx-quickstart.md).
+They apply to Dynamo C source `0be36a28b7814bc73ffeafb678b040733c76b0b0`
+and its pinned AISimulate B source `91b8ef98ac056654902751a6ade8585c4cf9439b`.
+The validated native runtime was built at Dynamo
+`ac77d287a27806825f72d1a71f2f72b2f7638ed8`; the later C commit changes only
+test worker configuration. They do not qualify later merged AISimulate revisions.
+The original pinned workload, complete YAML, installation procedure and limits
+remain in that immutable source document; the maintained walkthrough is
+[Start an AgentX simulation](../../../docs/replay/agentic/quickstart.md).
+
+The source pair passed 112 unit/integration/dependency checks and 50 end-to-end
+cases, including real CLI routing, after normal installation of the `aisimulate`,
+`ai-dynamo-runtime`, and `ai-dynamo` wheels.
+
+The installed end-to-end cases cover vLLM/SGLang, aggregated/P-D, session/sibling
+bindings, duration, physical prefix reuse, cache-disabled controls with zero
+reuse, and a separate decode destination-cache transfer comparison for both
+backends. With the exact YAML and two-play subset in the pinned quickstart, automatic stack selection
+(no `--stack`) produced these fresh native-adapter results on October 5, 2026:
+
+| Admission window | Successful measured requests | Matched measured worker/DP routes | Actual prefix reuse | Prefill KV events |
+| --- | --- | --- | --- | --- |
+| 600 s | 42 | 84 | 96.170902% | 81 |
+| 3,600 s | 219 | 438 | 95.649742% | 302 |
+
+Both runs exclude 22 preparation requests from the measured cohort and finish
+with zero canceled or unsettled requests. The report captures 128/482 native
+routing decisions respectively, including preparation in both P/D pools. Decode
+KV-event counts are zero on this load-based decode path; the independent transfer
+comparison establishes actual destination-cache reuse. These are verified source
+builds, not a published paired release or a hardware-accuracy measurement.

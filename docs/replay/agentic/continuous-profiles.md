@@ -40,8 +40,16 @@ with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
 single aggregated worker or 1P1D, with attention DP=1 on every role and
 speculative decoding disabled.
-Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
-other backends, and Dynamo-owned routing need their own qualified integration.
+Weka, Agentic Mooncake, and agentic Dynamo traces share this path.
+
+Conversation routing uses the built-in AISimulate runner and native adapter.
+[Dynamo #15631](https://github.com/ai-dynamo/dynamo/pull/15631) provides the native
+policy interface; [AISimulate #306](https://github.com/ai-dynamo/aisimulate/pull/306)
+drives it directly. The [AgentX quickstart](quickstart.md) describes a standalone
+wheel build with `router.policy: kv_router` and session/sibling affinity.
+Dynamo's optional compatibility PR is not required. Conversation affinity has
+its own static, device-only deployment limits; engine-stack G2 support does not
+qualify G2 with routing. Online execution requires separate qualification.
 
 ## Lanes and virtual time
 

@@ -111,7 +111,7 @@ aisimulate = "aisimulate.supervision:main"
 aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"
 
 [tool.maturin]
-manifest-path = "../../crates/core/Cargo.toml"
+manifest-path = "../../crates/python/Cargo.toml"
 module-name = "aisimulate._runtime"
 python-source = "src"
 python-packages = [

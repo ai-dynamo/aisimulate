@@ -131,10 +131,15 @@ has no assignment.
 - Binary parquet changes require a machine-readable summary of keys, shapes,
   units, row counts, coverage, and anomalies plus proof that a real consumer
   reaches the new data. A clean binary diff is not evidence.
-- AISimulate is standalone. Dynamo is a downstream compatibility target, not a
-  required runtime dependency. The release surface remains one `aisimulate`
-  wheel and one `aisimulate-core` crate unless the artifact contract is changed
-  deliberately.
+- AISimulate runs standalone, including conversation-aware simulation, without
+  a Dynamo Python package or service. Its wheel compiles source-pinned Dynamo
+  routing crates through the unpublished `aisimulate-python` host crate; the
+  published `aisimulate-core` remains independent of Dynamo. AISimulate owns
+  workload and simulation execution; Dynamo owns routing policy, admission,
+  and affinity. Reuse those implementations rather than copying their logic.
+  Dynamo's optional downstream integration consumes these interfaces. The
+  release surface remains one `aisimulate` wheel and one `aisimulate-core`
+  crate unless the artifact contract is changed deliberately.
 - Only workflows under the repository-root `.github/workflows/` run for this
   repository. Imported workflows below `python/aisimulate/` are provenance, not
   hosted-CI evidence.
