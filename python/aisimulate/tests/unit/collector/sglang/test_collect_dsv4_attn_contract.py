@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Adapted and modified from AIConfigurator PR #1611:
+# https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/tests/unit/collector/sglang/test_collect_dsv4_attn_contract.py
 
 import ast
 from collections.abc import Iterable
@@ -59,6 +61,13 @@ def test_dsv4_persisted_num_heads_is_rank_local_with_geometry_guard():
     assert resolve(native_heads=64, module_heads=8, tp_size=8) == 8
     # Pro native=128 without a module attribute still derives from config.
     assert resolve(native_heads=128, module_heads=None, tp_size=4) == 32
+    # Exact division remains valid even when each rank has only one head.
+    assert resolve(native_heads=64, module_heads=1, tp_size=64) == 1
+    # Truncating a non-divisible geometry would persist the wrong native identity.
+    for native_heads, tp_size in [(64, 3), (65, 8), (4, 8)]:
+        for module_heads in (None, native_heads, max(1, native_heads // tp_size)):
+            with pytest.raises(RuntimeError, match=r"native_heads=.*not divisible.*tp_size="):
+                resolve(native_heads=native_heads, module_heads=module_heads, tp_size=tp_size)
     # Geometry surprises fail the case (observe, don't guess).
     with pytest.raises(RuntimeError, match=r"head geometry mismatch"):
         resolve(native_heads=64, module_heads=16, tp_size=8)

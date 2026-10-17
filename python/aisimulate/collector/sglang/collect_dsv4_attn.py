@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Adapted and modified from AIConfigurator PR #1611:
+# https://github.com/ai-dynamo/aiconfigurator/blob/7ce66d6c01f77365e2592956f99be4ff0ae6eecc/collector/sglang/collect_dsv4_attn.py
 
 """DeepSeek-V4-Flash module-level attention collector for SGLang.
 
@@ -1225,6 +1227,11 @@ def _resolve_local_heads(*, native_heads: int, module_heads: int | None, tp_size
     cross-checked, never persisted — a value matching neither is a geometry
     surprise worth failing the case over.
     """
+    if int(native_heads) % tp_size != 0:
+        raise RuntimeError(
+            f"DSV4 attention head geometry mismatch: native_heads={int(native_heads)} "
+            f"is not divisible by tp_size={tp_size}"
+        )
     local_heads = max(1, int(native_heads) // tp_size)
     if module_heads is not None and int(module_heads) not in (int(native_heads), local_heads):
         raise RuntimeError(
