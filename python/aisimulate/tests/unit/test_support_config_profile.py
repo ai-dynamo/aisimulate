@@ -15,10 +15,19 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate.support.config_profile import derive_profile, load_model_config
+from aisimulate.support.config_profile import (
+    ProfileRequestError,
+    _geometry,
+    _runtime_layout,
+    derive_profile,
+    load_model_config,
+    profile_from_observations,
+)
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
+
+GLM = Path(__file__).parents[2] / "src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json"
 
 
 def _config(tmp_path, **updates):
@@ -66,26 +75,281 @@ def _runtime(**updates):
     return {"kv_cache_dtype": "bfloat16", "fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", **updates}
 
 
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("recurrent", [False, True])
-def test_mixed_attention_diagnosis_precedes_ordinary_head_dimensions(tmp_path, nested, recurrent):
-    raw = {
-        "architectures": ["Glm5NextForConditionalGeneration"],
-        "num_hidden_layers": 2,
-        "layer_types": ["linear_attention", "deepseek_sparse_attention"],
-        "head_dim": 0,
-    }
-    if recurrent:
-        raw.pop("layer_types")
-        raw["mamba_d_state"] = 16
+def _glm_request(**topology):
+    # The deployment from ai-dynamo/aisimulate#475.
+    return SupportRequest.model_validate(
+        {
+            "identity": {
+                "model": "zai-org/GLM-5.3-Flash",
+                "model_revision": "91b69215804f2d2036a8867f6ce44848e278dcda",
+                "model_kind": "moe",
+                "framework_version": "0.31.0",
+                "gpu": "b300_sxm",
+                "interconnect": "nvswitch",
+            },
+            "search": {"context_length": 1048576, "tensor_parallel": 4, "moe_tensor_parallel": 4, **topology},
+            "collection": {"max_num_tokens": 8192, "max_batch_size": 256, "gpu_memory_utilization": 0.92},
+        }
+    )
+
+
+def _zero_dim_config(tmp_path, nested=False, **updates):
+    # A decoder whose ordinary attention dimensions are declared as 0, as linear-attention checkpoints do.
+    raw = {"num_hidden_layers": 2, "head_dim": 0, "qk_rope_head_dim": 0, **updates}
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"text_config": raw} if nested else raw))
-    with pytest.raises(
-        ValueError,
-        match="unsupported recurrent/hybrid state" if recurrent else "unsupported mixed or recurrent attention layout",
-    ) as error:
-        load_model_config(path)
-    assert "head_dim" not in str(error.value)
+    return load_model_config(path)
+
+
+def test_glm53_flash_config_is_runtime_resolved_not_rejected():
+    config = load_model_config(GLM)
+    assert config.sha256 == "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f"
+    assert config.runtime_layout == (
+        "layer_types deepseek_sparse_attention x11",
+        "layer_types linear_attention x34",
+        "recurrent-state field linear_attn_config",
+    )
+    assert config.suggestions["architecture"] == "Glm5NextForConditionalGeneration"
+    assert config.suggestions["num_experts"] == 288
+    assert config.suggestions["context_length"] == 1048576
+    assert config.notes["cache_layout"] == (
+        f"runtime-resolved cache layout ({', '.join(config.runtime_layout)}): "
+        "config.json does not establish cache or state geometry; onboard probe-runtime measures it"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,architecture,expected",
+    [
+        ({"layer_types": ["full_attention", "sliding_attention"]}, None, ()),
+        ({"layer_types": ["deepseek_sparse_attention"]}, "GlmMoeDsaForCausalLM", ()),
+        ({"layer_types": ["deepseek_sparse_attention"]}, "DeepseekV32ForCausalLM", ()),
+        (
+            {"layer_types": ["deepseek_sparse_attention"]},
+            "LlamaForCausalLM",
+            ("layer_types deepseek_sparse_attention x1",),
+        ),
+        ({"layer_types": ["gdn", "full_attention", "gdn"]}, None, ("layer_types gdn x2",)),
+        # Null state fields are absent, not markers.
+        (
+            {"ssm_cfg": None, "mamba_d_state": None, "linear_conv_kernel_dim": None, "linear_attn_config": None},
+            None,
+            (),
+        ),
+        # Architecture names match case-insensitively; the name is reported as declared.
+        ({}, "ToyJambaForCausalLM", ("recurrent architecture ToyJambaForCausalLM",)),
+        ({}, "RWKVForCausalLM", ("recurrent architecture RWKVForCausalLM",)),
+        # State markers win over recognized layer names, and reasons come back sorted.
+        (
+            {"layer_types": ["linear_attention", "full_attention"], "mamba_d_state": 16},
+            "ToyMambaForCausalLM",
+            (
+                "layer_types linear_attention x1",
+                "recurrent architecture ToyMambaForCausalLM",
+                "recurrent-state field mamba_d_state",
+            ),
+        ),
+    ],
+)
+def test_runtime_layout_reasons(raw, architecture, expected):
+    assert _runtime_layout(raw, architecture) == expected
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "marker,reasons",
+    [
+        (
+            {"layer_types": ["linear_attention", "deepseek_sparse_attention"]},
+            ("layer_types deepseek_sparse_attention x1", "layer_types linear_attention x1"),
+        ),
+        ({"mamba_d_state": 16}, ("recurrent-state field mamba_d_state",)),
+        ({"ssm_cfg": {}}, ("recurrent-state field ssm_cfg",)),
+        ({"linear_conv_kernel_dim": 4}, ("recurrent-state field linear_conv_kernel_dim",)),
+        ({"linear_attn_config": {"head_dim": 128}}, ("recurrent-state field linear_attn_config",)),
+        ({"architectures": ["ToyMambaForCausalLM"]}, ("recurrent architecture ToyMambaForCausalLM",)),
+        # State markers win over recognized layer names.
+        (
+            {"layer_types": ["full_attention", "full_attention"], "mamba_d_state": 16},
+            ("recurrent-state field mamba_d_state",),
+        ),
+    ],
+)
+def test_unrecognized_layouts_load_with_zero_ordinary_dimensions(tmp_path, nested, marker, reasons):
+    config = _zero_dim_config(tmp_path, nested, **marker)
+    assert config.runtime_layout == reasons
+    assert "head_dim" not in config.notes["cache_layout"]
+    assert "onboard probe-runtime" in config.notes["cache_layout"]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "update,message",
+    [
+        ({"layer_types": ["linear_attention"]}, "one entry per num_hidden_layers"),
+        ({"layer_types": "linear_attention"}, "one entry per num_hidden_layers"),
+        ({"layer_types": ["linear_attention", 3]}, "layer_types entries must be nonempty strings"),
+        ({"layer_types": ["linear_attention", " "]}, "layer_types entries must be nonempty strings"),
+        ({"num_hidden_layers": 2.0}, "num_hidden_layers"),
+        ({"is_encoder_decoder": True}, "unsupported encoder-decoder"),
+        ({"sliding_window": 64, "sliding_window_size": 128}, "conflicting sliding-window"),
+    ],
+)
+def test_runtime_resolved_layouts_keep_structural_checks(tmp_path, nested, update, message):
+    with pytest.raises(ValueError, match=message):
+        _zero_dim_config(tmp_path, nested, mamba_d_state=16, **update)
+
+
+@pytest.mark.parametrize("update", [{"layer_types": ["full_attention", 3]}, {"layer_types": ["full_attention", ""]}])
+def test_recognized_layouts_keep_layer_type_structure_checks(tmp_path, update):
+    with pytest.raises(ValueError, match="layer_types entries must be nonempty strings"):
+        _config(tmp_path, **update)
+
+
+def test_recognized_layouts_still_reject_zero_ordinary_dimensions(tmp_path):
+    with pytest.raises(ValueError, match="head_dim"):
+        _zero_dim_config(tmp_path, layer_types=["full_attention", "sliding_attention"], sliding_window=8)
+
+
+def test_runtime_resolved_geometry_skips_head_derived_values():
+    dims = _geometry(load_model_config(GLM), None, _glm_request())
+    assert "local_kv_heads" not in dims and dims["num_hidden_layers"] == 45
+    # A declared 0 is "no such dimension", not a size to compute with.
+    assert "head_dim" not in dims
+
+
+def test_runtime_resolved_geometry_keeps_the_attention_head_tp_check():
+    with pytest.raises(ProfileRequestError, match="num_attention_heads must divide"):
+        _geometry(load_model_config(GLM), None, _glm_request(tensor_parallel=3, moe_tensor_parallel=3))
+
+
+def test_runtime_resolved_config_accepts_observed_cache_geometry():
+    # The runtime import path revalidates the same config that intake accepted.
+    profile = profile_from_observations(
+        load_model_config(GLM),
+        _glm_request(),
+        {
+            "gemm_quant_mode": "fp8_block",
+            "moe_quant_mode": "fp8_block",
+            "fmha_quant_mode": "bfloat16",
+            "comm_quant_mode": "half",
+            "kv_cache_dtype": "bfloat16",
+        },
+        {
+            "cache_layout": "grouped",
+            "cache_groups": [
+                {
+                    "name": "full_attention",
+                    "kind": "attention",
+                    "num_layers": 11,
+                    "block_size_tokens": 64,
+                    "page_size_bytes": 4096,
+                }
+            ],
+            "max_num_tokens": 8192,
+            "max_batch_size": 256,
+            "provenance": "observed runtime resources",
+        },
+    )
+    assert profile.architecture == "Glm5NextForConditionalGeneration"
+    assert profile.deployments[0].resources.cache_groups[0].num_layers == 11
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_runtime_resolved_layout_reports_pending_geometry(preview):
+    draft = derive_profile(load_model_config(GLM), None if preview else _glm_request())
+    assert draft.profile is None
+    assert set(draft.pending_runtime) == {"cache_geometry"}
+    reason = draft.pending_runtime["cache_geometry"]
+    assert "onboard probe-runtime" in reason and "linear_attention x34" in reason
+    assert "onboard import-observations" in reason
+    geometry = {"cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"}
+    assert not geometry & draft.missing.keys()
+    assert geometry.isdisjoint(draft.resolved)
+    assert draft.resolved["architecture"] == "Glm5NextForConditionalGeneration"
+
+
+def test_runtime_resolved_layout_keeps_precision_and_memory_overrides():
+    draft = derive_profile(load_model_config(GLM), _glm_request(), _runtime(weights_bytes=1000, activations_bytes=2000))
+    assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
+    assert draft.resolved["weights_bytes"] == 1000 and draft.resolved["kv_cache_dtype"] == "bfloat16"
+    assert draft.sources["weights_bytes"].startswith("user override")
+    assert draft.missing == {}
+
+
+def test_recognized_layout_reports_nothing_pending(tmp_path):
+    draft = derive_profile(_config(tmp_path), _request(), _runtime())
+    assert draft.profile is not None and draft.pending_runtime == {}
+
+
+@pytest.mark.parametrize("marker", [{"layer_types": ["full_attention", "linear_attention"]}, {"ssm_cfg": {}}])
+def test_full_attention_architecture_with_runtime_resolved_layout_assumes_no_linear_cache(tmp_path, marker):
+    # Llama is a known full-attention architecture; the marker says this checkpoint is not that layout.
+    draft = derive_profile(_config(tmp_path, **marker), _request(), _runtime())
+    assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
+    assert {"cache_layout", "kv_bytes_per_token"}.isdisjoint(draft.resolved | draft.missing)
+
+
+@pytest.mark.parametrize("preview", [False, True])
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"cache_layout": "linear"},
+        {"kv_bytes_per_token": 6000},
+        {
+            "cache_groups": [
+                {
+                    "name": "full_attention",
+                    "kind": "attention",
+                    "num_layers": 11,
+                    "block_size_tokens": 64,
+                    "page_size_bytes": 4096,
+                }
+            ]
+        },
+        {"cache_block_sizes": {"full_attention": 64}},
+        # The refusal is decided by key, so it wins whatever the value is.
+        {"cache_layout": "hybrid"},
+        {"kv_bytes_per_token": 0},
+        {"cache_groups": []},
+        {"cache_block_sizes": {"unknown_group": 0}},
+    ],
+)
+def test_runtime_resolved_layout_rejects_guessed_geometry(preview, override):
+    with pytest.raises(ValueError, match="measured by onboard probe-runtime"):
+        derive_profile(load_model_config(GLM), None if preview else _glm_request(), override)
+
+
+def test_geometry_refusal_names_the_supplied_keys_and_the_layout():
+    overrides = _runtime(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear")
+    with pytest.raises(ValueError) as error:
+        derive_profile(load_model_config(GLM), _glm_request(), overrides)
+    message = str(error.value)
+    assert "remove ['cache_layout', 'kv_bytes_per_token'] from resource overrides" in message
+    assert "layer_types linear_attention x34" in message
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("preview", [False, True])
+def test_architecture_override_cannot_bypass_runtime_resolved_geometry(tmp_path, preview, nested):
+    config = _config(tmp_path, architectures=None, model_type="unknown")
+    if nested:
+        config = _config(tmp_path, architectures=None, model_type="unknown_wrapper", text_config=config.raw)
+    assert config.runtime_layout == ()
+    request = None if preview else _request()
+    overrides = _runtime(architecture="MambaForCausalLM", num_experts=0)
+    draft = derive_profile(config, request, overrides)
+    assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
+    assert "recurrent architecture MambaForCausalLM" in draft.pending_runtime["cache_geometry"]
+    with pytest.raises(ValueError, match="measured by onboard probe-runtime") as error:
+        derive_profile(
+            config, request, {**overrides, "weights_bytes": 1, "kv_bytes_per_token": 1, "cache_layout": "linear"}
+        )
+    assert "remove ['cache_layout', 'kv_bytes_per_token'] from resource overrides" in str(error.value)
+    # Declaring the same architecture in the original config is classified identically.
+    declared = _config(tmp_path, architectures=["MambaForCausalLM"], model_type="unknown", num_experts=0)
+    assert declared.runtime_layout == ("recurrent architecture MambaForCausalLM",)
+    assert derive_profile(declared, request, _runtime()).pending_runtime == draft.pending_runtime
 
 
 def test_explicit_decoder_layout_is_not_overridden_by_inkling_wrapper(tmp_path):
@@ -588,19 +852,20 @@ def test_overrides_are_strict_even_before_identity_is_complete(tmp_path, overrid
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize(
-    "updates",
+    "updates,match",
     [
-        {"sliding_window": 128},
-        {"layer_types": ["full_attention", "linear_attention"]},
-        {"is_encoder_decoder": True},
-        {"ssm_cfg": {"d_state": 16}},
-        {"kv_lora_rank": 8},
+        ({"sliding_window": 128}, "unsupported"),
+        # Runtime-resolved layouts load, but their geometry is only ever measured.
+        ({"layer_types": ["full_attention", "linear_attention"]}, "measured by onboard probe-runtime"),
+        ({"is_encoder_decoder": True}, "unsupported"),
+        ({"ssm_cfg": {"d_state": 16}}, "measured by onboard probe-runtime"),
+        ({"kv_lora_rank": 8}, "unsupported"),
     ],
 )
-def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path, updates, nested):
+def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path, updates, match, nested):
     if nested:
         updates = {"text_config": {**_config(tmp_path).raw, **updates}}
-    with pytest.raises(ValueError, match="unsupported"):
+    with pytest.raises(ValueError, match=match):
         config = _config(tmp_path, **updates)
         derive_profile(config, _request(), _runtime(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear"))
 
@@ -614,7 +879,6 @@ def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path
         ({"num_experts": 4}, "LlamaForCausalLM", 4, "dense architecture"),
         ({}, "MixtralForCausalLM", 0, "MoE architecture"),
         ({"kv_lora_rank": 8}, "LlamaForCausalLM", 0, "cache/projection modifiers"),
-        ({}, "MambaForCausalLM", 0, "recurrent/hybrid"),
         ({"num_experts_per_tok": 8}, "MixtralForCausalLM", 4, "routed expert count"),
     ],
 )

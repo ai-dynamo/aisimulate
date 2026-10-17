@@ -12,7 +12,10 @@ This module reads JSON and packaged hardware metadata. It never instantiates a
 model, imports remote configuration code, or builds an operation graph. Tensor
 storage estimates cover the declared vanilla decoder layouts, not arbitrary
 implementations sharing their field names. Runtime reservations and activation
-estimates are not measurements or a guarantee that a deployment fits.
+estimates are not measurements or a guarantee that a deployment fits. A layout the
+config cannot establish (unrecognized layer types, recurrent state) is
+runtime-resolved: its cache geometry is measured by the runtime probe, never
+derived or accepted as an override.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import hashlib
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +73,10 @@ _NONNEGATIVE_FIELDS = frozenset(
 _BYTE_FIELDS = frozenset(field for field in INTEGER_FIELDS if "bytes" in field)
 _NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
 _CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
+# Overrides that state cache geometry; a runtime-resolved layout takes it only from the runtime probe.
+_GEOMETRY_OVERRIDES = frozenset(("cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"))
+_RECURRENT_STATE_FIELDS = ("ssm_cfg", "mamba_d_state", "linear_conv_kernel_dim", "linear_attn_config")
+_RECURRENT_ARCHITECTURES = ("mamba", "jamba", "rwkv")
 _INKLING_ARCHITECTURE = "InklingForConditionalGeneration"
 _INKLING_CACHE_SOURCE = (
     "https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/"
@@ -114,6 +122,9 @@ _EXTRA_DIMENSIONS = (
     "index_head_dim",
     "index_n_heads",
 )
+# A runtime-resolved layout may declare these as 0 when a layer type has no such attention shape.
+_ATTENTION_INT_ALIASES = frozenset(("num_key_value_heads", "head_dim"))
+_ATTENTION_DIMENSIONS = frozenset(_EXTRA_DIMENSIONS) - {"moe_intermediate_size", "num_experts_per_tok"}
 _AUXILIARY_DIMENSIONS = (
     "n_shared_experts",
     "shared_intermediate_size",
@@ -134,6 +145,8 @@ class ModelConfig:
     suggestions: dict[str, Any]
     notes: dict[str, str]
     source_files: dict[str, str] = field(default_factory=dict)
+    # Why config.json cannot establish the cache layout; empty when it can.
+    runtime_layout: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,6 +155,8 @@ class ProfileDraft:
     resolved: dict[str, Any]
     missing: dict[str, str]
     sources: dict[str, str]
+    # Facts only the runtime probe can establish, by field. A draft with any has no profile.
+    pending_runtime: dict[str, str] = field(default_factory=dict)
 
 
 class ProfileRequestError(ValueError):
@@ -165,12 +180,13 @@ def _text(value: Any, field: str) -> str:
     return value.strip()
 
 
-def _aliased_int(raw: Mapping[str, Any], name: str) -> int | None:
+def _aliased_int(raw: Mapping[str, Any], name: str, *, runtime_resolved: bool = False) -> int | None:
     supplied = {}
+    zero_allowed = name == "num_experts" or (runtime_resolved and name in _ATTENTION_INT_ALIASES)
     for key in _INT_ALIASES[name]:
         if key not in raw or (raw[key] is None and name in _OPTIONAL_DIMENSIONS):
             continue
-        supplied[key] = _integer(raw[key], key, minimum=0 if name == "num_experts" else 1)
+        supplied[key] = _integer(raw[key], key, minimum=0 if zero_allowed else 1)
     if len(set(supplied.values())) > 1:
         raise ValueError(f"conflicting {name} fields: {supplied}")
     return next(iter(supplied.values()), None)
@@ -286,6 +302,42 @@ def _cache_window(raw: Mapping[str, Any]) -> int | None:
     return next(iter(supplied.values()), None)
 
 
+def _recognized_layer_types(architecture: str | None) -> frozenset[str]:
+    names = {"full_attention", "sliding_attention"}
+    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
+        names.add("deepseek_sparse_attention")
+    return frozenset(names)
+
+
+def _layer_types(raw: Mapping[str, Any], layers: int | None) -> list[str]:
+    types = raw["layer_types"]
+    if not isinstance(types, list) or (layers is not None and len(types) != layers):
+        raise ValueError("layer_types must have one entry per num_hidden_layers")
+    if any(not isinstance(value, str) or not value.strip() for value in types):
+        raise ValueError("layer_types entries must be nonempty strings")
+    return types
+
+
+def _runtime_layout(raw: Mapping[str, Any], architecture: str | None) -> tuple[str, ...]:
+    """Sorted reasons config.json cannot establish the cache layout; empty when it can.
+
+    Layer types and recurrent-state markers count independently, so recognized layer names never
+    hide declared state.
+    """
+    reasons = []
+    layer_types = raw.get("layer_types")
+    if isinstance(layer_types, list):
+        recognized = _recognized_layer_types(architecture)
+        unrecognized = Counter(
+            value for value in layer_types if isinstance(value, str) and value.strip() and value not in recognized
+        )
+        reasons.extend(f"layer_types {name} x{count}" for name, count in unrecognized.items())
+    reasons.extend(f"recurrent-state field {key}" for key in _RECURRENT_STATE_FIELDS if raw.get(key) is not None)
+    if any(name in (architecture or "").lower() for name in _RECURRENT_ARCHITECTURES):
+        reasons.append(f"recurrent architecture {architecture}")
+    return tuple(sorted(reasons))
+
+
 def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inkling: bool = False) -> tuple[int, ...]:
     """Resolve explicit attention retention without assuming an operation graph."""
     window = _cache_window(raw)
@@ -304,13 +356,9 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
             raise ValueError("local_layer_ids must be unique indexes below num_hidden_layers")
         local = tuple(sorted(local))
     if "layer_types" in raw:
-        types = raw["layer_types"]
-        if not isinstance(types, list) or (layers is not None and len(types) != layers):
-            raise ValueError("layer_types must have one entry per num_hidden_layers")
-        allowed = {"full_attention", "sliding_attention"}
-        if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
-            allowed.add("deepseek_sparse_attention")
-        if any(not isinstance(value, str) or value not in allowed for value in types):
+        types = _layer_types(raw, layers)
+        recognized = _recognized_layer_types(architecture)
+        if any(value not in recognized for value in types):
             raise ValueError("unsupported mixed or recurrent attention layout in layer_types")
         indexed = tuple(index for index, value in enumerate(types) if value == "sliding_attention")
         if local is not None and indexed != local:
@@ -330,6 +378,8 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
 
 
 def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    if _runtime_layout(raw, architecture):
+        return False
     return bool(
         raw.get("use_sconv")
         or _cache_layer_ids(raw, architecture)
@@ -361,12 +411,13 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
             "requires explicit use_sconv=true. Verify the runtime/config or provide a complete FPM profile. "
             f"Source: {_INKLING_CACHE_SOURCE.rsplit('/', 1)[0]}/model.py"
         )
-    if any(raw.get(key) is not None for key in ("ssm_cfg", "mamba_d_state", "linear_conv_kernel_dim")) or any(
-        name in (architecture or "").lower() for name in ("mamba", "jamba", "rwkv")
-    ):
-        raise ValueError(
-            "unsupported recurrent/hybrid state; only explicit attention and windowed convolution caches are supported"
-        )
+    if _runtime_layout(raw, architecture):
+        # The runtime probe measures this layout's cache geometry; intake only checks the config is well formed.
+        _cache_window(raw)
+        layers = _aliased_int(raw, "num_hidden_layers")
+        if "layer_types" in raw:
+            _layer_types(raw, layers)
+        return
     sliding = _cache_layer_ids(raw, architecture, inkling=inkling)
     layers = _aliased_int(raw, "num_hidden_layers")
     if "attn_type_list" in raw:
@@ -498,13 +549,14 @@ def load_model_config(path: str | Path) -> ModelConfig:
             else "text_config does not identify a decoder architecture; decoder resource bounds require explicit input"
         )
     inkling = architecture == _INKLING_ARCHITECTURE
-    # A mixed/recurrent layout may use zero or absent ordinary head dimensions.
-    # Diagnose the unsupported resource model before validating GQA/MHA scalars.
+    # A runtime-resolved layout may use zero or absent ordinary attention dimensions.
+    # Validate its structure first, then exempt those dimensions from the GQA/MHA minimums.
     _validate_layout(raw, decoder_architecture, inkling=inkling)
-    geometry = {key: _aliased_int(raw, key) for key in _INT_ALIASES}
+    runtime_layout = _runtime_layout(raw, decoder_architecture)
+    geometry = {key: _aliased_int(raw, key, runtime_resolved=bool(runtime_layout)) for key in _INT_ALIASES}
     for key in _EXTRA_DIMENSIONS:
         if raw.get(key) is not None:
-            _integer(raw[key], key)
+            _integer(raw[key], key, minimum=0 if runtime_layout and key in _ATTENTION_DIMENSIONS else 1)
     for key in _AUXILIARY_DIMENSIONS:
         if raw.get(key) is not None:
             _integer(raw[key], key, minimum=0)
@@ -525,7 +577,12 @@ def load_model_config(path: str | Path) -> ModelConfig:
     for key in (*_EXTRA_DIMENSIONS, *_AUXILIARY_DIMENSIONS):
         if raw.get(key) is not None:
             notes[key] = f"config {key}={raw[key]}"
-    if _uses_grouped_cache(raw, decoder_architecture):
+    if runtime_layout:
+        notes["cache_layout"] = (
+            f"runtime-resolved cache layout ({', '.join(runtime_layout)}): config.json does not establish cache or "
+            "state geometry; onboard probe-runtime measures it"
+        )
+    elif _uses_grouped_cache(raw, decoder_architecture):
         notes["cache_layout"] = (
             "grouped cache: full-history attention, explicit sliding attention windows, and declared convolution "
             "state are accounted separately; runtime KV dtype, block sizes and page padding are not model-config facts"
@@ -574,7 +631,9 @@ def load_model_config(path: str | Path) -> ModelConfig:
     for key in ("num_nextn_predict_layers", "num_mtp_modules", "mtp_transformer_layers", "use_mtp"):
         if key in raw:
             notes[key] = f"config {key}={raw[key]}; checkpoint capability does not enable runtime speculative decoding"
-    return ModelConfig(raw, decoder_architecture, hashlib.sha256(payload).hexdigest(), suggestions, notes, source_files)
+    return ModelConfig(
+        raw, decoder_architecture, hashlib.sha256(payload).hexdigest(), suggestions, notes, source_files, runtime_layout
+    )
 
 
 def validate_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -712,7 +771,21 @@ def _precision_facts(config: ModelConfig) -> dict[str, tuple[str, str]]:
 
 
 def _geometry(config: ModelConfig, architecture: str | None, request: SupportRequest | None) -> dict[str, int]:
-    dimensions = {key: value for key in _INT_ALIASES if (value := _aliased_int(config.raw, key)) is not None}
+    runtime = bool(_runtime_layout(config.raw, architecture))
+    dimensions = {
+        key: value
+        for key in _INT_ALIASES
+        if (value := _aliased_int(config.raw, key, runtime_resolved=runtime)) is not None
+    }
+    if runtime:
+        # Rank-local KV heads and a derived head_dim are cache geometry, which the runtime probe measures.
+        # A declared 0 means the layout has no such attention dimension, so it is not a size to compute with.
+        heads = dimensions.get("num_attention_heads")
+        if request is not None and heads and heads % request.search.tensor_parallel:
+            raise ProfileRequestError(
+                "tensor_parallel", "num_attention_heads must divide into the selected TP attention heads"
+            )
+        return {key: value for key, value in dimensions.items() if value or key not in _ATTENTION_INT_ALIASES}
     if architecture not in _FULL_ATTENTION and not _uses_grouped_cache(config.raw, architecture):
         return dimensions
     heads = dimensions.get("num_attention_heads")
@@ -1064,6 +1137,16 @@ def _hardware_estimates(request: SupportRequest | None) -> dict[str, tuple[int, 
     return result
 
 
+def _declared_architecture(config: ModelConfig, overrides: Mapping[str, Any] | None) -> str | None:
+    """The decoder architecture layout checks run against: the config's own, else an override's."""
+    if "architecture" in config.suggestions:
+        return config.decoder_architecture
+    declared = overrides.get("architecture") if isinstance(overrides, Mapping) else None
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return None
+
+
 def derive_profile(
     config: ModelConfig, request: SupportRequest | None = None, overrides: Mapping[str, Any] | None = None
 ) -> ProfileDraft:
@@ -1072,7 +1155,17 @@ def derive_profile(
     Invalid structural facts and overrides raise immediately. ``request=None``
     supports validating overrides and previewing config facts before collecting
     deployment identity; it can never produce a complete deployment profile.
+    A runtime-resolved layout has no profile either: ``pending_runtime`` names the
+    cache geometry only the runtime probe can measure, and overrides cannot state it.
     """
+    architecture = _declared_architecture(config, overrides)
+    runtime = _runtime_layout(config.raw, architecture)
+    # Refuse by key, before any value is validated, so the refusal wins whatever the value is.
+    if runtime and isinstance(overrides, Mapping) and (stated := _GEOMETRY_OVERRIDES & overrides.keys()):
+        raise ValueError(
+            f"cache geometry for this layout is measured by onboard probe-runtime ({', '.join(runtime)}); "
+            f"remove {sorted(stated)} from resource overrides"
+        )
     supplied = validate_overrides(overrides)
     values = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
     sources = {key: config.notes[key] for key in values}
@@ -1103,9 +1196,6 @@ def derive_profile(
         values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
         if key == "comm_quant_mode" and value != "half":
             sources[key] += "; current collector supports half and will reject this identity for new collection"
-    architecture = config.decoder_architecture
-    if "architecture" not in config.suggestions:
-        architecture = values.get("architecture")
     _validate_layout(config.raw, architecture, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
     _validate_architecture(config.raw, architecture, values.get("num_experts"))
     geometry = _geometry(config, architecture, request)
@@ -1151,7 +1241,10 @@ def derive_profile(
         or "cache_groups" in values
         or values.get("cache_layout") == "grouped"
     )
-    if grouped_cache:
+    if runtime:
+        # The runtime probe measures cache geometry: none is derived here, and none is asked of the user.
+        missing = {key: value for key, value in missing.items() if key not in _GEOMETRY_OVERRIDES}
+    elif grouped_cache:
         _derive_cache_groups(config, architecture, request, geometry, values, sources, missing)
     elif "cache_block_sizes" in values:
         raise ValueError("cache_block_sizes requires a grouped cache layout")
@@ -1204,6 +1297,12 @@ def derive_profile(
         _integer(values[key], key, minimum=1 if key == "kv_bytes_per_token" else 0, maximum=2**53)
     if sum(values.get(key, 0) for key in _BYTE_FIELDS - {"kv_bytes_per_token"}) > 2**53:
         raise ValueError("total non-KV resource bytes must not exceed 2**53")
+    if runtime:
+        pending = (
+            f"measured from the selected runtime, not derived from config.json ({', '.join(runtime)}): "
+            "run onboard probe-runtime for this runtime and topology, then onboard import-observations"
+        )
+        return ProfileDraft(None, values, missing, sources, {"cache_geometry": pending})
     if missing or request is None:
         return ProfileDraft(None, values, missing, sources)
     declared_memory = supplied.keys() >= _NON_KV_FIELDS
