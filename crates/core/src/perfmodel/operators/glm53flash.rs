@@ -251,10 +251,15 @@ impl Glm53AttentionOp {
                 || self.index_topk != 2048
                 || self.kv_lora_rank == 0
                 || self.index_head_dim != 128
-                || self.kv_cache_dtype != KvCacheQuantMode::Fp8)
+                || !matches!(
+                    self.kv_cache_dtype,
+                    KvCacheQuantMode::Fp8 | KvCacheQuantMode::Bfloat16
+                ))
         {
             return Err(AicError::ModelConfig(
-                "GLM-5.3-Flash sparse MLA requires FP8 latent cache and IndexPool4/topk2048".into(),
+                "GLM-5.3-Flash sparse MLA requires an FP8 or BF16 latent cache and \
+                 IndexPool4/topk2048"
+                    .into(),
             ));
         }
         // Only SGLang keeps the FP8 checkpoint's block-quantized main sparse
@@ -278,6 +283,21 @@ impl Glm53AttentionOp {
         }
         validate_measured("attention", &self.measured)
     }
+    /// Bytes per latent KV element: FP8 (1) or BF16 (2). SGLang 0.5.20 sizes
+    /// the DSA latent as `kv_lora_rank + qk_rope_head_dim` elements of the KV
+    /// dtype outside its scaled-FP8 layouts
+    /// (`mem_cache/kv_cache_configurator.py` `calculate_mla_kv_cache_dim`),
+    /// while the IndexPool keys stay FP8 + FP32 scale and the pool tails BF16
+    /// whatever the KV dtype (`mem_cache/index_key_cache.py` `_buffer_shape`,
+    /// `mem_cache/memory_pool.py` `DSATokenToKVPool`). vLLM 0.31.0 sizes the
+    /// sparse-MLA page as `kv_lora_rank + qk_rope_head_dim` (512 for NoPE)
+    /// elements of the KV dtype, and its indexer cache is FP8 + scale
+    /// independently of it; on SM90 stock vLLM serves only BF16 KV (its
+    /// `FLASHINFER_MLA_SPARSE_SM90` hands FP8 as uint8 storage to FlashInfer
+    /// 0.7.0 `plan()`, which rejects it), so BF16 is priced the same way.
+    fn latent_bytes(&self) -> f64 {
+        self.kv_cache_dtype.mapping().memory
+    }
     /// One active sequence's persistent payload; no allocator pages, prefix
     /// snapshots or speculative states. Cache precision is independent of weights.
     pub fn cache_bytes(&self, seq_len: u32) -> Result<f64, AicError> {
@@ -287,12 +307,14 @@ impl Glm53AttentionOp {
             // FP32 D-by-D recurrence; BF16 q/k/v histories of conv_width-1.
             Ok(n * d * d * 4.0 + 3.0 * n * d * f64::from(self.conv_kernel - 1) * 2.0)
         } else {
-            // Replicated FP8 latent KV, FP8 index keys with FP32 block scale,
-            // and two BF16 pool-tail buffers (raw key and compression score).
+            // Replicated FP8/BF16 latent KV, FP8 index keys with FP32 block
+            // scale, and two BF16 pool-tail buffers (raw key and compression score).
             let pooled = seq_len / self.index_pool;
-            Ok(f64::from(seq_len) * f64::from(self.kv_lora_rank)
-                + f64::from(pooled) * f64::from(self.index_head_dim + 4)
-                + f64::from(self.index_pool * self.index_head_dim) * 4.0)
+            Ok(
+                f64::from(seq_len) * f64::from(self.kv_lora_rank) * self.latent_bytes()
+                    + f64::from(pooled) * f64::from(self.index_head_dim + 4)
+                    + f64::from(self.index_pool * self.index_head_dim) * 4.0,
+            )
         }
     }
     pub fn weight_bytes(&self) -> f64 {
@@ -465,16 +487,17 @@ impl Glm53AttentionOp {
                 pooled_pairs * 4.0 + selected_pairs * 4.0,
                 fp32,
             ));
+            let latent = self.latent_bytes();
             result = result.plus(leaf(
                 spec,
                 4.0 * selected_pairs * n * k,
-                selected_pairs * k + 4.0 * x * n * k,
+                selected_pairs * k * latent + 4.0 * x * n * k,
                 bf16,
             ));
             result = result.plus(leaf(
                 spec,
                 x * (5.0 * (q + k) + 12.0 * j + 7.0 * query_width),
-                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k),
+                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k * latent),
                 fp32,
             ));
         }
@@ -1793,5 +1816,67 @@ pub(crate) mod tests {
             .unwrap();
             assert_eq!(dense.validate().is_ok(), accepted, "ffn tp={tp}");
         }
+    }
+
+    #[test]
+    fn sglang_bf16_latent_cache_doubles_only_latent_bytes() {
+        // SGLang 0.5.20 BF16 KV: 512 latent elements x 2 bytes per token;
+        // IndexPool keys (128 FP8 + 4-byte scale per 4 tokens) and the two
+        // 4x128 BF16 pool-tail buffers (2048 B) are dtype-independent.
+        let mut fp8 = attention("sparse_mla");
+        fp8.backend = "sglang".into();
+        fp8.checkpoint_format = "nvfp4".into();
+        let mut bf16 = fp8.clone();
+        bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        assert_eq!(bf16.cache_bytes(0).unwrap(), 2048.0);
+        assert_eq!(bf16.cache_bytes(4).unwrap(), 2048.0 + 4.0 * 1024.0 + 132.0);
+        assert_eq!(
+            bf16.cache_bytes(131072).unwrap() - fp8.cache_bytes(131072).unwrap(),
+            131072.0 * 512.0
+        );
+        // The latent read/write grows with the KV width; FP8 is unchanged.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (is_context, s, prefix) in [(false, 65536.0, 0.0), (true, 1024.0, 65536.0)] {
+            let (mut a, mut b) = (fp8.clone(), bf16.clone());
+            a.is_context = is_context;
+            b.is_context = is_context;
+            let sol = |op: &Glm53AttentionOp| op.sol(&spec, 8.0, s, prefix).unwrap().latency_ms;
+            assert!(sol(&b) > sol(&a), "context={is_context}");
+        }
+        // An INT8 latent is not a served layout on either backend.
+        let mut int8 = fp8.clone();
+        int8.kv_cache_dtype = KvCacheQuantMode::Int8;
+        assert!(int8.validate().is_err());
+    }
+
+    #[test]
+    fn vllm_bf16_latent_is_priced_exactly_like_sglang_bf16() {
+        // Stock vLLM 0.31.0 on SM90 serves BF16 KV. The payload and the
+        // latent traffic are backend-independent: the SGLang BF16 values
+        // (512 x 2 B latent per token) apply unchanged.
+        let mut vllm = attention("sparse_mla");
+        vllm.checkpoint_format = "fp8".into();
+        let mut vllm_bf16 = vllm.clone();
+        vllm_bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        vllm_bf16.validate().unwrap();
+        let mut sglang_bf16 = vllm_bf16.clone();
+        sglang_bf16.backend = "sglang".into();
+        sglang_bf16.projection_quant_mode = GemmQuantMode::Fp8Block;
+        for seq in [0, 3, 4, 4096, 131072] {
+            assert_eq!(
+                vllm_bf16.cache_bytes(seq).unwrap(),
+                sglang_bf16.cache_bytes(seq).unwrap()
+            );
+        }
+        assert_eq!(
+            vllm_bf16.cache_bytes(4).unwrap(),
+            2048.0 + 4.0 * 1024.0 + 132.0
+        );
+        // vLLM FP8 keeps its 512 B/token latent (the pinned FP8 payload).
+        assert_eq!(vllm.cache_bytes(4).unwrap(), 4228.0);
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        let fp8_ms = vllm.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        let bf16_ms = vllm_bf16.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        assert!(bf16_ms > fp8_ms);
     }
 }

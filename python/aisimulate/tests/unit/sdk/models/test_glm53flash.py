@@ -232,6 +232,59 @@ def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
         model.close()
 
 
+def test_sglang_bf16_kv_doubles_only_the_latent_cache():
+    # SGLang 0.5.20 BF16 KV (SM90): the 512-element latent takes 2 bytes per
+    # element (calculate_mla_kv_cache_dim); IndexPool keys (128 FP8 + 4-byte
+    # scale per 4 tokens) and the BF16 pool tails do not change. Per token per
+    # sparse layer: FP8 512 B, BF16 1024 B (hand count from those layouts).
+    fp8 = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=common.KVCacheQuantMode.fp8)
+    bf16 = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=common.KVCacheQuantMode.bfloat16)
+    sparse = [
+        body["Glm53Attention"]
+        for op in bf16.context_ops
+        if "Glm53Attention" in (body := json.loads(op._spec_json()))
+        and body["Glm53Attention"]["layer_kind"] == "sparse_mla"
+    ]
+    assert {op["kv_cache_dtype"] for op in sparse} == {"bfloat16"}
+    assert bf16.get_kvcache_bytes_per_sequence(0) == fp8.get_kvcache_bytes_per_sequence(0)
+    per_pool = {m: m.get_kvcache_bytes_per_sequence(4) - m.get_kvcache_bytes_per_sequence(0) for m in (fp8, bf16)}
+    assert per_pool[fp8] == 11 * (4 * 512 + 132)
+    assert per_pool[bf16] == 11 * (4 * 1024 + 132)
+    long = {m: m.get_kvcache_bytes_per_sequence(131072) - m.get_kvcache_bytes_per_sequence(0) for m in (fp8, bf16)}
+    assert long[bf16] - long[fp8] == 11 * 131072 * 512
+
+
+@pytest.mark.parametrize(
+    ("backend", "kv"),
+    [
+        ("vllm", common.KVCacheQuantMode.int8),
+        ("sglang", common.KVCacheQuantMode.int8),
+    ],
+)
+def test_unsupported_kv_dtypes_fail_explicitly(backend, kv):
+    with pytest.raises(NotImplementedError, match="FP8 or BF16 sparse KV"):
+        build("zai-org/GLM-5.3-Flash", backend, kvcache_quant_mode=kv)
+
+
+def test_sglang_bf16_kv_sol_reads_more_latent_bytes_and_keeps_fp8_unchanged():
+    def latency(kv, prefill):
+        config = _config("SOL", "sglang", kvcache_quant_mode=kv)
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            assert model.diagnostics()["provenance"]["config"]["kvcache_quant_mode"] == kv
+            if prefill:
+                return model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True)
+            return model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False)
+        finally:
+            model.close()
+
+    # FP8 is the pinned golden of test_sol_is_unchanged_by_measured_composition.
+    assert latency("fp8", True) == 311.43951352907044
+    assert latency("fp8", False) == 12.986335470115982
+    assert latency("bfloat16", False) > latency("fp8", False)
+    assert latency("bfloat16", True) >= latency("fp8", True)
+
+
 def _config(database_mode, backend="vllm", **kwargs):
     return ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
@@ -391,6 +444,59 @@ def test_tp1_fits_one_gb300_only_with_the_nvfp4_checkpoint(backend, version, tmp
     assert estimate("nvidia/GLM-5.3-Flash-NVFP4", "nvfp4")["total_kv_size_bytes"] > 0
     with pytest.raises(ValueError, match="no KV budget"):
         estimate("zai-org/GLM-5.3-Flash", "fp8_block")
+
+
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
+    # Stock vLLM 0.31.0 on SM90 serves BF16 KV only. Its cache payload equals
+    # SGLang BF16 (512 x 2 B latent per token per sparse layer, index keys and
+    # pool tails unchanged); FP8 (Blackwell) keeps 512 B per token.
+    bf16 = common.KVCacheQuantMode.bfloat16
+    vllm = build("zai-org/GLM-5.3-Flash", "vllm", tp=8, kvcache_quant_mode=bf16)
+    sglang = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=bf16)
+    fp8 = build("zai-org/GLM-5.3-Flash", "vllm", tp=8, kvcache_quant_mode=common.KVCacheQuantMode.fp8)
+    for seq in (0, 4, 131072):
+        assert vllm.get_kvcache_bytes_per_sequence(seq) == sglang.get_kvcache_bytes_per_sequence(seq)
+    per_pool = vllm.get_kvcache_bytes_per_sequence(4) - vllm.get_kvcache_bytes_per_sequence(0)
+    assert per_pool == 11 * (4 * 1024 + 132)
+    assert fp8.get_kvcache_bytes_per_sequence(4) - fp8.get_kvcache_bytes_per_sequence(0) == 11 * (4 * 512 + 132)
+
+    def latency(kv):
+        config = ForwardPassPerfModelConfig(
+            model="zai-org/GLM-5.3-Flash",
+            system=system,
+            backend="vllm",
+            worker_type="aggregated",
+            tp=8,
+            moe_tp_size=8,
+            moe_ep_size=1,
+            kvcache_quant_mode=kv,
+            database_mode="SOL",
+            estimation_mode="op_level",
+            fallback_policy="deny",
+        )
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            assert model.diagnostics()["provenance"]["config"]["kvcache_quant_mode"] == kv
+            return model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False)
+        finally:
+            model.close()
+
+    assert latency("bfloat16") > latency("fp8") > 0
+
+
+def test_vllm_fp8_blackwell_sol_is_unchanged_by_bf16_admission():
+    # Pinned vLLM FP8 SOL golden (test_sol_is_unchanged_by_measured_composition).
+    model = RustForwardPassPerfModel.best_available(_config("SOL", "vllm"))
+    try:
+        assert model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True) == (
+            295.9030065577298
+        )
+        assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) == (
+            13.040700526115971
+        )
+    finally:
+        model.close()
 
 
 # sha256 of config.json / hf_quant_config.json at the pinned revisions in
