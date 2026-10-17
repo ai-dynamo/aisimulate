@@ -22,7 +22,14 @@ pub struct EstimatorConfig {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct OpLevelConfig {}
+pub struct OpLevelConfig {
+    /// Exact FastAFD MoE stage profile replacing the decode MoE span.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fastafd_profile_path: Option<PathBuf>,
+    /// MoE backend the profile measured: `megamoe` or `deepep_deepgemm`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fastafd_moe_backend: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

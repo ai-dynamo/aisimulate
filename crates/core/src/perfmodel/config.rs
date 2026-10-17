@@ -124,7 +124,8 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 28 (GLM-5.3-Flash Ops): Glm53Attention, Glm53Ffn and Glm53Primitive gained
 //   a tail-appended `measured` generic composition priced in SILICON/HYBRID.
 //   The serde default covers JSON only; schema-27 bincode payloads are rejected.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 28;
+// - 29: FastAfdMoeStage was appended for exact measured MoE-stage lookup.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 29;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
