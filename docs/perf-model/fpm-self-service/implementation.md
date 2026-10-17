@@ -457,7 +457,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, unsupported recurrent state, wide EP and EPLB remain outside this route.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Linear-attention and recurrent state are not supported yet: config intake leaves their [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe), and runtime import does not yet accept their cache groups.
 
 ### Parallelism support and guided CLI coverage
 
@@ -578,7 +578,7 @@ With no parallelism flags, guided setup asks for missing shared precision/layout
 
 When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. Otherwise, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
 
-Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Known incompatible text-decoder cache layouts remain rejected, and unknown layouts require explicit resource accounting.
+Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Text-decoder cache layouts that `config.json` cannot establish, such as linear-attention or recurrent state, are not rejected: their [cache geometry stays pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Other known incompatible layouts remain rejected, and unknown layouts require explicit resource accounting.
 
 Memory remains pending for the selected TP, DEP or TEP worker until collection. Prompts request only unresolved identity, precision and supported cache geometry. Optional legacy byte overrides describe a conservative per-rank estimate. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, backend identity, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
 
@@ -629,7 +629,7 @@ aisimulate onboard init \
 
 Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Flat per-rank byte overrides require an explicit topology because the same byte bound cannot be transferred or rescaled across candidate tuples. For multiple configurations, place them in each `--parallel-configs` entry's `resource_overrides` instead. Shared precision/layout overrides can be used for automatic suggestions. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved or no fully assessed automatic default exists. Validation first lists all missing or invalid target identity and collection options. Once that stage is valid, it lists unresolved profile fields, or candidate-specific gaps and exact topology flags, and asks for the necessary inputs or guided setup.
 
-The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
+The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. For a layout [pending the runtime probe](#cache-geometry-pending-the-runtime-probe), `cache_layout`, `kv_bytes_per_token`, `cache_groups` and `cache_block_sizes` are also refused. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
 
 Reusing an observed profile with `onboard init --fpm-profile` defaults to its recorded memory utilization and limits context to its observed `max_model_len`. An explicit smaller context is allowed; changing utilization or exceeding the observed context requires new runtime memory evidence.
 
@@ -644,36 +644,82 @@ Derivation is deliberately limited. Unambiguous architecture, context, expert co
 | Runtime overhead | The selected packaged hardware specification's per-rank `misc.other_mem` estimate when present. It excludes the separate CUDA graph reservation. |
 | Communication overhead | The exact `misc.nccl_mem` TP entry for a pure-TP worker when present. DEP and TEP estimates remain unavailable; total GPU count does not establish their communication storage. These estimates are optional. |
 
-Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. Unknown layouts must supply the remaining supported semantics explicitly; known incompatible layouts are rejected.
+Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. Unknown layouts must supply the remaining supported semantics explicitly. A layout whose cache geometry `config.json` cannot establish, such as linear-attention or recurrent state, instead leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe) and refuses geometry overrides. Other known incompatible layouts are rejected.
 
 The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
+### Cache geometry pending the runtime probe
+
+Config intake does not reject a model config whose cache layout `config.json`
+cannot establish. It loads the config and leaves the cache geometry pending the
+runtime probe, which measures it from the selected runtime. Any one of these
+makes a layout pending:
+
+- a `layer_types` entry other than `full_attention` or `sliding_attention`;
+  `deepseek_sparse_attention` counts as recognized only for
+  `GlmMoeDsaForCausalLM` and `DeepseekV32ForCausalLM`;
+- a non-null recurrent-state field: `ssm_cfg`, `mamba_d_state`,
+  `linear_conv_kernel_dim`, `linear_attn_config`, `ssm_state_size` or
+  `mamba_num_heads`;
+- an architecture name containing `mamba`, `jamba` or `rwkv` in any letter case,
+  including one supplied by an `architecture` resource override;
+- an integer `attn_type_list` entry other than 1.
+
+Unknown architectures can still use generic MLA/GQA planning when their
+declared layer layout is supported. Packaged configs that are pending include
+GLM-5.3-Flash (KDA and sparse-attention layers), Kimi K3 (KDA), the Qwen3.5
+Gated DeltaNet hybrids and NemotronH hybrids such as Nemotron-3 Nano. For these
+layouts, ordinary attention dimensions such as `head_dim: 0` are not validated
+as GQA facts.
+
+For such a config, `onboard init` cannot write a request yet, so it stops with
+guidance. It prints the facts it resolved with their sources and lists any
+unresolved profile fields (for GLM-5.3-Flash, `fmha_quant_mode` and
+`kv_cache_dtype`), then reports `Cache geometry: pending runtime probe` with the
+reasons. It exits 2 and writes nothing: no request, no profile and no
+`--output-dir` root, with or without `--parallel-configs`. `--interactive`
+prompts only for the missing profile fields, never for geometry or topology,
+before it stops the same way.
+
+To continue, record the deployment, the model config path and the precision in
+the [onboarding checkpoint](#save-the-launch-inputs-in-the-existing-checkpoint),
+then run `onboard probe-runtime` and `onboard import-observations` as described
+in [Resolve cache geometry with a runtime probe](#resolve-cache-geometry-with-a-runtime-probe).
+`--suggest-parallel` still prints its shortlist, with each candidate's cache
+geometry reported under `pending_runtime` and no default selected. Automatic
+topology selection stops with the same guidance, because the probe takes an
+explicit topology: record one of the shortlisted starting points or your own.
+
+`--resource-overrides` cannot supply cache geometry for these layouts. An
+override of `cache_layout`, `kv_bytes_per_token`, `cache_groups` or
+`cache_block_sizes` is refused with an error saying the probe measures the
+geometry; remove it. Precision and the other overrides are still accepted.
+
+Malformed declarations still fail for every layout. An explicit `layer_types`
+list must have one entry per declared model layer, and an `attn_type_list` must
+have one integer per layer. The declared `num_hidden_layers` must be a positive
+integer; fractional counts are rejected rather than rounded or truncated.
+Conflicting window fields and encoder-decoder configs also fail.
+
+Two limits apply today. Runtime observation import accepts only vLLM
+`FullAttentionSpec` and `SlidingWindowSpec` cache groups, so a probe whose
+runtime reports another cache spec, such as vLLM's `MambaSpec` for its Mamba,
+Gated DeltaNet and KDA layers, is imported as incomplete with a diagnostic
+naming the spec, and no profile draft is written. The direct `collector --fpm`
+path also rejects configs whose `layer_types` declare linear attention, such as
+GLM-5.3-Flash and the Qwen3.5-family Gated DeltaNet hybrids, including
+Qwen3.6/3.8 checkpoints with that layout, in native and op-level modes.
+Registered model cases do not make the dense-attention FPM template represent
+recurrent state.
+
+Planned work covers per-request state in the FPM profile, importing the
+recurrent-state cache groups a probe reports, and guided collection for these
+layouts. Until then, use a qualified model-specific collection path and verified
+cache profile.
+
 ### Review grouped cache resources
 
-GLM mixed-attention support in the generic `onboard` workflow is work in
-progress (WIP), planned for an upcoming update. The remaining work is to connect
-existing model-specific collection and replay/cache capabilities through profile
-generation, collection, import and validation.
-
-Until that integration is complete, generic onboarding rejects GLM Flash's
-linear-attention and sparse-attention combination before checking ordinary head
-dimensions. Generic MLA/GQA templates do not capture its full cache/state layout,
-even when the config includes MLA rank fields or the architecture is registered.
-Use a qualified model-specific collection path and verified cache profile.
-Sparse-attention layer declarations are accepted only for the collector's
-supported DSA architectures; the layer name alone does not establish support.
-Unknown architectures can still use generic MLA/GQA planning when their
-declared layer layout is supported.
-The direct `collector --fpm` path also rejects Qwen3.5-family Gated DeltaNet
-hybrids, including Qwen3.6/3.8 checkpoints with that layout, in native and
-op-level modes. Registered model cases do not make the dense-attention FPM
-template represent recurrent state. Generic onboarding intake already rejects
-these layouts; complete mixed-attention onboarding remains WIP.
-An explicit `layer_types` list must have one entry per declared model layer.
-The declared `num_hidden_layers` must be a positive integer; fractional counts
-are rejected rather than rounded or truncated.
-
-Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit; unsupported recurrent semantics and contradictory layer/window declarations fail.
+Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit, and contradictory layer/window declarations fail. Unrecognized layer types and recurrent state are not derived here; they leave the cache geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe).
 
 After selecting precision and topology, investigate the pinned cache/backend implementation and available allocation metadata for block sizes after page unification; ask only for values that remain unresolved. The model config's omission does not imply that the user must supply them. Supply `cache_block_sizes` using the generated group names listed by intake. For example, a mixed full/sliding model might require this JSON answer, or the equivalent mapping in a `--resource-overrides` file:
 
@@ -726,7 +772,7 @@ aisimulate onboard init \
   --suggest-parallel
 ```
 
-The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A pending-input candidate can be selected in guided setup, which asks for its missing bounds before final review.
+The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, [`pending_runtime`](#cache-geometry-pending-the-runtime-probe) cache geometry, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A pending-input candidate can be selected in guided setup, which asks for its missing bounds before final review.
 
 Dense decoders consider TP; MoE decoders consider pure TP, DEP and TEP. The shortlist contains at most two choices per family and six distinct tuples overall, preferring the smallest estimated fit and the next one. Widths are powers of two within the packaged node domain. A declared NVLink/NVSwitch fabric can use a packaged fast rack domain when its inter-node bandwidth matches or exceeds its intra-node bandwidth; a declared `none` interconnect permits only one GPU automatically. This is hardware architecture, not an available GPU allocation. Explicit topology choices may exceed the shortlist.
 
