@@ -577,15 +577,19 @@ impl GenerationAttentionOp {
             }
         }
         if self.use_qk_norm {
-            // Match ContextAttention's Q/K RMSNorm accounting: two memory
-            // passes before the norm, two for the norm, then the established
-            // fused-extra correction factor.
-            let q_num = (self.n * self.head_size) as f64;
-            let k_num = (self.n_kv * self.head_size) as f64;
-            let qk_norm = query_mem_op(db, q_num * 2.0)
-                .scaled(2.0)
-                .plus(query_mem_op(db, k_num * 2.0).scaled(2.0))
-                .scaled(2.0 * 1.1);
+            // Four bf16 memory passes over the new Q/K activations (two
+            // before the norm, two for the norm). Passes and query tokens
+            // scale bytes, not kernel launches: query the combined fused
+            // extra once so the empirical constant is not multiplied by 8.
+            // Normalize local heads before the DCP gather, and count the
+            // actual query width rather than the one-KV-read sequence basis.
+            let query_tokens = seq_batch as f64 * self.verify_query_tokens.max(1) as f64;
+            let qk_bytes = query_tokens
+                * (self.n as f64 + self.n_kv as f64)
+                * self.head_size as f64
+                * 2.0
+                * 4.0;
+            let qk_norm = query_mem_op(db, qk_bytes).scaled(1.1);
             result = result.plus(qk_norm);
         }
         if gen_seq_imbalance_correction_scale != 1.0 {
@@ -1685,34 +1689,91 @@ mod tests {
     }
 
     #[test]
-    fn generation_qk_norm_adds_fused_latency_and_preserves_energy() {
-        let db = b200_vllm_db();
-        let base = with_vllm_lanes_gen(GenerationAttentionOp::new(
+    fn generation_qk_norm_counts_one_launch_and_all_query_tokens() {
+        let root = PathBuf::from(REPO_ROOT_HINT)
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        let mut db = PerfDatabase::load(&root, "h200_sxm", "vllm", "0.24.0").unwrap();
+        let mut base = with_vllm_lanes_gen(GenerationAttentionOp::new(
             "gen",
-            64,
-            4,
+            32,
+            8,
             128,
-            KvCacheQuantMode::Fp8,
+            KvCacheQuantMode::Bfloat16,
         ));
-        let plain = base.query(&db, 32, 2048, 1.0).expect("plain decode");
-
-        let mut normalized = base;
+        base.scale_factor = 36.0;
+        let mut normalized = base.clone();
         normalized.use_qk_norm = true;
-        let with_norm = normalized
-            .query(&db, 32, 2048, 1.0)
-            .expect("Q/K-normalized decode");
 
-        let q_num = (64 * 128) as f64;
-        let k_num = (4 * 128) as f64;
-        let expected_extra = query_mem_op(&db, q_num * 2.0)
-            .scaled(2.0)
-            .plus(query_mem_op(&db, k_num * 2.0).scaled(2.0))
-            .scaled(2.0 * 1.1);
-        assert!(
-            (with_norm.latency_ms - plain.latency_ms - expected_extra.latency_ms).abs() < 1e-12
-        );
-        assert_eq!(with_norm.energy_wms, plain.energy_wms);
-        assert_eq!(with_norm.source, Source::Mixed);
+        // Hand calculation for H200 / Qwen3-8B: each token has 5,120 Q+K
+        // bf16 elements. Four memory passes move 40,960 bytes. At 3.84 TB/s
+        // effective bandwidth, the 1.1-corrected byte term is 11.7333 ns/token;
+        // the single 3 us launch becomes 3.3 us, independent of batch/KV.
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Empirical,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+        ] {
+            db.database_mode = mode;
+            let is_sol = matches!(mode, DatabaseMode::Sol | DatabaseMode::SolFull);
+            for batch in [1, 8, 32] {
+                for kv in [64, 576, 4096] {
+                    let plain = base.query(&db, batch, kv, 1.25).unwrap();
+                    let with_norm = normalized.query(&db, batch, kv, 1.25).unwrap();
+                    let per_layer = if is_sol {
+                        batch as f64 * 0.000009386666666666667
+                    } else {
+                        0.0033 + batch as f64 * 0.000011733333333333334
+                    };
+                    assert!(
+                        (with_norm.latency_ms - plain.latency_ms - per_layer * 36.0 * 1.25).abs()
+                            < 1e-10,
+                        "mode={mode:?} batch={batch} kv={kv}"
+                    );
+                    assert_eq!(with_norm.energy_wms, plain.energy_wms);
+                    assert_eq!(
+                        with_norm.source,
+                        plain.source.combine(if is_sol {
+                            Source::Sol
+                        } else {
+                            Source::Empirical
+                        })
+                    );
+                    if is_sol {
+                        let delta = with_norm.sol.unwrap().mem_ms - plain.sol.unwrap().mem_ms;
+                        assert!((delta - per_layer * 36.0 * 1.25).abs() < 1e-10);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generation_qk_norm_uses_local_heads_and_real_speculative_width() {
+        let mut db = b200_vllm_db();
+        db.database_mode = DatabaseMode::Sol;
+        let mut plain = GenerationAttentionOp::new("gen", 32, 8, 128, KvCacheQuantMode::Fp8);
+        // Four passes over 5,120 bf16 Q+K elements move 40,960 bytes/token.
+        let bytes_per_token = 40_960.0;
+        for dcp in [1, 2, 4] {
+            plain.dcp_size = dcp;
+            plain.scale_num_tokens = 5;
+            for query_width in [1, 3, 5] {
+                plain.verify_query_tokens = query_width;
+                let mut normalized = plain.clone();
+                normalized.use_qk_norm = true;
+                let base = plain.query(&db, 10, 2048, 1.0).unwrap();
+                let result = normalized.query(&db, 10, 2048, 1.0).unwrap();
+                // Two requests, each with query_width new tokens. DCP only
+                // gathers Q after normalization, and FP8 KV does not change
+                // the bf16 Q/K activations being normalized.
+                let expected = bytes_per_token * 2.0 * query_width as f64 * 1.1
+                    / db.system_spec.gpu.mem_bw
+                    * 1000.0;
+                assert!((result.latency_ms - base.latency_ms - expected).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]
