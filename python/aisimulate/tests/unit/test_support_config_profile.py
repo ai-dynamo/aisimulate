@@ -118,6 +118,30 @@ def test_glm53_flash_config_is_runtime_resolved_not_rejected():
     )
 
 
+def test_packaged_nemotron_h_hybrids_are_runtime_resolved():
+    paths = sorted(GLM.parent.glob("*_config.json"))
+    nemotron = [path for path in paths if json.loads(path.read_text()).get("architectures") == ["NemotronHForCausalLM"]]
+    assert len(nemotron) == 9
+    geometry = {"cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"}
+    loaded = 0
+    for path in nemotron:
+        try:
+            config = load_model_config(path)
+        except ValueError as error:
+            # A few packaged configs spell time_step_limit with Infinity, which the loader rejects as non-finite
+            # before any layout is classified: they are never rejected for their cache layout.
+            assert "must be finite" in str(error), path.name
+            continue
+        loaded += 1
+        assert {"recurrent-state field mamba_num_heads", "recurrent-state field ssm_state_size"} <= set(
+            config.runtime_layout
+        ), path.name
+        draft = derive_profile(config, None)
+        assert set(draft.pending_runtime) == {"cache_geometry"}, path.name
+        assert not geometry & draft.missing.keys(), path.name
+    assert loaded
+
+
 @pytest.mark.parametrize(
     "raw,architecture,expected",
     [
@@ -132,13 +156,26 @@ def test_glm53_flash_config_is_runtime_resolved_not_rejected():
         ({"layer_types": ["gdn", "full_attention", "gdn"]}, None, ("layer_types gdn x2",)),
         # Null state fields are absent, not markers.
         (
-            {"ssm_cfg": None, "mamba_d_state": None, "linear_conv_kernel_dim": None, "linear_attn_config": None},
+            {
+                "ssm_cfg": None,
+                "mamba_d_state": None,
+                "linear_conv_kernel_dim": None,
+                "linear_attn_config": None,
+                "ssm_state_size": None,
+                "mamba_num_heads": None,
+            },
             None,
             (),
         ),
         # Architecture names match case-insensitively; the name is reported as declared.
         ({}, "ToyJambaForCausalLM", ("recurrent architecture ToyJambaForCausalLM",)),
         ({}, "RWKVForCausalLM", ("recurrent architecture RWKVForCausalLM",)),
+        # An all-1 attn_type_list is full attention; other integers are one reason per distinct value.
+        ({"attn_type_list": [1, 1, 1]}, None, ()),
+        ({"attn_type_list": [1, 0, 0, 2, 1]}, None, ("attn_type_list 0 x2", "attn_type_list 2 x1")),
+        # Only real integers count; malformed lists are structural errors raised elsewhere.
+        ({"attn_type_list": [True, False, "0", None, 1.5]}, None, ()),
+        ({"attn_type_list": "0"}, None, ()),
         # State markers win over recognized layer names, and reasons come back sorted.
         (
             {"layer_types": ["linear_attention", "full_attention"], "mamba_d_state": 16},
@@ -147,6 +184,15 @@ def test_glm53_flash_config_is_runtime_resolved_not_rejected():
                 "layer_types linear_attention x1",
                 "recurrent architecture ToyMambaForCausalLM",
                 "recurrent-state field mamba_d_state",
+            ),
+        ),
+        (
+            {"layer_types": ["linear_attention"], "attn_type_list": [0], "ssm_state_size": 128},
+            None,
+            (
+                "attn_type_list 0 x1",
+                "layer_types linear_attention x1",
+                "recurrent-state field ssm_state_size",
             ),
         ),
     ],
@@ -167,7 +213,13 @@ def test_runtime_layout_reasons(raw, architecture, expected):
         ({"ssm_cfg": {}}, ("recurrent-state field ssm_cfg",)),
         ({"linear_conv_kernel_dim": 4}, ("recurrent-state field linear_conv_kernel_dim",)),
         ({"linear_attn_config": {"head_dim": 128}}, ("recurrent-state field linear_attn_config",)),
+        # NemotronH hybrids declare Mamba state with these two fields.
+        ({"ssm_state_size": 128}, ("recurrent-state field ssm_state_size",)),
+        ({"mamba_num_heads": 64}, ("recurrent-state field mamba_num_heads",)),
         ({"architectures": ["ToyMambaForCausalLM"]}, ("recurrent architecture ToyMambaForCausalLM",)),
+        # A mixed attn_type_list (0 = linear attention) is runtime-resolved, not rejected.
+        ({"attn_type_list": [1, 0]}, ("attn_type_list 0 x1",)),
+        ({"attn_type_list": [0, 2]}, ("attn_type_list 0 x1", "attn_type_list 2 x1")),
         # State markers win over recognized layer names.
         (
             {"layer_types": ["full_attention", "full_attention"], "mamba_d_state": 16},
@@ -190,6 +242,11 @@ def test_unrecognized_layouts_load_with_zero_ordinary_dimensions(tmp_path, neste
         ({"layer_types": "linear_attention"}, "one entry per num_hidden_layers"),
         ({"layer_types": ["linear_attention", 3]}, "layer_types entries must be nonempty strings"),
         ({"layer_types": ["linear_attention", " "]}, "layer_types entries must be nonempty strings"),
+        ({"attn_type_list": [0]}, "attn_type_list must have one entry per num_hidden_layers"),
+        ({"attn_type_list": "0"}, "attn_type_list must have one entry per num_hidden_layers"),
+        ({"attn_type_list": [0, "1"]}, "attn_type_list entries must be integers"),
+        ({"attn_type_list": [0, 1.5]}, "attn_type_list entries must be integers"),
+        ({"attn_type_list": [0, True]}, "attn_type_list entries must be integers"),
         ({"num_hidden_layers": 2.0}, "num_hidden_layers"),
         ({"is_encoder_decoder": True}, "unsupported encoder-decoder"),
         ({"sliding_window": 64, "sliding_window_size": 128}, "conflicting sliding-window"),
@@ -204,6 +261,24 @@ def test_runtime_resolved_layouts_keep_structural_checks(tmp_path, nested, updat
 def test_recognized_layouts_keep_layer_type_structure_checks(tmp_path, update):
     with pytest.raises(ValueError, match="layer_types entries must be nonempty strings"):
         _config(tmp_path, **update)
+
+
+@pytest.mark.parametrize(
+    "update,message",
+    [
+        ({"attn_type_list": [1]}, "attn_type_list must have one entry per num_hidden_layers"),
+        ({"attn_type_list": [1, "1"]}, "attn_type_list entries must be integers"),
+        ({"attn_type_list": [1, True]}, "attn_type_list entries must be integers"),
+        ({"attn_type_list": [True, True]}, "attn_type_list entries must be integers"),
+    ],
+)
+def test_recognized_layouts_keep_attn_type_list_structure_checks(tmp_path, update, message):
+    with pytest.raises(ValueError, match=message):
+        _config(tmp_path, **update)
+
+
+def test_all_full_attention_type_list_is_not_runtime_resolved(tmp_path):
+    assert _config(tmp_path, attn_type_list=[1, 1]).runtime_layout == ()
 
 
 def test_recognized_layouts_still_reject_zero_ordinary_dimensions(tmp_path):
@@ -282,7 +357,15 @@ def test_recognized_layout_reports_nothing_pending(tmp_path):
     assert draft.profile is not None and draft.pending_runtime == {}
 
 
-@pytest.mark.parametrize("marker", [{"layer_types": ["full_attention", "linear_attention"]}, {"ssm_cfg": {}}])
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"layer_types": ["full_attention", "linear_attention"]},
+        {"ssm_cfg": {}},
+        {"ssm_state_size": 128},
+        {"attn_type_list": [1, 0]},
+    ],
+)
 def test_full_attention_architecture_with_runtime_resolved_layout_assumes_no_linear_cache(tmp_path, marker):
     # Llama is a known full-attention architecture; the marker says this checkpoint is not that layout.
     draft = derive_profile(_config(tmp_path, **marker), _request(), _runtime())

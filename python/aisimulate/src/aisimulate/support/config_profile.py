@@ -75,7 +75,14 @@ _NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
 _CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
 # Overrides that state cache geometry; a runtime-resolved layout takes it only from the runtime probe.
 _GEOMETRY_OVERRIDES = frozenset(("cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"))
-_RECURRENT_STATE_FIELDS = ("ssm_cfg", "mamba_d_state", "linear_conv_kernel_dim", "linear_attn_config")
+_RECURRENT_STATE_FIELDS = (
+    "ssm_cfg",
+    "mamba_d_state",
+    "linear_conv_kernel_dim",
+    "linear_attn_config",
+    "ssm_state_size",
+    "mamba_num_heads",
+)
 _RECURRENT_ARCHITECTURES = ("mamba", "jamba", "rwkv")
 _INKLING_ARCHITECTURE = "InklingForConditionalGeneration"
 _INKLING_CACHE_SOURCE = (
@@ -318,11 +325,20 @@ def _layer_types(raw: Mapping[str, Any], layers: int | None) -> list[str]:
     return types
 
 
+def _attn_type_list(raw: Mapping[str, Any], layers: int | None) -> list[int]:
+    values = raw["attn_type_list"]
+    if not isinstance(values, list) or (layers is not None and len(values) != layers):
+        raise ValueError("attn_type_list must have one entry per num_hidden_layers")
+    if any(type(value) is not int for value in values):
+        raise ValueError("attn_type_list entries must be integers")
+    return values
+
+
 def _runtime_layout(raw: Mapping[str, Any], architecture: str | None) -> tuple[str, ...]:
     """Sorted reasons config.json cannot establish the cache layout; empty when it can.
 
-    Layer types and recurrent-state markers count independently, so recognized layer names never
-    hide declared state.
+    Layer types, attention-type lists and recurrent-state markers count independently, so recognized
+    values never hide declared state.
     """
     reasons = []
     layer_types = raw.get("layer_types")
@@ -332,6 +348,11 @@ def _runtime_layout(raw: Mapping[str, Any], architecture: str | None) -> tuple[s
             value for value in layer_types if isinstance(value, str) and value.strip() and value not in recognized
         )
         reasons.extend(f"layer_types {name} x{count}" for name, count in unrecognized.items())
+    attn_types = raw.get("attn_type_list")
+    if isinstance(attn_types, list):
+        # 1 is full attention; any other integer is a layer type the config does not describe.
+        other = Counter(value for value in attn_types if type(value) is int and value != 1)
+        reasons.extend(f"attn_type_list {value} x{count}" for value, count in other.items())
     reasons.extend(f"recurrent-state field {key}" for key in _RECURRENT_STATE_FIELDS if raw.get(key) is not None)
     if any(name in (architecture or "").lower() for name in _RECURRENT_ARCHITECTURES):
         reasons.append(f"recurrent architecture {architecture}")
@@ -417,15 +438,14 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
         layers = _aliased_int(raw, "num_hidden_layers")
         if "layer_types" in raw:
             _layer_types(raw, layers)
+        if "attn_type_list" in raw:
+            _attn_type_list(raw, layers)
         return
     sliding = _cache_layer_ids(raw, architecture, inkling=inkling)
     layers = _aliased_int(raw, "num_hidden_layers")
     if "attn_type_list" in raw:
-        values = raw["attn_type_list"]
-        if not isinstance(values, list) or (layers is not None and len(values) != layers):
-            raise ValueError("attn_type_list must have one entry per num_hidden_layers")
-        if any(type(value) is not int or value != 1 for value in values):
-            raise ValueError("unsupported mixed or non-full attention layout in attn_type_list")
+        # Every entry is 1 here: any other integer would have made the layout runtime-resolved.
+        _attn_type_list(raw, layers)
         if sliding:
             raise ValueError("full-attention attn_type_list conflicts with sliding-window layer declarations")
     if architecture in _FULL_ATTENTION and any(
