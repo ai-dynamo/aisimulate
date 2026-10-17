@@ -78,6 +78,10 @@ class TopologyCandidate:
     def missing(self) -> dict[str, str]:
         return dict(self.draft.missing) if self.draft is not None else {}
 
+    @property
+    def pending_runtime(self) -> dict[str, str]:
+        return dict(self.draft.pending_runtime) if self.draft is not None else {}
+
     def apply(self, request: SupportRequest) -> SupportRequest:
         """Return the selected topology with the caller's other request inputs intact."""
         payload = request.model_dump()
@@ -93,6 +97,7 @@ class TopologyCandidate:
             "status": self.status,
             "reasons": list(self.reasons),
             "missing": self.missing,
+            "pending_runtime": self.pending_runtime,
             "known_required_bytes": self.known_required_bytes,
             "estimated_required_bytes": self.estimated_required_bytes,
             "memory_budget_bytes": self.memory_budget_bytes,
@@ -306,6 +311,12 @@ def _assess(
             if no_grouped_cache_budget
             else f"{bound} {known} bytes exceeds the {request.collection.memory_fraction * 100:g}% per-GPU budget "
             f"of {hardware.memory_budget_bytes} bytes.",
+        )
+    elif draft.pending_runtime:
+        status = "needs_inputs"
+        reasons = (
+            "Cache geometry is pending the runtime probe (onboard probe-runtime); cache fit is not assessed. "
+            "A known byte lower bound below the budget does not establish fit.",
         )
     elif draft.missing or not complete_resources:
         status = "needs_inputs"

@@ -67,7 +67,9 @@ def add_support_parser(subparsers: Any) -> None:
         help="Declare a model, target hardware, worker topology, and FPM collection limits.",
         description=(
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
-            "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
+            "supply unresolved profile fields with --resource-overrides. Cache layouts that config.json cannot "
+            "establish, such as linear-attention or recurrent state, are resolved by onboard probe-runtime: setup "
+            "stops with guidance and writes nothing. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --gpu, and --interconnect. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
             "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
@@ -850,6 +852,32 @@ def _topology_summary(suggestions: TopologySuggestions) -> str:
     return "\n".join(lines)
 
 
+_PROBE_GUIDE = "docs/perf-model/fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe"
+
+
+def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None) -> str:
+    """Stop message for a layout whose cache geometry only the runtime probe measures."""
+    lines = []
+    if draft.missing:
+        lines += [
+            "Unresolved profile fields for this deployment:",
+            *(f"  {name}: {reason}" for name, reason in draft.missing.items()),
+            "Supply them in --resource-overrides PATH (JSON/YAML), or use --interactive.",
+        ]
+    lines += ["Cache geometry: pending runtime probe", f"  {draft.pending_runtime['cache_geometry']}"]
+    if shortlist is not None:
+        lines.append(shortlist)
+    lines.append(
+        "Next step: record the deployment, the model config path and the precision in the onboarding checkpoint "
+        "(onboard checkpoint), then run onboard probe-runtime --checkpoint PATH --output-dir DIR "
+        f"(guide: {_PROBE_GUIDE})."
+    )
+    if shortlist is not None:
+        lines.append("The probe takes an explicit topology: record one of the starting points above, or your own.")
+    lines.append("Nothing was saved.")
+    return "\n".join(lines)
+
+
 def _resolve_shared_profile_inputs(
     config: ModelConfig, shared: dict[str, Any], entry_overrides: list[dict[str, Any]]
 ) -> None:
@@ -891,6 +919,9 @@ def _select_topologies(
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
     summary = _topology_summary(suggestions)
+    # Pending geometry is topology-independent: no candidate can be chosen into a saved request.
+    if (pending := derive_profile(config, None, overrides)).pending_runtime:
+        raise ValueError(_probe_guidance(pending, summary))
     if not suggestions.candidates or (not args.interactive and suggestions.default is None):
         raise ValueError(
             "No fully assessed topology default is available.\n"
@@ -967,6 +998,8 @@ def _complete_config_request(
         print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
+        if draft.pending_runtime and not args.interactive:
+            raise ValueError(_probe_guidance(draft))
         if draft.missing and not args.interactive:
             raise ValueError(
                 "Unresolved profile fields for this deployment:\n"
@@ -985,6 +1018,8 @@ def _complete_config_request(
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
             continue
+        if draft.pending_runtime:
+            raise ValueError(_probe_guidance(draft))
         if draft.profile is None:
             raise ValueError("model config did not produce a complete FPM profile")
         try:

@@ -1694,3 +1694,161 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
     assert prediction.engine.workers.aggregated.parallelism.moe_tensor == moe_tp
     assert prediction.engine.workers.aggregated.parallelism.moe_expert == moe_ep
     assert json.loads((plan / "fpm-model-profile.json").read_text()) == request.fpm_profile.model_dump(mode="json")
+
+
+# Issue #475: the packaged GLM-5.3-Flash config mixes linear-attention and sparse-attention layers, so config.json
+# cannot establish its cache geometry. Intake reports it as pending the runtime probe instead of asking for bytes.
+_GLM = Path(__file__).parents[2] / "src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json"
+_GLM_IDENTITY = [
+    "onboard",
+    "init",
+    "--model",
+    "zai-org/GLM-5.3-Flash",
+    "--model-revision",
+    "91b69215804f2d2036a8867f6ce44848e278dcda",
+    "--gpu",
+    "b300_sxm",
+    "--interconnect",
+    "nvswitch",
+    "--worker-type",
+    "aggregated",
+]
+_GLM_LIMITS = [
+    "--context-length",
+    "1048576",
+    "--max-num-tokens",
+    "8192",
+    "--max-batch-size",
+    "256",
+    "--gpu-memory-utilization",
+    "0.92",
+]
+_ISSUE_ARGS = [*_GLM_IDENTITY, "--tensor-parallel", "4", *_GLM_LIMITS]
+# Automatic topology: --suggest-parallel and automatic selection reject explicit topology flags.
+_AUTOMATIC_ARGS = [*_GLM_IDENTITY, *_GLM_LIMITS]
+# Illustrative precision choices for the test only, not a claim about GLM's runtime precision.
+_GLM_PRECISION = {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8"}
+_GEOMETRY_KEYS = ("kv_bytes_per_token", "cache_groups", "cache_block_sizes")
+
+
+def _glm_precision(tmp_path):
+    path = tmp_path / "precision.yaml"
+    path.write_text(yaml.safe_dump(_GLM_PRECISION))
+    return ["--resource-overrides", str(path)]
+
+
+def _stops_with_guidance(command, capsys):
+    """Run init to its nonzero exit and return its (stdout, stderr)."""
+    with pytest.raises(SystemExit) as result:
+        cli.main(command)
+    assert result.value.code == 2
+    captured = capsys.readouterr()
+    assert "Cache geometry: pending runtime probe" in captured.err
+    assert "model config did not produce a complete FPM profile" not in captured.err
+    return captured.out, captured.err
+
+
+def test_issue_475_exact_command_lists_user_owned_inputs_and_pending_geometry(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    stdout, stderr = _stops_with_guidance([*_ISSUE_ARGS, "--model-config", str(_GLM), "--output", str(out)], capsys)
+    text = stdout + stderr
+    assert not out.exists()
+    assert "pending runtime probe" in text and "fmha_quant_mode" in text and "kv_cache_dtype" in text
+    # The original failure is gone, and no geometry is asked of the user.
+    assert "head_dim must be" not in text and "unsupported mixed" not in text and "kv_bytes_per_token" not in text
+    # The unresolved precision is part of the error itself, not only of the stdout transcript.
+    assert "fmha_quant_mode" in stderr and "kv_cache_dtype" in stderr
+    assert "onboard probe-runtime" in stderr
+
+
+def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    command = [*_ISSUE_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert not out.exists()
+    # Everything config.json resolves is still printed, with its source; the config is the issue's exact bytes.
+    assert "Glm5NextForConditionalGeneration" in stdout
+    assert "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f" in stdout
+    assert "Profile inputs" in stdout and "(source:" in stdout
+    # The reasons, the next step and the guide anchor.
+    assert "linear_attention x34" in stderr and "onboard probe-runtime" in stderr
+    assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
+    assert "implementation.md#resolve-cache-geometry-with-a-runtime-probe" in stderr
+    # No user-owned input is left, and geometry is never a user input.
+    assert "fmha_quant_mode" not in stderr and "Unresolved profile fields" not in stderr
+    assert "--resource-overrides" not in stderr
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+
+
+def test_runtime_resolved_suggestions_still_print(tmp_path, capsys):
+    out = tmp_path / "request.yaml"
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    assert cli.main([*command, "--suggest-parallel"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["candidates"] and report["default"] is None
+    for candidate in report["candidates"]:
+        assert "cache_geometry" in candidate["pending_runtime"]
+        assert "onboard probe-runtime" in candidate["pending_runtime"]["cache_geometry"]
+        reasons = " ".join(candidate["reasons"])
+        assert "pending the runtime probe" in reasons and "geometry checks passed" not in reasons
+    assert not out.exists()
+
+
+def test_ordinary_suggestions_report_no_pending_runtime(tmp_path, capsys):
+    overrides = {key: value for key, value in _OVERRIDES.items() if not key.endswith("_bytes")}
+    overrides.pop("kv_bytes_per_token")
+    source, resources = _files(tmp_path, overrides=overrides)
+    command = _args(tmp_path / "request.yaml", source, resources, tensor_parallel=None) + ["--suggest-parallel"]
+    assert cli.main(command) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["candidates"]
+    assert all(candidate["pending_runtime"] == {} for candidate in report["candidates"])
+    assert not any("pending the runtime probe" in " ".join(candidate["reasons"]) for candidate in report["candidates"])
+
+
+def test_runtime_resolved_automatic_topology_stops_with_probe_guidance(tmp_path, capsys):
+    out = tmp_path / "request.yaml"
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert not out.exists()
+    assert "onboard probe-runtime" in stderr and "explicit topology" in stderr
+    # Geometry is not an input, so no --resource-overrides advice, and no default topology claims a fit.
+    assert "--resource-overrides" not in stderr and "No fully assessed topology default" not in stderr
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+    # The shortlist remains available as starting points for the explicit topology, and claims no geometry check.
+    assert "Suggested worker topologies" in stderr and "--tensor-parallel" in stderr
+    assert "pending the runtime probe" in stderr and "geometry checks passed" not in stderr
+    assert "Selected" not in stdout
+
+
+@pytest.mark.parametrize("parallel_configs", [False, True])
+def test_runtime_resolved_output_dir_writes_nothing(tmp_path, capsys, parallel_configs):
+    root = tmp_path / "onboarding"
+    if parallel_configs:
+        entries = tmp_path / "parallel.yaml"
+        entries.write_text(yaml.safe_dump([{"tensor_parallel": 4}, {"tensor_parallel": 8}]))
+        command = [*_AUTOMATIC_ARGS, "--parallel-configs", str(entries)]
+    else:
+        command = list(_ISSUE_ARGS)
+    command += ["--model-config", str(_GLM), *_glm_precision(tmp_path), "--output-dir", str(root)]
+    _, stderr = _stops_with_guidance(command, capsys)
+    assert "onboard probe-runtime" in stderr
+    # No output root, no staging directory beside it and no request files anywhere.
+    assert not root.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == (
+        ["parallel.yaml", "precision.yaml"] if parallel_configs else ["precision.yaml"]
+    )
+
+
+@pytest.mark.parametrize("explicit_topology", [True, False])
+def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monkeypatch, capsys, explicit_topology):
+    out = tmp_path / "request.yaml"
+    # Only the two user-owned precision facts are asked: no geometry, and no topology choice that cannot be saved.
+    prompts = _terminal(monkeypatch, ["fp8", "fp8"])
+    command = [*(_ISSUE_ARGS if explicit_topology else _AUTOMATIC_ARGS), "--model-config", str(_GLM)]
+    _, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
+    assert [prompt.split(" ", 1)[0] for prompt in prompts] == ["fmha_quant_mode", "kv_cache_dtype"]
+    assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
+    assert "onboard probe-runtime" in stderr and "fmha_quant_mode" not in stderr
+    assert explicit_topology or "explicit topology" in stderr
+    assert not out.exists()
