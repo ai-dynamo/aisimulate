@@ -228,7 +228,7 @@ impl Glm53AttentionOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         if !matches!(self.layer_kind.as_str(), "kda" | "sparse_mla")
-            || !matches!(self.tp_size, 1 | 2 | 4)
+            || !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.num_heads == 0
             || self.head_dim == 0
             || self.hidden_size == 0
@@ -606,9 +606,9 @@ impl Glm53MhcOp {
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
-        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
+        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4 | 8) {
             return Err(AicError::ModelConfig(
-                "GLM mHC requires TP1/2/4, multiplier 4 and 20 Sinkhorn iterations".into(),
+                "GLM mHC requires TP1/2/4/8, multiplier 4 and 20 Sinkhorn iterations".into(),
             ));
         }
         if x <= 0.0 {
@@ -807,7 +807,7 @@ pub struct Glm53FfnOp {
 impl Glm53FfnOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.swiglu_limit != 10.0
             || self.scoring_func != "sigmoid"
@@ -941,7 +941,7 @@ pub struct Glm53PrimitiveOp {
 impl Glm53PrimitiveOp {
     pub fn validate_physical(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.vocab_size != 154880
         {
@@ -1733,5 +1733,65 @@ pub(crate) mod tests {
             op.query(&load(DatabaseMode::Sol), &c).unwrap().latency_ms,
             op.sol(&silicon.system_spec, 1024.0).unwrap().latency_ms
         );
+    }
+
+    #[test]
+    fn tensor_parallel_gate_accepts_tp8_and_rejects_non_divisors() {
+        use crate::operators::{communication::NcclOp, elementwise::ElementwiseOp, gemm::GemmOp};
+        // 64 attention/KDA heads, 12288 dense and 154880 vocab all divide by
+        // 8; TP8 is the FP8 deployment on 80/141 GiB Hopper GPUs.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (tp, accepted) in [
+            (1u32, true),
+            (2, true),
+            (4, true),
+            (8, true),
+            (3, false),
+            (16, false),
+        ] {
+            let mut kda = attention("kda");
+            kda.tp_size = tp;
+            kda.num_heads = (64 / tp).max(1);
+            assert_eq!(kda.validate().is_ok(), accepted, "attention tp={tp}");
+            let mhc = Glm53MhcOp {
+                name: "mhc_pre_attn_1".into(),
+                role: "pre".into(),
+                backend: "sglang".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: tp,
+                is_context: false,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            };
+            assert_eq!(mhc.sol(&spec, 8.0).is_ok(), accepted, "mhc tp={tp}");
+            let allreduce: Glm53PrimitiveOp = serde_json::from_value(serde_json::json!({
+                "name": "allreduce_0", "role": "allreduce", "backend": "vllm",
+                "checkpoint_format": "fp8", "tp_size": tp, "is_context": true,
+                "hidden_size": 4096, "vocab_size": 154880, "token_selection": "all_scheduled",
+                "output_dtype": "bfloat16", "collective": "all_reduce",
+                "children": [Op::Nccl(NcclOp::new("ar", 1.0, 4096.0, tp, "all_reduce"))],
+            }))
+            .unwrap();
+            assert_eq!(allreduce.validate().is_ok(), accepted, "primitive tp={tp}");
+            let width = 12288 / tp;
+            let q = GemmQuantMode::Fp8Block;
+            let dense: Glm53FfnOp = serde_json::from_value(serde_json::json!({
+                "name": "ffn_0", "backend": "vllm", "checkpoint_format": "fp8",
+                "is_context": true, "is_dense": true, "hidden_size": 4096,
+                "intermediate_size": 12288, "num_experts": 288, "topk": 8, "tp_size": tp,
+                "n_shared_experts": 1, "swiglu_limit": 10.0, "scoring_func": "sigmoid",
+                "routed_scaling_factor": 2.5, "n_group": 1, "topk_group": 1,
+                "norm_topk_prob": true, "gemm_quant_mode": q,
+                "shared_quant_mode": q, "moe_quant_mode": MoeQuantMode::Fp8Block,
+                "children": [
+                    Op::Gemm(GemmOp::new("up", 2 * width, 4096, q)),
+                    Op::Elementwise(ElementwiseOp::new("act", 6.0 * f64::from(width))),
+                    Op::Gemm(GemmOp::new("down", 4096, width, q)),
+                ],
+            }))
+            .unwrap();
+            assert_eq!(dense.validate().is_ok(), accepted, "ffn tp={tp}");
+        }
     }
 }

@@ -107,19 +107,20 @@ class Glm53FlashModel(BaseModel):
         tp = model_config.tp_size
         mtp, ep = model_config.resolve_moe_parallelism()
         if (
-            tp not in {1, 2, 4}
+            tp not in {1, 2, 4, 8}
             or mtp != tp
             or ep != 1
             or model_config.pp_size != 1
             or model_config.cp_size != 1
             or model_config.attention_dp_size != 1
         ):
-            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1")
-        # TP1 is accepted for both checkpoints, but only NVFP4 TP1 fits one
-        # GB300 (native runtime admitted it with Mamba block size 8576).
-        # FP8 TP1 runs out of memory while creating weights; the payload
-        # inventory below (about 298-299 GiB) already exceeds GB300's
-        # 277.5 GiB, so memory checks report OOM rather than this
+            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1")
+        # Every TP size that divides the 64 attention/KDA heads is accepted
+        # for both checkpoints; whether a deployment fits is a per-system
+        # capacity question, not a constructor rule. The payload inventory
+        # below (FP8 about 298-299 GiB, NVFP4 about 176 GiB) is compared
+        # against the system's memory by the memory checks, which report OOM
+        # (for example FP8 TP1 on any current GPU) rather than this
         # constructor rejecting it.
         if self._nextn or model_config.decoder_replay or self._num_layers != len(d.layer_types):
             raise NotImplementedError(

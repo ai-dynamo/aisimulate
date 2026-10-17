@@ -45,7 +45,7 @@ def test_pinned_text_schedule_and_no_vision(path):
 
 @pytest.mark.parametrize("path", MODEL_REVISIONS)
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-@pytest.mark.parametrize("tp", [1, 2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4, 8])
 def test_native_graph_boundary_precision_and_state(path, backend, tp):
     model = build(path, backend, tp)
     expected_format = "nvfp4" if "NVFP4" in path else "fp8"
@@ -109,8 +109,11 @@ def test_unsupported_topology_and_precision_fail_explicitly():
     path = "zai-org/GLM-5.3-Flash"
     with pytest.raises(NotImplementedError, match="vLLM and SGLang"):
         build(path, "trtllm")
-    with pytest.raises(NotImplementedError, match="TP1/2/4"):
-        build(path, tp=8)
+    with pytest.raises(NotImplementedError, match="TP1/2/4/8"):
+        build(path, tp=16)
+    # TP3 does not divide the 64 heads; the shared base model rejects it first.
+    with pytest.raises(AssertionError, match="divisible by tp_size 3"):
+        build(path, tp=3)
     with pytest.raises(NotImplementedError, match="nextn=0"):
         build(path, nextn=1)
     with pytest.raises(NotImplementedError, match="precision partition"):
@@ -203,6 +206,32 @@ def test_canonical_sol_constructor_and_saved_identity(path, backend):
         model.close()
 
 
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
+    # TP8 is the FP8 deployment for 80/141 GiB Hopper GPUs (the payload
+    # inventory exceeds TP4 headroom on H100). SOL needs only the system spec.
+    config = ForwardPassPerfModelConfig(
+        model="zai-org/GLM-5.3-Flash",
+        system=system,
+        backend=backend,
+        worker_type="aggregated",
+        tp=8,
+        moe_tp_size=8,
+        moe_ep_size=1,
+        database_mode="SOL",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.diagnostics()["provenance"]["config"]["tp"] == 8
+        assert model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True) > 0
+        assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) > 0
+    finally:
+        model.close()
+
+
 def _config(database_mode, backend="vllm", **kwargs):
     return ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
@@ -242,7 +271,7 @@ def test_hybrid_is_constructible_and_labels_analytical_fallbacks(backend):
 
 @pytest.mark.parametrize("path", MODEL_REVISIONS)
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-@pytest.mark.parametrize("tp", [1, 2, 4])
+@pytest.mark.parametrize("tp", [1, 2, 4, 8])
 def test_measured_composition_uses_generic_ops_and_one_glm_attention_table(path, backend, tp):
     from aisimulate_core.sdk.models.glm53flash import KDA_KERNELS
 
