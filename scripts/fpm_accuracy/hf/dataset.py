@@ -41,7 +41,8 @@ from scripts.fpm_accuracy.hf.protocols import (
 from scripts.fpm_accuracy.types.forward_pass import WorkloadKind
 from scripts.fpm_accuracy.types.worker_config import WorkerConfig, WorkerConfigRecord
 
-DEFAULT_REPO_ID = "nvidia/aisimulate-fpm-dataset"
+DEFAULT_REPO_ID = "nvidia/aisim-dataset"
+_DATASET_ALIASES = frozenset({DEFAULT_REPO_ID, "nvidia/aisimulate-fpm-dataset"})
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _TRUTH_ROLES = frozenset({"truth", "derived_truth"})
@@ -108,9 +109,10 @@ class HfDataset:
         self._overrides = overrides
         self._overrides_sha256 = overrides_sha256
         self._index = self._read_json("catalog/index.json")
-        if self._index.get("catalog_version") not in (5, 6):
+        if self._index.get("catalog_version") not in (5, 6, 7):
             raise DataError(f"unsupported HF catalog version: {self._index.get('catalog_version')!r}")
-        if self._index.get("dataset_id") != repo_id:
+        catalog_repo = self._index.get("dataset_id")
+        if catalog_repo != repo_id and not (catalog_repo in _DATASET_ALIASES and repo_id in _DATASET_ALIASES):
             raise DataError(
                 f"HF catalog dataset_id {self._index.get('dataset_id')!r} does not match requested repo {repo_id!r}"
             )

@@ -62,7 +62,7 @@ jobs:
             }
             const requestedHf = process.env.HF_REVISION || 'main';
             if (requestedHf !== 'main' && !/^[0-9a-f]{40}$/.test(requestedHf)) throw new Error('HF revision must be a full commit SHA');
-            const hf = await fetch(`https://huggingface.co/api/datasets/nvidia/aisimulate-fpm-dataset/revision/${requestedHf}`);
+            const hf = await fetch(`https://huggingface.co/api/datasets/nvidia/aisim-dataset/revision/${requestedHf}`);
             if (!hf.ok) throw new Error('Cannot resolve HF dataset revision');
             const hfRevision = (await hf.json()).sha;
             if (!/^[0-9a-f]{40}$/.test(hfRevision || '')) throw new Error('Invalid HF revision');

@@ -493,3 +493,45 @@ A workflow dry run does not rerun predictors. Use the deterministic tests in
 `tests/fpm_accuracy/test_digest.py` to exercise regressions, coverage losses,
 changed datasets, missing runs, daylight-saving cutoffs, deduplication, and
 interrupted thread delivery without sending fake alarms to Slack.
+
+## InferenceX HF intake
+
+`scripts/e2e_accuracy/hf_cache.py` provides the library for the initial cache in
+a separately configured private HF dataset. The public `nvidia/aisim-dataset`
+(renamed from `nvidia/aisimulate-fpm-dataset`) holds developer-collected evidence
+and no InferenceX cache or private-source index. The private intake preserves
+full API responses and partitions observation/metric Parquet files by source
+model, hardware, and framework. Content-addressed files are reused across weekly
+refreshes; unchanged input produces the same snapshot. Corrections replace only
+affected partitions. Existing snapshot manifests retain their original files.
+
+The intake schemas `inferencex-observations-v1`, `inferencex-metrics-v1`, and
+`inferencex-input-snapshot/v1` describe archival source evidence. They are not the
+DEP's complete `aisim-e2e/v2` Replay qualification contract. Full effective
+configuration resolution, legacy cohort parity, developer adapters, and evaluator
+cutover remain separate steps. API current-model views define the initial scope;
+this is not a claim to include every historical run or reproduce the old dump
+cohort. Original source configuration IDs stay null when the API omits them.
+Queried/inherited curve metadata stays in raw responses and never replaces the
+actual producer identity. Unknown metric keys remain in the raw record.
+
+Known latency statistics convert seconds to milliseconds. Missing values remain
+null, zero remains zero, and per-device throughput is not turned into deployment
+throughput. The API does not establish every timing boundary; intake does not
+certify those rows for accuracy qualification. No prediction output is stored.
+
+Discovery is `catalog/e2e/index.json`, then the source index and pinned snapshot.
+Read only selected partition artifacts and verify their hashes. The mutable HTTP
+cache supports conditional requests and bounded retries; evaluators must use a
+frozen snapshot rather than refreshing upstream during comparison.
+
+FPM readers accept catalog versions 5, 6, and 7 and the two explicit names of this
+renamed repository. Old pinned revisions retain their original paths and identity.
+Other repository identities remain strict. FPM manifests under `data/fpm/` retain
+the existing measurement contracts; E2E artifacts do not enter FPM evaluation.
+
+The weekly/manual InferenceX worker runs in internal GitLab and installs the
+hashed `scripts/e2e_hf_cache/requirements.txt` dependency lock. Public GitHub CI
+receives no private cache credentials and does not consume this source. API data
+retains InferenceX attribution and the upstream request for data terms; the data
+license remains unconfirmed. The publisher rejects public target repositories.

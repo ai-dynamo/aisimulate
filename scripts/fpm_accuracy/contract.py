@@ -12,7 +12,8 @@ from datetime import datetime
 from pathlib import PurePosixPath
 
 REPO = "ai-dynamo/aisimulate"
-HF_REPO = "nvidia/aisimulate-fpm-dataset"
+HF_REPO = "nvidia/aisim-dataset"
+HF_REPO_ALIASES = frozenset((HF_REPO, "nvidia/aisimulate-fpm-dataset"))
 # Evaluations before the learned method publish LEGACY_METHODS; both remain valid.
 LEGACY_METHODS = ("warmup", "nowarmup", "regression")
 METHODS = (*LEGACY_METHODS, "learned")
@@ -99,7 +100,7 @@ def validate_summary(summary):
     for name in ("commit_sha", "hf_revision", "evaluator_sha"):
         sha(snapshot[name])
     sha(snapshot["wheel_sha256"], 64)
-    require(snapshot["hf_repo"] == HF_REPO and snapshot["complete"] is True, "incomplete campaign")
+    require(snapshot["hf_repo"] in HF_REPO_ALIASES and snapshot["complete"] is True, "incomplete campaign")
     for name in ("run_id", "run_attempt"):
         require(
             isinstance(snapshot[name], str) and re.fullmatch(r"[1-9][0-9]*", snapshot[name]), "invalid run identity"

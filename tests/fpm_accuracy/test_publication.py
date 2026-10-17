@@ -298,3 +298,12 @@ def test_summary_methods_accept_legacy_and_learned_lists(summary):
     with_input["rows"][0]["results"]["learned"]["artifact"] = with_input["rows"][0]["results"]["warmup"]["artifact"]
     with pytest.raises(ValueError, match="learned has no FPM input"):
         validate_summary(with_input)
+
+
+@pytest.mark.parametrize("repo_id", ["nvidia/aisim-dataset", "nvidia/aisimulate-fpm-dataset"])
+def test_summary_accepts_dataset_rename(summary, repo_id):
+    summary["snapshot"]["hf_repo"] = repo_id
+    validate_summary(summary)
+    summary["snapshot"]["hf_repo"] = "another/dataset"
+    with pytest.raises(ValueError, match="incomplete campaign"):
+        validate_summary(summary)

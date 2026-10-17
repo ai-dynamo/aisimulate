@@ -12,7 +12,7 @@ import zipfile
 
 from scripts.fpm_accuracy.contract import (
     COUNTS,
-    HF_REPO,
+    HF_REPO_ALIASES,
     LEGACY_METHODS,
     keys,
     require,
@@ -243,7 +243,9 @@ def validate_details(details, summary):
 def validate_visualization(files, revision, summary=None):
     manifest = strict_json(files["manifest.json"])
     require(
-        manifest["schema_version"] == 1 and manifest["hf_revision"] == revision and manifest["repo_id"] == HF_REPO,
+        manifest["schema_version"] == 1
+        and manifest["hf_revision"] == revision
+        and manifest["repo_id"] in HF_REPO_ALIASES,
         "visualization identity mismatch",
     )
     require(set(files) == {*manifest["files"], "manifest.json", "qualification.json"}, "unexpected visualization files")
@@ -272,7 +274,7 @@ def validate_visualization(files, revision, summary=None):
     catalog = strict_json(files["catalog.json"])
     require(
         catalog["hf_revision"] == revision
-        and catalog["repo_id"] == HF_REPO
+        and catalog["repo_id"] in HF_REPO_ALIASES
         and catalog["policy"] == manifest["policy"],
         "wrong visualization catalog",
     )

@@ -18,6 +18,7 @@ the repository root unless a script documents another working directory.
 | `release/` | Wheel/artifact builds, version stamping, release migration gates, and installed CLI checks |
 | `readme/` | README command checks and their reports |
 | `e2e_accuracy/` | E2E dataset acquisition, prediction campaigns, and summary generation |
+| `e2e_hf_cache/` | Dependency lock for private InferenceX intake in `e2e_accuracy/` |
 | `fpm_accuracy/` | FPM dataset preparation, prediction campaigns, and shared FPM contracts |
 | `fpe/` | FPE support-matrix and release qualification |
 | `pages/` | Qualified artifact selection, site assembly, and browser checks |

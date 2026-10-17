@@ -1677,3 +1677,17 @@ def test_unknown_protocol_with_truth_stays_visible_without_guessing_parser(tmp_p
     case = dataset.measurement_case(CONFIGURATION_PATH)
     assert case.status == "unsupported_protocol" and not case.observations
     assert len(case.truth_files) == 1
+
+
+@pytest.mark.parametrize("repo_id", ["nvidia/aisim-dataset", "nvidia/aisimulate-fpm-dataset"])
+@pytest.mark.parametrize("catalog_id", ["nvidia/aisim-dataset", "nvidia/aisimulate-fpm-dataset"])
+def test_dataset_rename_preserves_pinned_catalogs(tmp_path, repo_id, catalog_id):
+    _build_dataset(tmp_path, protocol_id=None, files=[])
+    path = tmp_path / "catalog/index.json"
+    index = json.loads(path.read_text())
+    index.update(catalog_version=7, dataset_id=catalog_id)
+    _write_json(path, index)
+    dataset = HfDataset.from_local(tmp_path, revision=REVISION, repo_id=repo_id)
+    assert len(dataset.configurations()) == 1
+    with pytest.raises(DataError, match="does not match"):
+        HfDataset.from_local(tmp_path, revision=REVISION, repo_id="another/dataset")
