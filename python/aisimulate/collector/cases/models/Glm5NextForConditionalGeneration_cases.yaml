@@ -76,11 +76,10 @@ model_case_values:
       # under get_platform().is_sm100). On SM90 the runner stays auto and
       # Fp8MoEMethod.create_moe_runner resolves it to TRITON without a
       # deepep/mooncake/nixl a2a backend (layers/quantization/fp8.py:1188-1210,
-      # 2501-2512 @v0.5.20). Observed serving dispatch: H200 TP4, amd64 image
-      # b27fce60, moe_runner_backend auto -> triton fused MoE fp8_w8a8 block
-      # [128, 128] with the default kernel config (no tuned H200 json), job
-      # 4955570 (glm53flash-multigpu run-h200/evidence/sglang-sm90-moe). The
-      # block-FP8 default config is independent of E and M
+      # 2501-2512 @v0.5.20). Observed SGLang 0.5.20 SM90 serving dispatch
+      # (H200, TP4, auto MoE runner, amd64 image b27fce60): triton fused MoE
+      # fp8_w8a8 block [128, 128] with the default kernel config (no tuned
+      # H200 json). The block-FP8 default config is independent of E and M
       # (moe_runner/triton_utils/fused_moe_triton_config.py:236-245).
       # Known modelling deviation (owner decision, not reproduced): SM90
       # serving fuses the shared expert into the routed Triton MoE (E=289,

@@ -103,7 +103,7 @@ def test_sglang_moe_rows_carry_serving_routing_and_pure_tp(monkeypatch, model_pa
         assert backends[mode][103] == "flashinfer_trtllm"
         assert get_sglang_moe_backend(case, mode, 100) == "flashinfer_trtllm"
         if model_path == FP8:
-            # Observed SGLang 0.5.20 SM90 serving dispatch (H200 job 4955570).
+            # Observed SGLang 0.5.20 SM90 serving dispatch (H200, TP4, auto MoE runner).
             assert backends[mode][90] == "triton"
             assert get_sglang_moe_backend(case, mode, 90) == "triton"
 
