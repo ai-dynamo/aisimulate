@@ -905,7 +905,7 @@ impl WorkloadDriver {
             start_ms: None,
             last_advanced_ms: 0.0,
             cutoff: false,
-            cursor: u64::try_from(snapshots.len())?,
+            cursor: context.initial_corpus_cursor(),
             active_plays,
             next_ordinals,
             replacements_at_ms: (None, 0),
@@ -4968,7 +4968,7 @@ mod tests {
         )
         .unwrap();
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         // Tests start at the source origin, independently of initial cut sampling.
         let plays = (0..lanes)

@@ -24,10 +24,32 @@ use crate::replay::AgenticRuntimeIdentity;
 
 pub const AGENTIC_SNAPSHOT_SCHEMA_V1: &str = "aisimulate.agentic.snapshot.v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgenticSnapshotSelection {
+    pub source_play_id: String,
+    pub t_star_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgenticSnapshotOptions {
     pub seed: u64,
+    /// Exact, externally sampled cuts in lane order. Unset preserves v1 draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_selections: Option<Vec<AgenticSnapshotSelection>>,
+    /// Next draw from the shared sequential corpus sampler, including skipped draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corpus_cursor: Option<u64>,
+}
+
+impl AgenticSnapshotOptions {
+    pub fn seeded(seed: u64) -> Self {
+        Self {
+            seed,
+            ..Self::default()
+        }
+    }
 }
 
 /// Recorded provenance and the independent benchmark request boundary.
@@ -80,6 +102,7 @@ pub struct AgenticReplayContext {
     graph_identity: AgenticGraphIdentity,
     pub(super) lanes: usize,
     seed: u64,
+    initial_corpus_cursor: u64,
     index_by_id: FxHashMap<String, usize>,
     node_to_play: Vec<usize>,
     topological_rank: Vec<usize>,
@@ -128,6 +151,18 @@ impl ValidatedAgenticGraph {
     ) -> Result<PreparedAgenticSnapshots> {
         if lanes == 0 || self.plays.is_empty() {
             bail!("agentic snapshots require positive lanes and a nonempty corpus");
+        }
+        match (&options.initial_selections, options.corpus_cursor) {
+            (Some(selections), Some(cursor)) => {
+                if selections.len() != lanes {
+                    bail!("initial_selections must contain exactly one selection per lane");
+                }
+                if cursor < lanes as u64 {
+                    bail!("corpus_cursor cannot precede the initial lane draws");
+                }
+            }
+            (None, None) => {}
+            _ => bail!("initial_selections and corpus_cursor must be specified together"),
         }
         let index_by_id = self
             .nodes
@@ -222,6 +257,7 @@ impl ValidatedAgenticGraph {
             graph: self,
             lanes,
             seed: options.seed,
+            initial_corpus_cursor: options.corpus_cursor.unwrap_or(lanes as u64),
             outputs,
             index_by_id,
             node_to_play,
@@ -229,9 +265,36 @@ impl ValidatedAgenticGraph {
             recorded_intervals,
             token_stride,
         });
-        let plays = (0..lanes)
-            .map(|lane| context.prepare_play(lane, 0, None))
-            .collect::<Result<Vec<_>>>()?;
+        let plays = if let Some(selections) = options.initial_selections {
+            let play_by_id = context
+                .graph
+                .plays
+                .iter()
+                .enumerate()
+                .map(|(index, play)| (play.play_id.as_str(), index))
+                .collect::<FxHashMap<_, _>>();
+            selections
+                .into_iter()
+                .enumerate()
+                .map(|(lane, selection)| {
+                    let source = *play_by_id
+                        .get(selection.source_play_id.as_str())
+                        .with_context(|| {
+                            format!("unknown snapshot source play {}", selection.source_play_id)
+                        })?;
+                    context.prepare_play_with_cut(
+                        lane,
+                        0,
+                        PlayCut::Absolute(selection.t_star_ms),
+                        Some(source),
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            (0..lanes)
+                .map(|lane| context.prepare_play(lane, 0, None))
+                .collect::<Result<Vec<_>>>()?
+        };
         PreparedAgenticSnapshots::from_plays(plays)
     }
 }
@@ -259,6 +322,10 @@ impl AgenticReplayContext {
     }
     pub fn lane_count(&self) -> usize {
         self.lanes
+    }
+
+    pub fn initial_corpus_cursor(&self) -> u64 {
+        self.initial_corpus_cursor
     }
 
     /// Prepare a deterministic corpus-cycle instance. `None` samples an initial

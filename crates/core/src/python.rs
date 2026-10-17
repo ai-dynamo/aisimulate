@@ -1553,7 +1553,7 @@ fn build_agentic_driver(
             .agentic_lanes
             .context("agentic_snapshot requires positive agentic_lanes")?;
         // Sample recorded time before applying speedup to remaining timers.
-        let prepared = graph.into_prepared_snapshots(lanes, *options)?;
+        let prepared = graph.into_prepared_snapshots(lanes, options.clone())?;
         let mut driver = if traffic.agentic_warmup {
             WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
         } else {

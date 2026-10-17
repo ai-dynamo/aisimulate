@@ -404,6 +404,12 @@ class Workload(BaseModel):
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if self.agentic_snapshot is not None and self.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
+        if (
+            self.agentic_snapshot is not None
+            and self.agentic_snapshot.initial_selections is not None
+            and len(self.agentic_snapshot.initial_selections) != self.agentic_lanes
+        ):
+            raise ValueError("initial_selections must contain exactly one selection per lane")
         if self.agentic_lanes is not None:
             if (
                 self.trace_path is None

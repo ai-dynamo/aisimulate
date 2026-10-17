@@ -71,7 +71,9 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
-| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
+| `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane. Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
+| `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
@@ -275,7 +277,7 @@ traffic:
 | Control | Without it | With it |
 | --- | --- | --- |
 | `agentic_lanes` | Every play starts at its authored timestamp. | At most `N` plays run at once. |
-| `agentic_snapshot` | Each play starts at turn zero. | Each lane starts from a sampled point inside its play. |
+| `agentic_snapshot` | Each play starts at turn zero. | Each lane starts from a sampled or imported exact cut inside its play. |
 | `agentic_warmup` | Measurement starts with cold caches. | Caches are primed before measurement starts. |
 | `agentic_profile` | The run ends when the selected plays finish. | Lanes keep taking new plays until a deadline. |
 
@@ -332,6 +334,65 @@ integer.
 A snapshot is cut at request boundaries. It does not model partial decode
 progress or restore an engine checkpoint: without warmup, the caches start
 empty.
+
+For a reference run, matching the seed alone is insufficient: AISimulate's
+versioned BLAKE3 sampler is not AIPerf's NumPy sampler. Import the actual cuts
+and next sequential corpus position instead:
+
+```yaml
+agentic_snapshot:
+  seed: 42
+  initial_selections:
+    - source_play_id: "<source_play_id from the normalized corpus>"
+      t_star_ms: 40560.78627883167
+  corpus_cursor: 1
+```
+
+`initial_selections` and `corpus_cursor` must be supplied together, with exactly
+one selection per lane and a cursor at least as large as the selection count.
+Selections are in lane order. Each source ID must exist in the exact input
+corpus and each cut must lie within that play's request-start bounds. Cuts
+are in source milliseconds, before `speedup`; they are never re-sampled or
+silently replaced. Repeated source plays still get distinct lane/cache
+identities. Preserve the source corpus bytes/order, reference revision and
+selection artifact alongside the replay configuration.
+
+The sequential cursor counts source draws, not completed requests or unique
+plays; it can exceed the initial lane count when the reference skipped a
+source. After a tree drains, the shared cursor selects the next source play
+and starts it at turn zero, with a fresh cache identity. This matches the
+sequential-sampler recycling contract of
+[AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py).
+Random/shuffle recycling is not implemented by this import. Initial cuts do
+not import an engine checkpoint, tokenizer/chat-template bytes, or a
+post-warmup frontier; the warmup policy below remains unchanged.
+
+To produce selections without manually computing cuts, run the optional exporter
+in the **pinned AIPerf environment** (its existing dependencies are required):
+
+```bash
+python scripts/prediction_regression/export_agentx_snapshots.py \
+  --aiperf-source /path/to/aiperf-at-754356e9 \
+  --metadata reference-dataset-metadata.json \
+  --source-play-map source-play-map.json --lanes 15 --seed 42 \
+  > snapshot-options.json 2> snapshot-provenance.jsonl
+```
+
+`reference-dataset-metadata.json` is the reference loader's
+`DatasetMetadata.model_dump_json()` output, with every conversation, branch,
+and timestamp retained. `source-play-map.json` maps each root
+`conversation_id` from that metadata to its normalized AISimulate
+`source_play_id` (as recorded in `agentic_snapshots`). The root order in the
+metadata must match the replay corpus order and each root mapping must identify
+the corresponding source play; do not sort either input. The importer validates
+IDs and cut bounds, but cannot infer or verify reference corpus order from a
+cursor alone. A wrong mapping/order is not a valid parity comparison.
+Paste the emitted JSON object under `traffic.load.agentic_snapshot`.
+The exporter verifies the source revision and clean source tree, invokes the
+reference `TrajectorySource` directly, and records input hashes and corpus
+order on stderr. It fails on unsupported samplers, timestamp-less trajectories,
+or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISimulate
+runtime dependency.
 
 <a id="agentic-warmup"></a>
 
@@ -403,7 +464,7 @@ aisimulate predict --config examples/cli/agentic-profile.yaml \
 
 | Section | Contents |
 | --- | --- |
-| `agentic_snapshots` | Seed, sampled cut, history and remaining timers for each initial lane |
+| `agentic_snapshots` | Seed, sampled or imported exact cut, history and remaining timers for each initial lane |
 | `agentic_phases` | Preparation requests, barrier state and time (`profile_start_ms`) |
 | `agentic_play_outcomes` | Each play's terminal status (`completed`, `failed` or `incomplete`) and times |
 | `agentic_profile` | Resolved profile options, deadline, recycled plays, canceled and never-issued requests, unsettled server work |

@@ -13,6 +13,25 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## AIPerf AgentX snapshot oracle
+
+The reference sampling vectors and recycling contract in repository-root
+`crates/core/src/replay/loadgen/snapshot_tests.rs` and
+`docs/replay/workloads.md`, plus the invocation contract in
+`scripts/prediction_regression/export_agentx_snapshots.py`, are derived from
+`src/aiperf/timing/trajectory_source.py` and
+`src/aiperf/timing/strategies/agentic_replay.py` in SemiAnalysisAI/aiperf at
+commit `754356e9a39acc6cc6afb242d123bb57c3fb6f75`:
+https://github.com/SemiAnalysisAI/aiperf/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0. The upstream license is at
+https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE
+and the full license is included in this repository as `LICENSE`.
+Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
+to freeze expected cuts, and documented its sequential recycling behavior.
+No upstream implementation is vendored; AISimulate consumes explicit cuts.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
