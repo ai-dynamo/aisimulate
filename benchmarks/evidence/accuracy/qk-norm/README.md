@@ -139,3 +139,47 @@ The refreshed Qwen3.8 vLLM records also contain four pre-existing discrepancies:
 build of the original source and the corrected release return identical prefill
 values. The audit retains both values and the old goldens; these small shifts
 are unrelated to the decode correction.
+
+
+For batch 1 and KV length 576, the paired decode-step predictions are:
+
+| Model | Before (ms) | After (ms) |
+| --- | ---: | ---: |
+| Qwen3-8B | 6.005822 | 5.055422 |
+| Qwen3-0.6B | 2.280446 | 1.541246 |
+
+All 12 pairs retain the same nearest-table references and source tags. The
+change in total decode prediction equals the generation-attention change.
+These are CPU-computed predictions from unchanged GPU profiles.
+
+The official refresh updates 119 engine-step records, 21 compile-engine
+references and five per-op cases. Of the 119 engine-step records, 118 change
+numerically; the rounded AFD control remains identical to the original
+baseline. The source revision for the final model and all refreshed records is
+`88a4f8b40ee7370174e5c6ef13304d418a056432`.
+
+Final validation on that implementation (with the refreshed goldens):
+
+```bash
+cargo test -p aisimulate-core --lib perfmodel::operators
+# 318 passed
+
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisimulate/tests/unit/sdk/database/test_attention_lanes.py \
+  python/aisimulate/tests/unit/sdk/test_forward_pass_speculation.py \
+  python/aisimulate/tests/cross_package/test_single_oracle_contract.py
+# 100 passed
+
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  python/aisimulate/tests/unit/sdk/test_rust_engine_step.py -k canonical
+# 26 passed, 65 deselected
+
+python/aisimulate/.venv/bin/python -m pytest -q -n 4 -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+# 390 passed
+```
+
+Rust formatting, repository Ruff checks/formatting, documentation links,
+copyright, packaged legal files and generated CODEOWNERS checks also passed
+locally. Hosted CI and independent reviews are separate PR gates.
