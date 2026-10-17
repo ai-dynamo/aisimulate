@@ -11,9 +11,15 @@
 //! wraps the raw `AttentionTable` query with:
 //!
 //! - prefix correction `(full_s² − prefix²) / full_s²` for context paths
-//! - fused-op extras: context qk_norm / apply_rope (optional), kv_write; and
-//!   generation qk_norm (optional), via the analytic `mem_op` formula
-//! - 1.1× correction factor on the extras (matches Python)
+//! - context extras: optional qk_norm / apply_rope and kv_write, via the
+//!   analytic `query_mem_op` formula
+//! - optional generation Q/K normalization as bandwidth-only traffic through
+//!   `query_mem_traffic`: four BF16 memory passes over local Q/K heads before
+//!   the DCP gather, scaled by `seq_batch * max(verify_query_tokens, 1)` actual
+//!   new query tokens and the head size. This uses effective empirical
+//!   bandwidth (peak bandwidth for SOL / SOL_FULL), with no generic memory-op
+//!   intercept or assumed fixed backend kernel count
+//! - 1.1× correction factor on the extras, including generation Q/K traffic
 //! - `seq_imbalance_correction_scale` / `gen_seq_imbalance_correction_scale`
 //!   multiplier for unbalanced sequence distributions
 //! - `scale_factor` scaling at the end
