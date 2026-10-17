@@ -67,6 +67,29 @@ pub struct ForwardPassSpeculationConfig {
 }
 
 impl ForwardPassSpeculationConfig {
+    /// Validate this cost identity against replay's supported linear draft depth.
+    /// Algorithm-specific validation remains owned by the SDK scheme registry.
+    pub fn replay_depth(&self) -> Result<u32, AicError> {
+        #[cfg(feature = "python")]
+        {
+            crate::py::speculation_replay_depth(self)
+        }
+        #[cfg(not(feature = "python"))]
+        match self.kind.as_str() {
+            "none"
+                if self.params.is_empty()
+                    && self.draft_model_path.is_none()
+                    && self.draft_config.is_none() =>
+            {
+                Ok(0)
+            }
+            "ngram" => self.ngram_depth(),
+            _ => Err(invalid_config(
+                "generic speculative replay requires the python feature",
+            )),
+        }
+    }
+
     /// Preserve the existing prompt-lookup contract for canonical and replay callers.
     pub(crate) fn ngram_depth(&self) -> Result<u32, AicError> {
         if self.kind != "ngram" {

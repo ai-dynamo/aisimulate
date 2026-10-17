@@ -425,7 +425,7 @@ impl AicTimingConfig {
                     speculation.kind
                 ),
             }
-            return Ok(crate::py::speculation_replay_depth(speculation)?);
+            return Ok(speculation.replay_depth()?);
         }
         Ok(self.nextn)
     }
