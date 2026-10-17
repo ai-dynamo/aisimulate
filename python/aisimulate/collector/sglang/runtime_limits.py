@@ -153,8 +153,14 @@ def sglang_dsa_mqa_logits_chunking_supported() -> bool:
 
 
 def dsa_indexer_prefill_shape_is_supported(batch_size: int, seq_len: int) -> bool:
-    """Return whether SGLang's DSA prefill indexer supports this query shape."""
-    return batch_size > 0 and seq_len > 1
+    """Validate dimensions without inferring the native forward mode.
+
+    A one-token EXTEND remains prefill. SGLang 0.5.14's native TC runner
+    bucket-pads it (49e384ce, prefill_cuda_graph_runner.py:480-524), and its
+    DSA backend selects the sparse path in that context. The old eager-only
+    failure does not establish a native prefill graph exclusion.
+    """
+    return batch_size > 0 and seq_len > 0
 
 
 def dsa_indexer_total_kv_tokens_supported(
