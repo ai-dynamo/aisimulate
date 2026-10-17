@@ -1518,43 +1518,144 @@ pub(crate) mod tests {
     }
 
     fn sparse_tree(version: &str) -> tempfile::TempDir {
-        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let root = tempfile::tempdir().unwrap();
+        sparse_table(
+            root.path(),
+            "gb300",
+            "vllm",
+            version,
+            &[attention("sparse_mla")],
+        );
+        root
+    }
+
+    /// External systems root fixture: the packaged system YAML plus one GLM
+    /// attention table with rows (B=2, prefix 0, x 512/4096) per geometry.
+    fn sparse_table(
+        root: &std::path::Path,
+        system: &str,
+        backend: &str,
+        version: &str,
+        ops: &[Glm53AttentionOp],
+    ) {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../python/aisimulate/src/aisimulate_core/systems");
-        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let yaml = format!("{system}.yaml");
+        std::fs::copy(systems.join(&yaml), root.join(&yaml)).unwrap();
         let dir = root
-            .path()
-            .join("data/gb300/glm53_attention/vllm")
+            .join(format!("data/{system}/glm53_attention/{backend}"))
             .join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        let geometry: &'static str =
-            crate::perf_database::glm53flash::geometry(&attention("sparse_mla"))
-                .unwrap()
-                .leak();
+        let n = 2 * ops.len();
+        let geometry: Vec<&'static str> = ops
+            .iter()
+            .flat_map(|op| {
+                let g: &'static str = crate::perf_database::glm53flash::geometry(op)
+                    .unwrap()
+                    .leak();
+                [g, g]
+            })
+            .collect();
         let sha: &'static str = "a".repeat(64).leak();
         let digest: &'static str = format!("sha256:{sha}").leak();
         write_parquet(
             &dir.join(crate::perf_database::glm53flash::BASENAME),
             &[
-                Col::Str("component", vec!["attention"; 2]),
-                Col::Str("geometry", vec![geometry; 2]),
-                Col::I64("batch_size", vec![2; 2]),
-                Col::I64("prefix", vec![0; 2]),
-                Col::I64("x", vec![512, 4096]),
-                Col::F64("latency", vec![1.5, 9.0]),
-                Col::Str("kernel_source", vec!["glm53_sparse_mla"; 2]),
-                Col::Str("measurement_scope", vec!["local_compute"; 2]),
-                Col::Str("source_sha256", vec![sha; 2]),
-                Col::Str("config_sha256", vec![sha; 2]),
-                Col::Str("runtime_digest", vec![digest; 2]),
-                Col::Bool("used_cuda_graph", vec![false; 2]),
-                Col::I64("sample_count", vec![5; 2]),
-                Col::Str("kv_seed_regime", vec!["n/a"; 2]),
-                Col::Str("execution_profile", vec!["full"; 2]),
+                Col::Str("component", vec!["attention"; n]),
+                Col::Str("geometry", geometry),
+                Col::I64("batch_size", vec![2; n]),
+                Col::I64("prefix", vec![0; n]),
+                Col::I64("x", [512, 4096].repeat(ops.len())),
+                Col::F64("latency", [1.5, 9.0].repeat(ops.len())),
+                Col::Str("kernel_source", vec!["glm53_sparse_mla"; n]),
+                Col::Str("measurement_scope", vec!["local_compute"; n]),
+                Col::Str("source_sha256", vec![sha; n]),
+                Col::Str("config_sha256", vec![sha; n]),
+                Col::Str("runtime_digest", vec![digest; n]),
+                Col::Bool("used_cuda_graph", vec![false; n]),
+                Col::I64("sample_count", vec![5; n]),
+                Col::Str("kv_seed_regime", vec!["n/a"; n]),
+                Col::Str("execution_profile", vec!["full"; n]),
             ],
         );
-        root
+    }
+
+    #[test]
+    fn multi_system_tp8_rows_resolve_by_exact_kv_identity() {
+        const RUNTIME: &str = "0.5.20";
+        // SGLang FP8 checkpoint TP8 on Hopper (BF16 KV) and Blackwell (FP8 KV).
+        let deployment = |kv: KvCacheQuantMode| {
+            let mut op = attention("sparse_mla");
+            op.backend = "sglang".into();
+            op.checkpoint_format = "fp8".into();
+            op.projection_quant_mode = GemmQuantMode::Fp8Block;
+            op.tp_size = 8;
+            op.num_heads = 8;
+            op.kv_cache_dtype = kv;
+            op
+        };
+        let c = ctx(2, 512, 0, true);
+        for (system, kv, other) in [
+            (
+                "h100_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "h200_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "b300_sxm",
+                KvCacheQuantMode::Fp8,
+                KvCacheQuantMode::Bfloat16,
+            ),
+            ("gb200", KvCacheQuantMode::Fp8, KvCacheQuantMode::Bfloat16),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            sparse_table(root.path(), system, "sglang", RUNTIME, &[deployment(kv)]);
+            let db = PerfDatabase::load_resolved(
+                root.path(),
+                system,
+                "sglang",
+                RUNTIME,
+                true,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+            let hit = deployment(kv).query(&db, &c).unwrap();
+            assert_eq!(
+                (hit.latency_ms, hit.source),
+                (1.5, Source::Silicon),
+                "{system}"
+            );
+            // The other KV identity is a coverage gap, never a borrowed row.
+            assert!(deployment(other).query(&db, &c).is_err(), "{system}");
+        }
+        // One table never mixes the two KV identities.
+        let root = tempfile::tempdir().unwrap();
+        let ops = [
+            deployment(KvCacheQuantMode::Fp8),
+            deployment(KvCacheQuantMode::Bfloat16),
+        ];
+        sparse_table(root.path(), "h200_sxm", "sglang", RUNTIME, &ops);
+        let db = PerfDatabase::load_resolved(
+            root.path(),
+            "h200_sxm",
+            "sglang",
+            RUNTIME,
+            true,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        let err = ops[1].query(&db, &c).unwrap_err();
+        assert!(err.to_string().contains("mixes FP8 and BF16"), "{err}");
     }
 
     #[test]
