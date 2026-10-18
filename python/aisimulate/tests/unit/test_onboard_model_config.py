@@ -1745,6 +1745,9 @@ def _stops_with_guidance(command, capsys):
     captured = capsys.readouterr()
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
+    # Every stop warns that observation import cannot take recurrent-state cache groups yet.
+    assert "Importing recurrent-state cache groups is not supported yet." in captured.err
+    assert "Import reports such probes as incomplete." in captured.err
     return captured.out, captured.err
 
 
@@ -1773,7 +1776,7 @@ def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, ca
     # The reasons, the next step and the guide anchor.
     assert "linear_attention x34" in stderr and "onboard probe-runtime" in stderr
     assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
-    assert "implementation.md#resolve-cache-geometry-with-a-runtime-probe" in stderr
+    assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
     # No user-owned input is left, and geometry is never a user input.
     assert "fmha_quant_mode" not in stderr and "Unresolved profile fields" not in stderr
     assert "--resource-overrides" not in stderr
@@ -1791,6 +1794,10 @@ def test_runtime_resolved_suggestions_still_print(tmp_path, capsys):
         assert "onboard probe-runtime" in candidate["pending_runtime"]["cache_geometry"]
         reasons = " ".join(candidate["reasons"])
         assert "pending the runtime probe" in reasons and "geometry checks passed" not in reasons
+    # The shared assumptions must not claim a cache-fit check that the candidate reasons say was not made.
+    assumptions = " ".join(report["assumptions"])
+    assert "Cache fit is not assessed until onboard probe-runtime measures the cache geometry." in assumptions
+    assert "full search.context_length request" not in assumptions
     assert not out.exists()
 
 
@@ -1811,6 +1818,10 @@ def test_runtime_resolved_automatic_topology_stops_with_probe_guidance(tmp_path,
     command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), *_glm_precision(tmp_path), "--output", str(out)]
     stdout, stderr = _stops_with_guidance(command, capsys)
     assert not out.exists()
+    # What init resolved is printed first, with its sources, as on the explicit-topology route.
+    assert "Profile inputs" in stdout and "kv_cache_dtype: fp8 (source: user override" in stdout
+    # This preview has no request, so its default scheduler limits must not pass as the user's bounds.
+    assert "initial vLLM collection policy" not in stdout
     assert "onboard probe-runtime" in stderr and "explicit topology" in stderr
     # Geometry is not an input, so no --resource-overrides advice, and no default topology claims a fit.
     assert "--resource-overrides" not in stderr and "No fully assessed topology default" not in stderr

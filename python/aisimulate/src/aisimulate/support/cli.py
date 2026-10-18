@@ -67,10 +67,10 @@ def add_support_parser(subparsers: Any) -> None:
         help="Declare a model, target hardware, worker topology, and FPM collection limits.",
         description=(
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
-            "supply unresolved profile fields with --resource-overrides. Cache layouts that config.json cannot "
-            "establish, such as linear-attention or recurrent state, are resolved by onboard probe-runtime: setup "
-            "stops with guidance and writes nothing. Otherwise scripted setup requires "
+            "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --gpu, and --interconnect. "
+            "Cache layouts that config.json cannot establish, such as linear-attention or recurrent state, are "
+            "resolved by onboard probe-runtime: setup stops with guidance and writes nothing. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
             "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
             "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
@@ -852,7 +852,14 @@ def _topology_summary(suggestions: TopologySuggestions) -> str:
     return "\n".join(lines)
 
 
-_PROBE_GUIDE = "docs/perf-model/fpm-self-service/implementation.md#resolve-cache-geometry-with-a-runtime-probe"
+def _print_profile_inputs(draft: ProfileDraft, *, skip: tuple[str, ...] = ()) -> None:
+    print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
+    for name, value in draft.resolved.items():
+        if name not in skip:
+            print(f"  {name}: {value} (source: {draft.sources[name]})")
+
+
+_PROBE_GUIDE = "docs/perf-model/fpm-self-service/implementation.md#cache-geometry-pending-the-runtime-probe"
 
 
 def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None) -> str:
@@ -874,6 +881,9 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None) -> str:
     )
     if shortlist is not None:
         lines.append("The probe takes an explicit topology: record one of the starting points above, or your own.")
+    lines.append(
+        "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+    )
     lines.append("Nothing was saved.")
     return "\n".join(lines)
 
@@ -921,6 +931,8 @@ def _select_topologies(
     summary = _topology_summary(suggestions)
     # Pending geometry is topology-independent: no candidate can be chosen into a saved request.
     if (pending := derive_profile(config, None, overrides)).pending_runtime:
+        # This preview has no request, so its scheduler limits are policy defaults, not the user's bounds.
+        _print_profile_inputs(pending, skip=("max_num_tokens", "max_batch_size"))
         raise ValueError(_probe_guidance(pending, summary))
     if not suggestions.candidates or (not args.interactive and suggestions.default is None):
         raise ValueError(
@@ -995,9 +1007,7 @@ def _complete_config_request(
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
             continue
-        print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
-        for name, value in draft.resolved.items():
-            print(f"  {name}: {value} (source: {draft.sources[name]})")
+        _print_profile_inputs(draft)
         if draft.pending_runtime and not args.interactive:
             raise ValueError(_probe_guidance(draft))
         if draft.missing and not args.interactive:

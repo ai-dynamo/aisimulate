@@ -457,7 +457,7 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 | DEP8 | `--tensor-parallel 1 --attention-data-parallel 8 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(1, 1, 8, 1, 8, 1)` |
 | TEP8 | `--tensor-parallel 8 --attention-data-parallel 1 --moe-tensor-parallel 1 --moe-expert-parallel 8` | `(8, 1, 1, 1, 8, 1)` |
 
-The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Linear-attention and recurrent state are not supported yet: config intake leaves their [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe), and runtime import does not yet accept their cache groups.
+The profile route supports vLLM text decoders, including the text portion of multimodal checkpoints, and linear or grouped cache storage. Its current parallelism constraints are listed below. Groups describe full attention, sliding-window attention and supported short-convolution state. Grouped execution currently requires cold aggregated workers, HBM-only cache, no speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3 offload, disaggregation and scalar cache-capacity overrides are rejected for grouped profiles. AFD, encoder pools, wide EP and EPLB remain outside this route. Config intake does not derive cache geometry for linear-attention or recurrent state. It leaves that [cache geometry pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Runtime observation import does not accept their cache groups yet. The measured Kimi K3 profile route in the table below is not affected.
 
 ### Parallelism support and guided CLI coverage
 
@@ -662,15 +662,15 @@ makes a layout pending:
   `linear_conv_kernel_dim`, `linear_attn_config`, `ssm_state_size` or
   `mamba_num_heads`;
 - an architecture name containing `mamba`, `jamba` or `rwkv` in any letter case,
-  including one supplied by an `architecture` resource override;
+  including one supplied by an `architecture` resource override when the config
+  declares no architecture;
 - an integer `attn_type_list` entry other than 1.
 
 Unknown architectures can still use generic MLA/GQA planning when their
 declared layer layout is supported. Packaged configs that are pending include
 GLM-5.3-Flash (KDA and sparse-attention layers), Kimi K3 (KDA), the Qwen3.5
 Gated DeltaNet hybrids and NemotronH hybrids such as Nemotron-3 Nano. For these
-layouts, ordinary attention dimensions such as `head_dim: 0` are not validated
-as GQA facts.
+layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not rejected.
 
 For such a config, `onboard init` cannot write a request yet, so it stops with
 guidance. It prints the facts it resolved with their sources and lists any
@@ -678,8 +678,8 @@ unresolved profile fields (for GLM-5.3-Flash, `fmha_quant_mode` and
 `kv_cache_dtype`), then reports `Cache geometry: pending runtime probe` with the
 reasons. It exits 2 and writes nothing: no request, no profile and no
 `--output-dir` root, with or without `--parallel-configs`. `--interactive`
-prompts only for the missing profile fields, never for geometry or topology,
-before it stops the same way.
+prompts for missing inputs such as identity and precision, and never for cache
+geometry or topology, before it stops the same way.
 
 To continue, record the deployment, the model config path and the precision in
 the [onboarding checkpoint](#save-the-launch-inputs-in-the-existing-checkpoint),

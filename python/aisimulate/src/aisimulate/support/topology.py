@@ -390,6 +390,7 @@ def suggest_topologies(
     grouped = any(
         candidate.draft and candidate.draft.resolved.get("cache_layout") == "grouped" for candidate in candidates
     )
+    pending = any(candidate.pending_runtime for candidate in candidates)
     return TopologySuggestions(
         config_sha256=config.sha256,
         identity=request.identity.model_dump(mode="json"),
@@ -404,7 +405,9 @@ def suggest_topologies(
             hardware.assumption,
             "Enumerate powers-of-two widths within the fast domain; explicit topology choices may exceed it.",
             (
-                "Check one request's conservative peak grouped allocation using Rust's window, block-rounding "
+                "Cache fit is not assessed until onboard probe-runtime measures the cache geometry."
+                if pending
+                else "Check one request's conservative peak grouped allocation using Rust's window, block-rounding "
                 "and transient prefill bound at the selected context and scheduler limits. No aggregate token "
                 "capacity is assigned to mixed cache groups. Concurrent workload fit remains unchecked."
                 if grouped

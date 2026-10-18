@@ -113,8 +113,8 @@ def test_glm53_flash_config_is_runtime_resolved_not_rejected():
     assert config.suggestions["num_experts"] == 288
     assert config.suggestions["context_length"] == 1048576
     assert config.notes["cache_layout"] == (
-        f"runtime-resolved cache layout ({', '.join(config.runtime_layout)}): "
-        "config.json does not establish cache or state geometry; onboard probe-runtime measures it"
+        f"cache layout pending the runtime probe ({', '.join(config.runtime_layout)}). "
+        "config.json does not establish cache or state geometry. onboard probe-runtime measures it."
     )
 
 
@@ -300,6 +300,8 @@ def test_runtime_resolved_geometry_keeps_the_attention_head_tp_check():
 
 def test_runtime_resolved_config_accepts_observed_cache_geometry():
     # The runtime import path revalidates the same config that intake accepted.
+    # The group list stands in for the runtime report. A real GLM probe also reports state groups. The spec guard in
+    # collector/fpm_forward/runtime_memory.py keeps that probe incomplete until state groups are supported.
     profile = profile_from_observations(
         load_model_config(GLM),
         _glm_request(),

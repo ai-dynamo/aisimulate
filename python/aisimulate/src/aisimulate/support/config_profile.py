@@ -599,8 +599,8 @@ def load_model_config(path: str | Path) -> ModelConfig:
             notes[key] = f"config {key}={raw[key]}"
     if runtime_layout:
         notes["cache_layout"] = (
-            f"runtime-resolved cache layout ({', '.join(runtime_layout)}): config.json does not establish cache or "
-            "state geometry; onboard probe-runtime measures it"
+            f"cache layout pending the runtime probe ({', '.join(runtime_layout)}). config.json does not establish "
+            "cache or state geometry. onboard probe-runtime measures it."
         )
     elif _uses_grouped_cache(raw, decoder_architecture):
         notes["cache_layout"] = (
