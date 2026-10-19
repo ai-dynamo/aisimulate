@@ -313,6 +313,8 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
         slurm_cpus_per_task=deployment.get("cpus_per_task"),
         slurm_cpu_bind=deployment.get("cpu_bind"),
     )
+    options = options.resolve_model_execution(architecture)
+    collection["enforce_eager"] = options.enforce_eager
     admitted = enumerate_fpm_topologies(backend="vllm", is_moe=is_moe, options=options, allow_pure_tp=True)
     if topology not in admitted:
         raise ValueError(f"collector does not admit exact topology {topology.to_dict()}")
@@ -347,7 +349,18 @@ def build_runtime_probe_plan(configuration: str, facts: dict[str, Any], bundle: 
 
 
 def validate_collection_probe_launch(
-    launch, bundle, *, model_path, system, backend, backend_version, cells, options, profile, generator_overrides
+    launch,
+    bundle,
+    *,
+    model_path,
+    system,
+    backend,
+    backend_version,
+    cells,
+    options,
+    profile,
+    generator_overrides,
+    phases=None,
 ):
     """Bind optional formal instrumentation to the actual collection inputs."""
 
@@ -363,7 +376,12 @@ def validate_collection_probe_launch(
     if profile is None or profile.model_revision != identity["model_revision"]:
         raise ValueError("formal collection model revision differs from the accepted runtime probe")
     expected_cell = expected.cells[0]
-    if {cell.workload_kind for cell in cells} != set(expected.options.workload_kinds):
+    required = set(expected.options.workload_kinds)
+    if phases is not None:
+        if not phases or not set(phases) <= required:
+            raise ValueError("formal collection phases differ from the accepted serving role")
+        required = set(phases)
+    if {cell.workload_kind for cell in cells} != required:
         raise ValueError("formal collection phases differ from the accepted serving role")
     for cell in cells:
         fields = (
@@ -423,7 +441,7 @@ def validate_collection_probe_launch(
         ),
     }
     required_limits = (launch["collection"]["max_num_batched_tokens"], launch["collection"]["max_num_seqs"])
-    if any(limits[phase] != required_limits for phase in options.workload_kinds):
+    if any(limits[phase] != required_limits for phase in required):
         raise ValueError("formal phase scheduler limits differ from the accepted runtime probe")
     wanted = probe_generator_overrides(launch)
     actual = copy.deepcopy(generator_overrides)

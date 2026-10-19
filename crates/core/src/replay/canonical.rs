@@ -221,6 +221,7 @@ fn validate_per_request_finite(record: &PerRequestRecord) -> Result<()> {
     let path = format!("/per_request/{}", record.uuid);
     for (field, value) in [
         ("arrival_time_ms", Some(record.arrival_time_ms)),
+        ("tokenized_ms", record.tokenized_ms),
         ("first_admit_ms", record.first_admit_ms),
         ("terminal_time_ms", Some(record.terminal_time_ms)),
         ("first_token_ms", record.first_token_ms),

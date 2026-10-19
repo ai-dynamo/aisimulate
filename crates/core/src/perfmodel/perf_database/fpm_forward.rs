@@ -63,11 +63,13 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
+const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MeasurementPolicy {
     SingleSample,
     PerRow,
+    PerRowFullGrid,
     /// Default serving configuration (prefix caching on): Dynamo
     /// InstrumentedScheduler FPM wall time, real prefix-cache seeding.
     VllmNativeFpmMedian,
@@ -81,14 +83,23 @@ impl MeasurementPolicy {
         match self {
             Self::SingleSample => FPM_FORWARD_MEASUREMENT_POLICY,
             Self::PerRow => FPM_ROW_MEASUREMENT_POLICY,
+            Self::PerRowFullGrid => FPM_FULL_GRID_MEASUREMENT_POLICY,
             Self::VllmNativeFpmMedian => "vllm_native_fpm_prefix_seed_median_v1",
             Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
         }
     }
 
+    fn row_median_policy(self) -> Option<&'static str> {
+        match self {
+            Self::PerRow => Some("kvwarm_median_of_3"),
+            Self::PerRowFullGrid => Some("independent_full_grid_median_of_3"),
+            Self::SingleSample | Self::VllmNativeFpmMedian | Self::SglangNativeFpmMedian => None,
+        }
+    }
+
     fn state_protocol(self) -> Option<&'static str> {
         match self {
-            Self::SingleSample | Self::PerRow => None,
+            Self::SingleSample | Self::PerRow | Self::PerRowFullGrid => None,
             Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
             Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
@@ -96,7 +107,7 @@ impl MeasurementPolicy {
 
     fn timing_boundary(self) -> Option<&'static str> {
         match self {
-            Self::SingleSample | Self::PerRow => None,
+            Self::SingleSample | Self::PerRow | Self::PerRowFullGrid => None,
             Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
             Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
@@ -197,6 +208,9 @@ pub struct FpmForwardCell {
     /// Direct timing curves `(batch, KV) -> (prefill tokens -> latency)`.
     /// Fake-fallback rows are excluded even when the legacy table heals them.
     pub direct_prefill: BTreeMap<(u32, u32), BTreeMap<u32, f64>>,
+    /// Token-major view of `direct_prefill`: `(batch, prefill tokens) ->
+    /// (KV -> latency)`. Built once, on the first KV-first fallback query.
+    direct_prefill_by_tokens: OnceLock<BTreeMap<(u32, u32), BTreeMap<u32, f64>>>,
     /// Direct decode curves contain genuine measurements only; their bounds
     /// do not inherit the fabricated rows' extrapolated KV ceilings.
     pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
@@ -218,6 +232,18 @@ impl FpmForwardCell {
             "FPM table FMHA selector: original_model_mode={original:?}, selector={:?}, matched_cell_ids={:?}, model_path={:?}. Exact recorded-label matching does not independently verify runtime attention precision; arithmetic and memory modes are unchanged.",
             self.match_identity[2], self.cell_ids, self.model_path
         ))
+    }
+
+    pub(crate) fn direct_prefill_by_tokens(&self) -> &BTreeMap<(u32, u32), BTreeMap<u32, f64>> {
+        self.direct_prefill_by_tokens.get_or_init(|| {
+            let mut rows: BTreeMap<(u32, u32), BTreeMap<u32, f64>> = BTreeMap::new();
+            for (&(batch, kv), curve) in &self.direct_prefill {
+                for (&tokens, &latency) in curve {
+                    rows.entry((batch, tokens)).or_default().insert(kv, latency);
+                }
+            }
+            rows
+        })
     }
 }
 
@@ -533,6 +559,7 @@ fn validate_sidecar(
     ) {
         (Some(FPM_FORWARD_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::SingleSample,
         (Some(FPM_ROW_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRow,
+        (Some(FPM_FULL_GRID_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::PerRowFullGrid,
         (Some("vllm_native_fpm_prefix_seed_median_v1"), Some(7), "vllm") => {
             MeasurementPolicy::VllmNativeFpmMedian
         }
@@ -723,7 +750,7 @@ fn load_pair(
     let dcp_col = reader.col_optional("dcp");
     let row_policy_col = reader.col_optional("measurement_policy");
     let repeats_col = reader.col_optional("measurement_repeats");
-    if measurement_policy == MeasurementPolicy::PerRow
+    if measurement_policy.row_median_policy().is_some()
         && (row_policy_col.is_none() || repeats_col.is_none())
     {
         return Err(structural("FPM per-row measurement policy requires measurement_policy and measurement_repeats columns".into()));
@@ -944,14 +971,12 @@ fn load_pair(
                 "FPM row {index} dcp disagrees with the sidecar selector"
             )));
         }
-        if measurement_policy == MeasurementPolicy::PerRow {
+        if let Some(median_policy) = measurement_policy.row_median_policy() {
             let policy = row.str_optional(row_policy_col)?;
             let repeats = row.u32_optional(repeats_col)?;
-            if !matches!(
-                (policy, repeats),
-                (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
-                    | (Some("kvwarm_median_of_3"), Some(3))
-            ) {
+            if (policy, repeats) != (Some(FPM_FORWARD_MEASUREMENT_POLICY), Some(1))
+                && (policy, repeats) != (Some(median_policy), Some(3))
+            {
                 return Err(structural(format!(
                     "FPM row {index} measurement policy/repeats are inconsistent"
                 )));
@@ -1167,6 +1192,7 @@ fn load_pair(
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
                 direct_prefill: BTreeMap::new(),
+                direct_prefill_by_tokens: OnceLock::new(),
                 direct_decode: BTreeMap::new(),
                 direct_decode_rungs: Vec::new(),
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
@@ -2065,6 +2091,7 @@ pub(crate) mod tests {
             (2, "state_protocol"),
             (3, "timing_boundary"),
             (4, "fake_fallback"),
+            (5, "measurement_policy"),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let mut rows = median_rows("vllm");
@@ -2075,7 +2102,11 @@ pub(crate) mod tests {
                 1 => m.measured = 1,
                 2 => m.protocol = "wrong",
                 3 => m.boundary = "sglang_native_fpm_rank0_device_timer_wall_time",
-                _ => row.kv_seed_regime = Some(FPM_KV_SEED_FAKE_FALLBACK),
+                4 => row.kv_seed_regime = Some(FPM_KV_SEED_FAKE_FALLBACK),
+                _ => {
+                    m.policy = "independent_full_grid_median_of_3";
+                    m.measured = 3;
+                }
             }
             write_median_pair(tmp.path(), &rows);
             for replace in [false, true] {
@@ -2100,6 +2131,14 @@ pub(crate) mod tests {
                 serde_json::json!("sglang_native_fpm_radix_seed_median_v1"),
             ),
             ("measurement_policy", serde_json::json!("per_row")),
+            (
+                "measurement_policy",
+                serde_json::json!(FPM_ROW_MEASUREMENT_POLICY),
+            ),
+            (
+                "measurement_policy",
+                serde_json::json!(FPM_FULL_GRID_MEASUREMENT_POLICY),
+            ),
             ("warmup_repeats", serde_json::json!(5.0)),
             ("measurement_repeats", serde_json::Value::Null),
         ] {
@@ -2316,6 +2355,116 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("requires measurement_policy")
+        );
+    }
+
+    #[test]
+    fn full_grid_median_policy_preserves_aggregate_latencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 128,
+                total_kv_read_tokens: 0,
+                latency_ms: 7.25,
+                measurement: Some(("independent_full_grid_median_of_3", 3)),
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "decode",
+                batch_size: 1,
+                total_prefill_tokens: 0,
+                total_kv_read_tokens: 128,
+                latency_ms: 3.125,
+                measurement: Some((FPM_FORWARD_MEASUREMENT_POLICY, 1)),
+                ..RowSpec::default()
+            },
+        ];
+        write_pair_with(tmp.path(), &rows, |meta| {
+            meta.insert(
+                "measurement_policy".into(),
+                "per_row_single_sample_or_full_grid_median_v1".into(),
+            );
+        });
+        let table = loaded_table(tmp.path());
+        let cells = table
+            .cells()
+            .expect("aggregate pair must load without campaign files");
+        assert_eq!(cells.len(), 1);
+        // Independent oracle: stored fixture latencies are already aggregated.
+        assert_eq!(cells[0].direct_prefill[&(1, 0)][&128], 7.25);
+        assert_eq!(cells[0].direct_decode[&1][&128], 3.125);
+    }
+
+    #[test]
+    fn full_grid_median_policy_rejects_inconsistent_records() {
+        for (sidecar_policy, row_policy, repeats) in [
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                0,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                1,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                6,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                FPM_FORWARD_MEASUREMENT_POLICY,
+                3,
+            ),
+            (FPM_FULL_GRID_MEASUREMENT_POLICY, "kvwarm_median_of_3", 3),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "vllm_native_fpm_prefix_seed_median_v1",
+                3,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "sglang_native_fpm_radix_seed_median_v1",
+                3,
+            ),
+            (
+                FPM_FULL_GRID_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_6",
+                6,
+            ),
+            (FPM_FULL_GRID_MEASUREMENT_POLICY, "unknown", 3),
+            (
+                FPM_ROW_MEASUREMENT_POLICY,
+                "independent_full_grid_median_of_3",
+                3,
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows = [RowSpec {
+                measurement: Some((row_policy, repeats)),
+                ..RowSpec::default()
+            }];
+            write_pair_with(tmp.path(), &rows, |meta| {
+                meta.insert("measurement_policy".into(), sidecar_policy.into());
+            });
+            let error = loaded_table(tmp.path()).cells().unwrap_err();
+            assert!(error.to_string().contains("policy/repeats"), "{error}");
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair_with(tmp.path(), &default_rows(), |meta| {
+            meta.insert(
+                "measurement_policy".into(),
+                FPM_FULL_GRID_MEASUREMENT_POLICY.into(),
+            );
+        });
+        let error = loaded_table(tmp.path()).cells().unwrap_err();
+        assert!(
+            error.to_string().contains("requires measurement_policy"),
+            "{error}"
         );
     }
 

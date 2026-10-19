@@ -146,7 +146,7 @@ def test_glm_cli_plans_without_model_classes_or_any_timing_data(
         assert decision["activation_envelope"]["scope"] == "rank_local"
 
 
-def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_models_or_timing_data):
+def test_unknown_architecture_requires_supported_layers_before_rendering(tmp_path, no_models_or_timing_data):
     profile = _profile()
     config = load_model_config(profile["model"]).payload
     config["architectures"] = ["UnregisteredMoeForCausalLM"]
@@ -154,8 +154,21 @@ def test_unknown_architecture_plans_and_renders_from_real_config(tmp_path, no_mo
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
 
-    plan = _plan(profile, model_config_path=str(path), has_model_cases=False)
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        _plan(profile, model_config_path=str(path), has_model_cases=False)
+
+    # A renamed DSA checkpoint does not qualify an unknown architecture. Use an
+    # explicit full-attention layout for the generic MLA bootstrap control.
+    config["layer_types"] = ["full_attention"] * config["num_hidden_layers"]
+    path.write_text(json.dumps(config))
+    plan = _plan(
+        profile,
+        model_config_path=str(path),
+        has_model_cases=False,
+        selected_ops={"context_mla", "generation_mla"},
+    )
     assert plan.capability.support_level == "bootstrap_template"
+    assert plan.capability.template_id == "generic:moe_mla"
     cell_dir = tmp_path / "rendered"
     cell_dir.mkdir()
     runner._render_cell(plan, plan.cells[0], cell_dir, {})
@@ -560,7 +573,8 @@ def test_profile_cannot_override_resolved_precision_or_backend(field, value, no_
         _plan(profile)
 
 
-def test_historical_minimax_transfer_precision_cannot_relabel_new_collection(no_models_or_timing_data):
+@pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
+def test_minimax_selected_kv_precision_reaches_plan_and_worker(tmp_path, no_models_or_timing_data, kv_dtype):
     profile = _profile()
     profile.update(model="MiniMaxAI/MiniMax-M2.7", architecture="MiniMaxM2ForCausalLM")
     deployment = profile["deployments"][0]
@@ -572,16 +586,33 @@ def test_historical_minimax_transfer_precision_cannot_relabel_new_collection(no_
         moe_ep=1,
         gemm_quant_mode="fp8_block",
         moe_quant_mode="fp8_block",
-        fmha_quant_mode="bfloat16",
+        fmha_quant_mode=kv_dtype,
+        kv_cache_dtype=kv_dtype,
     )
     profile["deployments"] = [deployment]
     options = replace(
         FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        kv_cache_dtypes=(kv_dtype,),
         max_gpus=4,
         gpu_counts=(4,),
         parallel_presets=("pure_tp",),
     )
-    with pytest.raises(ValueError, match="fmha_quant_mode: resolved='fp8', profile='bfloat16'"):
+    plan = _plan(
+        profile, options=options, system="h200_sxm", selected_ops={"attention_context", "attention_generation"}
+    )
+    assert plan.dtype_profile.native_kv_cache_dtype == "fp8"
+    assert {cell.kv_cache_dtype for cell in plan.cells} == {kv_dtype}
+    assert {cell.fmha_quant_mode for cell in plan.cells} == {kv_dtype}
+    for cell in plan.cells:
+        directory = tmp_path / cell.cell_id
+        directory.mkdir()
+        runner._render_cell(plan, cell, directory, {})
+        script = (directory / "run.sh").read_text()
+        assert f"--kv-cache-dtype {kv_dtype}" in script
+
+    # A profile cannot relabel the other cache/attention precision as this run.
+    deployment["fmha_quant_mode"] = "fp8" if kv_dtype == "bfloat16" else "bfloat16"
+    with pytest.raises(ValueError, match="fmha_quant_mode: resolved="):
         _plan(profile, options=options, system="h200_sxm", selected_ops={"attention_context", "attention_generation"})
 
 
@@ -601,12 +632,29 @@ def test_missing_requested_topology_raises_before_memory_admission(monkeypatch, 
         _plan(profile)
 
 
-def test_profile_collection_rejects_non_native_kv_dtype(no_models_or_timing_data):
+def test_versioned_vllm_collection_rejects_invalid_int8_cache_token(no_models_or_timing_data):
+    profile = _profile()
+    with pytest.raises(ValueError, match="vLLM FPM collection does not support KV-cache dtype 'int8'"):
+        capabilities.resolve_model_capability(
+            backend="vllm",
+            model_path=profile["model"],
+            model_architecture=profile["architecture"],
+            selected_ops={"dsa_context_module", "dsa_generation_module"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("int8",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
+def test_profile_collection_rejects_kv_dtype_missing_from_profile(no_models_or_timing_data):
     profile = _profile()
     options = replace(
         FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), kv_cache_dtypes=("bfloat16",)
     )
-    with pytest.raises(ValueError, match="checkpoint-native KV dtype"):
+    with pytest.raises(ValueError, match="kv_cache_dtype: resolved='bfloat16', profile='fp8'"):
         _plan(profile, options=options)
 
 
@@ -1092,3 +1140,26 @@ def test_observed_runtime_drift_fails_after_recording_provenance(tmp_path, monke
     assert provenance["backend_version"] == "custom-label"
     assert provenance["runtime"] == {"backend": "vllm", "backend_version": "0.28.0", "dynamo_version": "1.5.0"}
     assert provenance["dynamo_version"] == "custom-dynamo"
+
+
+@pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
+def test_declared_fp8_kv_metadata_does_not_override_vllm_027_selection(tmp_path, no_models_or_timing_data, kv_dtype):
+    profile = _profile()
+    config = load_model_config(profile["model"]).payload
+    assert config["quantization_config"]["kv_cache_scheme"] == {"dynamic": False, "num_bits": 8, "type": "float"}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    for deployment in profile["deployments"]:
+        deployment.update(backend_version="0.27.0", kv_cache_dtype=kv_dtype, fmha_quant_mode=kv_dtype)
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), kv_cache_dtypes=(kv_dtype,)
+    )
+    plan = _plan(profile, model_config_path=str(config_path), options=options)
+    assert plan.dtype_profile.native_kv_cache_dtype == "fp8"
+    for cell in plan.cells:
+        assert cell.kv_cache_dtype == kv_dtype
+        assert cell.fmha_quant_mode == kv_dtype
+        directory = tmp_path / cell.cell_id
+        directory.mkdir()
+        runner._render_cell(plan, cell, directory, {})
+        assert f"--kv-cache-dtype {kv_dtype}" in (directory / "run.sh").read_text()

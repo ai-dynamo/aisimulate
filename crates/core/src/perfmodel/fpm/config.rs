@@ -52,25 +52,41 @@ pub enum ForwardPassFallbackPolicy {
     LegacyRegression,
 }
 
-/// Target-verification cost; acceptance and scheduler progress belong to replay.
+/// Speculative cost identity shared with the SDK scheme registry.
+/// Acceptance and scheduler progress belong to replay, not this configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "params",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum ForwardPassSpeculationConfig {
-    Ngram { num_speculative_tokens: u32 },
+#[serde(deny_unknown_fields)]
+pub struct ForwardPassSpeculationConfig {
+    pub kind: String,
+    #[serde(default)]
+    pub params: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_model_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_config: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ForwardPassSpeculationConfig {
-    pub fn num_speculative_tokens(&self) -> u32 {
-        match self {
-            Self::Ngram {
-                num_speculative_tokens,
-            } => *num_speculative_tokens,
+    /// Preserve the existing prompt-lookup contract for canonical and replay callers.
+    pub(crate) fn ngram_depth(&self) -> Result<u32, AicError> {
+        if self.kind != "ngram" {
+            return Err(invalid_config("expected ngram speculation"));
         }
+        if self.params.len() != 1 || !self.params.contains_key("num_speculative_tokens") {
+            return Err(invalid_config(
+                "ngram params must contain only num_speculative_tokens",
+            ));
+        }
+        if self.draft_model_path.is_some() || self.draft_config.is_some() {
+            return Err(invalid_config("ngram does not accept a draft checkpoint"));
+        }
+        self.params["num_speculative_tokens"]
+            .as_u64()
+            .filter(|depth| (1..=5).contains(depth))
+            .map(|depth| depth as u32)
+            .ok_or_else(|| {
+                invalid_config("ngram num_speculative_tokens must be an integer in 1..=5")
+            })
     }
 }
 
@@ -248,6 +264,25 @@ impl ForwardPassPerfModelConfig {
     pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
         self.validate()?;
+        if let Some(speculation) = &self.speculation {
+            #[cfg(feature = "python")]
+            {
+                self.speculation = Some(crate::py::resolve_speculation_identity(speculation)?);
+            }
+            #[cfg(not(feature = "python"))]
+            if !matches!(speculation.kind.as_str(), "ngram" | "none") {
+                return Err(invalid_config(
+                    "generic speculation validation requires the python feature",
+                ));
+            }
+        }
+        if self
+            .speculation
+            .as_ref()
+            .is_some_and(|spec| spec.kind == "none")
+        {
+            self.speculation = None;
+        }
         let registered = if self.fpm_profile.is_some() {
             self.estimator_config
                 .fpm_interpolation
@@ -410,23 +445,25 @@ impl ForwardPassPerfModelConfig {
         }
         if let Some(speculation) = &self.speculation {
             if self.nextn != 0 {
+                return Err(invalid_config("speculation cannot be combined with nextn"));
+            }
+            if speculation.kind.trim().is_empty() {
+                return Err(invalid_config("speculation kind cannot be empty"));
+            }
+            if speculation.kind == "ngram" {
+                speculation.ngram_depth()?;
+                if self.backend != BackendKind::Vllm {
+                    return Err(invalid_config("ngram speculation requires backend=vllm"));
+                }
+            }
+            if speculation.kind == "none"
+                && (!speculation.params.is_empty()
+                    || speculation.draft_model_path.is_some()
+                    || speculation.draft_config.is_some())
+            {
                 return Err(invalid_config(
-                    "ngram speculation cannot be combined with nextn",
+                    "none speculation does not accept parameters or a draft checkpoint",
                 ));
-            }
-            if self.backend != BackendKind::Vllm {
-                return Err(invalid_config("ngram speculation requires backend=vllm"));
-            }
-            if !(1..=5).contains(&speculation.num_speculative_tokens()) {
-                return Err(invalid_config(
-                    "ngram num_speculative_tokens must be in 1..=5",
-                ));
-            }
-            if !matches!(
-                self.estimation_mode,
-                EstimationMode::Auto | EstimationMode::OpLevel
-            ) {
-                return Err(invalid_config("ngram speculation requires op_level timing"));
             }
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
@@ -768,7 +805,9 @@ mod tests {
             EstimationMode::FpmRegression,
         ] {
             cfg.estimation_mode = mode;
-            assert!(cfg.validate().is_err());
+            // Estimator capability is checked during candidate selection, not
+            // syntax validation, so explicit fallback can retain this identity.
+            cfg.validate().unwrap();
         }
         cfg.estimation_mode = EstimationMode::Auto;
         cfg.nextn = 2;
@@ -778,9 +817,12 @@ mod tests {
         assert!(cfg.validate().is_err());
         cfg.backend = BackendKind::Vllm;
         for depth in [0, 6] {
-            cfg.speculation = Some(ForwardPassSpeculationConfig::Ngram {
-                num_speculative_tokens: depth,
-            });
+            cfg.speculation = Some(
+                serde_json::from_value(serde_json::json!({
+                    "kind": "ngram", "params": {"num_speculative_tokens": depth}
+                }))
+                .unwrap(),
+            );
             assert!(cfg.validate().is_err());
         }
     }

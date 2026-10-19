@@ -284,6 +284,23 @@ under Apache-2.0. These repository-root-relative files adapt behavioral contract
 no upstream method bodies are copied. The Rust implementation and fixtures are
 modified for simulation and do not reproduce native filesystem timing.
 
+The speculative scheduling/progress corrections in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,policy,tests}.rs` and
+`crates/core/src/engine/common/speculative.rs` are independently written,
+modified Rust simulation adaptations of behavioral contracts at vLLM commit
+`b3563fc65ae0f5359802593d78e7ea097e1fed31`:
+
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/scheduler.py
+- https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/vllm/v1/core/sched/async_scheduler.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/b3563fc65ae0f5359802593d78e7ea097e1fed31/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models
+scheduled draft positions, first-output and preemption state in virtual time;
+it does not reproduce asynchronous worker execution. That revision has no
+root NOTICE file. The repository LICENSE contains the Apache-2.0 license text.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 
@@ -1254,6 +1271,62 @@ Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a
 The adaptation adds zero recurrent-state bytes to the legacy token-only DTO
 conversion for CI builds against the newer AISimulate handoff API. It preserves
 the upstream copyright header and marks the modified conversion in the output.
+
+## NVIDIA Dynamo CI struct-literal compatibility
+
+The exact-source rewrites in `scripts/performance/build_simulation_dynamo.py`
+are adapted and modified from NVIDIA Dynamo's
+`lib/mocker/src/grouped_scheduler/compatibility.rs` and
+`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation adds `None` for new optional AISimulate fields to the native
+request and offline KV-router placement struct literals for CI builds against
+newer AISimulate APIs. It preserves the upstream copyright headers and marks
+each modified literal in the output.
+
+The replay compatibility rewrite in the same script adapts
+`lib/mocker/src/engine_adapter.rs` at that same immutable revision:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
+context parallelism to 1 in four replay descriptors, preserving the pinned
+adapter's topology. Its upstream copyright header is retained and each modified
+literal is marked in the generated output.
+
+## NVIDIA Dynamo CI speculation compatibility
+
+The exact-source rewrite in `scripts/performance/build_simulation_dynamo.py`
+and its regression fixture in `tests/test_ci_workflow_contracts.py` are adapted
+and modified from NVIDIA Dynamo's
+`lib/bindings/python/rust/llm/ais_callback.rs` at commit
+`def3b79b15c266805540a678dd400aeb6ccada1d`:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/ais_callback.rs
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
+Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
+The adaptation reads the serialized Ngram identity instead of the removed
+enum accessor, retaining legacy `nextn`, accepting disabled speculation, and
+rejecting other replay schemes.
+It preserves the upstream copyright header and marks the modified conversion
+in the output.
+
+The callback contract harness in `scripts/performance/check_dynamo_callback.py`
+compiles that entire adapted callback with the real AISimulate core. Its minimal
+trait interfaces are adapted from `lib/mocker/src/common/perf_model.rs` and
+`lib/kv-router/src/scheduling/prefill_load.rs` at the same immutable commit:
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/common/perf_model.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/kv-router/src/scheduling/prefill_load.rs
+
+These files carry the same NVIDIA copyright and Apache-2.0 license above.
+The harness modifies their module placement to test the callback independently
+of the Dynamo scheduler; it does not replace callback or estimator behavior.
 
 ## SGLang simulator and HiSim feature definitions
 

@@ -29,7 +29,9 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None):
+def _campaign(
+    tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None, model=None
+):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
     if cpu_policy:
@@ -55,7 +57,9 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
     checkpoint_model = tmp_path / "model-checkpoint"
     checkpoint_model.mkdir()
     (checkpoint_model / "config.json").write_bytes(model_path.read_bytes())
-    launch["identity"]["model"] = str(checkpoint_model)
+    launch["identity"]["model"] = model or str(checkpoint_model)
+    if model is not None:
+        launch["identity"]["model_revision"] = "4" * 40
     launch["model_config"]["sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
     launch["collection"]["max_model_len"] = context_length
     if worker_type is not None:
@@ -79,7 +83,9 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu
             value["launch"] = launch
             if ref.get("kind") == "observation":
                 value["identity"] = launch["identity"]
-                value["resolved_config"]["model_config"]["model"] = str(checkpoint_model)
+                value["resolved_config"]["model_config"].update(
+                    model=launch["identity"]["model"], revision=launch["identity"]["model_revision"]
+                )
                 value["model_config_sha256"] = launch["model_config"]["sha256"]
                 value["resolved_config"]["model_config"]["max_model_len"] = context_length
                 if worker_type is not None:
@@ -668,8 +674,10 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None):
-    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type)
+def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None):
+    checkpoint, index, _ = _campaign(
+        tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type, model=model
+    )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
@@ -783,7 +791,7 @@ def _formal_bindings(index, cells=None):
     for phase, result in attempt["phases"].items():
         cell_id = cells[phase] if cells else f"cell-{phase}"
         attempt_id = f"native-{phase}"
-        result.update(cell_id=cell_id, collector_attempt_id=attempt_id)
+        result.update(cell_id=cell_id, collector_attempt_id=attempt_id, status="passed")
         entries[cell_id] = {"status": "passed", "attempt_id": attempt_id}
         for ref in [result["launch_manifest"], *result["artifacts"]]:
             path = index.parent / ref["path"]
@@ -795,7 +803,7 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
+def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -807,7 +815,9 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None):
 
     from .test_onboard_finalization import _native
 
-    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type)
+    checkpoint, _, request, files = _imported(
+        tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type, model=model
+    )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     root = tmp_path / "collection"

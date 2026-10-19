@@ -1043,6 +1043,90 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture, mixed):
+    config = _unknown_fp8_moe_config()
+    config.update(
+        architectures=[architecture],
+        layer_types=(
+            ["linear_attention", "deepseek_sparse_attention"] * 2 if mixed else ["deepseek_sparse_attention"] * 4
+        ),
+    )
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+@pytest.mark.parametrize("native", [False, True])
+def test_qwen_gdn_hybrid_cannot_select_exact_dense_attention(tmp_path, architecture, native):
+    config = {
+        "architectures": [architecture],
+        "text_config": {
+            "num_hidden_layers": 4,
+            "hidden_size": 4096,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 4,
+            "head_dim": 128,
+            "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture=architecture,
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=True,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=native,
+        )
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_count,error",
+    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+)
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_count, error):
+    config = _unknown_fp8_moe_config()
+    config["num_hidden_layers"] = declared_layers
+    config["layer_types"] = ["full_attention"] * layer_count
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=error):
+        resolve_model_capability(
+            backend="vllm",
+            model_path=str(path),
+            model_architecture="NewMoeDsaForCausalLM",
+            selected_ops={"attention_context", "attention_generation"},
+            has_model_cases=False,
+            system="b200_sxm",
+            requested_weight_quantizations=(),
+            requested_kv_cache_dtypes=("auto",),
+            database_version="0.27.0",
+            checkpoint_native_dtypes=True,
+        )
+
+
 def test_explicit_real_config_keeps_unregistered_fp8_moe_bootstrap(monkeypatch, tmp_path):
     config_dir = tmp_path / "private-model-config"
     config_dir.mkdir()
@@ -2814,6 +2898,30 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
     payload = {"execution_identity": dict(zip(EXECUTION_COLUMNS, identity, strict=True)), "execution_mode": mode}
     with pytest.raises(ValueError, match="verified eager"):
         _validate_execution_provenance(cell, payload, tmp_path / "rank.json")
+
+
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "DeepseekV3ForCausalLM", None])
+def test_none_graph_policy_does_not_select_eager_for_other_models(architecture):
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_worker_type="aggregated", fpm_cudagraph_mode="NONE", fpm_prefill_cudagraph_policy="runtime")
+    )
+    assert options.resolve_model_execution(architecture).enforce_eager is False
+
+
+@pytest.mark.parametrize(
+    "graph_args",
+    [
+        {"fpm_cudagraph_mode": "FULL"},
+        {"fpm_cudagraph_capture_sizes": [1, 2]},
+        {"fpm_max_cudagraph_capture_size": 8},
+        {"fpm_prefill_cudagraph_policy": "explicit", "fpm_max_prefill_cudagraph_size": 128},
+    ],
+)
+def test_v41_auto_eager_rejects_capture_requests(graph_args):
+    args = {"fpm_worker_type": "aggregated", "fpm_prefill_cudagraph_policy": "runtime", **graph_args}
+    options = FPMCollectionOptions.from_args(_args(**args))
+    with pytest.raises(ValueError, match="DeepSeek V4.1 requires eager execution"):
+        options.resolve_model_execution("DeepseekV41ForCausalLM")
 
 
 @pytest.mark.parametrize("v41,eager", [(True, False), (False, True)])

@@ -112,3 +112,8 @@ Router identity does not depend on which rank stored it.
 finite cadence after workload settlement and before same-time scaling. It must
 remain observational and cannot keep an otherwise deadlocked runtime alive.
 Observer failures are typed `ReplayError::Telemetry`.
+
+The optional `Request.session_id` is forwarded to G1 and G2
+`StoredBlocks.session_id`, identifying the session whose request triggered the
+store, not exclusive block ownership. G2 snapshots preserve that attribution;
+removals remain hash-based.

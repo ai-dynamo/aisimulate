@@ -28,8 +28,10 @@
 //! `interpolation="direct"` instead uses raw linear interpolation between
 //! genuine measured curves. Prefill uses the nearest same-batch lower and
 //! upper KV sites whose token curves cover the query, without a KV distance
-//! limit; decode stays inside its inferred capture regime. It never
-//! evaluates `sol_ops`, clamps an unsupported batch, or uses fabricated KV.
+//! limit. If those sites cannot bracket the query, it interpolates KV at fixed
+//! measured token counts, then brackets tokens. Decode stays inside its inferred
+//! capture regime. It never evaluates `sol_ops`, clamps an unsupported batch,
+//! or uses fabricated KV.
 //!
 //! The canonical `ForwardPassPerfModel` constructor selects this native
 //! operator for `estimation_mode="fpm_interpolation"` and pins its method.
@@ -630,11 +632,7 @@ impl FpmForwardOp {
             .find(|&&(site_kv, _)| (site_kv as f64) < kv);
         let upper = covered.iter().find(|&&(site_kv, _)| (site_kv as f64) > kv);
         let Some((&(lo, lo_ms), &(hi, hi_ms))) = lower.zip(upper) else {
-            return Err(self.direct_coverage_err(
-                cell,
-                coords,
-                "no same-batch, two-sided KV bracket whose token curves cover this query",
-            ));
+            return self.resolve_direct_prefill_kv_first(cell, coords);
         };
         let weight = (kv - lo as f64) / (hi as f64 - lo as f64);
         let latency = lo_ms + (hi_ms - lo_ms) * weight;
@@ -658,6 +656,77 @@ impl FpmForwardOp {
             coords,
             latency,
             FpmQueryResolution::CrossKvInterpolation,
+            support,
+            false,
+        )
+    }
+
+    fn resolve_direct_prefill_kv_first(
+        &self,
+        cell: &FpmForwardCell,
+        coords: &[f64],
+    ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
+        let (batch, tokens, kv) = (coords[0], coords[1], coords[2]);
+        let unsupported = || {
+            self.direct_coverage_err(
+                cell,
+                coords,
+                "no same-batch, two-sided measured support in either token-first or KV-first interpolation",
+            )
+        };
+        let Some(token_key) = direct_axis(tokens) else {
+            return Err(unsupported());
+        };
+        // A collection's maximum KV can differ at each measured token count.
+        // Only after the usual path fails, interpolate KV at the nearest
+        // KV-covering token count on each side, retaining the same batch and
+        // genuine measurements; supported queries keep their old answer.
+        let rows = cell.direct_prefill_by_tokens();
+        let batch_key = batch as u32;
+        let covered = |(&(_, row_tokens), curve): (&(u32, u32), &BTreeMap<u32, f64>)| {
+            direct_curve_value(curve, kv).map(|latency| (row_tokens, latency))
+        };
+        let (lo, lo_ms) = rows
+            .range((batch_key, 0)..=(batch_key, token_key))
+            .rev()
+            .find_map(covered)
+            .ok_or_else(unsupported)?;
+        let (latency, token_support) = if tokens == lo as f64 {
+            (lo_ms, [Some((lo, 1.0)), None])
+        } else {
+            let (hi, hi_ms) = rows
+                .range((
+                    std::ops::Bound::Excluded((batch_key, lo)),
+                    std::ops::Bound::Included((batch_key, u32::MAX)),
+                ))
+                .find_map(covered)
+                .ok_or_else(unsupported)?;
+            let weight = direct_weight(lo, hi, tokens);
+            (
+                direct_lerp((lo, lo_ms), (hi, hi_ms), tokens),
+                [Some((lo, 1.0 - weight)), Some((hi, weight))],
+            )
+        };
+        let support = token_support
+            .into_iter()
+            .flatten()
+            .flat_map(|(row_tokens, row_weight)| {
+                let token = row_tokens as f64;
+                direct_curve_support(&rows[&(batch_key, row_tokens)], kv, |site_kv| {
+                    fpm_coordinates(self.phase, &[batch, token, site_kv])
+                })
+                .into_iter()
+                .map(move |mut point| {
+                    point.weight *= row_weight;
+                    point
+                })
+            })
+            .collect();
+        self.direct_result(
+            cell,
+            coords,
+            latency,
+            FpmQueryResolution::KvFirstInterpolation,
             support,
             false,
         )
@@ -960,7 +1029,7 @@ fn direct_curve_support(
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()
         .expect("covered curve");
-    let weight = (coordinate - lo as f64) / (hi as f64 - lo as f64);
+    let weight = direct_weight(lo, hi, coordinate);
     vec![
         FpmMeasurementSupport {
             coordinates: coordinates(lo as f64),
@@ -978,17 +1047,33 @@ fn direct_curve_support(
 /// Exact lookup or raw linear interpolation strictly inside one measured
 /// curve. There is deliberately no callback, boundary hold, or SOL input.
 fn direct_curve_value(curve: &BTreeMap<u32, f64>, coordinate: f64) -> Option<f64> {
-    if !coordinate.is_finite() || coordinate < 0.0 || coordinate > u32::MAX as f64 {
-        return None;
-    }
-    let (&lo, &lo_ms) = curve.range(..=(coordinate as u32)).next_back()?;
+    let (&lo, &lo_ms) = curve.range(..=direct_axis(coordinate)?).next_back()?;
     if coordinate == lo as f64 {
         return Some(lo_ms);
     }
     let (&hi, &hi_ms) = curve
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()?;
-    Some(lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64))
+    Some(direct_lerp((lo, lo_ms), (hi, hi_ms), coordinate))
+}
+
+/// Curve key at or below a finite, non-negative coordinate within `u32`.
+fn direct_axis(coordinate: f64) -> Option<u32> {
+    // NaN and infinities fall outside the range.
+    (0.0..=u32::MAX as f64)
+        .contains(&coordinate)
+        .then_some(coordinate as u32)
+}
+
+/// Raw linear interpolation between two measured points. Shared with the
+/// KV-first fallback so both keep the same floating-point evaluation order.
+fn direct_lerp((lo, lo_ms): (u32, f64), (hi, hi_ms): (u32, f64), coordinate: f64) -> f64 {
+    lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64)
+}
+
+/// Support weight of the upper point; the lower point's is `1.0 - weight`.
+fn direct_weight(lo: u32, hi: u32, coordinate: f64) -> f64 {
+    (coordinate - lo as f64) / (hi as f64 - lo as f64)
 }
 
 /// FPM interpolation configs: prefill sites `(batch, kv)` own the new-token
@@ -1329,6 +1414,107 @@ mod tests {
                 .latency_ms,
             27.5
         );
+        // KV-first could use the 999 ms points at KV=80/112. Keep both the
+        // old answer and original support when token-first already succeeds.
+        let result = direct.query_totals(&db, &[1.0, 150.0, 96.0]).unwrap();
+        let evidence = &result.fpm_queries.as_ref().unwrap()[0];
+        assert_eq!(
+            evidence.resolution,
+            FpmQueryResolution::CrossKvInterpolation
+        );
+        let support = &evidence.support;
+        assert_eq!(
+            support
+                .iter()
+                .map(|point| (
+                    point.coordinates.total_prefill_tokens,
+                    point.coordinates.total_kv_read_tokens,
+                    point.weight,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(100.0), 64.0, 0.25),
+                (Some(200.0), 64.0, 0.25),
+                (Some(100.0), 128.0, 0.25),
+                (Some(200.0), 128.0, 0.25),
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_prefill_kv_first_uses_nearest_covered_tokens_and_original_measurements() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let rows = [
+            (100, 0, 10.0),
+            (100, 64, 30.0),
+            (150, 0, 900.0), // Nearer tokens, but no two-sided KV support.
+            (200, 0, 20.0),
+            (200, 128, 60.0),
+            (400, 0, 999.0), // Covered tokens, but farther from the query.
+            (400, 80, 999.0),
+        ]
+        .into_iter()
+        .map(|(tokens, kv, latency)| RowSpec {
+            workload_kind: "prefill",
+            batch_size: 1,
+            total_prefill_tokens: tokens,
+            total_kv_read_tokens: kv,
+            latency_ms: latency,
+            ..RowSpec::default()
+        })
+        .collect::<Vec<_>>();
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let db = db_with_pair(tmp.path());
+        let mut direct = op(FpmPhase::Prefill);
+        direct.interpolation = FpmInterpolation::Direct;
+        // At KV=32 the token=100/200 curves yield 20/30 ms. Token=175 is
+        // three quarters between them: 27.5 ms. Flattening gives 1/8,1/8,9/16,3/16.
+        let result = direct.query_totals(&db, &[1.0, 175.0, 32.0]).unwrap();
+        assert_eq!(result.latency_ms, 27.5);
+        assert_eq!(result.source, Source::Silicon);
+        let evidence = &result.fpm_queries.as_ref().unwrap()[0];
+        assert_eq!(
+            evidence.resolution,
+            FpmQueryResolution::KvFirstInterpolation
+        );
+        assert_eq!(
+            evidence
+                .support
+                .iter()
+                .map(|point| (
+                    point.coordinates.total_prefill_tokens,
+                    point.coordinates.total_kv_read_tokens,
+                    point.latency_ms,
+                    point.weight,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some(100.0), 0.0, 10.0, 0.125),
+                (Some(100.0), 64.0, 30.0, 0.125),
+                (Some(200.0), 0.0, 20.0, 0.5625),
+                (Some(200.0), 128.0, 60.0, 0.1875),
+            ]
+        );
+        // An exact KV endpoint needs only one original row for that token.
+        let result = direct.query_totals(&db, &[1.0, 175.0, 64.0]).unwrap();
+        assert_eq!(result.latency_ms, 37.5); // 1/4 * 30 + 3/4 * 40 ms.
+        assert_eq!(result.fpm_queries.as_ref().unwrap()[0].support.len(), 3);
+        // Bounding-box membership alone is insufficient; both token neighbors
+        // must themselves cover KV. Neither axis may hold a one-sided value.
+        for coords in [
+            [1.0, 50.0, 50.0],
+            [1.0, 500.0, 50.0],
+            [1.0, 175.0, 110.0],
+            [1.0, 175.0, 121.0],
+            [1.0, 175.0, -1.0],
+            [1.0, f64::NAN, 32.0],
+            [1.0, -1.0, 32.0],
+            [1.0, 5e9, 32.0],
+            [2.0, 175.0, 50.0],
+        ] {
+            assert!(direct.query_totals(&db, &coords).is_err(), "{coords:?}");
+        }
     }
 
     #[test]
@@ -1378,6 +1564,62 @@ mod tests {
                 .latency_ms,
             999.0
         );
+    }
+
+    #[test]
+    fn direct_prefill_kv_first_cannot_borrow_fake_rows_other_batches_or_cells() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let mut rows = [
+            (100, 0, 10.0, "real_kv"),
+            (100, 16, 15.0, "real_kv"),
+            (100, 64, 30.0, "fake_fallback"),
+            (200, 0, 20.0, "real_kv"),
+            (200, 128, 60.0, "real_kv"),
+        ]
+        .into_iter()
+        .map(|(tokens, kv, latency, seed)| RowSpec {
+            workload_kind: "prefill",
+            batch_size: 1,
+            total_prefill_tokens: tokens,
+            total_kv_read_tokens: kv,
+            latency_ms: latency,
+            kv_seed_regime: Some(seed),
+            ..RowSpec::default()
+        })
+        .collect::<Vec<_>>();
+        for (batch, model, cell_id) in [
+            (2, "org/model-a", "other-batch"),
+            (1, "org/model-b", "other-model"),
+        ] {
+            rows.push(RowSpec {
+                workload_kind: "prefill",
+                batch_size: batch,
+                total_prefill_tokens: 175,
+                total_kv_read_tokens: 32,
+                latency_ms: 1.0,
+                model_path: model,
+                cell_id: Some(cell_id),
+                ..RowSpec::default()
+            });
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &rows);
+        let mut direct = op(FpmPhase::Prefill);
+        direct.interpolation = FpmInterpolation::Direct;
+        for replace in [false, true] {
+            let mut db = db_with_pair(tmp.path());
+            db.set_fpm_forward_for_test(
+                crate::perf_database::FpmForwardTable::new_with_replacement(
+                    tmp.path().to_path_buf(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.25.1",
+                    replace,
+                ),
+            );
+            let error = direct.query_totals(&db, &[1.0, 175.0, 32.0]).unwrap_err();
+            assert!(error.to_string().contains("genuine FPM points"), "{error}");
+        }
     }
 
     #[test]

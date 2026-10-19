@@ -385,9 +385,11 @@ class EngineReplayRunnerFactory:
             supports_analytical_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
+            supports_generic_speculation=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
+            supports_tokenization=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -404,7 +406,7 @@ class EngineReplayRunnerFactory:
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=True,
-            supports_agentic_speculative_decoding=False,
+            supports_agentic_speculative_decoding=True,
             agentic_qualification="functional_only",
         )
 
@@ -555,6 +557,10 @@ class EngineReplayRunner:
             execution_spec["determinism"] = self.determinism
         if self.trace_graph_cache and "traffic" in execution_spec:
             execution_spec["traffic"]["trace_graph_cache"] = True
+        if spec.backend_deployment.tokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -1404,6 +1410,23 @@ def _materialize_engine_role(
     """Materialize one single-rank or attention-DP generalized engine."""
 
     role_config = dict(raw_config)
+    # New generic schemes use caller-authored capacity; leave the existing
+    # Ngram/NextN capacity paths unchanged.
+    requested_rank = role_config.get("rank", role_config)
+    if isinstance(requested_rank, Mapping):
+        timing = requested_rank.get("timing_model")
+        timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
+        selections = (requested_rank.get("speculation"), canonical)
+        for spec in selections:
+            if spec is not None and not isinstance(spec, Mapping):
+                raise ValueError("speculation must be a mapping")
+            if isinstance(spec, Mapping) and not isinstance(spec.get("params", {}), Mapping):
+                raise ValueError("speculation params must be a mapping")
+        if requested_rank.get("num_gpu_blocks") is None:
+            for spec in selections:
+                if isinstance(spec, Mapping) and spec.get("kind") not in ("none", "ngram"):
+                    raise ValueError(f"{spec.get('kind')} speculation requires explicit fixed KV capacity on {role}")
     # The shared CLI/Sweeper form is flat. Nested rank descriptors are already
     # execution-level input and retain the native runtime's compatibility
     # fallback after their structure has been validated below.
@@ -1613,6 +1636,7 @@ def _materialize_engine_role(
             memory_fraction_overrides[memory_field] = float(value)
 
     aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
+    prefill_context_parallel_size = aic_timing_overrides.get("cp_size", 1)
     for target in ("cp_size", "dcp"):
         if target in aic_timing_overrides:
             # Same contract as tp / attention_dp: a directly supplied deployment
@@ -1700,18 +1724,23 @@ def _materialize_engine_role(
             memory_fraction_overrides.clear()
 
     speculation_raw = rank.pop("speculation", None)
+    timing_config = timing_model.get("config", {}) if uses_aic_timing and isinstance(timing_model, dict) else {}
+    canonical_speculation = timing_config.get("speculation")
+    canonical_kind = canonical_speculation.get("kind") if isinstance(canonical_speculation, Mapping) else None
     speculation = None
     if speculation_raw is not None:
-        from .config.engine import NgramSpeculationConfig
+        from pydantic import TypeAdapter
 
-        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
-        if backend != "vllm" or rank.get("native_host_offload") is not None:
-            raise ValueError("ngram speculation requires vllm without host_offload")
+        from .config.engine import NgramSpeculationConfig, SpeculationConfig
+
+        speculation = TypeAdapter(SpeculationConfig).validate_python(speculation_raw)
         if any(
             rank.get(key) is not None
             for key in (
                 "aic_nextn",
                 "nextn",
+                "aic_nextn_accepted",
+                "nextn_accepted",
                 "aic_nextn_accept_rates",
                 "nextn_accept_rates",
                 "aic_mtp_seed",
@@ -1720,8 +1749,17 @@ def _materialize_engine_role(
         ):
             raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
         rank["aic_nextn"] = speculation.num_speculative_tokens
-        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        if isinstance(speculation, NgramSpeculationConfig):
+            rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        else:
+            rank["aic_nextn_accepted"] = speculation.expected_accepted_tokens
         rank["aic_mtp_seed"] = speculation.seed
+
+    kind = speculation.kind if speculation is not None else canonical_kind
+    if kind not in (None, "none"):
+        supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+        if backend not in supported or rank.get("native_host_offload") is not None:
+            raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
@@ -1736,7 +1774,9 @@ def _materialize_engine_role(
         ("aic_nextn_accept_rates", "nextn_accept_rates"),
     )
     if accept_rates is not None:
-        if nextn is None:
+        # Canonical timing resolves depth in native replay. Keep the authored
+        # rates intact instead of requiring the same depth on the rank too.
+        if nextn is None and canonical_kind in (None, "none"):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates requires aic_nextn")
         if not isinstance(accept_rates, str):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
@@ -1821,22 +1861,25 @@ def _materialize_engine_role(
             if speculation is not None:
                 cost_config = speculation.cost_config()
                 if timing_config.get("nextn") not in (None, 0):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                    raise ValueError("speculation conflicts with timing_model.config.nextn")
                 if timing_config.get("speculation") not in (None, cost_config):
-                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
-                if timing_config.get("forward_model", "op_level") != "op_level":
-                    raise ValueError("ngram speculation requires op_level timing")
+                    raise ValueError("speculation conflicts with timing_model.config.speculation")
+                if speculation.kind == "ngram" and timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("speculation requires op_level timing")
                 timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
+            canonical = timing_config.get("speculation")
+            if speculation is None and canonical is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            if speculation is None:
+            if speculation is None and canonical is None:
                 timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
+        elif speculation is not None and speculation.kind != "ngram":
+            raise ValueError(f"{speculation.kind} speculation requires external AIC timing")
 
     host_offload = rank.get("native_host_offload")
     if (
@@ -1847,9 +1890,18 @@ def _materialize_engine_role(
     ):
         rank["native_host_offload"] = {**host_offload, "kv_layout_id": _kv_layout_id(rank, model, tensor_parallel_size)}
 
+    timing = rank.get("timing_model", {})
+    timing_config = timing.get("config", {}) if isinstance(timing, dict) and timing.get("provider") == "aic" else {}
+    if timing_config.get("cp_size") is not None:
+        prefill_context_parallel_size = timing_config["cp_size"]
+    prefill_context_parallel_size = _positive_int(
+        prefill_context_parallel_size,
+        f"engine provider {role} prefill context parallel size",
+    )
     return {
         "dp_size": dp_size,
         "tensor_parallel_size": tensor_parallel_size,
+        "prefill_context_parallel_size": prefill_context_parallel_size,
         "num_gpu_blocks_is_explicit": num_gpu_blocks_is_explicit,
         "rank": rank,
     }

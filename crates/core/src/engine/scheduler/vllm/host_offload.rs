@@ -80,6 +80,7 @@ impl VllmHostRequestState {
             })
             .collect();
         let prompt_meta = retain_meta.then(|| {
+            let session_id = lease.session_id.as_deref().map(Arc::<str>::from);
             (0..prompt_blocks)
                 .map(|index| HostBlockMeta {
                     parent: index
@@ -89,6 +90,7 @@ impl VllmHostRequestState {
                         .local_hash(index)
                         .expect("shared G2 metadata requires retained local hashes"),
                     position: index,
+                    session_id: session_id.clone(),
                 })
                 .collect()
         });
@@ -1220,6 +1222,7 @@ mod tests {
                 parent_hash: None,
                 start_position: Some(0),
                 blocks: vec![block(0), block(1)],
+                session_id: Some("producer-session".into()),
             }),
             tier: KvEventTier::HostPinned,
         };
@@ -1238,6 +1241,7 @@ mod tests {
                 max_output_tokens: 1,
                 uuid: Some(Uuid::from_u128(1)),
                 arrival_timestamp_ms: Some(0.0),
+                session_id: Some("producer-session".into()),
                 ..Default::default()
             });
             let mut device = Vec::new();
@@ -1583,7 +1587,8 @@ mod tests {
         let owner = Uuid::from_u128(902);
         let (sequence, identities) =
             RequestSequence::new(owner, vec![1, 2, 3, 4, 5], 0, 0, 4, true, true, false, None);
-        let lease = BlockRequestLease::new(owner, identities);
+        let mut lease = BlockRequestLease::new(owner, identities);
+        lease.session_id = Some("restoring-session".into());
         let mut host = VllmHostRequestState::new(&sequence, &lease, 4, true);
         let key = host.prompt_keys[0];
         let registry = G3Tier::new(
@@ -1633,11 +1638,14 @@ mod tests {
             .into_iter()
             .filter(|event| event.tier == KvEventTier::HostPinned)
             .map(|event| match event.data {
-                KvEventData::Stored(stored) => stored
-                    .blocks
-                    .iter()
-                    .map(|block| block.block_hash)
-                    .collect::<Vec<_>>(),
+                KvEventData::Stored(stored) => {
+                    assert_eq!(stored.session_id.as_deref(), Some("restoring-session"));
+                    stored
+                        .blocks
+                        .iter()
+                        .map(|block| block.block_hash)
+                        .collect::<Vec<_>>()
+                }
                 KvEventData::Removed { .. } => panic!("promotion evicts nothing"),
             })
             .collect::<Vec<_>>();

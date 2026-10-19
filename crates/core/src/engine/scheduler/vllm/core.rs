@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Copyright contributors to the vLLM project.
+// Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
+// scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -63,6 +66,8 @@ pub(crate) struct VllmRequestState {
     waiting_order: u64,
     is_decode_handoff: bool,
     pub(crate) num_computed_tokens: usize,
+    /// Cleared on preemption: recomputation has no draft IDs to verify.
+    drafts_ready: bool,
     pub(crate) num_preemptions: usize,
     /// Prefix tokens found cached at first admission (set once: a preempted
     /// request re-probes against a cache warmed by its own blocks, which
@@ -157,7 +162,9 @@ pub(super) struct PreemptedRequest {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ScheduledWork {
+    /// Known tokens plus scheduled speculative verification tokens.
     total_tokens: usize,
+    draft_tokens: usize,
     prompt_tokens: usize,
     prefix_tokens: usize,
     terminal_after_schedule: bool,
@@ -541,6 +548,7 @@ impl SchedulerState {
         let request = self.requests.get_mut(&uuid)?;
         request.status = RequestStatus::Preempted;
         request.num_computed_tokens = 0;
+        request.drafts_ready = false;
         request.num_preemptions += 1;
         self.preemptions_total += 1;
         request.debug_assert_invariants(uuid);
@@ -1394,6 +1402,7 @@ impl VllmCore {
             self.emit_token_ids,
             planned_output_ids,
         );
+        sequence.lease.session_id = request.session_id;
         if let (Some(unit), Some(tokens)) = (self.args.prefix_match_unit, prefix_tokens) {
             sequence.lease.configure_prefix_hashes(&tokens, unit);
         }
@@ -1411,6 +1420,7 @@ impl VllmCore {
             waiting_order,
             is_decode_handoff: false,
             num_computed_tokens: 0,
+            drafts_ready: false,
             num_preemptions: 0,
             cached_prefix_tokens: None,
             cached_tokens_signaled: false,
@@ -2655,6 +2665,14 @@ impl VllmCore {
             .len()
             .saturating_sub(effective_computed_before);
         let prompt_remaining = prompt_len.saturating_sub(prompt_before);
+        let draft_tokens = policy::scheduled_draft_tokens(
+            self.args.scheduling_policy(),
+            self.args.worker_type,
+            request.drafts_ready,
+            self.args.aic_nextn,
+            request.sequence.len(),
+            self.args.max_model_len,
+        );
         if prompt_remaining > 0
             && !self.args.enable_chunked_prefill
             && prompt_remaining > *token_budget
@@ -2668,6 +2686,9 @@ impl VllmCore {
             request.sequence.len(),
             remaining_known_tokens.min(*token_budget),
         );
+        // Speculative positions consume scheduler budget but are not committed
+        // sequence/KV state until verification accepts them.
+        let scheduled_drafts = draft_tokens.min(token_budget.saturating_sub(desired_tokens));
         if desired_tokens == 0 && remaining_known_tokens > 0 {
             return Ok(if *token_budget > 0 {
                 ScheduleOutcome::SkippedForAlignment
@@ -2772,10 +2793,11 @@ impl VllmCore {
         if let Some(request) = self.state.requests.get(&uuid) {
             request.debug_assert_invariants(uuid);
         }
-        let tokens_used = actual_computed_after.saturating_sub(effective_computed_before);
-        if tokens_used == 0 && actual_computed_after < self.state.request_sequence_len(uuid) {
+        let known_tokens_used = actual_computed_after.saturating_sub(effective_computed_before);
+        if known_tokens_used == 0 && actual_computed_after < self.state.request_sequence_len(uuid) {
             return Ok(ScheduleOutcome::Blocked);
         }
+        let tokens_used = known_tokens_used + scheduled_drafts;
 
         // vLLM's allocate_slots() caches full blocks through this request's
         // newly scheduled token boundary before scheduling the next request.
@@ -2810,6 +2832,7 @@ impl VllmCore {
             uuid,
             ScheduledWork {
                 total_tokens: tokens_used,
+                draft_tokens: scheduled_drafts,
                 prompt_tokens,
                 prefix_tokens: prompt_before,
                 terminal_after_schedule,
@@ -2871,6 +2894,25 @@ impl VllmCore {
         }
     }
 
+    fn is_first_token_from_prefill(
+        &self,
+        uuid: &Uuid,
+        request: &VllmRequestState,
+        scheduled: &FxHashMap<Uuid, ScheduledWork>,
+    ) -> bool {
+        // The final prefill forward already includes the output head. First
+        // tokens sampled from it do not require a second full forward pass.
+        self.args.worker_type == WorkerType::Aggregated
+            && policy::first_token_uses_prefill_forward(
+                self.args.scheduling_policy(),
+                self.speculative_sampler.is_some(),
+            )
+            && request.sequence.generated_tokens() == 0
+            && scheduled
+                .get(uuid)
+                .is_some_and(|work| work.prompt_tokens > 0)
+    }
+
     fn emit_ready_tokens(
         &mut self,
         mut collector: Option<&mut TraceCollector>,
@@ -2902,15 +2944,7 @@ impl VllmCore {
                 continue;
             }
             ready.push(uuid);
-            // The final prefill forward already includes the output head. First
-            // tokens sampled from it do not require a second full forward pass.
-            let first_token_from_prefill = self.args.worker_type == WorkerType::Aggregated
-                && self.speculative_sampler.is_none()
-                && request.sequence.generated_tokens() == 0
-                && scheduled
-                    .get(&uuid)
-                    .is_some_and(|work| work.prompt_tokens > 0);
-            if !first_token_from_prefill {
+            if !self.is_first_token_from_prefill(&uuid, request, scheduled) {
                 decode_count += 1;
                 total_length += request.sequence.len();
             }
@@ -3066,13 +3100,19 @@ impl VllmCore {
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
         decode_acceptance: &mut DecodeAcceptance,
     ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
-        let max_burst = if self.args.worker_type == WorkerType::Prefill {
-            1
-        } else {
-            self.args
-                .aic_nextn
-                .expect("speculative sampler requires nextn")
-                + 1
+        let nextn = self
+            .args
+            .aic_nextn
+            .expect("speculative sampler requires nextn");
+        let scheduling_policy = self.args.scheduling_policy();
+        let worker_type = self.args.worker_type;
+        let burst_limit = |uuid: &Uuid| {
+            policy::speculative_burst_limit(
+                scheduling_policy,
+                worker_type,
+                nextn,
+                scheduled.get(uuid).map_or(0, |work| work.draft_tokens),
+            )
         };
         let mut rejected_signals = Vec::new();
         let mut running_changed = false;
@@ -3082,7 +3122,7 @@ impl VllmCore {
                 .iter()
                 .filter_map(|uuid| self.state.requests.get(uuid).map(|r| (*uuid, r)))
                 .map(|(uuid, request)| {
-                    let burst = max_burst.min(policy::remaining_generation_tokens(
+                    let burst = burst_limit(&uuid).min(policy::remaining_generation_tokens(
                         &request.sequence,
                         self.args.max_model_len,
                     ));
@@ -3149,26 +3189,29 @@ impl VllmCore {
             }
         };
 
-        let total_length = ready
+        let (decode_count, total_length) = ready
             .iter()
-            .filter_map(|uuid| self.state.requests.get(uuid))
-            .map(|request| request.sequence.len())
-            .sum::<usize>();
-        let (decode_time, decode_end_ms) = if self.args.worker_type == WorkerType::Prefill {
-            (Duration::ZERO, decode_start_ms)
-        } else {
-            let active_kv_tokens = total_length;
-            let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
-            let context_length = total_length / ready.len();
-            let decode_ms = self.args.perf_model.predict_decode_time(
-                ready.len(),
-                active_kv_tokens,
-                context_length,
-                total_kv_tokens,
-            )?;
-            let duration = scale_decode_time(decode_ms, &self.args)?;
-            (duration, decode_start_ms + duration.as_secs_f64() * 1000.0)
-        };
+            .filter_map(|uuid| self.state.requests.get(uuid).map(|request| (uuid, request)))
+            .filter(|(uuid, request)| !self.is_first_token_from_prefill(uuid, request, scheduled))
+            .fold((0, 0), |(count, total), (_, request)| {
+                (count + 1, total + request.sequence.len())
+            });
+        let (decode_time, decode_end_ms) =
+            if worker_type == WorkerType::Prefill || decode_count == 0 {
+                (Duration::ZERO, decode_start_ms)
+            } else {
+                let active_kv_tokens = total_length;
+                let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
+                let context_length = total_length / decode_count;
+                let decode_ms = self.args.perf_model.predict_decode_time(
+                    decode_count,
+                    active_kv_tokens,
+                    context_length,
+                    total_kv_tokens,
+                )?;
+                let duration = scale_decode_time(decode_ms, &self.args)?;
+                (duration, decode_start_ms + duration.as_secs_f64() * 1000.0)
+            };
 
         let sampled_bursts = {
             let sampler = self
@@ -3187,12 +3230,13 @@ impl VllmCore {
                         &request.sequence,
                         self.args.max_model_len,
                     );
-                    let accepted = if self.args.worker_type == WorkerType::Prefill {
+                    let limit = burst_limit(uuid);
+                    let accepted = if limit == 1 {
                         remaining.min(1)
                     } else if remaining == 0 {
                         0
                     } else {
-                        sampler.sample_accepted_tokens()
+                        sampler.sample_accepted_tokens_up_to(limit)
                     };
                     // Record only surviving decode work, after reservation succeeds.
                     // FPM demand can still contain requests preempted above.
@@ -3292,6 +3336,7 @@ impl VllmCore {
                 .get_mut(&uuid)
                 .expect("nonterminal sampled request must remain active");
             request.num_computed_tokens = request.sequence.len().saturating_sub(1);
+            request.drafts_ready = true;
             request.debug_assert_progress(uuid);
             debug_assert_eq!(
                 request.sequence.len() - request.num_computed_tokens,
@@ -3930,6 +3975,11 @@ mod state_cache_tests {
         let pass = step(&mut core);
         assert_eq!(pass.admissions.len(), 1, "current tokens plus state fit");
         assert_eq!(pass.output_signals.len(), 1);
+        assert!(
+            !pass.output_signals[0].rejected,
+            "prefill has no draft lookahead"
+        );
+        let pass = step(&mut core);
         assert!(pass.output_signals[0].uuid == id && pass.output_signals[0].rejected);
         assert!(pass.output_signals[0].token_id.is_none());
         assert!(core.state.requests.is_empty());
@@ -4092,6 +4142,12 @@ mod state_cache_tests {
         config.aic_nextn_accept_rates = Some("1,0,0".into());
         let mut core = VllmCore::new(config);
         let id = submit(&mut core, 91_800, 6, 8);
+        let first = step(&mut core);
+        assert_eq!(
+            first.output_signals.len(),
+            1,
+            "prefill has no drafts to accept"
+        );
         for _ in 0..3 {
             let pass = step(&mut core);
             assert_eq!(pass.output_signals.len(), 2);
