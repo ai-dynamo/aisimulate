@@ -63,11 +63,11 @@ struct Entry {
     lru_slot: Option<NonZeroU32>,
 }
 
-/// Capacity and recency of one G3 namespace.
+/// Blocks and recency of one G3 namespace.
 #[derive(Default)]
 struct Pool {
-    /// Resident and pending blocks.
-    used: usize,
+    /// Resident and pending blocks; their count is the pool's used capacity.
+    entries: FxHashMap<HostBlockKey, Entry>,
     /// Resident blocks, least recently probed or transferred first. A
     /// completed job's blocks become newest together, in key order.
     lru: Lru,
@@ -94,7 +94,6 @@ pub(crate) struct G3Tier {
     config: G3OffloadConfig,
     next_worker_id: usize,
     block_bytes: usize,
-    entries: FxHashMap<(usize, HostBlockKey), Entry>,
     pools: BTreeMap<usize, Pool>,
     jobs: BTreeMap<u64, Job>,
     transfers: FairTransfers,
@@ -137,7 +136,6 @@ impl G3Tier {
             config,
             next_worker_id: workers,
             block_bytes,
-            entries: FxHashMap::default(),
             pools: BTreeMap::new(),
             jobs: BTreeMap::new(),
             transfers: FairTransfers::default(),
@@ -179,7 +177,6 @@ impl G3Tier {
         );
         self.completed.remove(&worker);
         if self.config.scope == G3Scope::WorkerLocal {
-            self.entries.retain(|(pool, _), _| *pool != worker);
             self.pools.remove(&worker);
         }
         Ok(())
@@ -198,20 +195,24 @@ impl G3Tier {
 
     /// Read-only availability for a capacity check; does not touch LRU or stats.
     pub(crate) fn contains(&self, worker: usize, key: HostBlockKey) -> bool {
-        self.entries.contains_key(&(self.pool(worker), key))
+        self.pools
+            .get(&self.pool(worker))
+            .is_some_and(|pool| pool.entries.contains_key(&key))
     }
 
     pub(crate) fn probe(&mut self, worker: usize, key: HostBlockKey) -> Probe {
         let pool = self.pool(worker);
         self.stats.lookup_probes += 1;
-        match self.entries.get_mut(&(pool, key)) {
+        let Some(Pool { entries, lru }) = self.pools.get_mut(&pool) else {
+            return Probe::Miss;
+        };
+        match entries.get_mut(&key) {
             None => Probe::Miss,
             Some(entry) if entry.pending => {
                 self.stats.lookup_pending += 1;
                 Probe::Pending
             }
             Some(entry) => {
-                let lru = &mut self.pools.get_mut(&pool).expect("G3 pool").lru;
                 lru.touch(&mut entry.lru_slot, key);
                 self.stats.lookup_hits += 1;
                 Probe::Resident
@@ -230,11 +231,12 @@ impl G3Tier {
         self.advance(now);
         let pool = self.pool(worker);
         let protected: FxHashSet<_> = keys.iter().copied().collect();
+        let Pool { entries, lru } = self.pools.entry(pool).or_default();
         let mut keys = match direction {
             Direction::Write => keys
                 .iter()
                 .copied()
-                .filter(|key| !self.entries.contains_key(&(pool, *key)))
+                .filter(|key| !entries.contains_key(key))
                 .collect::<Vec<_>>(),
             Direction::Read => keys.to_vec(),
         };
@@ -242,11 +244,9 @@ impl G3Tier {
             return None;
         }
         if direction == Direction::Write {
-            let Pool { used, lru } = self.pools.entry(pool).or_default();
-            let free = self.config.num_g3_blocks - *used;
-            let entries = &self.entries;
+            let free = self.config.num_g3_blocks - entries.len();
             let victims = lru.victims(keys.len().saturating_sub(free), |key| {
-                entries[&(pool, key)].pins == 0 && !protected.contains(&key)
+                entries[&key].pins == 0 && !protected.contains(&key)
             });
             // Keep the leading new blocks that fit, preserving any blocks of
             // this prefix already stored. Pending writes and read pins retain
@@ -256,9 +256,8 @@ impl G3Tier {
                 return None;
             }
             for key in victims {
-                let mut entry = self.entries.remove(&(pool, key)).unwrap();
+                let mut entry = entries.remove(&key).unwrap();
                 lru.remove(&mut entry.lru_slot);
-                *used -= 1;
                 self.stats.evictions += 1;
             }
             for key in &keys {
@@ -268,17 +267,17 @@ impl G3Tier {
                     writer: worker,
                     lru_slot: None,
                 };
-                *used += usize::from(self.entries.insert((pool, *key), entry).is_none());
+                entries.insert(*key, entry);
             }
         } else {
             if keys
                 .iter()
-                .any(|key| self.entries.get(&(pool, *key)).is_none_or(|e| e.pending))
+                .any(|key| entries.get(key).is_none_or(|e| e.pending))
             {
                 return None;
             }
             for key in &keys {
-                self.entries.get_mut(&(pool, *key)).unwrap().pins += 1;
+                entries.get_mut(key).unwrap().pins += 1;
             }
         }
         self.last_job_id += 1;
@@ -351,11 +350,11 @@ impl G3Tier {
     fn finish(&mut self, id: u64, job: Job, now: f64) {
         self.completion_epoch += 1;
         let pool = self.pool(job.worker);
-        let lru = &mut self.pools.get_mut(&pool).expect("G3 pool").lru;
+        let Pool { entries, lru } = self.pools.get_mut(&pool).expect("G3 pool");
         let mut cohort = job.keys.clone();
         cohort.sort_unstable();
         for key in cohort {
-            let entry = self.entries.get_mut(&(pool, key)).unwrap();
+            let entry = entries.get_mut(&key).unwrap();
             match job.direction {
                 Direction::Write => entry.pending = false,
                 Direction::Read => {
@@ -401,13 +400,12 @@ impl G3Tier {
         if self.transfers.cancel(id) {
             let job = self.jobs.remove(&id).unwrap();
             let pool = self.pool(job.worker);
+            let entries = &mut self.pools.get_mut(&pool).unwrap().entries;
             for key in &job.keys {
                 if job.direction == Direction::Write {
-                    if self.entries.remove(&(pool, *key)).is_some() {
-                        self.pools.get_mut(&pool).expect("G3 pool").used -= 1;
-                    }
+                    entries.remove(key);
                 } else {
-                    self.entries.get_mut(&(pool, *key)).unwrap().pins -= 1;
+                    entries.get_mut(key).unwrap().pins -= 1;
                 }
             }
             self.io_mut(job.direction).cancelled_jobs += 1;
@@ -416,8 +414,9 @@ impl G3Tier {
 
     pub(crate) fn snapshot(&self) -> G3Stats {
         let mut stats = self.stats.clone();
-        stats.pending_blocks = self.entries.values().filter(|e| e.pending).count();
-        stats.resident_blocks = self.entries.len() - stats.pending_blocks;
+        let entries = self.pools.values().flat_map(|pool| pool.entries.values());
+        stats.pending_blocks = entries.clone().filter(|e| e.pending).count();
+        stats.resident_blocks = entries.count() - stats.pending_blocks;
         stats
     }
 }

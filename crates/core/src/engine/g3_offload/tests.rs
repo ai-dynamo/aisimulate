@@ -73,7 +73,7 @@ fn partial_writes_preserve_pending_pinned_and_existing_prefix_blocks() {
         tier.take_completed(0, 1.0);
         assert_eq!(tier.snapshot().resident_blocks, 3);
         assert_eq!(tier.snapshot().pending_blocks, 0);
-        assert_eq!(tier.entries[&(0, key(2))].pins, 0);
+        assert_eq!(tier.pools[&0].entries[&key(2)].pins, 0);
     }
 }
 
@@ -262,7 +262,7 @@ fn retiring_workers_drain_only_their_io_and_never_reuse_ids() {
         tier.unregister_worker(2).unwrap();
         if scope == G3Scope::ClusterShared {
             assert_eq!(
-                tier.entries[&(0, key(1))].pins,
+                tier.pools[&0].entries[&key(1)].pins,
                 1,
                 "retired writer's block is still pinned by a foreign reader"
             );
@@ -473,5 +473,5 @@ fn cancel_after_foreign_advance_and_before_delivery_is_terminal_once() {
     assert!(r.take_completed(1, 50.0).is_empty());
     assert_eq!(r.snapshot().read.completed_jobs, 1);
     assert_eq!(r.snapshot().read.cancelled_jobs, 0);
-    assert_eq!(r.entries[&(0, key(1))].pins, 0);
+    assert_eq!(r.pools[&0].entries[&key(1)].pins, 0);
 }
