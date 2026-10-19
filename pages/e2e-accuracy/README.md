@@ -639,3 +639,6 @@ change predictions, cohort selection, or accuracy metrics.
   that series; ordinary activation toggles it. Charts expose their interactive points
   to assistive technology.
 - Pages CI runs the E2E Chromium smoke test alongside the FPE and FPM checks.
+
+The browser smoke check verifies that MTP summary values survive a page reload,
+as well as the selected filter.

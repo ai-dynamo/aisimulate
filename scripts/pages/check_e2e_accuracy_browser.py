@@ -63,8 +63,10 @@ async def check():
                 await page.locator("#decoding-select").select_option("mtp")
                 await expect(page.locator(".model-row").first).to_be_visible()
                 assert "spec=mtp" in page.url
+                mtp_summary = await page.locator("#summary-grid").inner_text()
                 await page.reload()
                 await expect(page.locator("#decoding-select")).to_have_value("mtp")
+                await expect(page.locator("#summary-grid")).to_have_text(mtp_summary)
                 await page.locator("#decoding-select").select_option("all")
                 await page.locator("#tab-details").click()
                 await expect(page.locator("#details-view")).to_be_visible()
