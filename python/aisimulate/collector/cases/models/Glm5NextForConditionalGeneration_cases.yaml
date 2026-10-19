@@ -19,7 +19,8 @@ description: >
   FP32 router); hidden 4096, vocab 154880; mHC hc_mult 4. Serving topology
   is pure TP in {1, 2, 4, 8} (which TP fits is a per-system capacity fact:
   e.g. FP8 TP1 fits no current GPU, H100 FP8 needs TP8), EP=PP=CP=DP=1.
-  Sparse-MLA KV is FP8, except on SM90, where both runtimes serve BF16 KV.
+  Collected sparse-MLA KV is FP8, except on SM90, where both runtimes serve
+  only BF16 KV (a BF16-KV SM10x deployment is a separate identity).
   Checkpoints: zai-org/GLM-5.3-Flash (FP8 e4m3 128x128 block for dense MLP,
   shared + routed experts and MLA q_a/q_b/kv_a/o; BF16 elsewhere) and
   nvidia/GLM-5.3-Flash-NVFP4 (NVFP4 routed experts + dense MLP; everything

@@ -263,7 +263,7 @@ def main():
         "--kv-cache-dtype",
         choices=("fp8", "bfloat16"),
         default="fp8",
-        help="sparse-MLA latent KV precision (both backends serve bfloat16 on SM90)",
+        help="sparse-MLA latent KV precision of the table (SM90 runtimes serve only bfloat16)",
     )
     parser.add_argument("--config", required=True, help="checkpoint config.json (pinned revision)")
     parser.add_argument("--sweep", default="collector/cases/base_ops/glm53flash_attention.yaml")

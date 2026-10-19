@@ -65,9 +65,11 @@ RUNTIME_IMAGES = {
     ("sglang", "amd64"): "sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4",
 }
 # Sparse-MLA latent KV precision (the geometry's ``kv_cache_dtype``) and the
-# framework flag that serves it (always explicit). Both runtimes serve FP8 KV
-# on SM10x and only BF16 KV on SM90, so Hopper rows are a distinct BF16-KV
-# identity; one table never mixes them.
+# framework flag that serves it (always explicit; the launcher default is fp8).
+# One table never mixes KV dtypes and serves only deployments of its dtype.
+# SM10x collections use FP8 KV (vLLM's ``auto`` would resolve BF16 for this
+# checkpoint, so BF16 there is a separate identity collected with
+# ``--kv-cache-dtype bfloat16``). On SM90 both runtimes serve only BF16 KV:
 # - SGLang 0.5.20: the IndexPool DSA backends cannot read FP8 KV
 #   (dsa_backend_kpool.py:41-68 admits only fa3/tilelang/trtllm; tilelang
 #   rejects FP8 KV, arg_groups/overrides.py:639-647); its default is BF16

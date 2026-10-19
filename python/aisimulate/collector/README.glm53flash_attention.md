@@ -28,8 +28,12 @@ rejects only a TP wider than the node or a checkpoint whose per-rank weights
 exceed one GPU of the system YAML; every other fit is observed at runtime.
 
 The sparse-MLA latent KV dtype is part of the key (`kv_cache_dtype`, always
-passed explicitly). Both backends serve FP8 KV (`fp8_e4m3`) on SM10x and BF16
-KV on SM90, so Hopper rows are a distinct BF16-KV identity:
+passed explicitly with `--kv-cache-dtype`; the default is `fp8`). A table
+holds rows of one KV dtype and serves only deployments of that dtype. On SM10x
+the collected identity is FP8 KV (`fp8_e4m3`). vLLM's `auto` would resolve BF16
+for this checkpoint there, so a BF16-KV SM10x deployment is a separate identity:
+collect it with `--kv-cache-dtype bfloat16`. On SM90 both runtimes can serve
+only BF16 KV, so Hopper rows are a BF16-KV identity:
 
 - SGLang 0.5.20: its IndexPool DSA backends (fa3/tilelang/trtllm) cannot read
   FP8 KV on SM90, and its own default there is BF16.
