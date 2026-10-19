@@ -1035,3 +1035,31 @@ test("models with only outlier predictions stay selectable and charted", async (
   assert.match(app.element("details-view").innerHTML, /point aisimulate/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
 });
+
+
+test("decoding filter recomputes MAPE, keeps failures, and restores its URL", () => {
+  const data = withTopology();
+  const gpu = data.models[0].workloads[0].gpus[0];
+  const mtp = structuredClone(gpu.topologies[0]);
+  mtp.id = "fedcba9876543210";
+  mtp.spec_method = "mtp";
+  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  gpu.topologies.push(mtp);
+  const app = harness();
+  app.set("fixture", data);
+  app.run("state.excludeMultinode = true; state.rawData = filterSnapshot(fixture); state.excludeMultinode = false");
+  app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
+  app.run("state.data = filterSnapshot(state.rawData)");
+  assert.equal(app.run("state.data.totals.rows"), 3);
+  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
+  assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
+  app.run("updateLocation()");
+  assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
+  app.element("decoding-select").events.change({target: {value: "none"}});
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  app.element("decoding-select").events.change({target: {value: "all"}});
+  assert.equal(app.run("state.data.totals.rows"), 6);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
+});

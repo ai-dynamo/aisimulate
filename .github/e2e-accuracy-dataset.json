@@ -70,5 +70,5 @@
   ],
   "release_tag": "db-dump/2026-09-14",
   "schema_version": 1,
-  "selection_policy": "gym-resolved-config-v2"
+  "selection_policy": "gym-resolved-config-v3"
 }
