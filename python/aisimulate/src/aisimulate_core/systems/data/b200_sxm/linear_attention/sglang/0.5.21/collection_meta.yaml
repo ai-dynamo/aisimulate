@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.5.21
+  image: lmsysorg/sglang:v0.5.21
+  image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+tables:
+  gdn_perf:
+    rows: 9977
+    status: complete
+    collections:
+    - collector_ref: 4ff777c61ca928312a2b2d45f243312cfafc97d4
+      collector_hash: sha256:4856a9cef02c86215c34cd549d20da49379b41c2cecb856af632be3f40239fbd
+      case_plan_hash: sha256:d4af8c9dc36a74fe71c09e3c55bc2526cf52de35baa000eb74e7a24723e79a4f
+      collected_at: '2026-10-06'
+      rows: 16461
+      status: complete
