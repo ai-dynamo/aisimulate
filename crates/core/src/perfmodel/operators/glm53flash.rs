@@ -1980,4 +1980,39 @@ pub(crate) mod tests {
         let bf16_ms = vllm_bf16.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
         assert!(bf16_ms > fp8_ms);
     }
+
+    #[test]
+    fn bf16_latent_traffic_has_a_hand_calculated_byte_delta() {
+        // BF16 vs FP8 changes exactly two SOL byte terms, each by one extra
+        // byte per latent element (kv_lora_rank 512): the NoPE latent read
+        // over the selected pairs and the KV publication of the x new
+        // tokens. Every FLOP term is unchanged.
+        let mut spec = db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.mem_bw = 1e6;
+        for backend in ["vllm", "sglang"] {
+            let mut fp8 = attention("sparse_mla");
+            fp8.backend = backend.into();
+            let mut bf16 = fp8.clone();
+            bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+            // Decode, B=1 at s=4098: sparse_pairs(4097, 4098) selects 2050
+            // pairs, x = 1 token -> (2050 + 1) * 512 bytes.
+            // Context, B=1, s=4, prefix 0: sparse_pairs(0, 4) selects 10
+            // pairs, x = 4 tokens -> (10 + 4) * 512 bytes.
+            for (is_context, s, extra_bytes) in
+                [(false, 4098.0, 2051.0 * 512.0), (true, 4.0, 14.0 * 512.0)]
+            {
+                fp8.is_context = is_context;
+                bf16.is_context = is_context;
+                let a = fp8.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let b = bf16.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let expected_ms = extra_bytes / 1e6 * 1e3;
+                assert!(
+                    (b.mem_ms - a.mem_ms - expected_ms).abs() <= 1e-9 * expected_ms,
+                    "{backend} context={is_context}: {} vs {expected_ms}",
+                    b.mem_ms - a.mem_ms
+                );
+                assert_eq!(b.math_ms, a.math_ms, "{backend} context={is_context}");
+            }
+        }
+    }
 }
