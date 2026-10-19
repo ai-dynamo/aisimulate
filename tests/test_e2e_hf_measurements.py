@@ -121,12 +121,12 @@ def test_local_configuration_identity_and_cohort(record):
     points, _ = select_points(tables)
     assert len(points) == 2
     assert all(p["source_row"]["head_sha"] == "b" * 40 for p in points)
-    with pytest.raises(ValueError, match="conflicting HF benchmark"):
+    with pytest.raises(ValueError, match="duplicate HF benchmark"):
         hf.to_tables([record, record | dict(conc=64)], {})
 
 
 @pytest.fixture
-def cache(tmp_path, monkeypatch, record):
+def cache(tmp_path, monkeypatch, record, request):
     artifacts = {}
 
     def register(path, payload, schema, rows=None):
@@ -147,11 +147,12 @@ def cache(tmp_path, monkeypatch, record):
         record_sha256=hashlib.sha256(hf.canonical(record)).hexdigest(),
         raw_record_json=hf.canonical(record).decode(),
     )
-    table = pa.Table.from_pylist([row]).replace_schema_metadata({b"schema_id": b"inferencex-observations-v1"})
+    count = getattr(request, "param", 1)
+    table = pa.Table.from_pylist([row] * count).replace_schema_metadata({b"schema_id": b"inferencex-observations-v1"})
     output = pa.BufferOutputStream()
     pq.write_table(table, output)
     ref = register(
-        "data/e2e/inferencex/observations.parquet", output.getvalue().to_pybytes(), "inferencex-observations-v1", 1
+        "data/e2e/inferencex/observations.parquet", output.getvalue().to_pybytes(), "inferencex-observations-v1", count
     )
     partitions = [
         dict(source_model=record["model"], hardware=record["hardware"], framework=record["framework"], artifacts=[ref])
@@ -161,7 +162,7 @@ def cache(tmp_path, monkeypatch, record):
         snapshot_id="test",
         completeness="complete",
         partitions=partitions,
-        counts={"observations_distinct": 1},
+        counts={"observations_distinct": count},
         source_scope={"kind": "api-current-model-view"},
     )
     ref = register("data/e2e/inferencex/snapshot.json", hf.canonical(snapshot), "inferencex-input-snapshot/v1")
@@ -252,3 +253,10 @@ def test_private_artifact_rejects_symlinks_and_plaintext(sealed):
     (encrypted / "link").unlink()
     with pytest.raises(ValueError, match="unencrypted"):
         private_artifacts.transfer(source, opened, decrypt=True)
+
+
+@pytest.mark.parametrize("cache", [2], indirect=True)
+def test_duplicate_observations_with_valid_checksums_fail_before_output(cache, manifest, tmp_path):
+    with pytest.raises(ValueError, match="duplicate HF benchmark identity"):
+        hf.fetch(manifest, tmp_path / "duplicate-output")
+    assert not (tmp_path / "duplicate-output").exists()

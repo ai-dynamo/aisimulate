@@ -150,8 +150,9 @@ def to_tables(records, runs):
             "workflow_run_id": run_id,
             "recipe_fingerprint": raw.get("recipe_fingerprint"),
         }
-        if benches.setdefault(benchmark_id, bench) != bench:
-            raise ValueError("conflicting HF benchmark versions")
+        if benchmark_id in benches:
+            raise ValueError("duplicate HF benchmark identity")
+        benches[benchmark_id] = bench
     if not benches:
         raise ValueError("HF cache contains no observations")
     return {

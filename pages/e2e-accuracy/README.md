@@ -97,6 +97,9 @@ charts; rebuilding the UI around a normalized-only summary cannot restore them.
 Gym imports without matching branch-qualified producer evidence remain historical
 snapshots and must not be labeled as newly evaluated public branch results.
 
+HF input validation rejects duplicate benchmark IDs, including identical records,
+before writing campaign inputs. Declared observation counts cannot hide deduplication.
+
 ## MTP decoding
 
 The HF `hf-current-view-config-v1` policy remains STP-only. Enabling MTP for HF
