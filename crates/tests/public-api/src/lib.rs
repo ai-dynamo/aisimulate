@@ -118,8 +118,8 @@ mod tests {
     use super::*;
     use aisimulate_core::{
         ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
-        ForwardPassRegressionWorkloadKind, TimingEvidenceSource, TimingEvidenceSummary,
-        TimingOperationEvidence, TimingPhaseEvidence,
+        ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, TimingEvidenceSource,
+        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
     };
 
     #[test]
@@ -228,6 +228,81 @@ mod tests {
     #[test]
     fn ergonomic_builder_is_available_to_external_crates() {
         let _builder = configured_builder();
+    }
+
+    #[test]
+    fn speculative_identity_round_trips_through_public_configuration() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/target",
+            "test-system",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::OpLevel;
+        config.database_mode = DatabaseMode::Sol;
+        let draft_config = serde_json::json!({
+            "architectures": ["LlamaForCausalLM"],
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+        });
+        config.speculation = Some(ForwardPassSpeculationConfig {
+            kind: "draft_model".into(),
+            params: [("num_speculative_tokens".into(), 8.into())]
+                .into_iter()
+                .collect(),
+            draft_model_path: Some("test/draft".into()),
+            draft_config: Some(draft_config.as_object().unwrap().clone()),
+        });
+
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            encoded["speculation"],
+            serde_json::json!({
+                "kind": "draft_model",
+                "params": {"num_speculative_tokens": 8},
+                "draft_model_path": "test/draft",
+                "draft_config": draft_config,
+            })
+        );
+        let restored: ForwardPassPerfModelConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn legacy_ngram_json_and_nextn_keep_their_public_contract() {
+        let ngram = serde_json::json!({
+            "kind": "ngram", "params": {"num_speculative_tokens": 2},
+        });
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(ngram.clone()).unwrap();
+        assert_eq!(speculation.kind, "ngram");
+        assert_eq!(speculation.draft_model_path, None);
+        assert_eq!(speculation.draft_config, None);
+        assert_eq!(serde_json::to_value(speculation).unwrap(), ngram);
+
+        let config: ForwardPassPerfModelConfig = serde_json::from_value(serde_json::json!({
+            "model": "test/target", "system": "test-system", "backend": "vllm",
+            "worker_type": "decode", "nextn": 2,
+        }))
+        .unwrap();
+        assert_eq!(config.nextn, 2);
+        assert_eq!(config.speculation, None);
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(restored, config);
+    }
+
+    #[test]
+    fn speculative_schema_defaults_params_and_excludes_acceptance() {
+        let speculation: ForwardPassSpeculationConfig =
+            serde_json::from_value(serde_json::json!({"kind": "none"})).unwrap();
+        assert!(speculation.params.is_empty());
+        assert!(
+            serde_json::from_value::<ForwardPassSpeculationConfig>(serde_json::json!({
+                "kind": "ngram", "params": {"num_speculative_tokens": 2}, "accepted_tokens": 1.5,
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -698,6 +773,7 @@ pub fn rebuild_replay_report_literals(
             uuid: record.uuid,
             arrival_time_ms: record.arrival_time_ms,
             dispatched_at_ms: record.dispatched_at_ms,
+            tokenized_ms: record.tokenized_ms,
             first_admit_ms: record.first_admit_ms,
             terminal_time_ms: record.terminal_time_ms,
             first_token_ms: record.first_token_ms,

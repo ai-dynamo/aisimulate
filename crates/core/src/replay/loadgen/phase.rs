@@ -295,7 +295,8 @@ impl AgenticPreparation {
                 policy_class: source.policy_class.clone(),
                 replay_context: Some(ReplayRequestContext {
                     authored_id: evidence.source_request_id.clone(),
-                    session_id: Some(evidence.identity.conversation_id.clone()),
+                    session_id: (!source.synthetic_session_id)
+                        .then(|| evidence.identity.conversation_id.clone()),
                     turn_index: Some(ordinal),
                     metadata: serde_json::json!({"agentic_phase": evidence.phase}),
                     prompt_token_source: ReplayPromptTokenSource::Materialized,
@@ -324,7 +325,7 @@ impl AgenticPreparation {
                 scheduled_ready_at_ms: lane.ready_at_ms,
                 replay_hashes,
                 emit_session_metadata,
-                synthetic_session_id: false,
+                synthetic_session_id: source.synthetic_session_id,
                 request,
             });
         }

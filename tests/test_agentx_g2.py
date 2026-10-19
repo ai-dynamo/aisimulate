@@ -213,7 +213,12 @@ def test_agentic_invalid_configuration_matrix_rejects_python_and_native(role, fa
         raise AssertionError(f"unhandled semantic fault: {fault}")
     with pytest.raises(ValueError, match=message):
         EngineReplayRunnerFactory().capabilities().require_compatible(spec)
-    with pytest.raises(RuntimeError, match=message):
+    native_message = (
+        "agentic host offload requires speculative decoding disabled"
+        if fault in {"aic_nextn", "nextn", "speculation"}
+        else message
+    )
+    with pytest.raises(RuntimeError, match=native_message):
         _runtime.run_replay_json(json.dumps(payload))
 
 

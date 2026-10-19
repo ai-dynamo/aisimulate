@@ -34,6 +34,7 @@ from collector.fpm_forward.runner import (
     _validate_runtime_collection,
     run_collection,
 )
+from collector.fpm_forward.slurm import SlurmCellRunner
 from collector.fpm_forward.types import ParallelTopology
 
 from aisimulate.fpm_contract import FPM_CELL_LABEL
@@ -3332,25 +3333,94 @@ def test_runtime_default_path_is_adapter_owned():
     assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
 
 
-def test_kubernetes_stages_exact_startup_configuration(tmp_path):
-    runner = _runner(tmp_path)
-    source = tmp_path / "collector-runtime-env.sh"
-    source.write_text("export FPM_READINESS_TIMEOUT_SECONDS=600\n")
-    remote = tmp_path / "remote"
-    remote.mkdir()
+@pytest.mark.parametrize("transport", ["kubernetes", "slurm"])
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize(
+    ("budget", "inherited"),
+    [
+        (None, None),
+        (None, "600"),
+        ("600", "45"),
+        ("1", None),
+        ("3600", None),
+        ("", None),
+        ("0", None),
+        ("3601", None),
+        ("invalid", None),
+    ],
+)
+def test_generated_finalization_budget_reaches_staged_collector(
+    tmp_path, monkeypatch, transport, phase, budget, inherited
+):
+    cell = _cell(phase=phase)
+    base = {"K8sConfig": {"k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test"}}
+    if budget is not None:
+        base["K8sConfig"]["extra_env"] = [{"name": "FPM_FINALIZATION_TIMEOUT_SECONDS", "value": budget}]
+    _render_cell(_plan(cell), cell, tmp_path, base)
+    files = [tmp_path / name for name in ("fpm_env.sh", "collector-runtime-env.sh", "run.sh")]
 
-    def kubectl(*args, **kwargs):
-        assert args[0] == "cp"
-        shutil.copy2(args[1], remote / Path(args[1]).name)
-        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+    if transport == "kubernetes":
+        runner = _runner(tmp_path)
+        remote = tmp_path / "remote"
+        remote.mkdir()
 
-    def execute(pod, command, *, timeout):
-        if command[0] == "mkdir":
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        rewritten = [arg.replace(REMOTE_WORKDIR, str(remote)) for arg in command]
-        return subprocess.run(rewritten, check=True, capture_output=True, text=True, timeout=timeout)
+        def kubectl(*args, **kwargs):
+            assert args[0] == "cp"
+            shutil.copy2(args[1], remote / Path(args[1]).name)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    runner._kubectl = kubectl
-    runner._exec_checked = execute
-    runner.stage(["pod-0"], [source])
-    assert (remote / source.name).read_bytes() == source.read_bytes()
+        def execute(pod, command, *, timeout):
+            if command[0] == "mkdir":
+                return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+            rewritten = [arg.replace(REMOTE_WORKDIR, str(remote)) for arg in command]
+            return subprocess.run(rewritten, check=True, capture_output=True, text=True, timeout=timeout)
+
+        runner._kubectl = kubectl
+        runner._exec_checked = execute
+        runner.stage(["pod-0"], files)
+    else:
+        monkeypatch.setenv("SLURM_JOB_ID", "1234")
+        runner = SlurmCellRunner(
+            tmp_path / "k8s_deploy.yaml",
+            tmp_path,
+            image=base["K8sConfig"]["k8s_image"],
+            mounts=(),
+            total_gpus=cell.topology.total_gpus,
+            cpus_per_task=16,
+            cpu_bind="cores",
+        )
+        runner.stage(["node0000"], files)
+        remote = tmp_path / "slurm-runtime"
+    for source in files:
+        assert (remote / source.name).read_bytes() == source.read_bytes()
+
+    # Execute the production parent's startup and deadline parsing unchanged;
+    # stop before etcd/preflight/engine startup. A child run.sh export cannot
+    # satisfy this check, and neither transport inherits the configured value.
+    runtime = Path(fpm_runner.__file__).parent / "runtime/fpm_exec.sh"
+    prefix, marker, _ = runtime.read_text().partition('\nif [[ -f "${workdir}/fpm_memory_worker.py" ]]; then')
+    assert marker
+    assert prefix.count("workdir=/tmp/fpm-bench") == 1
+    prefix = prefix.replace("workdir=/tmp/fpm-bench", 'workdir="$1"')
+    script = tmp_path / "collector-startup.sh"
+    script.write_text(prefix + '\nprintf "%s\\n" "$finalization_timeout_seconds"\n')
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith(("FPM_", "SLURM_", "LWS_", "GROVE_"))
+    }
+    if inherited is not None:
+        environment["FPM_FINALIZATION_TIMEOUT_SECONDS"] = inherited
+    completed = subprocess.run(
+        ["bash", str(script), str(remote)],
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    if budget in ("", "0", "3601", "invalid"):
+        assert completed.returncode == 2, completed.stderr
+        assert "FPM_FINALIZATION_TIMEOUT_SECONDS must be an integer from 1 through 3600" in completed.stderr
+        assert not completed.stdout
+    else:
+        assert completed.returncode == 0, completed.stderr
+        assert completed.stdout.strip() == (inherited or "120" if budget is None else budget)

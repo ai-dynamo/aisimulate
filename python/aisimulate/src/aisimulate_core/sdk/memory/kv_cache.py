@@ -355,7 +355,11 @@ class KVCacheEstimator:
         # Capacity needs model/system metadata, including when external FPM
         # timing has no backend data directory.
         database = perf_database.get_database(
-            system, backend, backend_version, systems_paths=systems_path, allow_missing_data=True
+            system,
+            backend,
+            "current" if backend_version is None else backend_version,
+            systems_paths=systems_path,
+            allow_missing_data=True,
         )
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)

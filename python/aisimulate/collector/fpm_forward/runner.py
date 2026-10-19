@@ -38,6 +38,7 @@ from aisimulate.fpm_contract import (
     FPM_CELL_LABEL,
     FPM_ENGINE_BENCHMARK_OUTPUT_ENV,
     FPM_ENV_FILENAME,
+    FPM_FINALIZATION_TIMEOUT_ENV,
     FPM_MANIFEST_FILENAME,
     FPM_RESULTS_DIR,
     FPM_RUN_ID_ENV,
@@ -1598,11 +1599,12 @@ def _configured_sampling_metadata(
 
 def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
     # Generator owns run.sh and fpm_env.sh. Mirror only startup inputs through
-    # this Collector-owned file because Slurm does not start a Kubernetes Pod
-    # with extra_env, and run.sh's exports happen after the preflight process.
+    # this Collector-owned file: run.sh cannot export settings back to its
+    # parent runtime, and Slurm does not inherit a Kubernetes Pod environment.
     names = {
         *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
+        FPM_FINALIZATION_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",

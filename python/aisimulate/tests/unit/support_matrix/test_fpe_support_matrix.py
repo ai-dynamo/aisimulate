@@ -430,6 +430,48 @@ def test_unrecognized_quantized_moe_error_remains_blocking():
     assert classify_failure(error, stage="build") == STATUS_BUILD_FAILED
 
 
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        (
+            "GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+            STATUS_SDK_UNREPRESENTABLE,
+        ),
+        (
+            "GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
+            STATUS_SDK_UNREPRESENTABLE,
+        ),
+        ("GLM-5.3-Flash currently supports vLLM and SGLang", STATUS_SDK_UNREPRESENTABLE),
+    ],
+)
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_glm53flash_rejections_preserve_probe_evidence(message, expected, wrapped):
+    rejection = NotImplementedError(message)
+    error = rejection
+    if wrapped:
+        error = RuntimeError("engine construction failed")
+        error.__cause__ = rejection
+
+    def factory(_plan):
+        raise error
+
+    results = probe_plan(
+        _plan(model="nvidia/GLM-5.3-Flash-NVFP4"),
+        workload=ProbeWorkload(),
+        source_version="0.13.0",
+        source_sha="a" * 40,
+        engine_factory=factory,
+    )
+    assert {result.phase for result in results} == {"prefill", "decode_start", "decode_end", "mixed"}
+    assert {result.status for result in results} == {expected}
+    assert all(result.latency_ms is None and result.failure_stage == "build" for result in results)
+    assert all(message in result.error_message for result in results)
+    assert all(result.error_type == type(error).__name__ for result in results)
+    assert classify_failure(error, stage="query") == STATUS_QUERY_FAILED
+    assert classify_failure(RuntimeError(message), stage="build") == STATUS_BUILD_FAILED
+    assert classify_failure(NotImplementedError(message + " unexpected failure"), stage="build") == STATUS_BUILD_FAILED
+
+
 def test_result_outputs_are_deterministic_while_run_metrics_remain_separate(tmp_path):
     class FakeEngine:
         def predict_prefill_latency(self, **_kwargs):

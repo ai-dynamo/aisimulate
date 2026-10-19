@@ -1412,7 +1412,8 @@
             "exact_lookup",
             "within_curve_interpolation",
             "cross_kv_interpolation",
-            "cross_batch_interpolation"
+            "cross_batch_interpolation",
+            "kv_first_interpolation"
           ]
         },
         "latency_ms": {
