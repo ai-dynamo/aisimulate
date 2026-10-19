@@ -10,10 +10,156 @@
 //! [`crate::perfmodel::engine::Engine`] drives these free functions over the precompiled
 //! op lists from an [`crate::perfmodel::engine::spec::EngineSpec`].
 
+use std::collections::HashMap;
+
 use crate::common::error::AicError;
 use crate::operators::base::PerformanceResult;
 use crate::operators::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
+
+/// Build-time facts about one immutable op list. Passes use them to skip
+/// repeated work; every op still reports its own name and value.
+#[derive(Debug)]
+pub(crate) struct OpListPlan {
+    /// Ops sharing a slot price identically, so a pass queries the first one
+    /// it visits and reuses that result. `None` always queries.
+    query_slot: Vec<Option<usize>>,
+    query_slots: usize,
+    /// First-encounter slot of each op's name, for folding without name scans.
+    name_slot: Vec<usize>,
+    names: usize,
+}
+
+impl OpListPlan {
+    pub(crate) fn new(ops: &[Op]) -> Self {
+        let mut names = HashMap::<&str, usize>::new();
+        let name_slot = ops
+            .iter()
+            .map(|op| {
+                let next = names.len();
+                *names.entry(op.name()).or_insert(next)
+            })
+            .collect();
+        let mut identities = HashMap::<String, usize>::new();
+        let query_slot = ops
+            .iter()
+            .map(|op| {
+                pricing_identity(op).map(|key| {
+                    let next = identities.len();
+                    *identities.entry(key).or_insert(next)
+                })
+            })
+            .collect();
+        Self {
+            query_slot,
+            query_slots: identities.len(),
+            name_slot,
+            names: names.len(),
+        }
+    }
+
+    /// Name slot of the op at `index`; slots number names in first-encounter order.
+    pub(crate) fn name_slot(&self, index: usize) -> usize {
+        self.name_slot[index]
+    }
+
+    /// Number of distinct op names.
+    pub(crate) fn names(&self) -> usize {
+        self.names
+    }
+
+    pub(crate) fn query_slot(&self, index: usize) -> Option<usize> {
+        self.query_slot[index]
+    }
+
+    pub(crate) fn query_slots(&self) -> usize {
+        self.query_slots
+    }
+}
+
+/// Pricing key of a GLM-5.3-Flash boundary without its per-layer display
+/// names. These names, including those of generic children, never select
+/// data, so identical layers price identically; debug builds re-price every
+/// shared query to check this ([`QueryMemo::query`]). Other families return
+/// `None` and are always queried.
+fn pricing_identity(op: &Op) -> Option<String> {
+    if !matches!(
+        op,
+        Op::Glm53Attention(_)
+            | Op::Glm53Mhc(_)
+            | Op::Glm53Router(_)
+            | Op::Glm53Ffn(_)
+            | Op::Glm53Primitive(_)
+    ) {
+        return None;
+    }
+    // Keep the name-selected session roles (filters and token-count policy).
+    let roles = (
+        op.is_context_attention(),
+        op.is_generation_attention(),
+        op.is_logits_gemm(),
+        op.name().starts_with("draft_"),
+    );
+    let clear = |ops: &mut [Op]| ops.iter_mut().for_each(|op| op.set_name(String::new()));
+    let mut op = op.clone();
+    op.set_name(String::new());
+    match &mut op {
+        Op::Glm53Attention(o) => clear(&mut o.measured),
+        Op::Glm53Ffn(o) => {
+            clear(&mut o.children);
+            clear(&mut o.measured);
+        }
+        Op::Glm53Primitive(o) => {
+            clear(&mut o.children);
+            clear(&mut o.measured);
+        }
+        _ => {}
+    }
+    let body = serde_json::to_string(&op).ok()?;
+    Some(format!("{roles:?}{body}"))
+}
+
+/// Results of one pass, keyed by [`OpListPlan`] query slot. Every op in a
+/// pass shares the pass's runtime shape, so a slot's first result is exact
+/// for the rest of the slot.
+pub(crate) struct QueryMemo<'p> {
+    plan: Option<&'p OpListPlan>,
+    results: Vec<Option<PerformanceResult>>,
+}
+
+impl<'p> QueryMemo<'p> {
+    pub(crate) fn new(plan: Option<&'p OpListPlan>, ops: &[Op]) -> Self {
+        debug_assert!(plan.is_none_or(|plan| plan.query_slot.len() == ops.len()));
+        Self {
+            plan,
+            results: vec![None; plan.map_or(0, OpListPlan::query_slots)],
+        }
+    }
+
+    pub(crate) fn query(
+        &mut self,
+        index: usize,
+        query: impl FnOnce() -> Result<PerformanceResult, AicError>,
+    ) -> Result<PerformanceResult, AicError> {
+        let Some(slot) = self.plan.and_then(|plan| plan.query_slot(index)) else {
+            return query();
+        };
+        if let Some(result) = &self.results[slot] {
+            #[cfg(debug_assertions)]
+            {
+                let repriced = query();
+                assert!(
+                    repriced.as_ref().is_ok_and(|repriced| repriced == result),
+                    "op {index} shares query slot {slot} but prices as {repriced:?}, not {result:?}"
+                );
+            }
+            return Ok(result.clone());
+        }
+        let result = query()?;
+        self.results[slot] = Some(result.clone());
+        Ok(result)
+    }
+}
 
 /// Context-op selection for [`run_context_ops`]. Mirrors the name-based
 /// filtering Python's `_get_mix_step_latency` applies to `run_static`'s
@@ -74,25 +220,55 @@ pub(crate) fn run_context_ops_with<'a>(
     filter: ContextOpFilter,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    run_context_ops_planned(
+        ops,
+        None,
+        db,
+        batch_size,
+        effective_isl,
+        prefix,
+        seq_imbalance_correction_scale,
+        filter,
+        |_, op, result| on_op(op, result),
+    )
+}
+
+/// [`run_context_ops_with`] over an op list with its [`OpListPlan`]. The sink
+/// also receives each op's index in `ops`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_context_ops_planned<'a>(
+    ops: &'a [Op],
+    plan: Option<&OpListPlan>,
+    db: &PerfDatabase,
+    batch_size: u32,
+    effective_isl: u32,
+    prefix: u32,
+    seq_imbalance_correction_scale: f64,
+    filter: ContextOpFilter,
+    mut on_op: impl FnMut(usize, &'a Op, PerformanceResult),
+) -> Result<f64, AicError> {
+    let mut memo = QueryMemo::new(plan, ops);
     let mut total = 0.0_f64;
-    for op in ops {
+    for (index, op) in ops.iter().enumerate() {
         match filter {
             ContextOpFilter::All => {}
             ContextOpFilter::SkipContextAttention if op.is_context_attention() => continue,
             ContextOpFilter::OnlyContextAttention if !op.is_context_attention() => continue,
             _ => {}
         }
-        let result = query_context_op(
-            op,
-            db,
-            batch_size,
-            effective_isl,
-            prefix,
-            seq_imbalance_correction_scale,
-            None,
-        )?;
+        let result = memo.query(index, || {
+            query_context_op(
+                op,
+                db,
+                batch_size,
+                effective_isl,
+                prefix,
+                seq_imbalance_correction_scale,
+                None,
+            )
+        })?;
         total += result.latency_ms;
-        on_op(op, result);
+        on_op(index, op, result);
     }
     Ok(total)
 }
@@ -201,23 +377,53 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
     only_generation_attention: bool,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    run_generation_ops_step_planned(
+        ops,
+        None,
+        db,
+        batch_size,
+        beam_width,
+        kv_seq_tokens,
+        gen_seq_imbalance_correction_scale,
+        only_generation_attention,
+        |_, op, result| on_op(op, result),
+    )
+}
+
+/// [`run_generation_ops_step_beamed_with`] over an op list with its
+/// [`OpListPlan`]. The sink also receives each op's index in `ops`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_generation_ops_step_planned<'a>(
+    ops: &'a [Op],
+    plan: Option<&OpListPlan>,
+    db: &PerfDatabase,
+    batch_size: u32,
+    beam_width: u32,
+    kv_seq_tokens: u32,
+    gen_seq_imbalance_correction_scale: f64,
+    only_generation_attention: bool,
+    mut on_op: impl FnMut(usize, &'a Op, PerformanceResult),
+) -> Result<f64, AicError> {
+    let mut memo = QueryMemo::new(plan, ops);
     let mut total = 0.0_f64;
-    for op in ops {
+    for (index, op) in ops.iter().enumerate() {
         if only_generation_attention && !op.is_generation_attention() {
             continue;
         }
-        let result = query_generation_op(
-            op,
-            db,
-            batch_size,
-            beam_width,
-            kv_seq_tokens,
-            gen_seq_imbalance_correction_scale,
-            0,
-            None,
-        )?;
+        let result = memo.query(index, || {
+            query_generation_op(
+                op,
+                db,
+                batch_size,
+                beam_width,
+                kv_seq_tokens,
+                gen_seq_imbalance_correction_scale,
+                0,
+                None,
+            )
+        })?;
         total += result.latency_ms;
-        on_op(op, result);
+        on_op(index, op, result);
     }
     Ok(total)
 }

@@ -881,12 +881,14 @@ mod vllm {
 
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
-
-        assert_eq!(pass.output_signals.len(), 3);
+        assert_eq!(pass.output_signals.len(), 1);
+        assert!(!pass.output_signals[0].completed);
+        let pass = core.execute_pass(&mut collector, pass.end_ms);
+        assert_eq!(pass.output_signals.len(), 2);
         assert!(
             pass.output_signals
                 .iter()
-                .take(2)
+                .take(1)
                 .all(|signal| !signal.completed)
         );
         let terminal = pass.output_signals.last().unwrap();
@@ -940,6 +942,7 @@ mod trtllm {
             output_token_ids: None,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            session_id: None,
         });
     }
 

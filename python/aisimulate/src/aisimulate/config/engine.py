@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, StrictBool, field_validator, model_serializer, model_validator
+from pydantic import Field, PrivateAttr, StrictBool, field_validator, model_serializer, model_validator
 
 from aisimulate.fpm_profile import FpmModelProfile
 
@@ -300,6 +300,43 @@ class NgramSpeculationConfig(StrictModel):
         return {"kind": self.kind, "params": {"num_speculative_tokens": self.num_speculative_tokens}}
 
 
+class SchemeSpeculationConfig(StrictModel):
+    """SDK scheme cost identity plus an explicit replay acceptance assumption."""
+
+    kind: Annotated[str, Field(strict=True, min_length=1)]
+    params: dict[str, Any] = Field(default_factory=dict)
+    draft_model_path: Annotated[str, Field(strict=True, min_length=1)] | None = None
+    draft_config: dict[str, Any] | None = None
+    expected_accepted_tokens: NonNegativeFloat
+    seed: Annotated[int, Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)] = 42
+    _num_speculative_tokens: int = PrivateAttr(default=0)
+
+    @model_validator(mode="after")
+    def _resolve_scheme(self) -> SchemeSpeculationConfig:
+        from aisimulate_core.sdk.speculation.base import SpeculationConfig, resolve_speculation_config
+
+        resolved = resolve_speculation_config(SpeculationConfig(**self.cost_config()))
+        self.params = resolved.params
+        self.draft_config = resolved.draft_config
+        self._num_speculative_tokens = resolved.replay_depth()
+        maximum = self.num_speculative_tokens
+        if maximum == 0:
+            raise ValueError("omit speculation to disable it")
+        if self.expected_accepted_tokens > maximum:
+            raise ValueError(f"expected_accepted_tokens must be within [0, {maximum}] accepted draft tokens")
+        return self
+
+    @property
+    def num_speculative_tokens(self) -> int:
+        return self._num_speculative_tokens
+
+    def cost_config(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"expected_accepted_tokens", "seed"}, exclude_none=True)
+
+
+SpeculationConfig = NgramSpeculationConfig | SchemeSpeculationConfig
+
+
 class TimingConfig(StrictModel):
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
@@ -420,6 +457,12 @@ class KvTransferConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
     bandwidth_gb_per_second: PositiveFloat | None = None
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
+
+
+class TokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_input_token_us: NonNegativeFloat = 0.0
 
 
 class EstimatorPolicyConfig(StrictModel):
@@ -551,9 +594,10 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     enable_shared_layer: StrictBool | None = None
     strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
-    speculation: NgramSpeculationConfig | None = None
+    speculation: SpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
+    tokenization: TokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -582,6 +626,8 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
             if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
                 raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
+        if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
+            raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.mode == "afd":
             _validate_prediction_afd(self)
         else:
@@ -880,18 +926,27 @@ def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
     if engine.speculation is None:
         return
-    if engine.nextn:
-        raise ValueError("speculation cannot be combined with nextn")
-    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
-        raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
+    kind = engine.speculation.kind
+    if engine.nextn or engine.nextn_accepted is not None:
+        raise ValueError("speculation cannot be combined with nextn or nextn_accepted")
+    supported_backends = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
+    if not backends <= supported_backends or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError(
+            f"{kind} speculation requires {'/'.join(sorted(supported_backends))} "
+            "aggregated/disaggregated language workers"
+        )
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
         if worker is None:
             continue
         if worker.kv_cache.host_offload is not None:
-            raise ValueError("ngram speculation does not support host_offload")
-        if worker.timing.forward_model != "op_level":
-            raise ValueError("ngram speculation requires op_level timing")
+            raise ValueError(f"{kind} speculation does not support host_offload")
+        if kind == "ngram" and worker.timing.forward_model != "op_level":
+            raise ValueError(f"{kind} speculation requires op_level timing")
+        if kind != "ngram" and worker.kv_cache.capacity.type != "fixed":
+            raise ValueError(f"{kind} speculation requires explicit fixed KV capacity on workers.{role}")
+        if kind != "ngram" and worker.timing.type != "default":
+            raise ValueError(f"{kind} speculation requires default timing to preserve draft costs")
 
 
 def _validate_worker_hardware(*, modes: set[str], workers) -> None:

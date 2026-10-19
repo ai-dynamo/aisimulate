@@ -232,6 +232,49 @@ def test_native_capacity_discloses_resolved_kv_precision(monkeypatch, override, 
     assert diagnostics["kvcache_quant_mode"] == resolved
 
 
+@pytest.mark.parametrize("selector", ["omitted", None, "current", "literal"])
+def test_native_capacity_defaults_backend_version_to_current(monkeypatch, selector):
+    # Keep real version resolution and database lookup; isolate model weights.
+    seen_versions = []
+    monkeypatch.setattr(
+        memory,
+        "get_model",
+        lambda *_args: SimpleNamespace(
+            get_kvcache_bytes_per_sequence=lambda length: 128 * length,
+            get_kvcache_batch_capacity=lambda budget, _batch: int(budget // 128),
+        ),
+    )
+
+    def memory_usage(_model, database, **_kwargs):
+        seen_versions.append(database.version)
+        return dict(weights=1, activations=1, others=1, nccl=1)
+
+    monkeypatch.setattr(memory, "get_backend", lambda _: SimpleNamespace(_get_memory_usage=memory_usage))
+    literal = memory.perf_database.resolve_query_version("h200_sxm", "vllm", "current")
+    options = dict(max_num_tokens=8192, max_batch_size=256, memory_fraction_kind="of_total", memory_fraction_value=0.9)
+    expected = memory.estimate_kv_cache("test/model", "h200_sxm", "vllm", literal, **options)
+    version = {} if selector == "omitted" else {"backend_version": literal if selector == "literal" else selector}
+    actual = memory.estimate_kv_cache("test/model", "h200_sxm", "vllm", **version, **options)
+    assert actual == expected
+    assert actual["source"] == "native"
+    assert seen_versions == [literal, literal]
+
+
+def test_native_capacity_rejects_unavailable_backend_version():
+    with pytest.raises(ValueError, match="9.9.9") as error:
+        memory.estimate_kv_cache(
+            "test/model",
+            "h200_sxm",
+            "vllm",
+            "9.9.9",
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+        )
+    assert "NoneType" not in str(error.value)
+
+
 def test_breakdown_applies_nextn_to_model_config(monkeypatch):
     # KVCacheEstimator.from_request must push nextn/MTP onto the ModelConfig before
     # get_model, so _get_memory_usage scales activation memory for speculative
