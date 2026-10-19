@@ -290,7 +290,12 @@ def unpack_artifact(archive: bytes) -> dict:
         or q["status"] != "complete"
         or q["advisory"] is not True
         or q["selection_policy"]
-        not in {"latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1"}
+        not in {
+            "latest-complete-config-run-v1",
+            "gym-resolved-config-v2",
+            "gym-resolved-config-v3",
+            "hf-current-view-config-v1",
+        }
     ):
         raise ValueError("campaign is not complete")
     for field in (
