@@ -1,5 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
+
+// Modified persistent speculative-capacity semantics derived from vLLM:
+// https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/kv_cache_manager.py
+// https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py
+// See THIRD_PARTY_NOTICES.md for the Apache-2.0 attribution.
 
 //! vLLM G1 manager over a minimal physical block-pool model.
 //!
@@ -107,7 +113,7 @@ struct LeaseCommitOptions<'a> {
 
 #[derive(Debug)]
 struct PendingCapacityWrites {
-    block_indices: Vec<usize>,
+    copies: Vec<BlockCopyId>,
     dependencies: Vec<SourceReuseDependency>,
 }
 
@@ -129,6 +135,8 @@ pub(crate) struct BlockRequestLease {
     owner: Uuid,
     entries: Vec<BlockLeaseEntry>,
     allocated_tokens: usize,
+    /// Anonymous request-owned slots, retained across draft rejection.
+    opaque_copies: Vec<BlockCopyId>,
     prefix_hashes: Option<(usize, Vec<SequenceHash>)>,
     /// Present only while newly acquired capacity awaits a scheduler-installed
     /// write fence. The default path does not allocate this state.
@@ -151,6 +159,7 @@ impl BlockRequestLease {
             owner,
             entries,
             allocated_tokens: 0,
+            opaque_copies: Vec::new(),
             prefix_hashes: None,
             pending_capacity_writes: None,
             grouped: None,
@@ -215,6 +224,10 @@ impl BlockRequestLease {
             .iter()
             .filter(|entry| entry.copy.is_some())
             .count()
+    }
+
+    pub(crate) fn physical_owned_block_count(&self) -> usize {
+        self.resident_block_count() + self.opaque_copies.len()
     }
 
     /// Project one framework-native identity without exposing physical G1
@@ -645,21 +658,63 @@ impl VllmKvManager {
         if self.state_cache.is_some() {
             return self.allocate_state_lease(lease, cumulative_tokens, reusable_prefix_blocks);
         }
+        self.allocate_lease_with_slots(
+            owner,
+            lease,
+            cumulative_tokens,
+            cumulative_tokens,
+            reusable_prefix_blocks,
+        )
+    }
+
+    /// Whether the manager uses the scalar token-only speculative lifecycle.
+    pub(crate) fn supports_native_speculative_slots(&self) -> bool {
+        self.grouped.is_none() && self.state_cache.is_none()
+    }
+
+    /// Atomically acquire known blocks and anonymous speculative capacity.
+    ///
+    /// Only the known range receives logical block identities. Capacity beyond
+    /// it remains request-owned across rejection and is bound when tokens become
+    /// known. Exhaustion changes neither range nor physical ownership.
+    pub(crate) fn allocate_lease_with_slots(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        known_target_tokens: usize,
+        physical_slot_target_tokens: usize,
+        reusable_prefix_blocks: usize,
+    ) -> NativeAllocation<usize> {
+        lease.debug_assert_owner(owner);
+        assert!(
+            self.supports_native_speculative_slots(),
+            "persistent speculative slots require scalar token-only KV"
+        );
+        assert!(
+            physical_slot_target_tokens >= known_target_tokens,
+            "physical slots must cover the known token target"
+        );
         let previous_blocks = lease
             .allocated_tokens
             .div_ceil(self.block_size)
             .min(lease.entries.len());
-        let target_blocks = cumulative_tokens
+        let target_blocks = known_target_tokens
             .div_ceil(self.block_size)
             .min(lease.entries.len());
-        if target_blocks <= previous_blocks {
-            // A dependency-bearing earlier attempt may already own a larger
-            // suffix than this pass can compute. Keep physical ownership
-            // monotonic and report the same pending write dependency again.
-            lease.allocated_tokens = lease.allocated_tokens.max(cumulative_tokens);
+        let known_growth = target_blocks.saturating_sub(previous_blocks);
+        let owned_blocks = previous_blocks + lease.opaque_copies.len();
+        let count = physical_slot_target_tokens
+            .div_ceil(self.block_size)
+            .saturating_sub(owned_blocks);
+        if count == 0 {
+            let NativeAllocation::Ready { dependencies, .. } =
+                self.bind_lease_owned_capacity(owner, lease, known_target_tokens)
+            else {
+                unreachable!("binding owned capacity cannot exhaust the pool")
+            };
             return NativeAllocation::Ready {
                 value: 0,
-                dependencies: self.pending_capacity_write_dependencies(lease),
+                dependencies,
             };
         }
         assert!(
@@ -668,12 +723,15 @@ impl VllmKvManager {
         );
         let newly_reusable_prefix_blocks = reusable_prefix_blocks.saturating_sub(previous_blocks);
         assert!(
-            newly_reusable_prefix_blocks <= target_blocks - previous_blocks,
+            newly_reusable_prefix_blocks <= known_growth,
             "reusable prefix exceeds the newly allocated block range"
+        );
+        assert!(
+            newly_reusable_prefix_blocks == 0 || lease.opaque_copies.is_empty(),
+            "retained private capacity cannot become a reused prefix"
         );
         assert!(self.enable_prefix_caching || reusable_prefix_blocks == 0);
 
-        let count = target_blocks - previous_blocks;
         let prefix = lease.entries[previous_blocks..previous_blocks + newly_reusable_prefix_blocks]
             .iter()
             .map(|entry| {
@@ -694,15 +752,14 @@ impl VllmKvManager {
             newly_reusable_prefix_blocks,
             "exact native prefix reservation returned the wrong hit count"
         );
-        let fresh_blocks = count - newly_reusable_prefix_blocks;
-        let dependencies = self
-            .pool
-            .reservation_next_pending_dependencies(&reservation, fresh_blocks);
+        let dependencies = self.pool.reservation_pending_dependencies(&reservation);
         self.publish_removed(removed);
+        let from_opaque = known_growth.min(lease.opaque_copies.len());
+        self.bind_opaque_range(lease, previous_blocks, previous_blocks + from_opaque);
         self.commit_lease_range(
             lease,
-            previous_blocks,
-            target_blocks,
+            previous_blocks + from_opaque,
+            target_blocks.max(previous_blocks),
             &mut reservation,
             LeaseCommitOptions {
                 cache_fresh: false,
@@ -710,12 +767,70 @@ impl VllmKvManager {
                 write_dependencies: &dependencies,
             },
         );
+        while reservation.fresh_len() > 0 {
+            let copy = self.pool.allocate_private(&mut reservation);
+            lease.opaque_copies.push(copy);
+            if let Some(pending) = &mut lease.pending_capacity_writes {
+                pending.copies.push(copy);
+            }
+        }
         assert_eq!(reservation.len(), 0, "native reservation was not consumed");
         self.pool.cancel(reservation);
-        lease.allocated_tokens = cumulative_tokens;
+        lease.allocated_tokens = lease.allocated_tokens.max(known_target_tokens);
         NativeAllocation::Ready {
             value: count,
             dependencies,
+        }
+    }
+
+    /// Bind accepted, now-known tokens using only capacity already owned by
+    /// this request. No pool allocation or eviction is possible here.
+    pub(crate) fn bind_lease_owned_capacity(
+        &mut self,
+        owner: Uuid,
+        lease: &mut BlockRequestLease,
+        known_target_tokens: usize,
+    ) -> NativeAllocation<usize> {
+        lease.debug_assert_owner(owner);
+        assert!(
+            self.supports_native_speculative_slots(),
+            "persistent speculative slots require scalar token-only KV"
+        );
+        let previous_blocks = lease
+            .allocated_tokens
+            .div_ceil(self.block_size)
+            .min(lease.entries.len());
+        let target_blocks = known_target_tokens
+            .div_ceil(self.block_size)
+            .min(lease.entries.len());
+        let count = target_blocks.saturating_sub(previous_blocks);
+        assert!(
+            count <= lease.opaque_copies.len(),
+            "known tokens exceed request-owned physical capacity"
+        );
+        self.bind_opaque_range(lease, previous_blocks, target_blocks.max(previous_blocks));
+        lease.allocated_tokens = lease.allocated_tokens.max(known_target_tokens);
+        NativeAllocation::Ready {
+            value: count,
+            dependencies: self.pending_capacity_write_dependencies(lease),
+        }
+    }
+
+    fn bind_opaque_range(&self, lease: &mut BlockRequestLease, start: usize, end: usize) {
+        for position in start..end {
+            let copy = lease
+                .opaque_copies
+                .pop()
+                .expect("prechecked opaque capacity disappeared");
+            let entry = &mut lease.entries[position];
+            assert!(entry.copy.is_none(), "known block already owns capacity");
+            entry.copy = Some(copy);
+            entry.pending_cache =
+                self.enable_prefix_caching && entry.identity.sequence_hash.is_some();
+            entry.capacity_write_pending = lease
+                .pending_capacity_writes
+                .as_ref()
+                .is_some_and(|pending| pending.copies.contains(&copy));
         }
     }
 
@@ -869,27 +984,14 @@ impl VllmKvManager {
         {
             let actual = self
                 .pool
-                .copies_pending_dependencies(pending.block_indices.iter().map(|&block_index| {
-                    lease.entries[block_index]
-                        .copy
-                        .expect("pending capacity write lost its request-owned copy")
-                }));
+                .copies_pending_dependencies(pending.copies.iter().copied());
             debug_assert_eq!(actual.as_slice(), dependencies);
         }
-        self.pool.authorize_source_reuse_writes(
-            pending.block_indices.iter().map(|&block_index| {
-                lease.entries[block_index]
-                    .copy
-                    .expect("pending capacity write lost its request-owned copy")
-            }),
-            dependencies,
-        );
-        let pending = lease
-            .pending_capacity_writes
-            .take()
-            .expect("checked pending write state disappeared");
-        for block_index in pending.block_indices {
-            lease.entries[block_index].capacity_write_pending = false;
+        self.pool
+            .authorize_source_reuse_writes(pending.copies.iter().copied(), dependencies);
+        lease.pending_capacity_writes = None;
+        for entry in &mut lease.entries {
+            entry.capacity_write_pending = false;
         }
     }
 
@@ -1091,7 +1193,7 @@ impl VllmKvManager {
     ) -> VllmAcquire<DestinationReservation> {
         lease.debug_assert_owner(owner);
         assert_eq!(
-            lease.resident_block_count(),
+            lease.physical_owned_block_count(),
             0,
             "destination request already owns physical blocks"
         );
@@ -1137,7 +1239,7 @@ impl VllmKvManager {
     ) -> VllmAcquire<DestinationReservation> {
         lease.debug_assert_owner(owner);
         assert_eq!(
-            lease.resident_block_count(),
+            lease.physical_owned_block_count(),
             0,
             "external destination request already owns physical blocks"
         );
@@ -1273,7 +1375,7 @@ impl VllmKvManager {
     ) {
         lease.debug_assert_owner(owner);
         debug_assert_eq!(
-            lease.resident_block_count(),
+            lease.physical_owned_block_count(),
             0,
             "destination request already owns physical blocks"
         );
@@ -1348,6 +1450,9 @@ impl VllmKvManager {
             manager.release(&mut self.pool, state);
         }
         lease.pending_capacity_writes = None;
+        for copy in lease.opaque_copies.drain(..).rev() {
+            self.pool.release(copy);
+        }
         for entry in lease.entries.iter_mut().rev() {
             if let Some(copy) = entry.copy.take() {
                 self.pool.release(copy);
@@ -1368,12 +1473,9 @@ impl VllmKvManager {
             .dependencies
             .retain(|dependency| self.pool.is_source_reuse_dependency_pending(*dependency));
         if pending.dependencies.is_empty() {
-            let pending = lease
-                .pending_capacity_writes
-                .take()
-                .expect("checked pending write state disappeared");
-            for block_index in pending.block_indices {
-                lease.entries[block_index].capacity_write_pending = false;
+            lease.pending_capacity_writes = None;
+            for entry in &mut lease.entries {
+                entry.capacity_write_pending = false;
             }
             Vec::new()
         } else {
@@ -1481,7 +1583,14 @@ impl VllmKvManager {
                 "new capacity was acquired before prior write dependencies were authorized"
             );
             lease.pending_capacity_writes = Some(Box::new(PendingCapacityWrites {
-                block_indices,
+                copies: block_indices
+                    .into_iter()
+                    .map(|position| {
+                        lease.entries[position]
+                            .copy
+                            .expect("new block lost capacity")
+                    })
+                    .collect(),
                 dependencies: write_dependencies.to_vec(),
             }));
         }
@@ -2224,6 +2333,12 @@ mod tests {
         };
         assert_eq!(dependencies, vec![dependency]);
         manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
+        assert!(
+            manager
+                .snapshot_store_sources(owner, &lease, &[0])
+                .is_none(),
+            "authorization alone does not prove new contents were produced"
+        );
         manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 4);
         assert!(manager.pool.prefix_hit(8).is_some());
         assert!(manager.is_source_reuse_dependency_pending(dependency));
@@ -2231,8 +2346,8 @@ mod tests {
         assert!(
             manager
                 .snapshot_store_sources(owner, &lease, &[0])
-                .is_none(),
-            "new stores must wait until the old source reader is terminal"
+                .is_some(),
+            "a new store may follow the compute fenced behind the old reader"
         );
         assert!(manager.satisfy_source_reuse_dependency(dependency));
         assert!(
@@ -2302,5 +2417,202 @@ mod tests {
         assert_eq!(stored.blocks[0].block_hash, 7);
         assert_eq!(stored.blocks[0].tokens_hash, 107);
         assert_eq!(stored.blocks[0].token_ids, Some(token_ids[0].clone()));
+    }
+    #[test]
+    fn speculative_physical_footprint_is_atomic_and_survives_rejection() {
+        let owner = Uuid::from_u128(31);
+        // N=13, C=12, K=2: verify three positions and retain two lookahead
+        // slots. The physical target is 17 tokens, requiring five B=4 blocks.
+        let known = 13;
+        let computed = 12;
+        let draft = 2;
+        let physical_target = computed + (known - computed + draft) + draft;
+        for capacity in [4, 5] {
+            let mut manager = VllmKvManager::new_with_event_sink(
+                capacity,
+                4,
+                true,
+                KvEventPublishers::default(),
+                0,
+            );
+            let (_, identities) =
+                RequestSequence::new(owner, (0..13).collect(), 4, 4, 4, true, true, false, None);
+            let mut lease = BlockRequestLease::new(owner, identities);
+            ready(manager.allocate_lease(owner, &mut lease, computed, 0));
+            let outcome =
+                manager.allocate_lease_with_slots(owner, &mut lease, known, physical_target, 0);
+            if capacity == 4 {
+                assert!(matches!(outcome, NativeAllocation::CapacityExhausted));
+                assert_eq!(lease.allocated_tokens(), computed);
+                assert_eq!(lease.physical_owned_block_count(), 3);
+                assert_eq!(manager.num_active_blocks(), 3);
+                manager.finish_lease(owner, lease);
+                continue;
+            }
+            assert_eq!(ready(outcome), 2);
+            assert_eq!(lease.allocated_tokens(), known);
+            assert_eq!(lease.resident_block_count(), 4);
+            assert_eq!(lease.physical_owned_block_count(), 5);
+            assert_eq!(lease.entries.len(), 4);
+            assert_eq!(manager.num_active_blocks(), 5);
+            assert_eq!(lease.sequence_hash(3), None);
+
+            // A smaller next verification after draft rejection retains the
+            // excess block, without inventing a fifth logical identity.
+            assert_eq!(
+                ready(manager.allocate_lease_with_slots(
+                    owner,
+                    &mut lease,
+                    known,
+                    known + draft,
+                    0,
+                )),
+                0
+            );
+            assert_eq!(lease.physical_owned_block_count(), 5);
+            assert_eq!(lease.entries.len(), 4);
+
+            // Accepting enough tokens to open the next logical block consumes
+            // the retained copy even though no free pool capacity remains.
+            lease.append_partial();
+            assert_eq!(
+                ready(manager.bind_lease_owned_capacity(owner, &mut lease, 17)),
+                1
+            );
+            assert_eq!(lease.physical_owned_block_count(), 5);
+            assert_eq!(lease.resident_block_count(), 5);
+            assert_eq!(lease.sequence_hash(4), None);
+            assert_eq!(manager.num_active_blocks(), 5);
+            manager.finish_lease(owner, lease);
+            assert_eq!(manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
+    fn speculative_opaque_capacity_is_released_on_preemption_and_finish() {
+        let owner = Uuid::from_u128(32);
+        let mut manager =
+            VllmKvManager::new_with_event_sink(3, 4, true, KvEventPublishers::default(), 0);
+        let (_, mut lease) = request(owner, &[1], false);
+        ready(manager.allocate_lease_with_slots(owner, &mut lease, 4, 12, 0));
+        assert_eq!(lease.resident_block_count(), 1);
+        assert_eq!(lease.physical_owned_block_count(), 3);
+        assert!(
+            manager
+                .snapshot_store_sources(owner, &lease, &[1])
+                .is_none()
+        );
+        manager.preempt_lease(owner, &mut lease);
+        assert_eq!(lease.allocated_tokens(), 0);
+        assert_eq!(lease.physical_owned_block_count(), 0);
+        assert_eq!(manager.num_active_blocks(), 0);
+        ready(manager.allocate_lease_with_slots(owner, &mut lease, 4, 12, 0));
+        manager.finish_lease(owner, lease);
+        assert_eq!(manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn speculative_opaque_capacity_receives_source_reuse_authorization() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(2, 4, true, KvEventPublishers::default(), 0);
+        let dependency = SourceReuseDependency::from_adapter_id(37);
+        finish_source_with_dependency(
+            &mut manager,
+            Uuid::from_u128(1),
+            &[7, 8],
+            &[0, 1],
+            dependency,
+        );
+        let owner = Uuid::from_u128(2);
+        let (mut sequence, mut lease) = request(owner, &[9, 10], false);
+        let dependencies = match manager.allocate_lease_with_slots(owner, &mut lease, 4, 8, 0) {
+            NativeAllocation::Ready {
+                value: 2,
+                dependencies,
+            } => dependencies,
+            _ => panic!("known and opaque capacity must be acquired together"),
+        };
+        assert_eq!(dependencies, vec![dependency]);
+        assert_eq!(lease.resident_block_count(), 1);
+        assert_eq!(lease.physical_owned_block_count(), 2);
+        assert!(matches!(
+            manager.allocate_lease_with_slots(owner, &mut lease, 4, 4, 0),
+            NativeAllocation::Ready { value: 0, dependencies: retry } if retry == dependencies
+        ));
+        manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
+        assert_eq!(
+            ready(manager.bind_lease_owned_capacity(owner, &mut lease, 8)),
+            1
+        );
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 8);
+        assert!(manager.pool.prefix_hit(9).is_some());
+        assert!(manager.pool.prefix_hit(10).is_some());
+        assert!(manager.is_source_reuse_dependency_pending(dependency));
+        assert!(
+            manager
+                .snapshot_store_sources(owner, &lease, &[1])
+                .is_some()
+        );
+        manager.finish_lease(owner, lease);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert!(manager.satisfy_source_reuse_dependency(dependency));
+    }
+
+    #[test]
+    fn speculative_growth_fences_dependency_exclusively_in_opaque_capacity() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(2, 4, true, KvEventPublishers::default(), 0);
+        let owner = Uuid::from_u128(1);
+        let (mut sequence, mut lease) = request(owner, &[1, 2], false);
+        ready(manager.allocate_lease(owner, &mut lease, 4, 0));
+        let dependency = SourceReuseDependency::from_adapter_id(41);
+        finish_source_with_dependency(&mut manager, Uuid::from_u128(2), &[7], &[0], dependency);
+
+        let dependencies = match manager.allocate_lease_with_slots(owner, &mut lease, 4, 8, 0) {
+            NativeAllocation::Ready {
+                value: 1,
+                dependencies,
+            } => dependencies,
+            _ => panic!("only opaque capacity should need acquisition"),
+        };
+        assert_eq!(dependencies, vec![dependency]);
+        assert!(!lease.entries[0].capacity_write_pending);
+        manager.authorize_lease_writes_after_dependencies(owner, &mut lease, &dependencies);
+        ready(manager.bind_lease_owned_capacity(owner, &mut lease, 8));
+        manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, 0, 8);
+        assert!(manager.pool.prefix_hit(2).is_some());
+        manager.finish_lease(owner, lease);
+        assert!(manager.satisfy_source_reuse_dependency(dependency));
+    }
+
+    #[test]
+    fn speculative_allocation_pins_exact_prefix_atomically_with_opaque_slots() {
+        let mut manager =
+            VllmKvManager::new_with_event_sink(2, 4, true, KvEventPublishers::default(), 0);
+        let seed = Uuid::from_u128(1);
+        let (mut sequence, mut seed_lease) = request(seed, &[7], false);
+        ready(manager.allocate_lease(seed, &mut seed_lease, 4, 0));
+        manager.finalize_lease_computed_prefix(seed, &mut sequence, &mut seed_lease, 0, 4);
+        manager.finish_lease(seed, seed_lease);
+
+        let owner = Uuid::from_u128(2);
+        let (_, mut lease) = request(owner, &[7], false);
+        assert!(matches!(
+            manager.allocate_lease_with_slots(owner, &mut lease, 4, 12, 1),
+            NativeAllocation::CapacityExhausted
+        ));
+        assert_eq!(lease.physical_owned_block_count(), 0);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert_eq!(manager.num_inactive_blocks(), 1);
+        assert_eq!(
+            ready(manager.allocate_lease_with_slots(owner, &mut lease, 4, 8, 1)),
+            2
+        );
+        assert_eq!(lease.resident_block_count(), 1);
+        assert_eq!(lease.physical_owned_block_count(), 2);
+        assert!(!lease.entries[0].pending_cache);
+        manager.finish_lease(owner, lease);
+        assert_eq!(manager.num_active_blocks(), 0);
+        assert_eq!(manager.num_inactive_blocks(), 1);
     }
 }

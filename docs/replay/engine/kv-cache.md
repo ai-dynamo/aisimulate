@@ -175,7 +175,24 @@ and shared bandwidths; otherwise the run is rejected. In `recommend` with
 
 G2 supports vLLM aggregated and token-only disaggregated workers with prefix
 caching and any `attention_data`. It is rejected with SGLang, TensorRT-LLM,
-native MTP, ngram speculation, `state_cache`, and Belady eviction.
+ngram speculation, `state_cache`, and Belady eviction.
+
+Canonical `engine.speculation.kind: mtp` can combine with G2 only on an
+aggregated vLLM worker with `attention_data: 1`, `scope: dp_rank_local`, prefix
+caching and no G3. Use explicit fixed KV capacity and default timing. This
+models synchronous single-module MTP with one uniform shared FullAttention
+cache; separate draft models and grouped caches are unsupported. See
+[speculation](speculation.md#registered-schemes) for the complete composition.
+
+This combined behavior is adapted and modified from the
+[vLLM v0.32.0 scheduler](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/v1/core/sched/scheduler.py)
+and [OffloadingConnector](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py),
+Copyright contributors to the vLLM project, Apache-2.0. Prompt stores exclude
+unverified drafts, and G1 copy sources stay protected until their transfer
+completes. A next step that can never fit physical KV capacity or the total
+padded verification budget is rejected instead of retried indefinitely; this
+is a simulation capacity guard. The scheduling baseline does not change the
+version or provenance of the performance data used for timing.
 
 For shared pools, the report's `g2_domains` gives capacity and resident blocks.
 Workers that publish KV events report G2 changes with `"tier": "host_pinned"`;
@@ -328,8 +345,10 @@ Rejected: `recommend`, G2/G3 offload, and speculative decoding with
 
 AgentX snapshot, warmup and continuous-profile traffic supports G2 on vLLM with
 one aggregated worker, or one prefill and one decode worker, all with
-`attention_data: 1`, static workers and no speculative decoding. Either G2 scope
-works; G3 is not supported. Results are qualified `functional_only`.
+`attention_data: 1` and static workers. Without speculation, either G2 scope
+works. Canonical MTP additionally supports the single aggregated worker with
+local G2 and prefix caching, within the [combined scope](#supported) above;
+other speculation and G3 are not supported. Results are qualified `functional_only`.
 
 Two small offline fixtures use fixed timing and need no GPU:
 
