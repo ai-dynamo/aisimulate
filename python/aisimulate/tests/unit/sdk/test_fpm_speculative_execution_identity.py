@@ -100,6 +100,12 @@ def test_legacy_profile_json_and_identity_do_not_gain_default_execution_fields()
         ("kind", "target_verify"),
         ("timing_scope", "scheduler_wall_time"),
         ("draft_revision", "main"),
+        ("draft_model", " test/draft"),
+        ("draft_model", "test/draft "),
+        ("draft_model", "test/\x00draft"),
+        ("draft_model", "test/\x7fdraft"),
+        ("draft_model", "test/\x85draft"),
+        ("draft_model", "test/\x9fdraft"),
         ("extra_field", "ignored"),
     ],
 )

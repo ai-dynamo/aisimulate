@@ -429,6 +429,31 @@ impl Engine {
         if let Some(binding) = &execution {
             binding.validate()?;
         }
+        fn contains_sd_round(ops: &[Op]) -> bool {
+            ops.iter().any(|op| match op {
+                Op::FpmForward(op) => {
+                    op.match_identity
+                        .get(16)
+                        .is_some_and(|selector| selector.starts_with("speculative_round"))
+                        || contains_sd_round(&op.sol_ops)
+                }
+                Op::TokenScale(op) => contains_sd_round(std::slice::from_ref(&op.op)),
+                Op::Dsv41Stage(op) => contains_sd_round(&op.children),
+                Op::Overlap(op) => contains_sd_round(&op.group_a) || contains_sd_round(&op.group_b),
+                Op::Fallback(op) => {
+                    contains_sd_round(std::slice::from_ref(&op.primary))
+                        || contains_sd_round(&op.fallback)
+                }
+                _ => false,
+            })
+        }
+        if execution.is_none()
+            && (contains_sd_round(&spec.context_ops) || contains_sd_round(&spec.generation_ops))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM selectors require an explicit execution binding".into(),
+            ));
+        }
         let nextn = spec
             .engine
             .speculative
@@ -447,6 +472,7 @@ impl Engine {
             ops.iter().any(|op| match op {
                 Op::FpmForward(_) => true,
                 Op::TokenScale(o) => contains_fpm(std::slice::from_ref(&o.op)),
+                Op::Dsv41Stage(o) => contains_fpm(&o.children),
                 Op::Overlap(o) => contains_fpm(&o.group_a) || contains_fpm(&o.group_b),
                 Op::Fallback(o) => {
                     contains_fpm(std::slice::from_ref(&o.primary)) || contains_fpm(&o.fallback)
@@ -4269,6 +4295,31 @@ mod tests {
                 "case {case}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn identity_only_sd_selector_in_nested_stage_is_rejected_before_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = build_fpm_spec(tmp.path(), None);
+        spec.engine.forward_model = None;
+        spec.engine.fpm_parquet_path = None;
+        for ops in [&mut spec.context_ops, &mut spec.generation_ops] {
+            let Op::FpmForward(op) = &mut ops[0] else {
+                unreachable!()
+            };
+            op.match_identity[16] = "speculative_round_v1:invalid".into();
+            *ops = vec![Op::Dsv41Stage(crate::operators::Dsv41StageOp {
+                name: "nested_fpm".into(),
+                is_context: op.phase == FpmPhase::Prefill,
+                decoder_replay: false,
+                bounded: false,
+                window_size: 128,
+                children: std::mem::take(ops),
+            })];
+        }
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
     }
 
     /// The marginal-decode mixed composition, exact arithmetic over the
