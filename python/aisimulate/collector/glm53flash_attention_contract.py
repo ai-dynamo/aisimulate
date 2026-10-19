@@ -78,6 +78,8 @@ RUNTIME_IMAGES = {
 KV_CACHE_DTYPES = {"vllm": ("fp8", "bfloat16"), "sglang": ("fp8", "bfloat16")}
 SERVING_KV_CACHE_DTYPE = {"fp8": "fp8_e4m3", "bfloat16": "bfloat16"}
 KPOOL_ALIGN = 4
+# System of attempt manifests that predate the recorded ``system`` field.
+LEGACY_SYSTEM = "gb300"
 PHASES = ("context", "generation")
 # Published columns, exactly the Rust reader's schema.
 COLUMNS = (
@@ -881,7 +883,8 @@ def main() -> None:
         if set(entry) != {"deployment", "key", "reason", "evidence"} or not entry["reason"] or not entry["evidence"]:
             raise ValueError(f"classified failure needs deployment, key, reason and evidence: {entry}")
     check_split_closure(loaded, classified)
-    if len({m.get("system") for m, _ in loaded}) != 1:
+    systems = {m.get("system") for m, _ in loaded}
+    if len(systems) != 1:
         raise ValueError("one table holds attempts of one system")
     # Request token provenance (glm53flash_attention_tokens) must be one spec.
     input_specs = {canonical_json(m.get("input_tokens")) for m, _ in loaded}
@@ -892,6 +895,14 @@ def main() -> None:
     if len(backends) != 1:
         raise ValueError("one table holds one backend")
     backend = backends.pop()
+    # The Rust reader identifies the system only by the table's directory, so
+    # the output must sit at data/<system>/glm53_attention/<backend>/<version>/
+    # of the attempts' recorded system. Attempts without a recorded system come
+    # from the launcher before per-system collection, which targeted GB300 only.
+    system = systems.pop() or LEGACY_SYSTEM
+    expected = ("data", system, "glm53_attention", backend, RUNTIME_VERSIONS[backend], BASENAME)
+    if Path(args.output).parts[-len(expected) :] != expected:
+        raise ValueError(f"output must end with {'/'.join(expected)} for attempts of system {system}")
     write_parquet(rows, args.output)
     digest = rows[0]["runtime_digest"]
     kv_cache_dtype = json.loads(rows[0]["geometry"])["kv_cache_dtype"]

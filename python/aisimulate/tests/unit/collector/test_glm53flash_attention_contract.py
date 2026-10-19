@@ -405,7 +405,7 @@ def test_vllm_hopper_rows_are_bf16_kv_and_never_mix_with_fp8(tmp_path):
         write_parquet(rows["fp8"] + rows["bfloat16"], tmp_path / "mixed.parquet")
 
 
-def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_len=None):
+def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_len=None, system=None):
     flat = _flat()
     sweep_spec = sweep_spec or SMALL
     plan = build_plan(sweep_spec)
@@ -422,6 +422,8 @@ def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_l
         "input_tokens": input_token_spec(plan),
         "source_commit": "c" * 40,
     }
+    if system is not None:
+        body["system"] = system
     if only_sets is not None:
         body["only_sets"] = sorted(only_sets)
         plan = {**plan, "sets": [s for s in plan["sets"] if s["set_id"] in only_sets]}
@@ -441,6 +443,36 @@ def _attempt(tmp_path, only_sets=None, name="full", sweep_spec=None, max_model_l
         (raw / f"rank-{rank}.jsonl").write_text("\n".join(lines) + "\n")
     (raw / "COMPLETE").write_text("done\n")
     return attempt, records
+
+
+def test_finalized_table_is_bound_to_the_attempts_system_directory(tmp_path, monkeypatch):
+    from collector import glm53flash_attention_contract as contract
+
+    def finalize(attempt, system_dir):
+        out = tmp_path / system_dir / "data" / system_dir / "glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
+        monkeypatch.setattr("sys.argv", ["x", "finalize", str(attempt), "--output", str(out)])
+        contract.main()
+        return out
+
+    b300, _ = _attempt(tmp_path, name="b300", system="b300_sxm")
+    # The Rust reader keys the system by directory: a B300 table under gb200
+    # would load as GB200 silicon, so it is refused.
+    with pytest.raises(ValueError, match="b300_sxm/glm53_attention/vllm"):
+        finalize(b300, "gb200")
+    assert pq.read_table(finalize(b300, "b300_sxm")).num_rows > 0
+    # Manifests without a recorded system come from the GB300-only launcher.
+    legacy, _ = _attempt(tmp_path, name="legacy")
+    with pytest.raises(ValueError, match="gb300/glm53_attention/vllm"):
+        finalize(legacy, "b300_sxm")
+    assert pq.read_table(finalize(legacy, "gb300")).num_rows > 0
+    # One table never mixes a recorded system with an unrecorded one.
+    sets = [s["set_id"] for s in build_plan(SMALL)["sets"]]
+    first, _ = _attempt(tmp_path, only_sets=sets[:-1], name="first")
+    last, _ = _attempt(tmp_path, only_sets=sets[-1:], name="last", system="gb300")
+    out = tmp_path / "mixed/data/gb300/glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
+    monkeypatch.setattr("sys.argv", ["x", "finalize", str(first), str(last), "--output", str(out)])
+    with pytest.raises(ValueError, match="one system"):
+        contract.main()
 
 
 def test_attempt_admission_requires_every_planned_target(tmp_path):
@@ -495,7 +527,7 @@ def test_split_attempts_must_cover_the_plan_exactly_once(tmp_path, monkeypatch):
     first, _ = _attempt(tmp_path, only_sets=sets[:-1], name="a")
     last, _ = _attempt(tmp_path, only_sets=sets[-1:], name="b")
     assert load_attempt(last)[1]
-    out = tmp_path / "t" / BASENAME
+    out = tmp_path / "t/data/gb300/glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
     base = ["x", "finalize", "--output", str(out)]
     monkeypatch.setattr("sys.argv", base[:2] + [str(first), str(last)] + base[2:])
     contract.main()
@@ -700,7 +732,7 @@ def test_partial_attempt_admits_only_its_complete_sets(tmp_path, monkeypatch):
     assert len(rows) == len(target_keys(plan)) - len(lost)
     # The rerun covers the failed set; the partial copy of its other targets is superseded.
     rerun, _ = _attempt(tmp_path, only_sets=[failed_set, sets[0]], name="rerun")
-    out = tmp_path / "p" / BASENAME
+    out = tmp_path / "p/data/gb300/glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
     argv = ["x", "finalize", str(rerun), "--partial", str(broken), "--output", str(out)]
     monkeypatch.setattr("sys.argv", argv)
     contract.main()
@@ -718,7 +750,7 @@ def test_classified_failures_are_explicit_gaps(tmp_path, monkeypatch):
     first, _ = _attempt(tmp_path, only_sets=sets[:-1], name="a")
     gap = [list(k) for k in target_keys({"sets": plan["sets"][-1:]})]
     classified = tmp_path / "classified.json"
-    out = tmp_path / "c" / BASENAME
+    out = tmp_path / "c/data/gb300/glm53_attention/vllm" / RUNTIME_VERSIONS["vllm"] / BASENAME
     argv = ["x", "finalize", str(first), "--output", str(out)]
     entries = [{"deployment": "fp8-tp2", "key": k, "reason": "OOM", "evidence": ["log"]} for k in gap]
     classified.write_text(json.dumps(entries))
