@@ -576,7 +576,7 @@ def _launch_args(tmp_path, name, **overrides):
         "systems_dir": None,
         "arch": "arm64",
         "gpus_per_node": None,
-        "kv_cache_dtype": "fp8",
+        "kv_cache_dtype": None,
     }
     return Namespace(**{**values, **overrides})
 
@@ -618,7 +618,8 @@ def test_launch_follows_the_system_yaml_and_image_architecture(tmp_path):
     assert (manifest["system"], manifest["gpus_per_node"]) == ("gb300", 4)
     # HGX H200 (8 GPUs/node, x86): TP8 FP8; NVLS and symmetric memory stay on,
     # MNNVL is off (the NVLink domain is one node).
-    manifest, run = launch("h200", system="h200_sxm", arch="amd64", checkpoint="fp8", config=CONFIGS["fp8"], tp=8)
+    hopper = {"system": "h200_sxm", "arch": "amd64", "kv_cache_dtype": "bfloat16"}
+    manifest, run = launch("h200", checkpoint="fp8", config=CONFIGS["fp8"], tp=8, **hopper)
     assert "#SBATCH --gres=gpu:8" in run and "--account=acct" in run
     assert manifest["serving_env"] == {
         "NCCL_CUMEM_ENABLE": "1",
@@ -629,7 +630,12 @@ def test_launch_follows_the_system_yaml_and_image_architecture(tmp_path):
     assert "NCCL_MNNVL_ENABLE" not in run and "NCCL_NVLS_ENABLE=1" in run and "VLLM_USE_NCCL_SYMM_MEM=1" in run
     assert manifest["runtime_digest"] == RUNTIME_IMAGES[("vllm", "amd64")]
     assert manifest["geometry"]["tp_size"] == 8 and manifest["geometry"]["num_heads"] == 8
-    assert launch("gpn", system="h200_sxm", arch="amd64", gpus_per_node=4, tp=4)[1].count("--gres=gpu:4") == 1
+    assert launch("gpn", gpus_per_node=4, tp=4, **hopper)[1].count("--gres=gpu:4") == 1
+    # Without --kv-cache-dtype a Hopper attempt is refused (its runtimes serve
+    # only BF16 KV); elsewhere the default is FP8 (the GB300 attempt above).
+    with pytest.raises(SystemExit, match="explicit --kv-cache-dtype"):
+        launch("default", system="h100_sxm", arch="amd64", checkpoint="fp8", config=CONFIGS["fp8"], tp=8)
+    assert launch("b300", system="b300_sxm", arch="amd64", tp=2)[0]["geometry"]["kv_cache_dtype"] == "fp8"
     # SGLang on Hopper serves BF16 KV: the flag and the key follow the manifest.
     manifest, run = launch(
         "sgl",
@@ -656,7 +662,10 @@ def test_launch_follows_the_system_yaml_and_image_architecture(tmp_path):
         ({"checkpoint": "fp8", "tp": 1, "system": "b300_sxm", "arch": "amd64"}, "exceed one b300_sxm"),
         # NVFP4 (190.4 GiB) exceeds one GB200 (185 GiB); FP8 TP2 exceeds H100.
         ({"system": "gb200"}, "exceed one gb200"),
-        ({"checkpoint": "fp8", "tp": 2, "system": "h100_sxm", "arch": "amd64"}, "exceed one h100_sxm"),
+        (
+            {"checkpoint": "fp8", "tp": 2, "system": "h100_sxm", "arch": "amd64", "kv_cache_dtype": "bfloat16"},
+            "exceed one h100_sxm",
+        ),
         # One attempt is one node: TP8 needs two 4-GPU NVL72 trays.
         ({"tp": 8, "system": "gb200"}, "exceeds the 4 GPUs"),
     ],

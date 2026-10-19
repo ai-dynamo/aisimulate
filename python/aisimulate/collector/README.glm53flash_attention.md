@@ -28,7 +28,7 @@ rejects only a TP wider than the node or a checkpoint whose per-rank weights
 exceed one GPU of the system YAML; every other fit is observed at runtime.
 
 The sparse-MLA latent KV dtype is part of the key (`kv_cache_dtype`, always
-passed explicitly with `--kv-cache-dtype`; the default is `fp8`). A table
+passed with `--kv-cache-dtype`: default `fp8`, required on SM90). A table
 holds rows of one KV dtype and serves only deployments of that dtype. On SM10x
 the collected identity is FP8 KV (`fp8_e4m3`). vLLM's `auto` would resolve BF16
 for this checkpoint there, so a BF16-KV SM10x deployment is a separate identity:

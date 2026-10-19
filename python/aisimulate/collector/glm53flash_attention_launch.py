@@ -87,6 +87,7 @@ def system_spec(system: str, systems_dir: str | None = None) -> dict:
     return {
         "gpus_per_node": per_node,
         "mem_capacity": int(data["gpu"]["mem_capacity"]),
+        "sm_version": data["gpu"].get("sm_version"),
         # An NVLink domain wider than one node (GB200/GB300 NVL72 racks).
         "multi_node_nvlink": int(node.get("num_gpus_per_rack") or per_node) > per_node,
     }
@@ -96,6 +97,16 @@ def check_deployment(args, spec: dict) -> None:
     """Capacity and topology facts only; nothing about expected kernels."""
     if args.tp > args.gpus_per_node:
         raise SystemExit(f"TP{args.tp} exceeds the {args.gpus_per_node} GPUs of one {args.system} node")
+    if args.kv_cache_dtype is None:
+        # No silent default where it cannot be served: the stock SM90 runtimes
+        # serve this model's sparse-MLA KV only in BF16, so Hopper attempts
+        # must name the KV dtype; elsewhere the default stays FP8.
+        if spec["sm_version"] is not None and 90 <= int(spec["sm_version"]) < 100:
+            raise SystemExit(
+                f"{args.system} (SM{spec['sm_version']}) needs an explicit --kv-cache-dtype: the stock "
+                "SM90 runtimes serve GLM-5.3-Flash with bfloat16 KV only (pass --kv-cache-dtype bfloat16)"
+            )
+        args.kv_cache_dtype = "fp8"
     if args.kv_cache_dtype not in KV_CACHE_DTYPES[args.backend]:
         raise SystemExit(f"{args.backend} GLM attention serves KV {KV_CACHE_DTYPES[args.backend]}")
     per_rank = CHECKPOINT_GIB[args.checkpoint] * GIB / args.tp
@@ -262,8 +273,9 @@ def main():
     parser.add_argument(
         "--kv-cache-dtype",
         choices=("fp8", "bfloat16"),
-        default="fp8",
-        help="sparse-MLA latent KV precision of the table (SM90 runtimes serve only bfloat16)",
+        default=None,
+        help="sparse-MLA latent KV precision of the table (default fp8; required on SM90, "
+        "whose runtimes serve only bfloat16)",
     )
     parser.add_argument("--config", required=True, help="checkpoint config.json (pinned revision)")
     parser.add_argument("--sweep", default="collector/cases/base_ops/glm53flash_attention.yaml")
