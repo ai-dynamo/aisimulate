@@ -236,6 +236,48 @@ def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
         model.close()
 
 
+def _hopper_sol(system, backend, tp, kv=None):
+    kwargs = {} if kv is None else {"kvcache_quant_mode": kv}
+    config = ForwardPassPerfModelConfig(
+        model="zai-org/GLM-5.3-Flash",
+        system=system,
+        backend=backend,
+        worker_type="aggregated",
+        tp=tp,
+        moe_tp_size=tp,
+        moe_ep_size=1,
+        database_mode="SOL",
+        estimation_mode="op_level",
+        fallback_policy="deny",
+        **kwargs,
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        return model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False)
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("tp", [4, 8])
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+def test_fp8_sparse_kv_is_rejected_on_hopper(system, tp, backend):
+    # The stock SM90 runtimes serve GLM-5.3-Flash with BF16 KV only, so an
+    # explicit FP8 request and the FP8 default both fail at construction
+    # (previously SOL priced them, e.g. 8.2 ms at B32/4096/2 on H100 TP8).
+    for kv in ("fp8", None):
+        with pytest.raises(Exception, match=r"SM90.*bfloat16"):
+            _hopper_sol(system, backend, tp, kv)
+    assert _hopper_sol(system, backend, tp, "bfloat16") > 0
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("system", ["b300_sxm", "gb200"])
+def test_fp8_sparse_kv_stays_admitted_on_blackwell(system, backend):
+    assert _hopper_sol(system, backend, 4, "fp8") > 0
+    assert _hopper_sol(system, backend, 4) == _hopper_sol(system, backend, 4, "fp8")
+
+
 def test_sglang_bf16_kv_doubles_only_the_latent_cache():
     # SGLang 0.5.20 BF16 KV (SM90): the 512-element latent takes 2 bytes per
     # element (calculate_mla_kv_cache_dim); IndexPool keys (128 FP8 + 4-byte
@@ -486,7 +528,10 @@ def test_vllm_bf16_kv_on_hopper_is_priced_like_sglang_bf16(system):
         finally:
             model.close()
 
-    assert latency("bfloat16") > latency("fp8") > 0
+    assert latency("bfloat16") > 0
+    # FP8 KV is not a served SM90 identity: refused at construction, never priced.
+    with pytest.raises(ValueError, match="SM90"):
+        latency("fp8")
 
 
 def test_vllm_fp8_blackwell_sol_is_unchanged_by_bf16_admission():

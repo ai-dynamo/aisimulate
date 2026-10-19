@@ -8,7 +8,8 @@ use std::collections::HashMap;
 
 use crate::AicError;
 use crate::common::enums::{
-    ComputeDtype, DatabaseMode, GemmQuantMode, MoeQuantMode, QuantMapping, TransferKind,
+    ComputeDtype, DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode, QuantMapping,
+    TransferKind,
 };
 use crate::config::PerfSource;
 use crate::operators::Op;
@@ -85,6 +86,33 @@ fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result
              Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
              with matching backend performance data.",
             db.system, quant.name,
+        )));
+    }
+    Ok(())
+}
+
+/// GLM-5.3-Flash sparse MLA on SM9x: the modelled stock runtimes serve the
+/// latent KV only in BF16. SGLang 0.5.20's IndexPool DSA backends cannot read
+/// FP8 KV there, and vLLM 0.31.0 `FLASHINFER_MLA_SPARSE_SM90` hands an FP8
+/// cache to FlashInfer 0.7.0.post1 `plan()` as uint8 storage, which it
+/// rejects. An FP8-KV request (including the FP8 default) fails here in every
+/// database mode instead of pricing a deployment the runtimes cannot serve;
+/// the requested dtype is never switched.
+fn validate_glm53_kv_capability(
+    db: &PerfDatabase,
+    op: &crate::operators::glm53flash::Glm53AttentionOp,
+) -> Result<(), AicError> {
+    if op.layer_kind == "sparse_mla"
+        && op.kv_cache_dtype == KvCacheQuantMode::Fp8
+        && let Some(sm) = db.system_spec.gpu.sm_version
+        && (90..100).contains(&sm)
+    {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "GLM-5.3-Flash on GPU {} (SM{sm}) cannot use FP8 sparse-MLA KV with {}: the \
+             stock SM90 runtimes (vLLM 0.31.0, SGLang 0.5.20) serve this model with BF16 KV \
+             only. Pass kvcache_quant_mode=\"bfloat16\" (the FP8 default does not apply on \
+             SM90).",
+            db.system, op.backend,
         )));
     }
     Ok(())
@@ -411,6 +439,9 @@ impl Availability<'_> {
         };
         if let Some(quant) = quant {
             validate_compute_capability(self.db, quant)?;
+        }
+        if let Glm53Attention(attention) = op {
+            validate_glm53_kv_capability(self.db, attention)?;
         }
         // CSA context parallelism consumes both sparse correction tables even
         // when its base module uses the analytic SOL. HCA never consumes them.
@@ -760,6 +791,65 @@ mod tests {
                         .to_string()
                         .contains("GPU a100_sxm (SM80) does not support FP8")
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_is_rejected_on_sm90_in_every_mode() {
+        let root = systems();
+        for (sm, rejected) in [
+            (Some(90), true),
+            (Some(100), false),
+            (Some(103), false),
+            (None, false),
+        ] {
+            let path = root.path().join("b200_sxm.yaml");
+            let mut spec: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+            std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+            for mode in [
+                DatabaseMode::Silicon,
+                DatabaseMode::Hybrid,
+                DatabaseMode::Sol,
+            ] {
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                for backend in ["vllm", "sglang"] {
+                    let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                    sparse.backend = backend.into();
+                    sparse.checkpoint_format = "fp8".into();
+                    let mut bf16 = sparse.clone();
+                    bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+                    let kda = crate::operators::glm53flash::tests::attention("kda");
+                    let fp8 = Op::Glm53Attention(sparse);
+                    let result = validate(&db, [&fp8].into_iter());
+                    let wrapped = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(fp8.clone()),
+                        numerator: 1,
+                        denominator: 1,
+                    });
+                    let nested = validate(&db, [&wrapped].into_iter());
+                    if rejected {
+                        for error in [result.unwrap_err(), nested.unwrap_err()] {
+                            assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+                            let text = error.to_string();
+                            assert!(text.contains("SM90") && text.contains("bfloat16"), "{text}");
+                        }
+                    } else {
+                        assert!(!matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                        assert!(!matches!(nested, Err(AicError::InvalidEngineConfig(_))));
+                    }
+                    // BF16 latent KV and KDA layers are never refused here.
+                    for op in [Op::Glm53Attention(bf16), Op::Glm53Attention(kda.clone())] {
+                        assert!(!matches!(
+                            validate(&db, [&op].into_iter()),
+                            Err(AicError::InvalidEngineConfig(_))
+                        ));
+                    }
+                }
             }
         }
     }
