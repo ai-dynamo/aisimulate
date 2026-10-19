@@ -814,8 +814,7 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
-        // Keep rejected requests alive until the pass succeeds so a provider
-        // failure can restore both their queue position and terminal bookkeeping.
+        // Overlength requests leave the queue now and report rejection after this pass's tokens.
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len
             && self
@@ -824,12 +823,12 @@ impl SglangCore {
                 .maximum_length()
                 .is_some_and(|length| length >= limit as u64)
         {
-            for index in 0..self.waiting.len() {
+            for _ in 0..self.waiting.len() {
                 let request = self.waiting.pop_front().expect("waiting request retained");
                 if request.prompt_len() < limit {
                     self.waiting.push_back(request);
                 } else {
-                    rejected.push((index, request));
+                    rejected.push(request);
                 }
             }
         }
@@ -931,7 +930,7 @@ impl SglangCore {
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let decode = if prefill_pass {
+        let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
                 &mut self.kv_manager,
@@ -947,23 +946,7 @@ impl SglangCore {
                 decode_start_ms,
                 true,
             )
-        };
-        let mut decode = match decode {
-            Ok(decode) => decode,
-            Err(error) => {
-                for (index, request) in rejected {
-                    self.waiting.insert(index.min(self.waiting.len()), request);
-                }
-                self.active_request_ids = self
-                    .waiting
-                    .iter()
-                    .chain(&self.prebuilt_ready)
-                    .chain(&self.running)
-                    .map(|request| request.uuid)
-                    .collect();
-                return Err(error);
-            }
-        };
+        }?;
         if !prefill_pass {
             // The decode step can retract requests before executing the batch.
             committed_requests.extend(
@@ -988,9 +971,9 @@ impl SglangCore {
             self.complete_source(request);
         }
         if let Some(oracle) = &self.belady {
-            oracle.retire_requests(rejected.iter().map(|(_, request)| request.uuid));
+            oracle.retire_requests(rejected.iter().map(|request| request.uuid));
         }
-        for (_, request) in rejected {
+        for request in rejected {
             self.active_request_ids.remove(&request.uuid);
             self.source_holds.remove_request(request.uuid);
             decode.output_signals.push(OutputSignal {

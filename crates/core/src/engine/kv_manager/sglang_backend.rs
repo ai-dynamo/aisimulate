@@ -271,29 +271,27 @@ impl SglangKvManager {
         self.page_hash_present.set(slot, hash.is_some());
     }
 
-    /// Count one more slot advertising `hash`; returns its previous logical refcount.
-    fn acquire_hash(&mut self, hash: SequenceHash) -> Option<usize> {
+    /// Count one more slot advertising `hash`; returns whether `hash` became live.
+    fn acquire_hash(&mut self, hash: SequenceHash) -> bool {
         if self.live_hashes.insert(hash) {
-            return None;
+            return true;
         }
-        let extra = self.extra_hash_refs.entry(hash).or_default();
-        *extra += 1;
-        Some(*extra)
+        *self.extra_hash_refs.entry(hash).or_default() += 1;
+        false
     }
 
-    /// Count one slot fewer advertising `hash`; returns its previous logical refcount.
-    fn release_hash(&mut self, hash: SequenceHash) -> Option<usize> {
+    /// Count one slot fewer advertising `hash`; returns whether that was its last slot.
+    fn release_hash(&mut self, hash: SequenceHash) -> bool {
         if !self.extra_hash_refs.is_empty()
             && let Some(extra) = self.extra_hash_refs.get_mut(&hash)
         {
-            let previous = *extra + 1;
             *extra -= 1;
             if *extra == 0 {
                 self.extra_hash_refs.remove(&hash);
             }
-            return Some(previous);
+            return false;
         }
-        self.live_hashes.remove(&hash).then_some(1)
+        self.live_hashes.remove(&hash)
     }
 
     pub fn cache(&self) -> &RadixCache {
@@ -1042,9 +1040,9 @@ impl SglangKvManager {
                 None => tokens_hash.0,
             };
 
-            let previous_refcount = self.acquire_hash(block_hash);
+            let newly_live = self.acquire_hash(block_hash);
             self.set_page_hash(page_slot, Some(block_hash));
-            if previous_refcount.is_none() && !publishing {
+            if newly_live && !publishing {
                 publishing = true;
                 parent_hash = block_parent_hash;
                 blocks.reserve_exact(local_hashes.len() - block_idx);
@@ -1093,9 +1091,9 @@ impl SglangKvManager {
             let Some(block_hash) = self.page_hash(page.index()) else {
                 continue;
             };
-            let previous_refcount = self.release_hash(block_hash);
+            let last_copy = self.release_hash(block_hash);
             self.set_page_hash(page.index(), None);
-            if previous_refcount == Some(1) {
+            if last_copy {
                 if block_hashes.is_empty() {
                     block_hashes.reserve_exact(evicted_pages.len() - page_idx);
                 }
@@ -1679,10 +1677,11 @@ mod tests {
     fn hash_refcounts_track_more_than_two_copies() {
         let sink = Arc::new(MockSink::new());
         let mut mgr = SglangKvManager::new(4, 1, KvEventPublishers::new(Some(sink)), 0);
-        let previous: Vec<_> = (0..3).map(|_| mgr.acquire_hash(7)).collect();
-        assert_eq!(previous, [None, Some(1), Some(2)]);
-        let previous: Vec<_> = (0..4).map(|_| mgr.release_hash(7)).collect();
-        assert_eq!(previous, [Some(3), Some(2), Some(1), None]);
+        let newly_live: Vec<_> = (0..3).map(|_| mgr.acquire_hash(7)).collect();
+        assert_eq!(newly_live, [true, false, false]);
+        assert_eq!(mgr.refcount_snapshot()[&7], 3);
+        let last_copy: Vec<_> = (0..4).map(|_| mgr.release_hash(7)).collect();
+        assert_eq!(last_copy, [false, false, true, false]);
         assert!(mgr.refcount_snapshot().is_empty());
     }
 
