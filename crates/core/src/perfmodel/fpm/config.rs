@@ -522,7 +522,7 @@ impl ForwardPassPerfModelConfig {
         }
         if self.nextn != binding.execution_profile.num_draft_tokens || self.speculation.is_some() {
             return Err(invalid_config(
-                "speculative-round FPM nextn must match num_draft_tokens and cannot use ngram speculation",
+                "speculative-round FPM nextn must match num_draft_tokens and cannot use generic speculation",
             ));
         }
         if self.backend != BackendKind::Vllm

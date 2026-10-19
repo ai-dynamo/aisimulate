@@ -859,7 +859,14 @@ def test_speculative_round_direct_spec_preserves_identity_and_raw_batch_width(sp
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"nextn": 0}, {"nextn": 2}, {"estimation_mode": "auto"}, {"fallback_policy": "allow"}],
+    [
+        {"nextn": 0},
+        {"nextn": 2},
+        {"estimation_mode": "auto"},
+        {"fallback_policy": "allow"},
+        {"nextn": 0, "speculation": {"kind": "mtp", "params": {"depth": 3}}},
+        {"nextn": 0, "speculation": {"kind": "ngram", "params": {"num_speculative_tokens": 3}}},
+    ],
 )
 def test_speculative_round_profile_rejects_implicit_or_mismatched_execution(speculative_profile, overrides):
     config = _request(speculative_profile, "direct", nextn=3)

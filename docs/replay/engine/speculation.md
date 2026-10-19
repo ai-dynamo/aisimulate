@@ -216,7 +216,9 @@ the [SD execution identity](../../perf-model/methods/whole-forward.md#recorded-s
 and observed linear-cache `runtime_memory`. Select `fpm_interpolation`, direct
 interpolation and deny fallback in the worker's timing configuration; `nextn`
 must match the recorded depth. For three drafts and mean total acceptance length
-2.78, use `nextn: 3` and `nextn_accepted: 1.78`.
+2.78, use `nextn: 3` and `nextn_accepted: 1.78`. Leave `engine.speculation`
+unset: the registered-scheme configuration above models analytical draft work
+and cannot be combined with a measured full-round profile.
 
 Acceptance determines sampled output progress, not a latency multiplier. Each
 decode query consumes one measured complete round at the request count and
