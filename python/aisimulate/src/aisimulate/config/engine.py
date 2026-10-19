@@ -58,6 +58,21 @@ class AFDTopologyPredictionConfig(StrictModel):
     pipeline_model: AFDPipelineModel = "optimistic"
     comm_overhead_factor: PositiveFloat = 1.0
     boundary_on_attn: bool = Field(default=True, strict=True)
+    # Measured FastAFD split MoE stage replacing the modeled F side and A<->F
+    # transfers; see docs/replay/engine/analytical.md.
+    fastafd_profile_path: str | None = None
+    fastafd_moe_backend: Literal["megamoe", "deepep_deepgemm"] | None = None
+
+    @model_validator(mode="after")
+    def _validate_fastafd_profile(self) -> AFDTopologyPredictionConfig:
+        if (self.fastafd_profile_path is None) != (self.fastafd_moe_backend is None):
+            raise ValueError("fastafd_profile_path and fastafd_moe_backend must be configured together")
+        if self.fastafd_profile_path is not None:
+            if not self.fastafd_profile_path.strip():
+                raise ValueError("fastafd_profile_path cannot be empty")
+            if self.phase != "decode":
+                raise ValueError("fastafd_profile_path requires phase='decode'; the profiles measure decode only")
+        return self
 
 
 class AFDSearchRecommendationConfig(StrictModel):

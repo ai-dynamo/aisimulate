@@ -19,6 +19,7 @@ from .config.engine import EnginePredictionConfig, WorkerPredictionConfig, resol
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .estimator_readiness import unready_estimator_message
 from .state_size import resolve_state_size
+from .sweeper.afd_fastafd import FastAFDMoEStagePerformanceModel
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
     AFDPerformanceModel,
@@ -332,8 +333,20 @@ def _afd_deployment(
     afd = engine.afd
     assert afd is not None
     facts = resolve_model_hardware(engine.model, engine.hardware, backend=engine.backend)
+    topology_fields = afd.model_dump(mode="python")
+    profile_path = topology_fields.pop("fastafd_profile_path")
+    profile_backend = topology_fields.pop("fastafd_moe_backend")
+    if profile_path is not None:
+        # The configured provider keeps measuring the attention side; the
+        # profile supplies the complete MoE stage.
+        performance_model = FastAFDMoEStagePerformanceModel(
+            profile_path=profile_path,
+            moe_backend=profile_backend,
+            attention_model=performance_model,
+            moe_precision=engine.moe_quant_mode,
+        )
     topology = AFDTopology(
-        **afd.model_dump(mode="python"),
+        **topology_fields,
         gpus_per_node=facts.gpus_per_node,
         is_moe=facts.is_moe,
         num_experts=facts.num_experts,

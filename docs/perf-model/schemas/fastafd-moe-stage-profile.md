@@ -70,6 +70,12 @@ iterations. `stable` is the benchmark's own stability gate and must be true;
 `correctness` is the matched-output check against a reference backend, `null` when
 the benchmark ran no reference.
 
+## Consumers
+
+`afd` entries drive analytical AFD prediction through
+`engine.afd.fastafd_profile_path`; see
+[measured FastAFD MoE stage](../../replay/engine/analytical.md#measured-fastafd-moe-stage).
+
 ## Building a profile
 
 `python -m aisimulate.fastafd_profile <results_dir> --repository <url> --output <profile.json>`
