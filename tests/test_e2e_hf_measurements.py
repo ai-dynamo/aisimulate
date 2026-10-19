@@ -4,6 +4,7 @@
 import hashlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,7 +16,10 @@ from cryptography.exceptions import InvalidTag
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.e2e_accuracy import hf_measurements as hf
 from scripts.e2e_accuracy import private_artifacts
+from scripts.e2e_accuracy.source import hf_bindings
 from scripts.e2e_accuracy.source.cohort import select_points
+from scripts.e2e_accuracy.source.recipes import runtime_evidence
+from scripts.e2e_accuracy.source.schema import SiliconRow
 
 
 @pytest.fixture
@@ -260,3 +264,67 @@ def test_duplicate_observations_with_valid_checksums_fail_before_output(cache, m
     with pytest.raises(ValueError, match="duplicate HF benchmark identity"):
         hf.fetch(manifest, tmp_path / "duplicate-output")
     assert not (tmp_path / "duplicate-output").exists()
+
+
+@pytest.mark.parametrize("archive_version", [1, 2])
+def test_reviewed_hf_binding_preserves_archive_and_full_database_log_reuse(record, monkeypatch, archive_version):
+    record = record | dict(spec_method="mtp")
+    tables = hf.to_tables([record], {})
+    point = select_points(tables, include_mtp=True)[0][0]
+    row = SiliconRow(**point["source_row"])
+    original = replace(
+        row, config_id=7, workflow_run_id=9, server_log_id="11", infx_config={**row.infx_config, "id": 7}
+    )
+    binding = hf_bindings.bind_row(row, original, 2)
+    monkeypatch.setattr(
+        hf_bindings,
+        "load_manifest",
+        lambda _: {
+            "schema_version": "reviewed-hf-evidence-bindings/1",
+            "records": {hf_bindings.row_digest(row): binding},
+        },
+    )
+    points, _ = select_points(tables, include_mtp=True)
+    assert points[0]["server_log_uses"] == 2  # The HF snapshot contains only one of the shared log's rows.
+    assert points[0]["config"]["id"].startswith("hf:")
+    parsed = ["model", {}, "version", "vllm", {}, {}]
+    monkeypatch.setattr(
+        runtime_evidence,
+        "load_manifest",
+        lambda _: {
+            "schema_version": f"reviewed-runtime-observations/{archive_version}",
+            "records": {
+                hf_bindings.row_digest(original)
+                if archive_version == 1
+                else runtime_evidence.observation_id(original): {
+                    "benchmark_id": row.bench_id,
+                    "parsed": parsed,
+                    "measurement_sha256": hf_bindings.row_digest(original),
+                }
+            },
+        },
+    )
+    assert runtime_evidence.archived_recipe(row)[:5] == tuple(parsed[:5])
+    changed = replace(row, metrics={"mean_ttft": 99})
+    assert hf_bindings.reviewed_binding(changed) is None
+    with pytest.raises(ValueError, match="measurement identity mismatch"):
+        runtime_evidence.archived_recipe(changed)
+    assert hf_bindings.reviewed_binding(replace(row, run_started_at="2026-10-19")) == binding
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"metrics": {"mean_ttft": 99}},
+        {"image": "different"},
+        {"conc": 999},
+        {"head_sha": "c" * 40},
+        {"decode_tp": 4},
+        {"run_attempt": 5},
+    ],
+)
+def test_hf_binding_rejects_changed_measurements(record, changes):
+    point = select_points(hf.to_tables([record], {}))[0][0]
+    row = SiliconRow(**point["source_row"])
+    with pytest.raises(ValueError, match="identity mismatch"):
+        hf_bindings.bind_row(row, replace(row, **changes), 1)

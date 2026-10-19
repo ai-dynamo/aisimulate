@@ -23,6 +23,7 @@ from huggingface_hub import HfApi, hf_hub_download
 REPO_ID = "ai-dynamo/aisim-infx-cache"
 INDEX_PATH = "catalog/e2e/inferencex.json"
 POLICY = "hf-current-view-config-v1"
+MTP_POLICY = "hf-current-view-config-v2"
 CONFIG_FIELDS = (
     "model",
     "hardware",
@@ -57,7 +58,7 @@ def validate_manifest(manifest):
         raise ValueError("invalid HF measurement manifest fields")
     if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 2:
         raise ValueError("unsupported HF measurement manifest schema")
-    if manifest["repo_id"] != REPO_ID or manifest["selection_policy"] != POLICY:
+    if manifest["repo_id"] != REPO_ID or manifest["selection_policy"] not in {POLICY, MTP_POLICY}:
         raise ValueError("unsupported HF measurement source or cohort policy")
     if not isinstance(manifest["revision"], str) or not re.fullmatch(r"[0-9a-f]{40}", manifest["revision"]):
         raise ValueError("HF measurements require a full commit SHA")

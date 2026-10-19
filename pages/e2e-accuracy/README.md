@@ -102,11 +102,11 @@ before writing campaign inputs. Declared observation counts cannot hide deduplic
 
 ## MTP decoding
 
-The HF `hf-current-view-config-v1` policy remains STP-only. Enabling MTP for HF
-requires a new cohort policy and benchmark-specific runtime-log identity evidence;
-the current adapter does not retain the DB server-log identities used to reject
-shared acceptance windows. Stacking the HF migration on the MTP implementation
-does not establish this evidence or numerical parity with the DB campaign.
+HF campaigns use `hf-current-view-config-v2` to include STP and MTP. Historical
+HF v1 campaigns remain STP-only. Reviewed full-row bindings preserve existing
+launcher/runtime evidence and DB-wide server-log reuse counts. New or changed
+observations without an acceptance-window binding remain explicitly unresolved;
+a benchmark endpoint alone does not prove that a log belongs to one workload.
 
 DB-backed campaigns use `gym-resolved-config-v3` to include NVIDIA single-turn MTP
 measurements alongside STP. **Decoding: All / STP / MTP** filters both views,
@@ -301,7 +301,7 @@ checkout and committed snapshots unchanged.
   `catalog/e2e/inferencex.json`, its verified snapshot manifest and only the listed
   observation Parquet files. It validates byte hashes, sizes, schemas, row counts
   and record identities. Raw API archives and metric Parquet files are not needed.
-- Policy `hf-current-view-config-v1` explicitly identifies the API current-view
+- Policy `hf-current-view-config-v2` explicitly identifies the API current-view
   cohort. It uses the existing source filters, row deduplication, image coherence
   and 180-day configuration freshness rules, including P/D and multinode rows.
   It is not the historical dump cohort; aggregate changes across this boundary

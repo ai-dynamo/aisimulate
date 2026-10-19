@@ -1751,6 +1751,9 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     data = resolved_tables()
     if resolution_stage:
         data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "conc": 128})
+        if resolution_stage == "mtp_acceptance_missing":
+            data["configs"].append({**data["configs"][0], "id": "hf:mtp", "spec_method": "mtp"})
+            data["benchmark_results"][-1]["config_id"] = "hf:mtp"
     tables_path = tmp_path / "resolved-tables.json"
     tables_path.write_text(json.dumps(data))
     manifest = tmp_path / "resolved-manifest.json"
@@ -1810,7 +1813,7 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     assert summary["snapshot"]["measurement_source_url"] == (
         "https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/" + hf_manifest["revision"]
     )
-    assert summary["snapshot"]["campaign"]["selection_policy"] == "hf-current-view-config-v1"
+    assert summary["snapshot"]["campaign"]["selection_policy"] == "hf-current-view-config-v2"
     resolved = json.loads((evidence / "resolved-points.json").read_text())
     qualification = json.loads((output / "qualification.json").read_text())
     assert qualification["cohort_sha256"] == campaign.sha(

@@ -3,6 +3,6 @@
   "repo_id": "ai-dynamo/aisim-infx-cache",
   "revision": "8ec77d043d236ae92aa0cee6a9896f8195ea7718",
   "release_tag": "hf/8ec77d043d236ae92aa0cee6a9896f8195ea7718",
-  "selection_policy": "hf-current-view-config-v1",
+  "selection_policy": "hf-current-view-config-v2",
   "max_age_days": 180
 }

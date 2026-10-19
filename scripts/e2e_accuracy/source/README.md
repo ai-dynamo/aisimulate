@@ -100,8 +100,9 @@ resolver; fetching current metadata cannot prove the measured revision.
 Public exclusions use the stable `source_unresolved` reason. Detailed resolver
 stages remain in resolved-point evidence; they are not public exclusion keys.
 
-The dataset manifest opts into `gym-resolved-config-v3`. The v2 policy and the
-selector's default retain their STP-only behavior. V3 adds MTP after the same
+DB campaigns use `gym-resolved-config-v3`; HF campaigns use
+`hf-current-view-config-v2`. Historical DB v2/HF v1 policies and the selector's
+default retain STP-only behavior. The MTP policies add candidates after the same
 deduplication, image-coherence, and 180-day freshness rules. STP keeps its own
 reference date; MTP ages against the newest eligible STP or MTP measurement so
 stopped MTP collection cannot remain current indefinitely. Log reuse is
@@ -215,3 +216,27 @@ revisions; fresh replay outcomes and errors determine the report.
   ordering metadata and is not part of the original measurement digest.
 - Immutable recipe cache files are written atomically. Resolved public adapter
   requests warn when the prediction database version is not pinned.
+
+## Reviewed HF evidence bindings
+
+`hf_bindings.py` compares complete source rows before binding HF observations to
+historical evidence. Only transport IDs, fetch-time run ordering metadata and
+workflow URLs may differ; the API defaults `offload_mode=off` and `workers=null`
+are equivalent to their absence in the dump. Measurements, image, topology,
+workload, benchmark ID, source SHA and attempt must match exactly.
+
+`manifests/hf_evidence_bindings.json` pins the database release, HF revision and
+both input-table hashes. Each full HF row hash maps to its original database row
+hash, reviewed configuration ID and log-reuse count over the complete database.
+It contains no raw metrics or logs. The original runtime archives, job metadata,
+source checksums and benchmark identity checks still apply. HF configuration IDs
+remain local; these aliases are used only to locate reviewed evidence.
+
+To regenerate, select both pinned tables with `select_points(..., include_mtp=True)`,
+join by benchmark ID, and call `bind_row` for each matched pair. Count server-log
+uses over the entire database table before selection. Retain bindings for MTP,
+archived runtime observations and reviewed launcher configurations. Reject any
+non-transport mismatch; never bind by benchmark or configuration ID alone.
+Changed/new rows without a binding cannot reuse archived facts or claim a unique
+observed-acceptance window. New evidence requires review; live logs are still
+hash-recorded and checked against their benchmark endpoint.

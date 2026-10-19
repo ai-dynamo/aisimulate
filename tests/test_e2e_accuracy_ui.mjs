@@ -1069,7 +1069,8 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
 });
 
-test("HF campaigns show pinned provenance and source-resolved settings", async () => {
+for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
+test(`HF campaigns show pinned provenance and source-resolved settings (${policy})`, async () => {
   const data = withEvaluation();
   const revision = data.snapshot.evaluated_revision;
   data.snapshot.release_tag = "hf/" + "c".repeat(40);
@@ -1078,7 +1079,7 @@ test("HF campaigns show pinned provenance and source-resolved settings", async (
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
     selected: data.totals.rows, published: data.totals.rows,
-    backend_versions: [], exclusion_reasons: {}, selection_policy: "hf-current-view-config-v1",
+    backend_versions: [], exclusion_reasons: {}, selection_policy: policy,
   };
   const app = setup(async () => response(data));
   app.set("revisionFixture", revision);
@@ -1099,3 +1100,5 @@ test("HF campaigns show pinned provenance and source-resolved settings", async (
     assert.throws(() => app.run("validateSummary(invalid)"));
   }
 });
+
+}
