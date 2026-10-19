@@ -403,8 +403,12 @@ def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, 
             perf.close()
 
     assert sources(kv) == {"silicon"}
-    other = "fp8" if kv == "bfloat16" else "bfloat16"
-    assert sources(other) == {"sol"}
+    if kv == "bfloat16":
+        # SM90: FP8 KV is not a served identity and is refused at construction.
+        with pytest.raises(ValueError, match="SM90"):
+            sources("fp8")
+    else:
+        assert sources("bfloat16") == {"sol"}
 
 
 def _config(database_mode, backend="vllm", **kwargs):
