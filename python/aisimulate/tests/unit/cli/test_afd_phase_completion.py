@@ -40,6 +40,9 @@ def _fake_phase_metrics(
     t_f2a_layer: float = 0.1,
     t_step: float = 50.0,
     comm_hidden: bool = True,
+    t_a_combine_layer: float = 0.0,
+    t_f_collective_layer: float = 0.0,
+    f_per_op: dict | None = None,
 ) -> dict:
     """Build a minimal ``_simulate_phase``-style metrics dict for AFD tests.
 
@@ -56,7 +59,9 @@ def _fake_phase_metrics(
         "comm_hidden": comm_hidden,
         "balance_ratio": balance_ratio,
         "a_per_op": {},
-        "f_per_op": {},
+        "f_per_op": dict(f_per_op or {}),
+        "t_a_combine_layer": t_a_combine_layer,
+        "t_f_collective_layer": t_f_collective_layer,
         "a_memory": {"total": 1.0, "weights": 1.0, "activations": 0.0, "kvcache": 0.0, "nccl": 0.0, "others": 0.0},
         "f_memory": {"total": 1.0, "weights": 1.0, "activations": 0.0, "kvcache": 0.0, "nccl": 0.0, "others": 0.0},
         "a_is_oom": False,
@@ -709,6 +714,13 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
             "a_to_f_ms": 0.05,
             "f_to_a_ms": 0.05,
             "num_layers": 4,
+            "components": {
+                "attention_compute_ms": 0.5,
+                "a_combine_ms": 0.0,
+                "router_ms": 0.0,
+                "ffn_compute_ms": 0.7,
+                "f_collective_ms": 0.0,
+            },
         },
         "decode": {
             "attention_ms": 1.2,
@@ -716,6 +728,13 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
             "a_to_f_ms": 0.1,
             "f_to_a_ms": 0.1,
             "num_layers": 4,
+            "components": {
+                "attention_compute_ms": 1.2,
+                "a_combine_ms": 0.0,
+                "router_ms": 0.0,
+                "ffn_compute_ms": 0.9,
+                "f_collective_ms": 0.0,
+            },
         },
     }
 
@@ -732,6 +751,37 @@ def test_afd_summary_phase_both_paired_scalars_and_nan_unprefixed(monkeypatch):
     ):
         assert math.isnan(result[key]), f"expected NaN un-prefixed {key} in phase=both, got {result[key]!r}"
     assert result["comm_hidden"] is None
+
+
+def test_result_dict_splits_afd_layer_boundary_components(monkeypatch):
+    """Combine, router, and F collectives are reported per layer next to the totals."""
+    decode_metrics = _fake_phase_metrics(
+        t_a_layer=1.2,
+        t_f_layer=0.9,
+        balance_ratio=1.33,
+        t_a_combine_layer=0.05,
+        t_f_collective_layer=0.1,
+        f_per_op={"generation_router_gemm": 0.8, "generation_moe": 2.4},
+    )
+    session = _build_afd_session_with_phase_metrics(
+        monkeypatch,
+        prefill_metrics=None,
+        decode_metrics=decode_metrics,
+        combined_with_pd=True,
+    )
+
+    result = session.run_afd(RuntimeConfig(isl=128, osl=10), phase="decode").get_result_dict()
+
+    components = result["afd_layer_measurements"]["decode"]["components"]
+    assert components == pytest.approx(
+        {
+            "attention_compute_ms": 1.15,
+            "a_combine_ms": 0.05,
+            "router_ms": 0.2,
+            "ffn_compute_ms": 0.8,
+            "f_collective_ms": 0.1,
+        }
+    )
 
 
 def test_afd_summary_phase_prefill_mirrors_unprefixed_into_prefill_pair(monkeypatch):

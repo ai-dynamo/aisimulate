@@ -1840,6 +1840,8 @@ class AFDInferenceSession:
             "a_is_kv_cache_oom": a_memory_summary.check_kv_cache_oom(),
             "f_is_kv_cache_oom": f_memory_summary.check_kv_cache_oom(),
             "num_layers": num_layers,
+            "t_a_combine_layer": brk_t_a_per_layer,
+            "t_f_collective_layer": brk_t_f_per_layer,
             "a_partition": a_partition,
             "f_partition": f_partition,
         }
@@ -2077,12 +2079,28 @@ class AFDInferenceSession:
             ("decode", decode_metrics),
         ):
             if metrics is not None:
+                num_layers = int(metrics["num_layers"])
+                a_combine_ms = float(metrics["t_a_combine_layer"])
+                f_collective_ms = float(metrics["t_f_collective_layer"])
+                # The router is an F-side op here; per-op values are per step.
+                router_ms = (
+                    sum(float(ms) for name, ms in metrics["f_per_op"].items() if "router" in name.lower()) / num_layers
+                )
                 afd_layer_measurements[measurement_phase] = {
                     "attention_ms": float(metrics["t_a_layer"]),
                     "ffn_ms": float(metrics["t_f_layer"]),
                     "a_to_f_ms": float(metrics["t_a2f_layer"]),
                     "f_to_a_ms": float(metrics["t_f2a_layer"]),
-                    "num_layers": int(metrics["num_layers"]),
+                    "num_layers": num_layers,
+                    # Boundary components let an external MoE-stage provider move
+                    # the router to the A side and drop the combine it measured itself.
+                    "components": {
+                        "attention_compute_ms": float(metrics["t_a_layer"]) - a_combine_ms,
+                        "a_combine_ms": a_combine_ms,
+                        "router_ms": router_ms,
+                        "ffn_compute_ms": float(metrics["t_f_layer"]) - f_collective_ms,
+                        "f_collective_ms": f_collective_ms,
+                    },
                 }
 
         # HBM / OOM — take the worst of any simulated phase.
