@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "default_serving_admission_blocked": true,
+  "explicit_diagnostic_download_verified": true,
+  "files_verified": 3,
+  "systems_path": "/experiment/glm53-b300-refinement-r3-20261019/dataset-cache/96b2d4b80a5bc3ecd248241f1985ad6bbe6bc318c66c46547dd0e43faccd9936",
+  "dataset_commit": "8dcf3ad20c46677c56cb3375fd107176cce9d0f7",
+  "independent_forward_step_holdout_passed": true,
+  "serving_accuracy": "not_assessed",
+  "completed_requests": 2,
+  "input_tokens": 1024,
+  "output_tokens": 4,
+  "replay_scope": "Finite standalone CPU replay from the actual downloaded profile; no serving accuracy claim"
+}

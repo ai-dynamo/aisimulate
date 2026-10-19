@@ -1,0 +1,614 @@
+{
+  "basis": "Per-measurement native dispatch observations, original calibration; no inference of modes from timings",
+  "cudagraph_configuration": {
+    "mode": "FULL_AND_PIECEWISE",
+    "prefill_mode": "PIECEWISE",
+    "decode_mode": "FULL",
+    "max_capture_size": 64,
+    "capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      40,
+      48,
+      56,
+      64
+    ],
+    "prefill_capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32,
+      40,
+      48,
+      56,
+      64
+    ],
+    "decode_capture_sizes": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24,
+      32
+    ]
+  },
+  "measurement_dispatch_counts": {
+    "at_or_below_64_tokens": {
+      "PIECEWISE": 270
+    },
+    "above_64_tokens": {
+      "NONE": 1850
+    }
+  },
+  "small_input_cases": [
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 116,
+      "native_ms": 27.175119961611927,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 120,
+      "native_ms": 27.117298974189907,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 124,
+      "native_ms": 27.19914197223261,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 128,
+      "native_ms": 27.29664003709331,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 132,
+      "native_ms": 27.07869152072817,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 136,
+      "native_ms": 27.02043653698638,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 992,
+      "native_ms": 27.026293973904103,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 2016,
+      "native_ms": 27.22581650596112,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 3036,
+      "native_ms": 28.696403023786843,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 4064,
+      "native_ms": 28.821136569604278,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 4352,
+      "native_ms": 28.033655951730907,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 4356,
+      "native_ms": 28.8211940205656,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 4360,
+      "native_ms": 28.720632020849735,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 8160,
+      "native_ms": 29.37084500445053,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 16352,
+      "native_ms": 30.37164598936215,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 32736,
+      "native_ms": 32.23461948800832,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 65504,
+      "native_ms": 37.14549198048189,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 32,
+      "cached_tokens_total": 131040,
+      "native_ms": 44.98231649631634,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 1,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 128.72300698654726,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 1984,
+      "native_ms": 28.10552902519703,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 4032,
+      "native_ms": 28.363541001453996,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 6072,
+      "native_ms": 29.9246390350163,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 8128,
+      "native_ms": 30.116197478491813,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 16320,
+      "native_ms": 31.187676009722054,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 32704,
+      "native_ms": 33.11899350956082,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 65472,
+      "native_ms": 37.193502532318234,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 131008,
+      "native_ms": 46.06791754486039,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 64,
+      "cached_tokens_total": 262080,
+      "native_ms": 63.34208755288273,
+      "observed_dispatch_modes": {
+        "PIECEWISE": 10
+      }
+    },
+    {
+      "batch_size": 2,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 128.79479554248974,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 129.47956449352205,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 472,
+      "native_ms": 130.03444153582677,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 480,
+      "native_ms": 130.12634398182854,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 484,
+      "native_ms": 130.2583224605769,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 496,
+      "native_ms": 130.30766253359616,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 504,
+      "native_ms": 130.1732779829763,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 508,
+      "native_ms": 130.14749402645975,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 512,
+      "native_ms": 130.2099849563092,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 516,
+      "native_ms": 129.9660949734971,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 520,
+      "native_ms": 129.74484649021178,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 528,
+      "native_ms": 129.66512551065534,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 540,
+      "native_ms": 129.83784294920042,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 544,
+      "native_ms": 129.90886706393212,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 552,
+      "native_ms": 130.63990598311648,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 3968,
+      "native_ms": 130.17827150179073,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 8064,
+      "native_ms": 130.7978449622169,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 12144,
+      "native_ms": 132.67361355246976,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 16256,
+      "native_ms": 133.6359819979407,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17408,
+      "native_ms": 132.73563096299767,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17412,
+      "native_ms": 133.57003300916404,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17416,
+      "native_ms": 133.3425475168042,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17424,
+      "native_ms": 133.39634099975228,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17436,
+      "native_ms": 133.5744725074619,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17440,
+      "native_ms": 133.66675400175154,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 17448,
+      "native_ms": 133.6648275027983,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 32640,
+      "native_ms": 135.27528854319826,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 65408,
+      "native_ms": 138.92993953777477,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 130944,
+      "native_ms": 147.7245434653014,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 262016,
+      "native_ms": 164.96062255464494,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 4,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 524160,
+      "native_ms": 200.42269653640687,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 8,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 129.3509974493645,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 16,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 130.13193855294958,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    },
+    {
+      "batch_size": 32,
+      "new_tokens_total": 128,
+      "cached_tokens_total": 0,
+      "native_ms": 130.5676635238342,
+      "observed_dispatch_modes": {
+        "NONE": 10
+      }
+    }
+  ],
+  "interpolation_change": "none; focused data coverage first",
+  "original_validation_preserved": true
+}

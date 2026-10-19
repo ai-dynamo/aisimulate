@@ -1,0 +1,5724 @@
+{
+  "schema_version": 3,
+  "prefill": [
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 4,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 4,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          4,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 4,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          4,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 4,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          4,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          16,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          24,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          24,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          24,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          24,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          32,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          32,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          32,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          32,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          48,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          48,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          48,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          48,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          56,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          56,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          56,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          56,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          60,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          60,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          60,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          60,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          64,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          64,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          64,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          64,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          68,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          68,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          68,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          68,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          80,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          80,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          80,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          80,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          96,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          96,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          96,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          96,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          128,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          128,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          128,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          192,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          192,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          192,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          192,
+          65536
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 8,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          4,
+          32768
+        ],
+        [
+          4,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          32768
+        ],
+        [
+          8,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          32768
+        ],
+        [
+          12,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          512
+        ],
+        [
+          16,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          4096
+        ],
+        [
+          16,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          32768
+        ],
+        [
+          16,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          24,
+          512
+        ],
+        [
+          24,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          24,
+          4096
+        ],
+        [
+          24,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          24,
+          32768
+        ],
+        [
+          24,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          28,
+          0
+        ],
+        [
+          28,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          28,
+          512
+        ],
+        [
+          28,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          28,
+          4096
+        ],
+        [
+          28,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          28,
+          32768
+        ],
+        [
+          28,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          32,
+          0
+        ],
+        [
+          28,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          32,
+          512
+        ],
+        [
+          28,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          32,
+          4096
+        ],
+        [
+          28,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          32,
+          32768
+        ],
+        [
+          28,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          32,
+          0
+        ],
+        [
+          32,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          32,
+          512
+        ],
+        [
+          32,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          32,
+          4096
+        ],
+        [
+          32,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          32,
+          32768
+        ],
+        [
+          32,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          36,
+          0
+        ],
+        [
+          32,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          36,
+          512
+        ],
+        [
+          32,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          36,
+          4096
+        ],
+        [
+          32,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          36,
+          32768
+        ],
+        [
+          32,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          40,
+          0
+        ],
+        [
+          40,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          40,
+          512
+        ],
+        [
+          40,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          40,
+          4096
+        ],
+        [
+          40,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          40,
+          32768
+        ],
+        [
+          40,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          48,
+          0
+        ],
+        [
+          48,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          48,
+          512
+        ],
+        [
+          48,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          48,
+          32768
+        ],
+        [
+          48,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          64,
+          512
+        ],
+        [
+          64,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          64,
+          4096
+        ],
+        [
+          64,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          64,
+          32768
+        ],
+        [
+          64,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          96,
+          0
+        ],
+        [
+          96,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          96,
+          512
+        ],
+        [
+          96,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          96,
+          4096
+        ],
+        [
+          96,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          96,
+          32768
+        ],
+        [
+          96,
+          32768
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          4,
+          256
+        ],
+        [
+          4,
+          256
+        ],
+        [
+          4,
+          256
+        ],
+        [
+          4,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          4,
+          2048
+        ],
+        [
+          4,
+          2048
+        ],
+        [
+          4,
+          2048
+        ],
+        [
+          4,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 16,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          4,
+          16384
+        ],
+        [
+          4,
+          16384
+        ],
+        [
+          4,
+          16384
+        ],
+        [
+          4,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          256
+        ],
+        [
+          8,
+          256
+        ],
+        [
+          4,
+          256
+        ],
+        [
+          4,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          2048
+        ],
+        [
+          8,
+          2048
+        ],
+        [
+          4,
+          2048
+        ],
+        [
+          4,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          16384
+        ],
+        [
+          8,
+          16384
+        ],
+        [
+          4,
+          16384
+        ],
+        [
+          4,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          256
+        ],
+        [
+          8,
+          256
+        ],
+        [
+          8,
+          256
+        ],
+        [
+          8,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          2048
+        ],
+        [
+          8,
+          2048
+        ],
+        [
+          8,
+          2048
+        ],
+        [
+          8,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          16384
+        ],
+        [
+          8,
+          16384
+        ],
+        [
+          8,
+          16384
+        ],
+        [
+          8,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          2048
+        ],
+        [
+          12,
+          2048
+        ],
+        [
+          12,
+          2048
+        ],
+        [
+          12,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          16384
+        ],
+        [
+          12,
+          16384
+        ],
+        [
+          12,
+          16384
+        ],
+        [
+          12,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          12,
+          2048
+        ],
+        [
+          12,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          12,
+          16384
+        ],
+        [
+          12,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          12,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          12,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          20,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ],
+        [
+          16,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          20,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ],
+        [
+          16,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          20,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ],
+        [
+          16,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          20,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ],
+        [
+          16,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          20,
+          0
+        ],
+        [
+          20,
+          0
+        ],
+        [
+          20,
+          0
+        ],
+        [
+          20,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          20,
+          256
+        ],
+        [
+          20,
+          256
+        ],
+        [
+          20,
+          256
+        ],
+        [
+          20,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          20,
+          2048
+        ],
+        [
+          20,
+          2048
+        ],
+        [
+          20,
+          2048
+        ],
+        [
+          20,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          20,
+          16384
+        ],
+        [
+          20,
+          16384
+        ],
+        [
+          20,
+          16384
+        ],
+        [
+          20,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          24,
+          256
+        ],
+        [
+          24,
+          256
+        ],
+        [
+          24,
+          256
+        ],
+        [
+          24,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          24,
+          2048
+        ],
+        [
+          24,
+          2048
+        ],
+        [
+          24,
+          2048
+        ],
+        [
+          24,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          24,
+          16384
+        ],
+        [
+          24,
+          16384
+        ],
+        [
+          24,
+          16384
+        ],
+        [
+          24,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          32,
+          256
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          32,
+          256
+        ],
+        [
+          32,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          32,
+          2048
+        ],
+        [
+          32,
+          2048
+        ],
+        [
+          32,
+          2048
+        ],
+        [
+          32,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          32,
+          16384
+        ],
+        [
+          32,
+          16384
+        ],
+        [
+          32,
+          16384
+        ],
+        [
+          32,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          48,
+          0
+        ],
+        [
+          48,
+          0
+        ],
+        [
+          48,
+          0
+        ],
+        [
+          48,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          48,
+          256
+        ],
+        [
+          48,
+          256
+        ],
+        [
+          48,
+          256
+        ],
+        [
+          48,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          48,
+          2048
+        ],
+        [
+          48,
+          2048
+        ],
+        [
+          48,
+          2048
+        ],
+        [
+          48,
+          2048
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          48,
+          16384
+        ],
+        [
+          48,
+          16384
+        ],
+        [
+          48,
+          16384
+        ],
+        [
+          48,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 32,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          4,
+          128
+        ],
+        [
+          4,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          4,
+          1024
+        ],
+        [
+          4,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 56,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          4,
+          8192
+        ],
+        [
+          4,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          4,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          4,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 60,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          4,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ],
+        [
+          8,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ],
+        [
+          8,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ],
+        [
+          8,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ],
+        [
+          12,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ],
+        [
+          12,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ],
+        [
+          12,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ],
+        [
+          16,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ],
+        [
+          16,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ],
+        [
+          16,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ],
+        [
+          24,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ],
+        [
+          24,
+          128
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ],
+        [
+          24,
+          1024
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ],
+        [
+          24,
+          8192
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 64,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 68,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 80,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ],
+        [
+          4,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ],
+        [
+          4,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ],
+        [
+          4,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ],
+        [
+          8,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ],
+        [
+          8,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 128,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ],
+        [
+          8,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 0,
+      "rows": [
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ],
+        [
+          12,
+          0
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ],
+        [
+          12,
+          64
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ],
+        [
+          12,
+          512
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ],
+        [
+          12,
+          4096
+        ]
+      ]
+    }
+  ],
+  "decode": [
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 256
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 512
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 1024
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 2048
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 4096
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 256
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 512
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 1024
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 2048
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 4096
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 8192
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 1024
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 2048
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 4096
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 8192
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 16384
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 1024
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 2048
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 4096
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 8192
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 16384
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 32768
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 2048
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 4096
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 8192
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 16384
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 32768
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 65536
+    }
+  ]
+}

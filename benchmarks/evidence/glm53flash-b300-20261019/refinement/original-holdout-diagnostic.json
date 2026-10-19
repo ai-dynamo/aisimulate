@@ -1,0 +1,362 @@
+[
+  {
+    "absolute_percentage_error": 2.7911821599550297,
+    "coordinate": [
+      "prefill",
+      1,
+      12,
+      256
+    ],
+    "measured_ms": 27.06004650099203,
+    "predicted_ms": 27.815341691403255,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 3.7085136539088395,
+    "coordinate": [
+      "prefill",
+      1,
+      48,
+      4096
+    ],
+    "measured_ms": 28.835995006375015,
+    "predicted_ms": 29.905381818426903,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.09056134606499597,
+    "coordinate": [
+      "prefill",
+      1,
+      192,
+      16384
+    ],
+    "measured_ms": 136.06615649769083,
+    "predicted_ms": 136.18937984055404,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.6662066254526199,
+    "coordinate": [
+      "prefill",
+      2,
+      24,
+      512
+    ],
+    "measured_ms": 28.014467505272478,
+    "predicted_ms": 27.82783326666708,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.5868032968765077,
+    "coordinate": [
+      "prefill",
+      2,
+      96,
+      8192
+    ],
+    "measured_ms": 133.5731145227328,
+    "predicted_ms": 134.35692596249282,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.4314409955815681,
+    "coordinate": [
+      "prefill",
+      2,
+      384,
+      32768
+    ],
+    "measured_ms": 133.51280748611316,
+    "predicted_ms": 135.42396454682128,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.09970853462098002,
+    "coordinate": [
+      "prefill",
+      4,
+      48,
+      1024
+    ],
+    "measured_ms": 27.896304498426616,
+    "predicted_ms": 27.924119494855404,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.532258759053319,
+    "coordinate": [
+      "prefill",
+      4,
+      192,
+      16384
+    ],
+    "measured_ms": 133.9242304675281,
+    "predicted_ms": 135.97629621936156,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.9683368007185278,
+    "coordinate": [
+      "prefill",
+      4,
+      768,
+      65536
+    ],
+    "measured_ms": 140.85651701316237,
+    "predicted_ms": 138.08398635258195,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.6131814336998408,
+    "coordinate": [
+      "prefill",
+      8,
+      96,
+      2048
+    ],
+    "measured_ms": 131.69880100758746,
+    "predicted_ms": 132.5063536037713,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.2335366730718094,
+    "coordinate": [
+      "prefill",
+      8,
+      384,
+      32768
+    ],
+    "measured_ms": 136.34389551589265,
+    "predicted_ms": 134.6620435632094,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.6565413722519029,
+    "coordinate": [
+      "prefill",
+      8,
+      1536,
+      131072
+    ],
+    "measured_ms": 147.6730369613506,
+    "predicted_ms": 146.70350237803848,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.9358927084403584,
+    "coordinate": [
+      "prefill",
+      16,
+      192,
+      4096
+    ],
+    "measured_ms": 132.2587575414218,
+    "predicted_ms": 133.49655760952578,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.5550570290599329,
+    "coordinate": [
+      "prefill",
+      16,
+      768,
+      65536
+    ],
+    "measured_ms": 136.8471520836465,
+    "predicted_ms": 137.60673182035512,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 4.746586921479443,
+    "coordinate": [
+      "prefill",
+      16,
+      3072,
+      262144
+    ],
+    "measured_ms": 167.387000459712,
+    "predicted_ms": 159.44183098763457,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.20441164607953424,
+    "coordinate": [
+      "decode",
+      1,
+      0,
+      303
+    ],
+    "measured_ms": 7.119019457604736,
+    "predicted_ms": 7.104467352746724,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.44661865844751214,
+    "coordinate": [
+      "decode",
+      1,
+      0,
+      9003
+    ],
+    "measured_ms": 7.222580490633845,
+    "predicted_ms": 7.190323098541285,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.4786493282573174,
+    "coordinate": [
+      "decode",
+      1,
+      0,
+      48003
+    ],
+    "measured_ms": 7.278149481862783,
+    "predicted_ms": 7.243312668258284,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.8291662048690089,
+    "coordinate": [
+      "decode",
+      2,
+      0,
+      606
+    ],
+    "measured_ms": 7.892306020949036,
+    "predicted_ms": 7.8268656866384845,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.6033717061880144,
+    "coordinate": [
+      "decode",
+      2,
+      0,
+      18006
+    ],
+    "measured_ms": 7.792652468197048,
+    "predicted_ms": 7.917597653033681,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.30871397237114967,
+    "coordinate": [
+      "decode",
+      2,
+      0,
+      96006
+    ],
+    "measured_ms": 7.848109002225101,
+    "predicted_ms": 7.872337211281888,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.4352768345838405,
+    "coordinate": [
+      "decode",
+      4,
+      0,
+      1212
+    ],
+    "measured_ms": 8.479410491418093,
+    "predicted_ms": 8.442501581839679,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.08747000693387236,
+    "coordinate": [
+      "decode",
+      4,
+      0,
+      36012
+    ],
+    "measured_ms": 8.512408006936312,
+    "predicted_ms": 8.519853810810218,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.9299678737416545,
+    "coordinate": [
+      "decode",
+      4,
+      0,
+      192012
+    ],
+    "measured_ms": 8.671958988998085,
+    "predicted_ms": 8.591312556376351,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.12192927798838263,
+    "coordinate": [
+      "decode",
+      8,
+      0,
+      2424
+    ],
+    "measured_ms": 9.560789039824158,
+    "predicted_ms": 9.572446440870408,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 0.4817171911040413,
+    "coordinate": [
+      "decode",
+      8,
+      0,
+      72024
+    ],
+    "measured_ms": 9.23101301304996,
+    "predicted_ms": 9.275480389646873,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 2.4293839579690286,
+    "coordinate": [
+      "decode",
+      8,
+      0,
+      384024
+    ],
+    "measured_ms": 9.328434010967612,
+    "predicted_ms": 9.101810531575438,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 2.0008366822101054,
+    "coordinate": [
+      "decode",
+      16,
+      0,
+      4848
+    ],
+    "measured_ms": 11.105672980193049,
+    "predicted_ms": 10.88346660139905,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 1.9844853678422356,
+    "coordinate": [
+      "decode",
+      16,
+      0,
+      144048
+    ],
+    "measured_ms": 10.444456478580832,
+    "predicted_ms": 10.237187768012745,
+    "status": "supported"
+  },
+  {
+    "absolute_percentage_error": 2.764917622421162,
+    "coordinate": [
+      "decode",
+      16,
+      0,
+      768048
+    ],
+    "measured_ms": 10.533662978559732,
+    "predicted_ms": 10.24241587457908,
+    "status": "supported"
+  }
+]

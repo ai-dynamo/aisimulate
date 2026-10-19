@@ -25,7 +25,7 @@ repository. They are published in `nvidia/aisimulate-fpm-dataset`
 [experimental B300 discussion 19](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/19)).
 [`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
 pins the ten profiles to immutable dataset revision
-`4dc9dda1ccc5f6b778c0bbea5138b28237082b2f` and records each file's SHA-256.
+`8dcf3ad20c46677c56cb3375fd107176cce9d0f7` and records each file's SHA-256.
 Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `gb300-vllm-nvfp4-tp1` or `gb300-sglang-fp8-tp2`. Materialize one with
 `python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
@@ -33,7 +33,7 @@ Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `estimation_mode="fpm_interpolation"` and the profile identity's
 `backend_version`.
 
-The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blocked; use `--allow-unqualified` only for diagnostic reproduction. It uses system `b300_sxm`, FP8 KV, TP4 and vLLM `0.31.0`. Its collection covers batch sizes up to 32 and per-request contexts up to 131,072 tokens. [Collection and validation evidence](../benchmarks/evidence/glm53flash-b300-20261019/README.md) records the exact scope and limitations.
+The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blocked; use `--allow-unqualified` only for diagnostic reproduction. It uses system `b300_sxm`, FP8 KV, TP4 and vLLM `0.31.0`. Its expanded table has 427 prefill and 175 decode measurements. Its collection covers batch sizes up to 32 and per-request contexts up to 131,072 tokens. [Collection and validation evidence](../benchmarks/evidence/glm53flash-b300-20261019/refinement/README.md) records the exact scope and limitations.
 
 ## vLLM producer
 

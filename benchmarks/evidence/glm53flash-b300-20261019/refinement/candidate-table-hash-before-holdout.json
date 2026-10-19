@@ -1,0 +1,11 @@
+{
+  "frozen_unix_ns": 1792436888237297000,
+  "frozen_at_utc": "2026-10-19T19:08:08.237302+00:00",
+  "parquet_sha256": "a3e696a41246b36fe872a1de786fd0b98df71014e9c5fc11dd73c990b8e0a0b1",
+  "rows": 602,
+  "calibration_cases_old": 359,
+  "calibration_cases_new": 243,
+  "model_source_revision": "c9e7363bf5983b980fe6622f7b064ee7adff5f5d",
+  "core_interpolation_changed": false,
+  "scope": "Calibration table frozen before independent new holdout timing observations; metadata qualification remains pending"
+}
