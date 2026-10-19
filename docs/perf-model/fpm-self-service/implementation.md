@@ -878,13 +878,16 @@ For a profile-based campaign, the collector validates its resolved topology and 
 
 Profile-based collection retains checkpoint weight quantization and the selected KV precision without consulting op-level timing tables. An explicit BF16 KV selection uses BF16 attention/cache identity even when FP8 weights caused the default inference to choose FP8 KV. This does not prove runtime support: initialization, observed cache precision and readiness checks must agree with the plan before measurements are accepted. Model-specific native-cache requirements still apply, including DeepSeek V4.1's FP8 KV path. The vLLM collector rejects the unsupported literal `int8` cache option; explicit BF16 and FP8 selections remain available independently of the inferred default.
 
-The current generator renders BF16 KV as `--kv-cache-dtype auto`. On
-[vLLM 0.27.0](https://github.com/vllm-project/vllm/blob/v0.27.0/vllm/utils/torch_utils.py#L374),
-`auto` can honor an FP8 KV declaration in checkpoint metadata, including ModelOpt
-`kv_cache_quant_algo`. Such a BF16 campaign can pass planning but fails the
-observed-precision check if the runtime selects FP8. Preview success does not
-qualify that combination, and the collector does not relabel the FP8 measurement
-as BF16. MiniMax-M2.7 without a KV declaration does not have this metadata override.
+The current unversioned vLLM template used by FPM collection, and explicit
+vLLM 0.11.0 and newer templates, render an explicit BF16 KV
+selection as `--kv-cache-dtype bfloat16`. This preserves the selection when
+checkpoint metadata declares FP8 KV. See the pinned runtime's
+[accepted cache dtypes](https://github.com/vllm-project/vllm/blob/v0.11.0/vllm/config/cache.py)
+and [dtype resolution](https://github.com/vllm-project/vllm/blob/v0.20.1/vllm/utils/torch_utils.py).
+Only the 0.10.2 template retains `--kv-cache-dtype auto` because that runtime
+does not accept literal `bfloat16`. Observed-precision checks must still reject
+any runtime mismatch. Preview success does not qualify GPU execution.
+Explicit FP8 and runtime `auto` selections retain their existing meanings.
 
 Use a fresh onboarding output directory and dataset when changing collection precision. Do not relabel historical timings or reuse their memory bounds without validation. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. A collection profile must resolve to one backend identity label for the target hardware/backend before publication.
 

@@ -208,6 +208,9 @@ pub struct FpmForwardCell {
     /// Direct timing curves `(batch, KV) -> (prefill tokens -> latency)`.
     /// Fake-fallback rows are excluded even when the legacy table heals them.
     pub direct_prefill: BTreeMap<(u32, u32), BTreeMap<u32, f64>>,
+    /// Token-major view of `direct_prefill`: `(batch, prefill tokens) ->
+    /// (KV -> latency)`. Built once, on the first KV-first fallback query.
+    direct_prefill_by_tokens: OnceLock<BTreeMap<(u32, u32), BTreeMap<u32, f64>>>,
     /// Direct decode curves contain genuine measurements only; their bounds
     /// do not inherit the fabricated rows' extrapolated KV ceilings.
     pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
@@ -229,6 +232,18 @@ impl FpmForwardCell {
             "FPM table FMHA selector: original_model_mode={original:?}, selector={:?}, matched_cell_ids={:?}, model_path={:?}. Exact recorded-label matching does not independently verify runtime attention precision; arithmetic and memory modes are unchanged.",
             self.match_identity[2], self.cell_ids, self.model_path
         ))
+    }
+
+    pub(crate) fn direct_prefill_by_tokens(&self) -> &BTreeMap<(u32, u32), BTreeMap<u32, f64>> {
+        self.direct_prefill_by_tokens.get_or_init(|| {
+            let mut rows: BTreeMap<(u32, u32), BTreeMap<u32, f64>> = BTreeMap::new();
+            for (&(batch, kv), curve) in &self.direct_prefill {
+                for (&tokens, &latency) in curve {
+                    rows.entry((batch, tokens)).or_default().insert(kv, latency);
+                }
+            }
+            rows
+        })
     }
 }
 
@@ -1177,6 +1192,7 @@ fn load_pair(
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
                 direct_prefill: BTreeMap::new(),
+                direct_prefill_by_tokens: OnceLock::new(),
                 direct_decode: BTreeMap::new(),
                 direct_decode_rungs: Vec::new(),
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),

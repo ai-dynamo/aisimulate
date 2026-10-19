@@ -514,6 +514,7 @@ fn submit_interval_request(
                     tokens: vec![id as u32; input_tokens],
                     max_output_tokens: output_tokens,
                     output_token_ids: None,
+                    session_id: None,
                 }),
             ),
             now_ms,
@@ -593,6 +594,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
                         tokens,
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        session_id: None,
                     }),
                 ),
                 now_ms,
@@ -646,6 +648,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
                             tokens,
                             max_output_tokens: 0,
                             output_token_ids: None,
+                            session_id: None,
                         }),
                     ),
                     now_ms,
@@ -1615,6 +1618,50 @@ fn resource_accounting_multiplies_attention_dp_and_tensor_parallelism() {
     config.tensor_parallel_size = 3;
     let report = run_engine_replay(spec(config)).unwrap();
     assert_eq!(report.throughput.decode_gpus_per_worker, 6);
+}
+
+#[test]
+fn resource_accounting_includes_prefill_context_parallelism() {
+    for (dp, tp, cp) in [(1, 1, 1), (1, 1, 8), (1, 1, 16), (2, 3, 4)] {
+        let mut config = engine_config(TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        });
+        config.dp_size = dp;
+        config.tensor_parallel_size = tp;
+        let gpus = (dp * tp * cp) as usize;
+        let mut replay = spec(config);
+        replay.engine["prefill_context_parallel_size"] = serde_json::json!(cp);
+        let report = run_engine_replay(replay).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.throughput.decode_gpus_per_worker, gpus);
+        assert_eq!(report.throughput.prefill_gpus_per_worker, 0);
+        assert!(
+            (report.throughput.gpu_hours
+                - report.throughput.decode_worker_seconds * gpus as f64 / 3600.0)
+                .abs()
+                < 1e-12
+        );
+    }
+}
+
+#[test]
+fn disaggregated_resource_accounting_includes_role_prefill_context_parallelism() {
+    let fixed = TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    };
+    let mut replay = disaggregated_spec(Backend::Sglang, fixed.clone(), fixed);
+    replay.engine["prefill"]["prefill_context_parallel_size"] = serde_json::json!(8);
+    replay.engine["decode"]["tensor_parallel_size"] = serde_json::json!(8);
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.throughput.prefill_gpus_per_worker, 8);
+    assert_eq!(report.throughput.decode_gpus_per_worker, 8);
+    let expected =
+        (report.throughput.prefill_worker_seconds + report.throughput.decode_worker_seconds) * 8.0
+            / 3600.0;
+    assert!((report.throughput.gpu_hours - expected).abs() < 1e-12);
 }
 
 struct FixedExternalTiming {

@@ -61,13 +61,15 @@ pub(crate) struct HostLink {
     pub(crate) latency_to_first_byte_ms: f64,
 }
 
-/// Router-facing identity of a host block, retained only by shared pools.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Router-facing identity and store attribution, retained when publishing residency.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HostBlockMeta {
     pub(crate) parent: Option<SequenceHash>,
     pub(crate) tokens_hash: u64,
     /// Absolute zero-based block index within its prompt.
     pub(crate) position: usize,
+    /// Session that triggered this residency; retained for subscriber snapshots.
+    pub(crate) session_id: Option<Arc<str>>,
 }
 
 /// Visibility of one logical host block.
@@ -487,7 +489,7 @@ impl HostTier {
         let mut missing = Vec::new();
         for (index, key) in blocks.iter().copied().enumerate() {
             if protected.insert(key) && !self.entries.contains_key(&key) {
-                missing.push((key, meta.map(|meta| meta[index])));
+                missing.push((key, meta.map(|meta| meta[index].clone())));
             }
         }
         let (missing, missing_meta): (Vec<_>, Vec<_>) = missing.into_iter().unzip();
@@ -1173,7 +1175,8 @@ impl HostTier {
             match events.last_mut() {
                 Some(KvEventData::Stored(stored))
                     if stored.blocks.last().map(|last: &KvBlock| last.block_hash)
-                        == meta.parent =>
+                        == meta.parent
+                        && stored.session_id.as_deref() == meta.session_id.as_deref() =>
                 {
                     stored.blocks.push(block);
                 }
@@ -1181,6 +1184,7 @@ impl HostTier {
                     parent_hash: meta.parent,
                     start_position: Some(meta.position),
                     blocks: vec![block],
+                    session_id: meta.session_id.as_deref().map(str::to_owned),
                 })),
             }
         }
@@ -2002,6 +2006,7 @@ pub(crate) mod tests {
             parent,
             tokens_hash,
             position,
+            session_id: None,
         }
     }
 
@@ -2018,7 +2023,43 @@ pub(crate) mod tests {
                     token_ids: None,
                 })
                 .collect(),
+            session_id: None,
         })
+    }
+
+    #[test]
+    fn host_stores_and_snapshots_preserve_each_sessions_attribution() {
+        let mut tier = shared(3, 0.0);
+        tier.subscribe(B);
+        let mut expected = Vec::new();
+        for (index, session_id) in [Some("session-a"), Some("session-b"), None]
+            .into_iter()
+            .enumerate()
+        {
+            let hash = index as u64 + 1;
+            let parent = (index > 0).then_some(hash - 1);
+            let mut metadata = meta(parent, hash + 10, index);
+            metadata.session_id = session_id.map(Arc::from);
+            let mut event = stored(parent, index, &[(hash, hash + 10)]);
+            if let KvEventData::Stored(stored) = &mut event {
+                stored.session_id = session_id.map(str::to_owned);
+            }
+            tier.prepare_store(
+                A,
+                request_id(),
+                &[key(hash)],
+                Some(&[metadata]),
+                index as f64,
+            );
+            assert!(tier.take_events(B).is_empty(), "store is not yet resident");
+            tier.submit_prepared_stores(A, index as f64);
+            tier.tick(A, index as f64 + 1.0);
+            assert_eq!(tier.take_events(B), [event.clone()]);
+            expected.push(event);
+        }
+        // A parent-linked snapshot must not merge different session labels.
+        tier.subscribe(A);
+        assert_eq!(tier.take_events(A), expected);
     }
 
     #[test]

@@ -5,32 +5,110 @@ SPDX-License-Identifier: Apache-2.0
 
 # Speculative decoding
 
-Replay supports two speculative-decoding inputs. They cannot be combined.
+Prediction Replay accepts the following speculative-decoding inputs. Select
+one input; `engine.speculation` cannot be combined with `engine.nextn` or
+`engine.nextn_accepted`.
 
 | Input | Drafts from | Configure with |
 | --- | --- | --- |
 | [Prompt lookup (ngram)](#prompt-lookup-ngram) | Earlier tokens of the request | `engine.speculation` |
+| [Registered speculative schemes](#registered-schemes) | The selected scheme's draft head or checkpoint | `engine.speculation` with `params` and `expected_accepted_tokens` |
 | [MTP / EAGLE](#mtp) | A draft head of the model | `engine.nextn`, `engine.nextn_accepted` |
 
-In both cases you provide how often draft tokens are accepted. That rate
+In each case you provide how often draft tokens are accepted. That rate
 depends on the workload, so Replay does not predict it. Each decode round then
-emits a sampled number of tokens, and its cost is a verification pass over the
-draft tokens.
+emits a sampled number of tokens. The selected cost model prices the configured
+verification round, including draft operations for schemes that model them.
 
 ## Speculation fields
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.speculation` | Unset (off) | fixed | Optional ngram block below. Rejected together with `engine.nextn > 0`. |
-| `engine.speculation.kind` | Required | fixed | `ngram`. |
-| `engine.speculation.num_speculative_tokens` | Required | fixed | Integer from 1 to 5. |
-| `engine.speculation.acceptance_rates` | Required | fixed | Exactly one value per draft token, each in `[0, 1]`. |
+| `engine.speculation` | Unset (off) | Ngram only, fixed | Ngram block or registered-scheme block below. Rejected together with `nextn` or `nextn_accepted`; omit it to disable speculation. |
+| `engine.speculation.kind` | Required | Ngram only, fixed | `ngram` for prompt lookup; registered schemes include `mtp`, `eagle3`, `dflash`, `dspark`, and `draft_model`, subject to model/backend and replay limits below. |
+| `engine.speculation.params` | `{}` | Rejected | Scheme-specific cost parameters. The scheme must resolve to 1–5 draft tokens; EAGLE requires a chain. |
+| `engine.speculation.draft_model_path` | Unset | Rejected | Draft checkpoint path or model ID, when required by the scheme. |
+| `engine.speculation.draft_config` | Unset | Rejected | Resolved draft geometry retained with the cost identity. See the [cost configuration](../../perf-model/configuration.md#speculative-decoding-configuration) for checkpoint requirements. |
+| `engine.speculation.expected_accepted_tokens` | Required for registered-scheme input | Rejected | Expected accepted draft tokens per round, excluding the base token, in `[0, resolved draft depth]`. |
+| `engine.speculation.num_speculative_tokens` | Required for flat ngram input | fixed | Integer from 1 to 5. |
+| `engine.speculation.acceptance_rates` | Required for flat ngram input | fixed | Exactly one conditional acceptance probability per draft token, each in `[0, 1]`. |
 | `engine.speculation.seed` | `42` | fixed | Unsigned 64-bit sampling seed. |
 | `engine.nextn` | `0` (off) | fixed | MTP/EAGLE draft tokens, 0 to 5. |
 | `engine.nextn_accepted` | Unset | fixed | Required when `nextn > 0`. Expected accepted **draft** tokens per round, excluding the base token, in `[0, nextn]`. |
 
-`recommend` keeps these values fixed for every candidate; it does not search
-draft length or acceptance.
+`recommend` retains the flat ngram and legacy `nextn` inputs, fixed for every
+candidate. Registered-scheme blocks are prediction-only. Recommendation does
+not search draft length or acceptance.
+
+## Registered schemes
+
+The prediction `engine.speculation` block combines the existing
+[canonical cost configuration](../../perf-model/configuration.md#speculative-decoding-configuration)
+with a workload acceptance assumption and a sampling seed. For example, merge
+this fragment into an aggregated prediction for a supported model:
+
+```yaml
+engine:
+  speculation:
+    kind: mtp
+    params: {depth: 3}
+    expected_accepted_tokens: 1.5
+    seed: 42
+  workers:
+    aggregated:
+      kv_cache:
+        capacity: {type: fixed, blocks: 4096}
+```
+
+The block count is illustrative: supply the target KV capacity available after
+reserving memory for the selected draft weights and draft KV cache. Every
+configured language-worker role requires explicit fixed capacity for a generic
+scheme, including MTP configured through this block. Replay does not infer that
+capacity. Legacy `nextn` and flat ngram keep their existing capacity paths.
+
+For a full draft-ready round, `expected_accepted_tokens: 1.5` means one draft
+token is always accepted and a second is accepted with probability 0.5, before
+clipping to the remaining output length. The base token is additional.
+Acceptance and `seed` control progress;
+they are excluded from the cost configuration passed to
+`ForwardPassPerfModel::best_available`. The scheme parameters and resolved draft
+identity are preserved through that constructor and saved configuration.
+Direct replay descriptors using a generic canonical timing identity must also
+provide explicit `aic_nextn_accept_rates` on the worker rank. They do not inherit
+the legacy `nextn` acceptance defaults. The rank may omit `aic_nextn`; native
+replay derives it from the canonical scheme. An explicit rank depth must match.
+The legacy `aic_nextn_accepted` shorthand still requires an explicit rank depth
+to convert the expected count to acceptance rates.
+
+For a linear EAGLE3 draft, use `kind: eagle3`,
+`params: {num_speculative_tokens: 3}`, and the draft checkpoint path or validated
+configuration required by the scheme. Standalone `draft_model` still requires
+its checkpoint path; retained `draft_config` does not replace checkpoint access.
+Scheme-specific model and backend checks remain unchanged. Explicit MTP is
+rejected for Kimi-K3 (`KimiK3ForConditionalGeneration`), the architecture in the
+DSPARK capability gate. MiniMax EAGLE3 remains unsupported.
+Selecting a scheme does not override these model-family gates.
+
+Replay uses the existing NextN executor for a linear chain of 1–5 draft tokens.
+EAGLE trees, a verification budget inconsistent with the chain, and wider
+blocks are rejected even when the cost API can estimate them. A scheme name
+does not enable a separate scheduler, tree traversal, dynamic verification
+width, or draft offload behavior. The first-token, partial-round and preemption
+semantics described under [MTP](#mtp) still apply.
+
+Supported compositions use the offline `engine` stack, vLLM or SGLang language
+workers, aggregated or P/D topology, and synthetic or HBM-only agentic traffic.
+The selected scheme may impose a narrower backend/model constraint. Use default
+timing so the canonical constructor retains draft costs; fixed and polynomial
+timing are rejected for generic schemes. OP/SOL support and estimator fallback
+follow the [cost-model contract](../../perf-model/configuration.md#speculative-decoding-configuration):
+an explicit FPM request with `fallback_policy: deny` fails, while an allowed
+fallback can select OP without discarding the scheme.
+
+Grouped caches, G2/G3 offload, state-cache `prefix_match_unit`, AFD/EPD,
+TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
+replay path. Functional replay does not establish AgentX prediction accuracy,
+model quality, or measured hardware speedup; see [feature support](../features.md).
 
 <a id="prompt-lookup-ngram"></a>
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
@@ -75,6 +153,10 @@ Supported: vLLM aggregated or disaggregated workers with `op_level`, `fixed` or
 or G3 offload. HBM-only agentic traffic is supported with the same functional-only
 qualification as ordinary AgentX replay. The Dynamo stack is not supported for ngram.
 Deployment artifacts are not generated for ngram candidates.
+
+An engine-level FPM `estimation_mode` request with `fallback_policy: allow` can
+fall back to OP timing through the canonical estimator. With `deny`, that
+unsupported request fails instead.
 
 Prompt lookup is unrelated to `kv_cache.prefix_caching`.
 

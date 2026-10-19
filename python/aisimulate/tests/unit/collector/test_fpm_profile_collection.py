@@ -608,8 +608,7 @@ def test_minimax_selected_kv_precision_reaches_plan_and_worker(tmp_path, no_mode
         directory.mkdir()
         runner._render_cell(plan, cell, directory, {})
         script = (directory / "run.sh").read_text()
-        runtime_kv = "auto" if kv_dtype == "bfloat16" else "fp8"
-        assert f"--kv-cache-dtype {runtime_kv}" in script
+        assert f"--kv-cache-dtype {kv_dtype}" in script
 
     # A profile cannot relabel the other cache/attention precision as this run.
     deployment["fmha_quant_mode"] = "fp8" if kv_dtype == "bfloat16" else "bfloat16"
@@ -1141,3 +1140,26 @@ def test_observed_runtime_drift_fails_after_recording_provenance(tmp_path, monke
     assert provenance["backend_version"] == "custom-label"
     assert provenance["runtime"] == {"backend": "vllm", "backend_version": "0.28.0", "dynamo_version": "1.5.0"}
     assert provenance["dynamo_version"] == "custom-dynamo"
+
+
+@pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
+def test_declared_fp8_kv_metadata_does_not_override_vllm_027_selection(tmp_path, no_models_or_timing_data, kv_dtype):
+    profile = _profile()
+    config = load_model_config(profile["model"]).payload
+    assert config["quantization_config"]["kv_cache_scheme"] == {"dynamic": False, "num_bits": 8, "type": "float"}
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    for deployment in profile["deployments"]:
+        deployment.update(backend_version="0.27.0", kv_cache_dtype=kv_dtype, fmha_quant_mode=kv_dtype)
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), kv_cache_dtypes=(kv_dtype,)
+    )
+    plan = _plan(profile, model_config_path=str(config_path), options=options)
+    assert plan.dtype_profile.native_kv_cache_dtype == "fp8"
+    for cell in plan.cells:
+        assert cell.kv_cache_dtype == kv_dtype
+        assert cell.fmha_quant_mode == kv_dtype
+        directory = tmp_path / cell.cell_id
+        directory.mkdir()
+        runner._render_cell(plan, cell, directory, {})
+        assert f"--kv-cache-dtype {kv_dtype}" in (directory / "run.sh").read_text()

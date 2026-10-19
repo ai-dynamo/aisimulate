@@ -48,8 +48,10 @@ pub enum ReplayPromptTokenSource {
 
 /// Replay-owned correlation data retained while a request crosses placement,
 /// engine, and reporting boundaries.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ReplayRequestContext {
+    /// Source request ID, when supplied; empty for session-only ingress metadata.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub authored_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -61,6 +63,17 @@ pub struct ReplayRequestContext {
     pub prompt_token_source: ReplayPromptTokenSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agentic: Option<AgenticRuntimeIdentity>,
+}
+
+impl ReplayRequestContext {
+    /// Effective serving identity, matching Dynamo's backend normalization.
+    /// Missing or whitespace-only IDs do not label routing or engine events.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+    }
 }
 
 /// One materialized replay request before it enters a generalized engine.
@@ -89,8 +102,8 @@ pub struct DirectRequest {
     pub strict_priority: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_class: Option<String>,
-    /// Correlation/provenance retained by Replay but ignored by the native
-    /// scheduler. Legacy runtime inputs may omit it.
+    /// Replay identity and provenance. The engine adapter forwards its session ID
+    /// to the native request; the remaining context stays in Replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_context: Option<ReplayRequestContext>,
 }

@@ -29,8 +29,9 @@ use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
 use crate::perfmodel::engine::spec::EngineSpec;
 use crate::session::{
-    ContextOpFilter, get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
-    run_context_ops_with, run_generation_ops_step, run_generation_ops_step_beamed_with,
+    ContextOpFilter, OpListPlan, QueryMemo, get_mix_step_ops, query_context_op,
+    query_generation_op, run_context_ops, run_context_ops_planned, run_context_ops_with,
+    run_generation_ops_step, run_generation_ops_step_beamed_with, run_generation_ops_step_planned,
 };
 use crate::{ForwardPassMetrics, validate_forward_pass_metrics};
 
@@ -155,12 +156,15 @@ pub(crate) type MixedStepPerOpValuesWithMetadata = (
 pub type PerOpSolValue = (String, f64, f64, f64);
 
 /// Name-folding accumulator for [`PerOpValue`] streams. First-encounter
-/// order is preserved (mirrors Python dict insertion order). Linear scan on
-/// purpose: unique-name counts are a few dozen (per-block families repeat
-/// names), far below where a map would win.
+/// order is preserved (mirrors Python dict insertion order). [`Self::add`]
+/// scans names, which suits short lists; engine op lists fold through
+/// [`Self::add_slot`] with their [`OpListPlan`] name slots instead, because
+/// per-layer models carry hundreds of unique names.
 struct PerOpFold {
     inference_phase: &'static str,
     entries: Vec<PerOpValueWithMetadata>,
+    /// Entry index per name slot, for [`Self::add_slot`].
+    slots: Vec<Option<usize>>,
 }
 
 fn insert_per_op_fallback(
@@ -192,10 +196,33 @@ impl PerOpFold {
         Self {
             inference_phase,
             entries: Vec::new(),
+            slots: Vec::new(),
+        }
+    }
+
+    /// A fold for one engine op list, addressed by its plan's name slots.
+    fn for_plan(inference_phase: &'static str, plan: &OpListPlan) -> Self {
+        Self {
+            slots: vec![None; plan.names()],
+            ..Self::new(inference_phase)
         }
     }
 
     fn add(&mut self, op: &Op, r: PerformanceResult) {
+        let position = self.entries.iter().position(|e| e.0 == op.name());
+        self.add_at(position, op, r);
+    }
+
+    /// [`Self::add`] for an op whose plan name slot is `slot`.
+    fn add_slot(&mut self, slot: usize, op: &Op, r: PerformanceResult) {
+        let position = self.slots[slot];
+        if position.is_none() {
+            self.slots[slot] = Some(self.entries.len());
+        }
+        self.add_at(position, op, r);
+    }
+
+    fn add_at(&mut self, position: Option<usize>, op: &Op, r: PerformanceResult) {
         let name = op.name();
         let source = r.source.as_str();
         let mut fallbacks = None;
@@ -212,7 +239,7 @@ impl PerOpFold {
                 ),
             );
         }
-        if let Some(entry) = self.entries.iter_mut().find(|e| e.0 == name) {
+        if let Some(entry) = position.map(|position| &mut self.entries[position]) {
             entry.1 += r.latency_ms;
             entry.2 += r.energy_wms;
             if entry.3 != source {
@@ -251,22 +278,25 @@ struct PerOpSolFold {
     entries: Vec<PerOpSolValue>,
 }
 
+/// `(sol_math_ms, sol_mem_ms)` of one op's SOL-mode result.
+fn sol_components(op: &Op, r: &PerformanceResult) -> Result<(f64, f64), AicError> {
+    match &r.sol {
+        Some(c) => Ok((c.math_ms, c.mem_ms)),
+        // No-op short-circuits (tp_size=1 allreduce, pp_size=1 P2P)
+        // return plain zero results without a decomposition: a zero
+        // contribution is exact, not a coverage gap.
+        None if r.latency_ms == 0.0 && r.energy_wms == 0.0 => Ok((0.0, 0.0)),
+        None => Err(AicError::SolNotImplemented(format!(
+            "evaluate_ops_sol_json: op '{}' has no SOL decomposition \
+             (family not exported yet — see PerformanceResult::sol)",
+            op.name()
+        ))),
+    }
+}
+
 impl PerOpSolFold {
     fn add(&mut self, op: &Op, r: PerformanceResult) -> Result<(), AicError> {
-        let (sol_math, sol_mem) = match r.sol {
-            Some(c) => (c.math_ms, c.mem_ms),
-            // No-op short-circuits (tp_size=1 allreduce, pp_size=1 P2P)
-            // return plain zero results without a decomposition: a zero
-            // contribution is exact, not a coverage gap.
-            None if r.latency_ms == 0.0 && r.energy_wms == 0.0 => (0.0, 0.0),
-            None => {
-                return Err(AicError::SolNotImplemented(format!(
-                    "evaluate_ops_sol_json: op '{}' has no SOL decomposition \
-                     (family not exported yet — see PerformanceResult::sol)",
-                    op.name()
-                )));
-            }
-        };
+        let (sol_math, sol_mem) = sol_components(op, &r)?;
         if let Some(entry) = self.entries.iter_mut().find(|e| e.0 == op.name()) {
             entry.1 += r.latency_ms;
             entry.2 += sol_math;
@@ -303,6 +333,10 @@ pub struct Engine {
     context_ops: Vec<Op>,
     /// Generation-phase ops in execution order (from `spec.generation_ops`).
     generation_ops: Vec<Op>,
+    /// Build-time query sharing and name slots of `context_ops`.
+    context_plan: OpListPlan,
+    /// Build-time query sharing and name slots of `generation_ops`.
+    generation_plan: OpListPlan,
     /// Loaded perf database. `Arc` so the `AicEngine` can share it with the
     /// capacity API; free fns take `&PerfDatabase`, so deref works either way.
     db: Arc<PerfDatabase>,
@@ -356,6 +390,8 @@ impl Engine {
             spec.context_ops.iter().chain(&spec.generation_ops),
         )?;
         Ok(Engine {
+            context_plan: OpListPlan::new(&spec.context_ops),
+            generation_plan: OpListPlan::new(&spec.generation_ops),
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
             db,
@@ -673,15 +709,16 @@ impl Engine {
             on_op(&self.context_ops[0], result);
             return Ok(latency_ms);
         }
-        run_context_ops_with(
+        run_context_ops_planned(
             &self.context_ops,
+            Some(&self.context_plan),
             &self.db,
             runtime.batch_size,
             effective_isl,
             runtime.prefix,
             runtime.seq_imbalance_correction_scale,
             ContextOpFilter::All,
-            on_op,
+            |_, op, result| on_op(op, result),
         )
     }
 
@@ -699,7 +736,7 @@ impl Engine {
     ///
     /// `osl <= 1` yields an empty loop and 0.0 (matches Python).
     fn run_generation_phase(&self, runtime: &RuntimeConfig, stride: u32) -> Result<f64, AicError> {
-        self.run_generation_phase_with(runtime, stride, |_, _| {})
+        self.run_generation_phase_with(runtime, stride, |_, _, _| {})
     }
 
     /// [`Self::run_generation_phase`] with a per-op sink. Python builds a
@@ -709,11 +746,13 @@ impl Engine {
     /// observes ONE per-step-folded result per op name, already weighted by
     /// `repeat_count`, in that exact order: `(r1 + r2) * k`, not
     /// `r1*k + r2*k` (bit-identical for repeated-name model families).
+    ///
+    /// The sink also receives the op's name slot in [`Self::generation_plan`].
     fn run_generation_phase_with(
         &self,
         runtime: &RuntimeConfig,
         stride: u32,
-        mut on_op: impl FnMut(&Op, PerformanceResult),
+        mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
         let bs = runtime
             .batch_size
@@ -723,6 +762,10 @@ impl Engine {
         if runtime.osl <= 1 {
             return Ok(0.0);
         }
+        let plan = &self.generation_plan;
+        // Per-step name fold, indexed by name slot; `order` keeps first encounter.
+        let mut step_fold: Vec<Option<(&Op, PerformanceResult)>> = vec![None; plan.names()];
+        let mut order = Vec::with_capacity(plan.names());
         let upper = runtime.osl - 1; // exclusive, matches Python `range(0, osl-1, stride)`
         let mut i = 0u32;
         while i < upper {
@@ -733,30 +776,33 @@ impl Engine {
             // Per-step name fold FIRST (Python's per-iteration dict), with
             // the phase-dict source merge (mismatch -> Mixed, no
             // zero-identity — mirrors `base_backend.py:391-393`).
-            let mut step_fold: Vec<(&Op, PerformanceResult)> = Vec::new();
-            let step = run_generation_ops_step_beamed_with(
+            let step = run_generation_ops_step_planned(
                 &self.generation_ops,
+                Some(plan),
                 &self.db,
                 bs,
                 runtime.beam_width,
                 s,
                 runtime.gen_seq_imbalance_correction_scale,
                 false,
-                |op, r| {
-                    if let Some(entry) = step_fold.iter_mut().find(|(e, _)| e.name() == op.name()) {
-                        entry.1.latency_ms += r.latency_ms;
-                        entry.1.energy_wms += r.energy_wms;
-                        if entry.1.source != r.source {
-                            entry.1.source = crate::operators::base::Source::Mixed;
+                |index, op, r| {
+                    let slot = plan.name_slot(index);
+                    if let Some((_, entry)) = &mut step_fold[slot] {
+                        entry.latency_ms += r.latency_ms;
+                        entry.energy_wms += r.energy_wms;
+                        if entry.source != r.source {
+                            entry.source = crate::operators::base::Source::Mixed;
                         }
-                        entry.1.moe_comm_fallbacks.extend(r.moe_comm_fallbacks);
+                        entry.moe_comm_fallbacks.extend(r.moe_comm_fallbacks);
                     } else {
-                        step_fold.push((op, r));
+                        step_fold[slot] = Some((op, r));
+                        order.push(slot);
                     }
                 },
             )?;
-            for (op, folded) in step_fold {
-                on_op(op, folded.scaled(repeat_count as f64));
+            for slot in order.drain(..) {
+                let (op, folded) = step_fold[slot].take().expect("visited name slot");
+                on_op(slot, op, folded.scaled(repeat_count as f64));
             }
             total += step * repeat_count as f64;
             i += stride;
@@ -1441,7 +1487,7 @@ impl Engine {
             };
             let mut target = PerformanceResult::zero();
             let mut draft = PerformanceResult::zero();
-            self.run_generation_phase_with(&rt, DEFAULT_STATIC_STRIDE, |op, result| {
+            self.run_generation_phase_with(&rt, DEFAULT_STATIC_STRIDE, |_, op, result| {
                 let component = if matches!(op, Op::FpmForward(_)) {
                     &mut target
                 } else {
@@ -1525,65 +1571,79 @@ impl Engine {
             self.run_static_per_op_with_metadata(&runtime, mode, DEFAULT_STATIC_STRIDE)?;
         let entries = if prefill { context } else { generation };
         let sol_db = self.db.sol_full_view();
-        let ops = if prefill {
-            &self.context_ops
+        let (ops, plan) = if prefill {
+            (&self.context_ops, &self.context_plan)
         } else {
-            &self.generation_ops
+            (&self.generation_ops, &self.generation_plan)
         };
+        // Both folds visit every op in order, so entry `k` is name slot `k`.
+        if entries.len() != plan.names() {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase diagnostics did not fold every operation name".into(),
+            ));
+        }
+        // SOL comparison per name slot, summed in op order. A name stops at
+        // its first failure, which becomes its unavailable reason.
+        let mut sols: Vec<Option<Result<SolDiagnostics, AicError>>> =
+            (0..plan.names()).map(|_| None).collect();
+        let mut memo = QueryMemo::new(Some(plan), ops);
+        for (index, op) in ops.iter().enumerate() {
+            let sol = &mut sols[plan.name_slot(index)];
+            if matches!(sol, Some(Err(_))) {
+                continue;
+            }
+            let result = memo
+                .query(index, || {
+                    if prefill {
+                        query_context_op(
+                            op,
+                            &sol_db,
+                            batch_size,
+                            context_length - prefix,
+                            prefix,
+                            1.0,
+                            None,
+                        )
+                    } else {
+                        query_generation_op(
+                            op,
+                            &sol_db,
+                            batch_size.saturating_mul(self.nextn.saturating_add(1)),
+                            1,
+                            context_length.saturating_add(1),
+                            1.0,
+                            0,
+                            None,
+                        )
+                    }
+                })
+                .and_then(|result| {
+                    let (math_ms, memory_ms) = sol_components(op, &result)?;
+                    Ok(SolDiagnostics {
+                        latency_ms: result.latency_ms,
+                        math_ms,
+                        memory_ms,
+                    })
+                });
+            *sol = Some(match (sol.take(), result) {
+                (Some(Ok(sum)), Ok(next)) => Ok(sum.plus(&next)),
+                (_, result) => result,
+            });
+        }
+        debug_assert!(entries.iter().enumerate().all(|(slot, entry)| {
+            (0..ops.len()).any(|i| plan.name_slot(i) == slot && ops[i].name() == entry.0)
+        }));
         entries
             .into_iter()
-            .map(|(name, latency_ms, energy_wms, source, fallbacks)| {
-                let mut sol = PerOpSolFold::default();
-                let comparison = ops
-                    .iter()
-                    .filter(|op| op.name() == name)
-                    .try_for_each(|op| {
-                        let result = if prefill {
-                            query_context_op(
-                                op,
-                                &sol_db,
-                                batch_size,
-                                context_length - prefix,
-                                prefix,
-                                1.0,
-                                None,
-                            )
-                        } else {
-                            query_generation_op(
-                                op,
-                                &sol_db,
-                                batch_size.saturating_mul(self.nextn.saturating_add(1)),
-                                1,
-                                context_length.saturating_add(1),
-                                1.0,
-                                0,
-                                None,
-                            )
-                        }?;
-                        sol.add(op, result)
-                    });
-                let (sol, sol_unavailable_reason) = match comparison {
-                    Ok(()) => match sol.into_values().into_iter().next() {
-                        Some((_, latency_ms, math_ms, memory_ms))
-                            if [latency_ms, math_ms, memory_ms]
-                                .iter()
-                                .all(|v| v.is_finite() && *v >= 0.0) =>
-                        {
-                            (
-                                Some(SolDiagnostics {
-                                    latency_ms,
-                                    math_ms,
-                                    memory_ms,
-                                }),
-                                None,
-                            )
-                        }
-                        _ => (
-                            None,
-                            Some("operation did not export finite SOL evidence".into()),
-                        ),
-                    },
-                    Err(error) => (None, Some(error.to_string())),
+            .zip(sols)
+            .map(|((name, latency_ms, energy_wms, source, fallbacks), sol)| {
+                let (sol, sol_unavailable_reason) = match sol {
+                    Some(Ok(sol)) if sol.is_valid() => (Some(sol), None),
+                    Some(Err(error)) => (None, Some(error.to_string())),
+                    _ => (
+                        None,
+                        Some("operation did not export finite SOL evidence".into()),
+                    ),
                 };
                 let fallbacks = fallbacks
                     .into_iter()
@@ -1658,7 +1718,7 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
-        let mut context = PerOpFold::new("context");
+        let mut context = PerOpFold::for_plan("context", &self.context_plan);
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
             if runtime.prefix >= runtime.isl {
                 return Err(AicError::InvalidEngineConfig(format!(
@@ -1666,20 +1726,23 @@ impl Engine {
                     runtime.isl as i64 - runtime.prefix as i64
                 )));
             }
-            run_context_ops_with(
+            run_context_ops_planned(
                 &self.context_ops,
+                Some(&self.context_plan),
                 &self.db,
                 runtime.batch_size,
                 runtime.isl - runtime.prefix,
                 runtime.prefix,
                 runtime.seq_imbalance_correction_scale,
                 ContextOpFilter::All,
-                |op, r| context.add(op, r),
+                |index, op, r| context.add_slot(self.context_plan.name_slot(index), op, r),
             )?;
         }
-        let mut generation = PerOpFold::new("generation");
+        let mut generation = PerOpFold::for_plan("generation", &self.generation_plan);
         if matches!(mode, StaticMode::Generation | StaticMode::Both) {
-            self.run_generation_phase_with(runtime, stride, |op, r| generation.add(op, r))?;
+            self.run_generation_phase_with(runtime, stride, |slot, op, r| {
+                generation.add_slot(slot, op, r)
+            })?;
         }
         Ok((context.into_values(), generation.into_values()))
     }
@@ -2562,6 +2625,206 @@ mod tests {
         }
     }
 
+    /// GLM-5.3-Flash-shaped op list: per-layer names over repeated geometry,
+    /// generic ops with unique and repeated names.
+    fn glm_layer_ops(is_context: bool) -> Vec<Op> {
+        use crate::operators::glm53flash::tests::{attention, mhc_site};
+        let mut ops = Vec::new();
+        for layer in 0..6 {
+            let mut mhc = mhc_site(if layer == 0 { "pre" } else { "fused_post_pre" });
+            mhc.name = format!("mhc_{layer}");
+            mhc.is_context = is_context;
+            mhc.checkpoint_format = "nvfp4".into();
+            ops.push(Op::Glm53Mhc(mhc));
+            let mut attn = attention(if layer % 3 == 2 { "sparse_mla" } else { "kda" });
+            attn.name = format!("attention_{layer}");
+            attn.is_context = is_context;
+            attn.backend = "sglang".into();
+            if attn.layer_kind == "kda" {
+                attn.measured = vec![Op::Gemm(GemmOp::new(
+                    format!("kda_{layer}_o_proj"),
+                    4096,
+                    4096,
+                    GemmQuantMode::Bfloat16,
+                ))];
+            }
+            ops.push(Op::Glm53Attention(attn));
+            ops.push(Op::Gemm(GemmOp::new(
+                format!("gemm_{layer}"),
+                4096,
+                4096,
+                GemmQuantMode::Bfloat16,
+            )));
+        }
+        ops.push(Op::Gemm(GemmOp::new(
+            "gemm_0",
+            4096,
+            4096,
+            GemmQuantMode::Bfloat16,
+        )));
+        ops
+    }
+
+    fn glm_layer_engine() -> Engine {
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "gb300",
+            "sglang",
+            "0.5.14",
+            true,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_mode(DatabaseMode::Hybrid, TransferPolicy::default());
+        let mut config = fixture_engine_config(None);
+        config.system_name = "gb300".into();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.14".into());
+        config.database_mode = DatabaseMode::Hybrid;
+        let spec = EngineSpec::new(config, glm_layer_ops(true), glm_layer_ops(false));
+        Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    fn per_op_bits(entries: &[PerOpValueWithMetadata]) -> Vec<(String, u64, u64, &'static str)> {
+        entries
+            .iter()
+            .map(|e| (e.0.clone(), e.1.to_bits(), e.2.to_bits(), e.3))
+            .collect()
+    }
+
+    #[test]
+    fn repeated_glm_layers_share_queries_with_identical_per_op_values() {
+        let engine = glm_layer_engine();
+        // Per layer: mhc, attention, gemm; then a repeated "gemm_0".
+        for plan in [&engine.context_plan, &engine.generation_plan] {
+            let (kda, sparse) = (plan.query_slot(1), plan.query_slot(7));
+            assert!(kda.is_some() && sparse.is_some() && kda != sparse);
+            assert_eq!(plan.query_slot(4), kda, "KDA layers 0 and 1 share");
+            assert_eq!(plan.query_slot(16), sparse, "sparse layers 2 and 5 share");
+            assert_eq!(plan.query_slot(5), None, "generic ops always query");
+            assert_eq!(plan.query_slot(18), None);
+            assert_eq!(plan.query_slots(), 4);
+            assert_eq!(plan.name_slot(18), plan.name_slot(2));
+        }
+        let ctx_ops = glm_layer_ops(true);
+        let gen_ops = glm_layer_ops(false);
+        let db = engine.database().clone();
+        // Prefill: reference folds every op's own query by name scan.
+        let rt = RuntimeConfig {
+            batch_size: 3,
+            isl: 700,
+            osl: 40,
+            prefix: 200,
+            ..Default::default()
+        };
+        let mut reference = PerOpFold::new("context");
+        let context_total = run_context_ops_with(
+            &ctx_ops,
+            &db,
+            3,
+            500,
+            200,
+            1.0,
+            ContextOpFilter::All,
+            |op, r| reference.add(op, r),
+        )
+        .unwrap();
+        let (context, _) = engine
+            .run_static_per_op_with_metadata(&rt, StaticMode::Context, 32)
+            .unwrap();
+        assert_eq!(per_op_bits(&context), per_op_bits(&reference.into_values()));
+        // Decode over two stride steps (repeat 32 and 7): reference is the
+        // name-scan step fold, then the stride weight, then the phase fold.
+        let mut reference = PerOpFold::new("generation");
+        let mut generation_total = 0.0;
+        for (i, repeat) in [(0u32, 32u32), (32, 7)] {
+            let mut step_fold: Vec<(&Op, PerformanceResult)> = Vec::new();
+            let step = run_generation_ops_step_beamed_with(
+                &gen_ops,
+                &db,
+                3,
+                1,
+                rt.isl + i + 1,
+                1.0,
+                false,
+                |op, r| {
+                    if let Some(entry) = step_fold.iter_mut().find(|(e, _)| e.name() == op.name()) {
+                        entry.1.latency_ms += r.latency_ms;
+                        entry.1.energy_wms += r.energy_wms;
+                        if entry.1.source != r.source {
+                            entry.1.source = crate::operators::base::Source::Mixed;
+                        }
+                    } else {
+                        step_fold.push((op, r));
+                    }
+                },
+            )
+            .unwrap();
+            for (op, folded) in step_fold {
+                reference.add(op, folded.scaled(repeat as f64));
+            }
+            generation_total += step * repeat as f64;
+        }
+        let (_, generation) = engine
+            .run_static_per_op_with_metadata(&rt, StaticMode::Generation, 32)
+            .unwrap();
+        assert_eq!(
+            per_op_bits(&generation),
+            per_op_bits(&reference.into_values())
+        );
+        let totals = engine.run_static(&rt, StaticMode::Both, 32).unwrap();
+        assert_eq!(totals.context_ms.to_bits(), context_total.to_bits());
+        assert_eq!(totals.generation_ms.to_bits(), generation_total.to_bits());
+        // Diagnostics: the SOL comparison sums each name's own SOL queries.
+        let sol_db = db.sol_full_view();
+        for prefill in [true, false] {
+            let ops = if prefill { &ctx_ops } else { &gen_ops };
+            let rows = engine
+                .static_phase_diagnostics(3, 700, if prefill { 200 } else { 0 }, prefill)
+                .unwrap();
+            assert_eq!(rows.len(), 18);
+            for row in rows {
+                let mut sol = PerOpSolFold::default();
+                ops.iter()
+                    .filter(|op| op.name() == row.name)
+                    .try_for_each(|op| {
+                        let result = if prefill {
+                            query_context_op(op, &sol_db, 3, 500, 200, 1.0, None)
+                        } else {
+                            query_generation_op(op, &sol_db, 3, 1, 701, 1.0, 0, None)
+                        }?;
+                        sol.add(op, result)
+                    })
+                    .unwrap();
+                let (_, latency_ms, math_ms, memory_ms) = sol.into_values().remove(0);
+                let actual = row.details.sol.unwrap();
+                assert_eq!(
+                    [actual.latency_ms, actual.math_ms, actual.memory_ms].map(f64::to_bits),
+                    [latency_ms, math_ms, memory_ms].map(f64::to_bits),
+                    "{}",
+                    row.name
+                );
+            }
+        }
+    }
+
+    /// A shared GLM query must price every op in its slot alike; a name-keyed
+    /// price that differs fails debug builds instead of being masked.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "shares query slot")]
+    fn debug_builds_reject_a_shared_query_that_prices_differently() {
+        use crate::operators::base::Source;
+        let ops = glm_layer_ops(false);
+        let plan = OpListPlan::new(&ops);
+        let mut memo = QueryMemo::new(Some(&plan), &ops);
+        // KDA attention of layers 0 and 1 (indices 1 and 4) share a slot.
+        memo.query(1, || Ok(PerformanceResult::new(1.0, Source::Silicon)))
+            .unwrap();
+        let _ = memo.query(4, || Ok(PerformanceResult::new(2.0, Source::Silicon)));
+    }
+
     #[test]
     fn per_op_fold_attaches_the_inference_phase_only_to_executed_fallbacks() {
         use crate::operators::base::{MoeCommFallback, Source};
@@ -2885,6 +3148,8 @@ mod tests {
         );
         engine.context_ops = vec![stage(true, false), stage(true, true)];
         engine.generation_ops = vec![stage(false, false), stage(false, true)];
+        engine.context_plan = OpListPlan::new(&engine.context_ops);
+        engine.generation_plan = OpListPlan::new(&engine.generation_ops);
         engine
     }
 

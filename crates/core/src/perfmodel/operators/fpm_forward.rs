@@ -667,50 +667,61 @@ impl FpmForwardOp {
         coords: &[f64],
     ) -> Result<(PerformanceResult, DirectFpmResolution), AicError> {
         let (batch, tokens, kv) = (coords[0], coords[1], coords[2]);
-        // A collection's maximum KV can differ at each measured token count.
-        // Transpose only after the usual path fails, retaining the same batch
-        // and genuine measurements; supported queries keep their old answer.
-        let mut kv_curves: BTreeMap<u32, BTreeMap<u32, f64>> = BTreeMap::new();
-        for (&(_, site_kv), curve) in cell
-            .direct_prefill
-            .range((batch as u32, 0)..=(batch as u32, u32::MAX))
-        {
-            for (&site_tokens, &latency) in curve {
-                kv_curves
-                    .entry(site_tokens)
-                    .or_default()
-                    .insert(site_kv, latency);
-            }
-        }
-        let token_curve: BTreeMap<u32, f64> = kv_curves
-            .iter()
-            .filter_map(|(&site_tokens, curve)| {
-                direct_curve_value(curve, kv).map(|latency| (site_tokens, latency))
-            })
-            .collect();
-        let latency = direct_curve_value(&token_curve, tokens).ok_or_else(|| {
+        let unsupported = || {
             self.direct_coverage_err(
                 cell,
                 coords,
                 "no same-batch, two-sided measured support in either token-first or KV-first interpolation",
             )
-        })?;
-        let support = direct_curve_support(&token_curve, tokens, |token| {
-            fpm_coordinates(self.phase, &[batch, token, kv])
-        })
-        .into_iter()
-        .flat_map(|token_point| {
-            let token = token_point.coordinates.total_prefill_tokens.unwrap();
-            direct_curve_support(&kv_curves[&(token as u32)], kv, |site_kv| {
-                fpm_coordinates(self.phase, &[batch, token, site_kv])
-            })
+        };
+        let Some(token_key) = direct_axis(tokens) else {
+            return Err(unsupported());
+        };
+        // A collection's maximum KV can differ at each measured token count.
+        // Only after the usual path fails, interpolate KV at the nearest
+        // KV-covering token count on each side, retaining the same batch and
+        // genuine measurements; supported queries keep their old answer.
+        let rows = cell.direct_prefill_by_tokens();
+        let batch_key = batch as u32;
+        let covered = |(&(_, row_tokens), curve): (&(u32, u32), &BTreeMap<u32, f64>)| {
+            direct_curve_value(curve, kv).map(|latency| (row_tokens, latency))
+        };
+        let (lo, lo_ms) = rows
+            .range((batch_key, 0)..=(batch_key, token_key))
+            .rev()
+            .find_map(covered)
+            .ok_or_else(unsupported)?;
+        let (latency, token_support) = if tokens == lo as f64 {
+            (lo_ms, [Some((lo, 1.0)), None])
+        } else {
+            let (hi, hi_ms) = rows
+                .range((
+                    std::ops::Bound::Excluded((batch_key, lo)),
+                    std::ops::Bound::Included((batch_key, u32::MAX)),
+                ))
+                .find_map(covered)
+                .ok_or_else(unsupported)?;
+            let weight = direct_weight(lo, hi, tokens);
+            (
+                direct_lerp((lo, lo_ms), (hi, hi_ms), tokens),
+                [Some((lo, 1.0 - weight)), Some((hi, weight))],
+            )
+        };
+        let support = token_support
             .into_iter()
-            .map(move |mut point| {
-                point.weight *= token_point.weight;
-                point
+            .flatten()
+            .flat_map(|(row_tokens, row_weight)| {
+                let token = row_tokens as f64;
+                direct_curve_support(&rows[&(batch_key, row_tokens)], kv, |site_kv| {
+                    fpm_coordinates(self.phase, &[batch, token, site_kv])
+                })
+                .into_iter()
+                .map(move |mut point| {
+                    point.weight *= row_weight;
+                    point
+                })
             })
-        })
-        .collect();
+            .collect();
         self.direct_result(
             cell,
             coords,
@@ -1018,7 +1029,7 @@ fn direct_curve_support(
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()
         .expect("covered curve");
-    let weight = (coordinate - lo as f64) / (hi as f64 - lo as f64);
+    let weight = direct_weight(lo, hi, coordinate);
     vec![
         FpmMeasurementSupport {
             coordinates: coordinates(lo as f64),
@@ -1036,17 +1047,33 @@ fn direct_curve_support(
 /// Exact lookup or raw linear interpolation strictly inside one measured
 /// curve. There is deliberately no callback, boundary hold, or SOL input.
 fn direct_curve_value(curve: &BTreeMap<u32, f64>, coordinate: f64) -> Option<f64> {
-    if !coordinate.is_finite() || coordinate < 0.0 || coordinate > u32::MAX as f64 {
-        return None;
-    }
-    let (&lo, &lo_ms) = curve.range(..=(coordinate as u32)).next_back()?;
+    let (&lo, &lo_ms) = curve.range(..=direct_axis(coordinate)?).next_back()?;
     if coordinate == lo as f64 {
         return Some(lo_ms);
     }
     let (&hi, &hi_ms) = curve
         .range((std::ops::Bound::Excluded(lo), std::ops::Bound::Unbounded))
         .next()?;
-    Some(lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64))
+    Some(direct_lerp((lo, lo_ms), (hi, hi_ms), coordinate))
+}
+
+/// Curve key at or below a finite, non-negative coordinate within `u32`.
+fn direct_axis(coordinate: f64) -> Option<u32> {
+    // NaN and infinities fall outside the range.
+    (0.0..=u32::MAX as f64)
+        .contains(&coordinate)
+        .then_some(coordinate as u32)
+}
+
+/// Raw linear interpolation between two measured points. Shared with the
+/// KV-first fallback so both keep the same floating-point evaluation order.
+fn direct_lerp((lo, lo_ms): (u32, f64), (hi, hi_ms): (u32, f64), coordinate: f64) -> f64 {
+    lo_ms + (hi_ms - lo_ms) * (coordinate - lo as f64) / (hi as f64 - lo as f64)
+}
+
+/// Support weight of the upper point; the lower point's is `1.0 - weight`.
+fn direct_weight(lo: u32, hi: u32, coordinate: f64) -> f64 {
+    (coordinate - lo as f64) / (hi as f64 - lo as f64)
 }
 
 /// FPM interpolation configs: prefill sites `(batch, kv)` own the new-token
@@ -1481,6 +1508,9 @@ mod tests {
             [1.0, 175.0, 110.0],
             [1.0, 175.0, 121.0],
             [1.0, 175.0, -1.0],
+            [1.0, f64::NAN, 32.0],
+            [1.0, -1.0, 32.0],
+            [1.0, 5e9, 32.0],
             [2.0, 175.0, 50.0],
         ] {
             assert!(direct.query_totals(&db, &coords).is_err(), "{coords:?}");
