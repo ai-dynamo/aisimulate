@@ -47,10 +47,14 @@ pub struct ForwardPassPerfDiagnostics {
     /// inferred workload kinds for Native and Learned and across all logical
     /// stores for Regression. Dynamic calibration counts distinct retained
     /// observations, not duplicated local/recent slots.
+    /// Hybrid sums its independent fixed and dynamic histories, counting an
+    /// observation retained by both policies once in each history.
     pub retained_observations: usize,
     /// Number of populated correction regions (Native and Learned) whose
     /// workload kind has at least `min_observations` total retained samples.
     /// Excludes the recent-global fallback. Always 0 for Regression.
+    /// Hybrid sums both grids, including overlapping regions; this describes
+    /// retained calibration state, not the number of regions selected by queries.
     pub correction_ready_buckets: usize,
     /// Fallback reason when `best_available` had to use regression instead of native AIC.
     pub last_warning: Option<String>,
@@ -263,9 +267,10 @@ impl RegressionStores {
 /// `max_slower_correction_factor` place independent absolute bounds on learned
 /// native correction factors in each direction, defaulting to `0.5` and `2.0`.
 /// Callers may explicitly disable either bound. Learned models default to
-/// dynamic local calibration with expanding log-space bounds, balanced local
+/// hybrid calibration with a fixed grid inside configured limits and dynamic
+/// local calibration outside them, with expanding log-space bounds, balanced local
 /// retention, and a recent-global fallback. `correction_mode` can explicitly
-/// select either policy for Native or Learned.
+/// select any policy for Native or Learned.
 ///
 /// Queued request fields are accepted for FPM schema parity but ignored by this
 /// forward-pass-level model. `estimate_forward_pass_time_ms` treats FPM as a
@@ -338,7 +343,7 @@ impl ForwardPassPerfModel {
     /// `source` is either a filesystem path or the artifact JSON text itself
     /// (detected by a leading `{`). The artifact binds the worker type and the
     /// ordered feature ABI. Estimation is the learned prediction multiplied by
-    /// a dynamic local correction factor learned through
+    /// a hybrid correction factor learned through
     /// `tune_with_fpms`; iterations whose regression workload kind has no
     /// trained store return `Ok(None)`.
     pub fn from_learned(source: &str, options: ForwardPassPerfOptions) -> Result<Self, AicError> {
@@ -346,7 +351,7 @@ impl ForwardPassPerfModel {
         let learned = load_learned(source)?;
         let mut correction_options = options.clone();
         if correction_options.correction_mode == CorrectionMode::Auto {
-            correction_options.correction_mode = CorrectionMode::DynamicLocal;
+            correction_options.correction_mode = CorrectionMode::Hybrid;
         }
         Ok(Self {
             mode: ForwardPassPerfMode::Learned {
@@ -920,6 +925,8 @@ impl ForwardPassPerfModel {
     /// across all workload kinds (Native and Learned models alike). Dynamic
     /// calibration includes each ready recent-global fallback once, in addition
     /// to its populated local bucket factors.
+    /// Hybrid includes both grids (including overlapping regions) and the
+    /// dynamic fallback; this is a state summary, not a query-weighted average.
     ///
     /// Returns `None` before any correction workload kind has enough samples.
     /// Regression-only models have no correction grid and always return `None`.

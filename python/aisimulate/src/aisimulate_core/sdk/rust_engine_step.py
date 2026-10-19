@@ -331,8 +331,8 @@ class RustForwardPassPerfModel:
 
     ``config.estimator_config["correction"]["mode"]`` selects the correction
     policy. ``"auto"`` keeps fixed correction for native estimates and selects
-    dynamic local correction for learned forests; ``"fixed"`` and
-    ``"dynamic_local"`` select either policy explicitly. The existing learned
+    hybrid correction for learned forests; ``"fixed"``, ``"dynamic_local"``,
+    and ``"hybrid"`` select a policy explicitly. The existing learned
     adapter accepts the equivalent legacy option ``correction_mode``.
 
     Fixed correction uses constructor-time ranges from
@@ -343,6 +343,9 @@ class RustForwardPassPerfModel:
     ``2000000``. Dynamic local correction instead expands ``log1p`` bounds from
     admitted feedback and uses recent global feedback for empty regions or
     queries outside those bounds. Prediction queries do not change the grid.
+    Hybrid uses the fixed policy inside its configured limits (including empty
+    or unready cells) and the dynamic policy outside. Both retain their full
+    independent sample budgets and receive the same feedback.
 
     Both policies apply the configured correction-factor bounds. The legacy
     option ``min_faster_correction_factor`` places an absolute lower bound
@@ -426,9 +429,9 @@ class RustForwardPassPerfModel:
         ``aisimulate_core.sdk.fpm_learned``). ``source`` is an artifact path,
         the artifact JSON text, or the already-parsed artifact mapping. The
         artifact binds the worker type and the ordered feature ABI; estimation is
-        the learned prediction times a dynamic local correction factor
-        accumulated through ``tune_with_fpms()``. Bounds expand from admitted
-        observations; out-of-domain queries use recent global feedback. Pass
+        the learned prediction times a hybrid correction factor accumulated
+        through ``tune_with_fpms()``. Fixed correction applies inside configured
+        limits; dynamic local correction applies outside them. Pass
         ``options={"correction_mode": "fixed"}`` to retain the legacy fixed grid.
         Iterations whose workload kind
         has no trained store return ``None``.

@@ -355,8 +355,9 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
    learned path (`classify_regression_workload` is weight-independent).
 
 Online calibration (`tune_with_fpms`) multiplies the learned base by a correction
-factor. Learned models default to an expanding log-coordinate grid with local
-medians and a recent-global fallback; native AIC retains its fixed grid. See
+factor. Learned models default to hybrid correction: fixed local medians inside
+the configured grid and expanding log-coordinate correction with a recent-global
+fallback outside it. Native AIC retains its fixed grid. See
 [the calibration contract](learned-forward-pass-model.md#online-correction) for retention,
 readiness, and the `correction_mode="fixed"` compatibility option.
 

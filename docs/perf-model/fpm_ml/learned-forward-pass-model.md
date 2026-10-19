@@ -234,12 +234,23 @@ model.tune_with_fpms([[observed_rank0, observed_rank1]])           # optional on
 ### Online correction
 
 `estimate_forward_pass_time_ms` returns the learned prediction multiplied by
-a dynamic local correction factor. Its grid expands when `tune_with_fpms`
-admits new workload coordinates, including observations beyond the old fixed
-limits of 8,192 prefill tokens, 512 decode requests, or 2,000,000 decode KV
-tokens. Prediction queries do not change the grid or admit feedback.
+a hybrid correction factor. Inside the configured fixed grid it uses the
+existing fixed local median, including the neutral factor 1.0 for empty or
+unready cells. Outside that grid it uses dynamic local correction with a
+recent-global fallback. Default fixed upper limits are 8,192 prefill tokens,
+512 decode requests, and 2,000,000 decode KV tokens; endpoints are inside.
+Hybrid selection uses these configured limits, not the dynamic bounds or
+whether either store is ready. Prediction queries do not admit feedback.
 
-At the default capacity of 64, each inferred workload kind retains 48 samples
+Both policies receive the same feedback and uncorrected forest prediction.
+The fixed store keeps its original raw-coordinate geometry, admission, median,
+and eviction behavior, including rejection of out-of-grid observations. The
+dynamic store receives in-grid observations too. Each has an independent full
+capacity: the default hybrid retains up to 64 fixed slots plus 64 dynamic slots
+per inferred workload kind. This preserves the fixed history instead of
+dividing its capacity between policies. Only one forest prediction is computed.
+
+Within the dynamic policy, the default capacity of 64 retains 48 samples
 with balanced bucket eviction and a separate FIFO of the 16 most recent
 samples. The two sets can overlap. Samples expire after 128 admitted
 observations; the grid bounds only expand, even when an old extreme expires.
@@ -267,15 +278,21 @@ all valid queries use the recent-global fallback once it is ready. For example,
 `M = 10` and `min_observations = 5` allocate five slots to each set; when
 `M = min_observations`, all slots go to the recent FIFO.
 
-Each admitted observation rebuilds the bucket medians and recent-global median.
+Each observation admitted to the dynamic policy rebuilds its bucket medians
+and recent-global median.
 This takes `O(M log M)` time in the worst case and allocates `O(M)` temporary
 storage per update; retained calibration state is also `O(M)` per workload kind.
-Prediction reads cached factors in `O(log B)` time for `B` populated buckets,
-without scanning samples or allocating calibration storage. Keep the default
+The dynamic query reads cached factors in `O(log B)` time for `B` populated buckets,
+without scanning samples or allocating calibration storage. Hybrid performs
+both policies' admission work, then queries only the selected policy. Its
+in-grid query retains the fixed policy's local-median calculation and allocation;
+its out-of-grid query uses the cached dynamic factor. Keep the default
 capacity of 64 unless a larger sample history is needed, and measure update
 cost at the intended capacity and feedback cadence before increasing it.
 
-To reproduce the previous fixed-grid behavior, select it explicitly:
+`auto` selects hybrid for learned forests and fixed for native AIC. Select
+`hybrid`, `fixed`, or `dynamic_local` explicitly to override this choice. To
+reproduce the previous fixed-grid behavior everywhere:
 
 ```python
 model = RustForwardPassPerfModel.from_learned(
@@ -283,11 +300,10 @@ model = RustForwardPassPerfModel.from_learned(
 )
 ```
 
-`correction_mode="auto"` is the default: dynamic local calibration for learned
-forests and the existing fixed grid for native AIC estimates. Explicit
-`"dynamic_local"` selects the new policy. Canonical native configurations expose
-the same selection as `estimator_config.correction.mode`. The `max_num_tokens`,
-`max_batch_size`, and `max_kv_tokens` options bound only the fixed policy.
+Canonical native configurations expose the same selection as
+`estimator_config.correction.mode`. The `max_num_tokens`, `max_batch_size`, and
+`max_kv_tokens` options define the fixed grid and hybrid's switching boundary;
+they do not constrain the dynamic store's expanding bounds.
 
 To compare policies on your own frozen forest and held-out chronological
 observations, run:
@@ -299,13 +315,30 @@ python -m scripts.fpm_accuracy.compare_calibration --model model.json \
 
 Each input line wraps a rank list as `{"time_ms": 5000, "worker_id": "w0", "metrics": [...]}`.
 The utility predicts before feedback, uses independent model state per worker,
-and reports iteration-weighted errors on common coverage. It does not retrain
+and compares raw, fixed, dynamic, and hybrid predictions on common coverage.
+It reports iteration-weighted errors and does not retrain
 the supplied forest; use disjoint training and evaluation inputs. See `--help`
 for the timestamp, label, and sampling contract.
+
+Use `--every-events 100` instead of the default five-second cadence to admit
+every 100th event after predicting it. Add `--training-input training.jsonl.gz`
+to compare a fitted fixed grid as well. The training file uses the same wrapper
+format; its labels are ignored. Each fitted upper bound is
+`ceil(1.25 * training_maximum)` using the critical-rank coordinates, with a
+minimum bound of 1 for an unused axis. The report records maxima, bounds, and
+the training-file hash. These bounds are fixed before evaluation; the original
+fixed and hybrid arms and cohort labels still use the default limits.
+The caller must ensure the training and evaluation observations are disjoint.
+Fixed-grid eviction ties depend on hash-map iteration order, so independently
+constructed fixed stores can differ across runs.
 
 Iterations whose workload kind has no trained
 store return `None`; empty iterations return `0.0`. `diagnostics()["source"]`
 reports `learned` or `learned_with_correction`.
+Hybrid diagnostics sum the two histories and grids, counting observations
+retained in both once per history. Ready-bucket counts include overlapping
+regions, and correction-factor summaries include both grids and the dynamic
+fallback. These summarize retained state rather than query-weighted behavior.
 
 Consumers that already hold a `RustForwardPassPerfModel` (the Dynamo planner
 engine-query layer, the mocker's AIC callback) need no code change beyond

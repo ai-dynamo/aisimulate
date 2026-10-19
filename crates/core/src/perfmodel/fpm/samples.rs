@@ -201,7 +201,7 @@ impl<T: Clone> BucketedSamples<T> {
         Some(key)
     }
 
-    fn is_in_bounds(&self, x: &[f64]) -> bool {
+    pub(crate) fn is_in_bounds(&self, x: &[f64]) -> bool {
         if x.len() != self.axis_min.len() {
             return false;
         }

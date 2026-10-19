@@ -271,8 +271,8 @@ sample from the most populated cell when the store exceeds its budget.
 
 | Correction field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects dynamic local correction for learned forests. `fixed` and `dynamic_local` explicitly select either policy. |
-| `estimator_config.correction.sampling.max_observations` | `64` | Maximum retained sample slots per workload kind. Dynamic local updates take `O(M log M)` time and `O(M)` temporary storage in this capacity `M`; measure update cost before increasing it. |
+| `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
+| `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
 
 The fixed policy uses raw workload coordinates and the configured fixed limits.
 The dynamic local policy expands `log1p` bounds as valid feedback arrives, balances
@@ -280,12 +280,18 @@ local samples across the grid, and blends local median ratios with a recent-glob
 median. Empty cells and out-of-range queries use that recent-global fallback.
 At the default capacity of 64, it reserves 48 local and 16 recent slots and expires
 samples after 128 admissions. Bounds and cached factors change only on feedback.
+The hybrid policy feeds both stores the same observations and uncorrected base
+predictions; the fixed store continues rejecting out-of-grid observations.
+Selection depends only on the query coordinates and the configured fixed limits,
+including their upper endpoints. An empty or unready in-grid cell keeps the fixed
+factor of 1.0, even if the dynamic store is ready. Dynamic geometry never changes
+the fixed grid. Native AIC can also select `hybrid` explicitly.
 See [learned-model calibration](fpm_ml/learned-forward-pass-model.md#online-correction)
 for the readiness thresholds, shrinkage, and custom-capacity behavior. The existing
 learned-model SDK adapter accepts the equivalent legacy option `correction_mode`;
 canonical native configurations use `estimator_config.correction.mode`.
 
-Correction explicitly reports `feature_space: legacy_workload` for both policies
+Correction explicitly reports `feature_space: legacy_workload` for all policies
 and retains separate prefill/decode/mixed stores. Native AIC's default policy
 and median-ratio calculation remain unchanged. A shared role-based correction space requires separate
 accuracy validation and is not accepted as a configuration value in this release.

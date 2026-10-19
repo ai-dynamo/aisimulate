@@ -4,8 +4,9 @@
 //! Online correction policies for the forward-pass perf model.
 //!
 //! Buckets observed `(workload feature, observed_ms / native_ms)` correction
-//! samples into the legacy fixed grid or an expanding local calibrator. The
-//! fixed policy retains its original admission and prediction behavior.
+//! samples into the legacy fixed grid or an expanding local calibrator. Hybrid
+//! keeps independent full-budget stores and selects fixed correction inside the
+//! configured grid, including empty/cold cells, and dynamic correction outside.
 
 use super::dynamic_correction::DynamicCorrection;
 use super::options::{CorrectionMode, ForwardPassPerfOptions};
@@ -130,11 +131,22 @@ impl FixedCorrectionBuckets {
 pub(crate) enum CorrectionBuckets {
     Fixed(FixedCorrectionBuckets),
     Dynamic(DynamicCorrection),
+    Hybrid(Box<HybridCorrection>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HybridCorrection {
+    fixed: FixedCorrectionBuckets,
+    dynamic: DynamicCorrection,
 }
 
 impl WithOptions for CorrectionBuckets {
     fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
         match options.correction_mode {
+            CorrectionMode::Hybrid => Self::Hybrid(Box::new(HybridCorrection {
+                fixed: FixedCorrectionBuckets::with_options(options, axis_ranges),
+                dynamic: DynamicCorrection::new(options, axis_ranges.len()),
+            })),
             CorrectionMode::DynamicLocal => {
                 Self::Dynamic(DynamicCorrection::new(options, axis_ranges.len()))
             }
@@ -150,6 +162,9 @@ impl StoreStats for CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.observation_count(),
             Self::Dynamic(value) => value.observation_count(),
+            Self::Hybrid(value) => {
+                value.fixed.observation_count() + value.dynamic.observation_count()
+            }
         }
     }
 
@@ -157,6 +172,7 @@ impl StoreStats for CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.is_ready(),
             Self::Dynamic(value) => value.is_ready(),
+            Self::Hybrid(value) => value.fixed.is_ready() || value.dynamic.is_ready(),
         }
     }
 }
@@ -166,6 +182,12 @@ impl CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.add_observation(x, observed_ms, base_ms),
             Self::Dynamic(value) => value.add_observation(x, observed_ms, base_ms),
+            Self::Hybrid(value) => {
+                // Preserve the fixed sampler's admission and eviction behavior.
+                // Dynamic must also see in-grid feedback for its global fallback.
+                value.fixed.add_observation(x.clone(), observed_ms, base_ms);
+                value.dynamic.add_observation(x, observed_ms, base_ms);
+            }
         }
     }
 
@@ -173,6 +195,15 @@ impl CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.correction_factor_for(x),
             Self::Dynamic(value) => value.correction_factor_for(x),
+            Self::Hybrid(value) => {
+                // Geometry alone selects the policy: readiness and empty cells
+                // must not divert an in-grid query to the dynamic fallback.
+                if value.fixed.samples.is_in_bounds(x) {
+                    value.fixed.correction_factor_for(x)
+                } else {
+                    value.dynamic.correction_factor_for(x)
+                }
+            }
         }
     }
 
@@ -180,6 +211,9 @@ impl CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.ready_bucket_count(),
             Self::Dynamic(value) => value.ready_bucket_count(),
+            Self::Hybrid(value) => {
+                value.fixed.ready_bucket_count() + value.dynamic.ready_bucket_count()
+            }
         }
     }
 
@@ -187,6 +221,11 @@ impl CorrectionBuckets {
         match self {
             Self::Fixed(value) => value.correction_factors(),
             Self::Dynamic(value) => value.correction_factors(),
+            Self::Hybrid(value) => {
+                let mut factors = value.fixed.correction_factors();
+                factors.extend(value.dynamic.correction_factors());
+                factors
+            }
         }
     }
 }
