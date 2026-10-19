@@ -12,6 +12,63 @@ from pathlib import Path
 from typing import NamedTuple
 
 DYNAMO_REVISION = "def3b79b15c266805540a678dd400aeb6ccada1d"
+REPLAY_ADAPTER_SHA256 = "2d03eb4fe0d62f2dd09521fc3cb1e5e97f6d956ef9efd2fb43eabc48d2318af3"
+
+
+# Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 callback:
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/ais_callback.rs
+# Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Read the shared wire identity so the pinned consumer supports both the old
+# Ngram enum and the generic cost configuration, without enabling new replay schemes.
+SPECULATION_DEPTH_PATH = "lib/bindings/python/rust/llm/ais_callback.rs"
+SPECULATION_DEPTH_SHA256 = "b2ceb79fd168a6feabcee2062efb8f72d5ee99b62c1dc4cdf7f8c72cde0cf5cd"
+SPECULATION_DEPTH_OLD = """    let nextn = config
+        .speculation
+        .as_ref()
+        .map_or(config.nextn, |spec| spec.num_speculative_tokens());
+"""
+SPECULATION_DEPTH_NEW = """    // Modified by AISimulate CI: preserve the Ngram-only replay contract
+    // across the enum-to-struct cost-configuration migration.
+    let nextn = match config.speculation.as_ref() {
+        None => config.nextn,
+        Some(spec) => {
+            let spec = serde_json::to_value(spec).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid AIS speculation: {e}"))
+            })?;
+            match spec["kind"].as_str() {
+                // The canonical constructor below validates disabled parameters
+                // and rejects a conflicting legacy nextn before normalization.
+                Some("none") => 0,
+                Some("ngram") => spec["params"]["num_speculative_tokens"]
+                    .as_u64()
+                    .filter(|depth| (1..=5).contains(depth))
+                    .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
+                        "ngram num_speculative_tokens must be an integer in 1..=5",
+                    ))? as u32,
+                _ => return Err(pyo3::exceptions::PyValueError::new_err(
+                    "Dynamo replay requires ngram speculation or legacy nextn",
+                )),
+            }
+        }
+    };
+"""
+
+
+def patch_speculation_depth(dynamo: Path) -> dict:
+    path = dynamo / SPECULATION_DEPTH_PATH
+    original = path.read_bytes()
+    if hashlib.sha256(original).hexdigest() != SPECULATION_DEPTH_SHA256:
+        raise ValueError("pinned Dynamo speculation adapter differs from reviewed source")
+    anchor = SPECULATION_DEPTH_OLD.encode()
+    if original.count(anchor) != 1:
+        raise ValueError("pinned speculation conversion anchor is not unique")
+    patched = original.replace(anchor, SPECULATION_DEPTH_NEW.encode())
+    path.write_bytes(patched)
+    return {
+        "path": SPECULATION_DEPTH_PATH,
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(patched).hexdigest(),
+    }
 
 
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 handoff adapter:
@@ -205,6 +262,41 @@ def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
     return records
 
 
+# Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 replay adapter:
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/engine_adapter.rs
+def patch_replay_context_parallelism(core: Path, dynamo: Path) -> dict:
+    """Keep the pinned adapter's CP=1 topology when replay gains explicit PCP."""
+    path = dynamo / "lib/mocker/src/engine_adapter.rs"
+    original = path.read_bytes()
+    if hashlib.sha256(original).hexdigest() != REPLAY_ADAPTER_SHA256:
+        raise ValueError("pinned Dynamo replay adapter differs from reviewed source")
+    api = (core / "src/replay/engine.rs").read_text()
+    fields = [
+        _struct_fields(api, struct).get("prefill_context_parallel_size")
+        for struct in ("ReplayEngineConfig", "ReplayRoleConfig")
+    ]
+    if fields not in ([None, None], [(True, "u32"), (True, "u32")]):
+        raise ValueError("unreviewed AISimulate replay PCP API; update the pinned adapter")
+    patched = original
+    if fields[0] is not None:
+        anchor = b"        num_gpu_blocks_is_explicit: Some(true),\n"
+        if original.count(anchor) != 4:
+            raise ValueError("pinned replay adapter must have four capacity anchors")
+        patched = original.replace(
+            anchor,
+            b"        // Modified by AISimulate CI: the pinned adapter has no PCP control.\n"
+            b"        prefill_context_parallel_size: 1,\n" + anchor,
+        )
+        path.write_bytes(patched)
+    return {
+        "path": str(path.relative_to(dynamo)),
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(patched).hexdigest(),
+        "api_has_prefill_context_parallel_size": fields[0] is not None,
+        "prefill_context_parallel_size": 1,
+    }
+
+
 def build(source: Path, dynamo: Path, output: Path) -> None:
     source, dynamo, output = source.resolve(), dynamo.resolve(), output.resolve()
     revision = subprocess.check_output(["git", "-C", str(dynamo), "rev-parse", "HEAD"], text=True).strip()
@@ -214,6 +306,8 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
     core = source / "crates/core"
     handoff_compatibility = patch_handoff_timing(core, dynamo)
     literal_compatibility = patch_optional_literal_fields(core, dynamo)
+    speculation_compatibility = patch_speculation_depth(dynamo)
+    replay_compatibility = patch_replay_context_parallelism(core, dynamo)
     bindings = dynamo / "lib/bindings/python"
     for manifest, options in (
         (dynamo / "Cargo.toml", ""),
@@ -271,6 +365,8 @@ def build(source: Path, dynamo: Path, output: Path) -> None:
                 "features": ["ais-forward-pass"],
                 "handoff_compatibility": handoff_compatibility,
                 "literal_compatibility": literal_compatibility,
+                "speculation_compatibility": speculation_compatibility,
+                "replay_compatibility": replay_compatibility,
             },
             indent=2,
         )

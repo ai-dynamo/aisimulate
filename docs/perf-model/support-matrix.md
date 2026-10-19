@@ -38,6 +38,18 @@ builder cannot express the requested identity; it does not authorize probing a
 simpler topology. Missing data, incompatible configurations, build failures,
 and query failures remain distinct.
 
+GLM-5.3-Flash build-time rejections of unsupported parallelism, non-native
+checkpoint precision, or backends outside vLLM/SGLang are `SDK_UNREPRESENTABLE`.
+The backend rejection describes AISimulate's modeling coverage; it does not
+establish that the backend itself cannot run the model.
+These rows retain their diagnostics and phases,
+with no latency or `PASS` status. Only the recognized `NotImplementedError`
+diagnostics receive these categories. Unexpected build errors and query-time
+failures still block nightly qualification. Matching currently uses the exact
+exception type and message. Other restrictions (nextn/decoder replay,
+megamoe/wideep, and non-FP8 KV) and changed diagnostics remain blocking until
+explicitly classified; adding those probe axes requires extending coverage.
+
 The site's branch selector identifies the tested main or release snapshot.
 Check its source and qualification evidence instead of treating the page's
 publication time as a new test run. Generation, nightly qualification, and

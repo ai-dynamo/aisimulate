@@ -46,6 +46,14 @@ if [[ ! "${FPM_READINESS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] ||
   echo "FPM_READINESS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
   exit 2
 fi
+# Merge and the producer's bounded worker probe must not consume hours of an
+# unused collection budget after every local rank has finished timing.
+finalization_timeout_seconds="${FPM_FINALIZATION_TIMEOUT_SECONDS-120}"
+if [[ ! "$finalization_timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
+   (( ${#finalization_timeout_seconds} > 4 || finalization_timeout_seconds > 3600 )); then
+  echo "FPM_FINALIZATION_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+  exit 2
+fi
 
 if [[ -f "${workdir}/fpm_memory_worker.py" ]]; then
   # The wrappers are staged alongside this script and delegate all execution
@@ -189,7 +197,17 @@ if (( ! fpm_is_follower )); then
   for ((dp_rank=local_dp_start; dp_rank<local_dp_end; dp_rank++)); do
     expected_results+=("$(benchmark_path_for_dp_rank "$dp_rank")")
   done
-  for path in "${expected_results[@]}"; do
+  # Each launcher finalizes only its local DP shard. Refuse stale completion
+  # artifacts too: they must never satisfy the new launch's completion gate.
+  first_result="${expected_results[0]}"
+  if [[ "${first_result##*/}" == *.* ]]; then
+    merged_result="${first_result%.*}_merged.${first_result##*.}"
+    worker_probe_result="${first_result%.*}_merged_worker_probe.${first_result##*.}"
+  else
+    merged_result="${first_result}_merged"
+    worker_probe_result="${first_result}_merged_worker_probe"
+  fi
+  for path in "${expected_results[@]}" "$merged_result" "$worker_probe_result"; do
     if [[ -e "$path" || -L "$path" ]]; then
       echo "Refusing to overwrite existing benchmark output: $path" >&2
       exit 1
@@ -208,21 +226,29 @@ start_rank = int(sys.argv[1])
 expected_mode = sys.argv[2]
 expected_schema_version = int(sys.argv[3])
 allowed_point_types = {"prefill", "decode"} if expected_mode == "agg" else {expected_mode}
+pending_status = 10
 
 def invalid(path, message):
     print(f"Invalid FPM benchmark result {path}: {message}", file=sys.stderr)
     raise SystemExit(20)
 
-for offset, raw_path in enumerate(sys.argv[4:]):
-    path = pathlib.Path(raw_path)
+def read_result(path):
+    if path.is_symlink():
+        invalid(path, "result must not be a symlink")
     if not path.is_file() or path.stat().st_size == 0:
-        raise SystemExit(10)
+        raise SystemExit(pending_status)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        raise SystemExit(10)
+        raise SystemExit(pending_status)
     if not isinstance(value, dict):
         invalid(path, f"top-level JSON must be an object, got {type(value).__name__}")
+    return value
+
+paths = [pathlib.Path(raw_path) for raw_path in sys.argv[4:]]
+run_identity = None
+for offset, path in enumerate(paths):
+    value = read_result(path)
     expected_rank = start_rank + offset
     if (value.get("schema_version") != expected_schema_version or value.get("status") != "complete"
             or value.get("valid") is not True):
@@ -266,6 +292,54 @@ for offset, raw_path in enumerate(sys.argv[4:]):
             observed_ranks.add(rank)
     if observed_ranks != {expected_rank}:
         invalid(path, f"FPM dp_ranks {sorted(observed_ranks)!r} != [{expected_rank}]")
+    identity = (value.get("run_id"), value.get("grid_digest"))
+    if not all(isinstance(part, str) and part for part in identity):
+        invalid(path, "missing run_id or grid_digest")
+    if run_identity is not None and identity != run_identity:
+        invalid(path, "run_id or grid_digest differs across local ranks")
+    run_identity = identity
+
+# Rank files precede the launcher's merge and optional post-run worker probe.
+# Signal a separate finalization deadline once all local ranks are complete.
+# A sidecar proves probe recording, not worker restoration; observed failures
+# and partial coverage remain consumer evidence.
+pending_status = 11
+first_path = paths[0]
+merged_path = first_path.with_name(f"{first_path.stem}_merged{first_path.suffix}")
+merged = read_result(merged_path)
+if (merged.get("artifact_type") != "merged"
+        or merged.get("schema_version") != expected_schema_version
+        or merged.get("status") != "complete" or merged.get("valid") is not True):
+    invalid(merged_path, "merged result is not complete and valid with the expected schema")
+if (merged.get("run_id"), merged.get("grid_digest")) != run_identity:
+    invalid(merged_path, "run_id or grid_digest differs from local rank results")
+if not isinstance(merged.get("config"), dict) or merged["config"].get("mode") != expected_mode:
+    invalid(merged_path, "benchmark mode differs from local rank results")
+rank_files = [str(path) for path in paths]
+source_ranks = list(range(start_rank, start_rank + len(paths)))
+if (merged.get("rank_files") != rank_files or merged.get("merged_output_path") != str(merged_path)
+        or not isinstance(merged.get("dp"), dict) or merged["dp"].get("source_ranks") != source_ranks):
+    invalid(merged_path, "merged paths or source ranks do not bind the local DP shard")
+
+# Older producers have no sidecar contract. Never infer one from an engine
+# block or require a file they cannot write.
+if "worker_probe_path" in merged:
+    probe_path = merged_path.with_name(f"{merged_path.stem}_worker_probe{merged_path.suffix}")
+    if merged["worker_probe_path"] != str(probe_path):
+        invalid(merged_path, "worker_probe_path does not name the local merged artifact's sidecar")
+    probe = read_result(probe_path)
+    if (probe.get("schema") != "dynamo.fpm.benchmark_worker_probe" or probe.get("schema_version") != 1
+            or probe.get("run_id") != run_identity[0]
+            or probe.get("merged_output_path") != str(merged_path) or probe.get("rank_files") != rank_files):
+        invalid(probe_path, "worker probe schema or run/path binding differs from the merged result")
+    if not isinstance(probe.get("merged"), dict) or not isinstance(probe.get("ranks"), dict):
+        invalid(probe_path, "worker probe merged and ranks views must be objects")
+    if set(probe["ranks"]) != {str(rank) for rank in source_ranks}:
+        invalid(probe_path, "worker probe rank views do not cover the local DP shard")
+    for rank, rank_file in zip(source_ranks, rank_files):
+        view = probe["ranks"][str(rank)]
+        if not isinstance(view, dict) or view.get("rank_file") != rank_file:
+            invalid(probe_path, f"worker probe rank {rank} does not bind its rank file")
 PY
 }
 
@@ -335,6 +409,7 @@ if (( fpm_is_follower )); then
 fi
 
 deadline=$((SECONDS + FPM_WAIT_TIMEOUT_SECONDS))
+finalization_deadline=0
 
 while true; do
   set +e
@@ -347,12 +422,16 @@ while true; do
   if (( result_status == 20 )); then
     exit 1
   fi
-  if (( result_status != 10 )); then
-    # 10 is the checker's only keep-waiting signal; any other status
-    # (python traceback, exec failure, OOM-kill) is checker breakage
+  if (( result_status != 10 && result_status != 11 )); then
+    # 10 means rank collection pending; 11 means artifact finalization pending.
+    # Any other status (python traceback, exec failure, OOM-kill) is checker breakage
     # and must fail now instead of burning the whole wait deadline.
     echo "FPM result checker failed with unexpected status ${result_status}" >&2
     exit 1
+  fi
+  if (( result_status == 11 && finalization_deadline == 0 )); then
+    finalization_deadline=$((SECONDS + finalization_timeout_seconds))
+    echo "Local FPM rank outputs complete; allowing ${finalization_timeout_seconds}s for artifact finalization" >&2
   fi
   if ! kill -0 "$engine_pid" 2>/dev/null; then
     set +e
@@ -361,11 +440,15 @@ while true; do
     set -e
     terminate_engine "$engine_pid"
     engine_pid=""
-    echo "Engine exited before writing all FPM benchmark outputs" >&2
+    echo "Engine exited before writing all FPM benchmark outputs (rank, merged, and advertised worker probe)" >&2
     if (( engine_status == 0 )); then exit 1; else exit "$engine_status"; fi
   fi
   if (( SECONDS >= deadline )); then
-    echo "Timed out waiting for all FPM benchmark outputs" >&2
+    echo "Timed out waiting for all FPM benchmark outputs (rank, merged, and advertised worker probe)" >&2
+    exit 124
+  fi
+  if (( finalization_deadline > 0 && SECONDS >= finalization_deadline )); then
+    echo "Timed out finalizing FPM benchmark artifacts after valid local rank outputs; raw timings retained" >&2
     exit 124
   fi
   sleep 2

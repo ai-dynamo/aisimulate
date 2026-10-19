@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 
 use crate::AicError;
-use crate::common::enums::{DatabaseMode, GemmQuantMode, MoeQuantMode, TransferKind};
+use crate::common::enums::{
+    ComputeDtype, DatabaseMode, GemmQuantMode, MoeQuantMode, QuantMapping, TransferKind,
+};
 use crate::config::PerfSource;
 use crate::operators::Op;
 use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation, FpmPhase};
@@ -29,6 +31,25 @@ pub(super) fn validate<'a>(
 }
 
 pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), AicError> {
+    // FPM profiles may have no original SOL ops. Check the preserved compute
+    // identity before selecting a measured cell, independently of data presence.
+    for (field, value) in crate::perf_database::fpm_forward::FPM_CELL_MATCH_COLUMNS
+        .iter()
+        .zip(&fpm.match_identity)
+    {
+        let quant = match *field {
+            "gemm_quant_mode" => serde_json::from_value::<GemmQuantMode>(value.clone().into())
+                .ok()
+                .map(GemmQuantMode::mapping),
+            "moe_quant_mode" => serde_json::from_value::<MoeQuantMode>(value.clone().into())
+                .ok()
+                .map(MoeQuantMode::mapping),
+            _ => None,
+        };
+        if let Some(quant) = quant {
+            validate_compute_capability(db, quant)?;
+        }
+    }
     let cell = db
         .fpm_forward
         .select_cell(&fpm.match_identity, &fpm.model_path, fpm.dcp_size)?;
@@ -45,6 +66,25 @@ pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), 
              systems root containing them.",
             fpm.model_path,
             db.data_root.display(),
+        )));
+    }
+    Ok(())
+}
+
+fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result<(), AicError> {
+    // FP8 tensor-core compute starts at SM89 (Ada). Weight-only formats
+    // that dequantize to BF16 must not be rejected by their storage name.
+    // https://docs.nvidia.com/cuda/archive/12.9.0/ada-tuning-guide/index.html
+    if quant.compute_dtype == Some(ComputeDtype::Fp8)
+        && let Some(sm) = db.system_spec.gpu.sm_version
+        && sm < 89
+    {
+        return Err(AicError::InvalidEngineConfig(format!(
+            "GPU {} (SM{sm}) does not support FP8 tensor-core compute required by quant mode '{}'. \
+             AISimulate does not model FP8 weight-only (Marlin) execution on pre-SM89 GPUs. \
+             Use a BF16 checkpoint on this GPU, or select an FP8-capable GPU such as h100_sxm or h200_sxm \
+             with matching backend performance data.",
+            db.system, quant.name,
         )));
     }
     Ok(())
@@ -364,6 +404,14 @@ impl Availability<'_> {
 
     fn op(&mut self, op: &Op) -> Result<(), AicError> {
         use Op::*;
+        let quant = match op {
+            Gemm(gemm) => Some(gemm.quant_mode.mapping()),
+            Moe(moe) => Some(moe.quant_mode.mapping()),
+            _ => None,
+        };
+        if let Some(quant) = quant {
+            validate_compute_capability(self.db, quant)?;
+        }
         // CSA context parallelism consumes both sparse correction tables even
         // when its base module uses the analytic SOL. HCA never consumes them.
         if let Dsv4Context(module) = op
@@ -643,6 +691,77 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn fp8_compute_capability_is_checked_before_tables_and_sol() {
+        let root = systems();
+        for mode in [DatabaseMode::Silicon, DatabaseMode::Sol] {
+            for sm in [Some(80), Some(86), Some(89), Some(90), None] {
+                let path = root.path().join("b200_sxm.yaml");
+                let mut spec: serde_yaml::Value =
+                    serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+                std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::Fp8Block));
+                let result = validate(&db, [&op].into_iter());
+                if sm.is_some_and(|value| value < 89) {
+                    assert!(matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                } else {
+                    assert!(!matches!(result, Err(AicError::InvalidEngineConfig(_))));
+                }
+                let op = Op::Gemm(GemmOp::new("gemm", 16, 16, GemmQuantMode::W4a16Nvfp4));
+                assert!(!matches!(
+                    validate(&db, [&op].into_iter()),
+                    Err(AicError::InvalidEngineConfig(_))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn a100_fpm_precision_is_checked_before_table_readiness() {
+        use crate::perf_database::fpm_forward::tests::default_identity;
+        let root = systems();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems/a100_sxm.yaml");
+        std::fs::copy(source, root.path().join("a100_sxm.yaml")).unwrap();
+        std::fs::create_dir_all(root.path().join("data/a100_sxm/vllm/0.24.0")).unwrap();
+        let db = PerfDatabase::load(root.path(), "a100_sxm", "vllm", "0.24.0").unwrap();
+        for (gemm, moe, rejected) in [
+            ("fp8_block", "bfloat16", true),
+            ("bfloat16", "fp8", true),
+            ("w4a16_nvfp4", "w4a16_nvfp4", false),
+            ("bfloat16", "bfloat16", false),
+        ] {
+            let mut identity = default_identity(4);
+            identity[0] = gemm.into();
+            identity[1] = moe.into();
+            let op = FpmForwardOp {
+                name: "fpm_forward_decode".into(),
+                phase: FpmPhase::Decode,
+                model_path: "org/model-a".into(),
+                match_identity: identity,
+                weight_bytes: 0.0,
+                verify_width: 1,
+                interpolation: FpmInterpolation::Direct,
+                sol_ops: vec![],
+                original_fmha_quant_mode: None,
+                dcp_size: None,
+            };
+            let error = validate_fpm(&db, &op).unwrap_err();
+            assert_eq!(matches!(error, AicError::InvalidEngineConfig(_)), rejected);
+            if rejected {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("GPU a100_sxm (SM80) does not support FP8")
+                );
+            }
+        }
     }
 
     #[test]

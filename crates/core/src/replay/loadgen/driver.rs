@@ -1921,7 +1921,7 @@ impl WorkloadDriver {
                     priority: node.priority,
                     strict_priority: node.strict_priority,
                     policy_class: node.policy_class,
-                    synthetic_session_id: false,
+                    synthetic_session_id: node.synthetic_session_id,
                     deterministic_request_id: Some(deterministic_request_id),
                 }],
                 cumulative_tokens: Vec::new(),
@@ -2249,6 +2249,8 @@ impl WorkloadDriver {
         Uuid::new_v4()
     }
 
+    /// Suppress legacy session/turn reporting metadata, including synthetic row IDs.
+    /// Authored request identity still reaches placement and engine execution.
     pub fn without_session_metadata(mut self) -> Self {
         self.emit_session_metadata = false;
         self
@@ -2338,16 +2340,27 @@ impl WorkloadDriver {
             };
             let session = &mut self.sessions[session_index];
             let turn = &mut session.turns[turn_index];
-            let replay_context = turn.request_id.as_ref().zip(turn.play_id.as_ref()).map(
-                |(request_id, _play_id)| ReplayRequestContext {
+            let replay_context = turn
+                .request_id
+                .as_ref()
+                .zip(turn.play_id.as_ref())
+                .map(|(request_id, _play_id)| ReplayRequestContext {
                     authored_id: request_id.clone(),
-                    session_id: Some(session.session_id.clone()),
+                    session_id: (!turn.synthetic_session_id).then(|| session.session_id.clone()),
                     turn_index: None,
                     metadata: serde_json::Value::Null,
                     prompt_token_source: ReplayPromptTokenSource::Materialized,
                     agentic: agentic_identity,
-                },
-            );
+                })
+                .or_else(|| {
+                    // Legacy traces have a session but no authored request/play IDs.
+                    // Normalize that identity at ingress without exposing synthetic row IDs.
+                    (!turn.synthetic_session_id).then(|| ReplayRequestContext {
+                        session_id: Some(session.session_id.clone()),
+                        turn_index: Some(turn_index),
+                        ..Default::default()
+                    })
+                });
             let arrival_timestamp_ms = self.policy.arrival_timestamp_ms(scheduled_ready_at_ms);
             let (request, replay_hashes) = match self.prompt_mode {
                 PromptMode::Full => {

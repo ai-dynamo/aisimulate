@@ -60,10 +60,20 @@ aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
 
-`ReplayEngineConfig` has the aggregated rank/DP/TP descriptor and optional
+`ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce
 feature combinations beyond the generic spec validator. Grouped-cache, G2/G3,
 Belady and AgentX restrictions are listed in [features](../features.md).
+
+`ReplayEngineConfig` and `ReplayRoleConfig` carry
+`prefill_context_parallel_size` for GPU accounting. It defaults to 1 when
+omitted from JSON; Rust struct literals should set it or use `..Default::default()`.
+It multiplies DP × TP for resource reports without creating additional attention-DP
+schedulers. Decode context parallelism does not add physical GPUs.
+
+The pinned Dynamo CI adapter is updated during its build to set this field to
+1, matching its existing topology. That adapter does not expose PCP controls;
+its performance comparison does not qualify nondefault PCP configurations.
 
 ## Reports and capture
 
@@ -71,6 +81,15 @@ Belady and AgentX restrictions are listed in [features](../features.md).
 SLA goodput, optional per-request admission/routing records, cache and power
 evidence. `ReplayTerminalStatus` is also exported as `RequestTerminalStatus`.
 Native power diagnostics do not certify downstream Python adapter passthrough.
+
+`with_tokenization(workers, base_ms, per_input_token_ms)` tokenizes each
+request on the worker it was placed on before that worker's engine sees it.
+Each worker of the entry role has `workers` first-come, first-served servers,
+and a request takes `base_ms + per_input_token_ms × input tokens` on one of
+them. Latency metrics keep the arrival time, and each per-request record gains
+`tokenized_ms`. Both costs zero, the default, keep direct dispatch. Scaling is
+rejected. See
+[request tokenization](../engine/README.md#tokenization).
 
 `with_capture_options(ReplayCaptureOptions)` controls capture and canonical
 determinism. Canonical comparison uses the exported schema version, seed and

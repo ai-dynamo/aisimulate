@@ -1596,6 +1596,58 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
 
+/// Validate scheme parameters and pin draft content before selection and caching.
+/// The SDK registry supplies geometry only; Rust still owns estimator selection.
+pub(crate) fn resolve_speculation_identity(
+    config: &crate::ForwardPassSpeculationConfig,
+) -> Result<crate::ForwardPassSpeculationConfig, AicError> {
+    Python::with_gil(|py| -> PyResult<_> {
+        let json = PyModule::import(py, "json")?;
+        let encoded = serde_json::to_string(config)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let fields = json.call_method1("loads", (encoded,))?;
+        let module = PyModule::import(py, "aisimulate_core.sdk.speculation.base")?;
+        let spec = module
+            .getattr("SpeculationConfig")?
+            .call((), Some(fields.downcast()?))?;
+        let resolved = module.call_method1("resolve_speculation_config", (spec,))?;
+        let fields = PyModule::import(py, "dataclasses")?.call_method1("asdict", (resolved,))?;
+        let encoded: String = json.call_method1("dumps", (fields,))?.extract()?;
+        serde_json::from_str(&encoded).map_err(|error| PyValueError::new_err(error.to_string()))
+    })
+    .map_err(|error| {
+        let checkpoint_unavailable = Python::with_gil(|py| {
+            py.import("aisimulate_core.sdk.utils")
+                .and_then(|module| module.getattr("HuggingFaceDownloadError"))
+                .is_ok_and(|kind| error.is_instance(py, &kind))
+        });
+        if checkpoint_unavailable {
+            // Match native construction's checkpoint-availability category.
+            // Identity resolution still fails before estimator selection.
+            AicError::UnsupportedModel(format!("speculation checkpoint unavailable: {error}"))
+        } else {
+            AicError::InvalidEngineConfig(format!("speculation: {error}"))
+        }
+    })
+}
+
+/// Check the existing replay executor against a canonical resolved cost identity.
+pub(crate) fn speculation_replay_depth(
+    config: &crate::ForwardPassSpeculationConfig,
+) -> Result<u32, AicError> {
+    Python::with_gil(|py| -> PyResult<_> {
+        let encoded = serde_json::to_string(config)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let fields = PyModule::import(py, "json")?.call_method1("loads", (encoded,))?;
+        PyModule::import(py, "aisimulate_core.sdk.speculation")?
+            .getattr("SpeculationConfig")?
+            .call((), Some(fields.downcast()?))?
+            .call_method0("replay_depth")?
+            .extract()
+    })
+    .map_err(|error| AicError::InvalidEngineConfig(format!("speculation: {error}")))
+}
+
 /// Profile schema/identity facts supplied by Python without choosing an estimator.
 #[derive(serde::Deserialize)]
 pub(crate) struct ForwardPassProfileFacts {

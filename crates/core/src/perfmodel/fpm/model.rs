@@ -442,12 +442,24 @@ impl ForwardPassPerfModel {
                 last_error = Some(error);
                 continue;
             }
-            if config.speculation.is_some() && mode != EstimationMode::OpLevel {
-                let error =
-                    AicError::UnsupportedModel("ngram speculation requires op_level timing".into());
-                failures.push(format!("{mode:?}: {error}"));
-                last_error = Some(error);
-                continue;
+            if let Some(speculation) = &config.speculation {
+                if mode != EstimationMode::OpLevel {
+                    let error = AicError::UnsupportedModel(format!(
+                        "{} speculation requires op_level timing",
+                        speculation.kind
+                    ));
+                    failures.push(format!("{mode:?}: {error}"));
+                    last_error = Some(error);
+                    continue;
+                }
+                if config.fpm_fmha_quant_mode.is_some() {
+                    let error = AicError::UnsupportedModel(
+                        "op_level speculation does not support fpm_fmha_quant_mode".into(),
+                    );
+                    failures.push(format!("{mode:?}: {error}"));
+                    last_error = Some(error);
+                    continue;
+                }
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();

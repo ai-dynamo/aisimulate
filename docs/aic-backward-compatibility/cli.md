@@ -754,6 +754,14 @@ K8sConfig:
 
 `Workers.agg.extra_cli_args` must be a `list[str]`, and the final command must include `--benchmark-mode` with one of `agg`, `prefill`, or `decode`. This runtime option selects the FPM collection phase; it does not change the required single aggregated-worker deployment topology. `K8sConfig.extra_env` accepts concrete `{name, value}` entries only; `valueFrom`, `envFrom`, and Secret-derived values are not supported. The normal rule, mapping, and versioned-template pipeline still builds the base command before the extra arguments are appended. If both `--benchmark-output-path` and `DYN_FPM_BENCHMARK_OUTPUT_PATH` are supplied, they must be identical. If neither is supplied, the generator adds `/results/benchmark.json` to both the command and environment.
 
+When the FPM collector drives these artifacts, its runtime also accepts this `K8sConfig.extra_env` entry:
+
+| Environment entry name | Default | Accepted value and behavior |
+| --- | --- | --- |
+| `FPM_FINALIZATION_TIMEOUT_SECONDS` | `120` seconds | A literal string containing an integer from `1` through `3600`, such as `{name: FPM_FINALIZATION_TIMEOUT_SECONDS, value: "600"}`. Invalid values fail before engine startup. |
+
+The collector stages this setting in `collector-runtime-env.sh` for both Kubernetes and Slurm so the parent collection process receives it before launching `run.sh`. The deadline starts after all local rank timing files are complete and bounds waiting for the matching merged artifact and any advertised worker-probe sidecar. It cannot extend the overall collection deadline. On expiry, collection fails and retains raw timings for recovery. Running the generated engine script alone does not enforce this collector-owned deadline.
+
 `K8sConfig.fpm_shared_memory_size` controls the generated `/dev/shm` `emptyDir` limit, while `K8sConfig.fpm_resource_labels` adds labels to the workload and its Pods. Container memory, ephemeral-storage, and other requests or limits can be supplied under `K8sConfig.worker_extra_pod_spec.mainContainer.resources`; the Generator-resolved per-node GPU count cannot be changed there. Grove does not inject a scheduler or queue: clusters that use KAI Scheduler can set `worker_extra_pod_spec.schedulerName` and the `kai.scheduler/queue` resource label explicitly, while other clusters can supply their own scheduler settings through the same generic fields. Matching user-provided `results` or `dshm` volume-and-mount pairs are preserved instead of replaced.
 
 The generated artifact directory contains only:

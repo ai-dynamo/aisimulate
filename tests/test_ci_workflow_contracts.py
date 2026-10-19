@@ -3092,6 +3092,15 @@ def test_simulation_performance_rollout_and_revision_contract():
         {"side": "base", "sha": "${{ needs.select.outputs.base_sha }}"},
         {"side": "head", "sha": "${{ needs.select.outputs.head_sha }}"},
     ]
+    build_commands = _run_commands(build)
+    callback_check = "scripts/performance/check_dynamo_callback.py source dynamo"
+    assert (
+        build_commands.index("build_simulation_dynamo.py source dynamo")
+        < build_commands.index('"${RUNNER_TEMP}"/wheel/aisimulate-*.whl')
+        < build_commands.index(callback_check)
+        < build_commands.index("simulation_perf_artifact.py record")
+    )
+    assert '"${RUNNER_TEMP}/callback-venv/bin/python"' in build_commands
     downloads = [
         step["with"]["name"] for step in comparison["steps"] if "actions/download-artifact@" in step.get("uses", "")
     ]
@@ -3124,6 +3133,8 @@ def test_simulation_performance_rollout_and_revision_contract():
         ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
         ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
         ("scripts/performance/build_simulation_dynamo.py", True),
+        ("scripts/performance/check_dynamo_callback.py", True),
+        ("scripts/performance/dynamo_callback_contract.rs", True),
         ("scripts/performance/simulation_dynamo_requirements.in", True),
         ("scripts/performance/simulation_dynamo_requirements.txt", True),
         ("python/aisimulate/uv.lock", True),
@@ -3478,6 +3489,86 @@ def test_simulation_dynamo_optional_literal_fields_fail_closed(
         assert (dynamo / path).read_text() == text
 
 
+def test_simulation_dynamo_speculation_depth_patch_records_exact_change(tmp_path, monkeypatch):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    dynamo = tmp_path / "dynamo"
+    path = dynamo / builder.SPECULATION_DEPTH_PATH
+    path.parent.mkdir(parents=True)
+    prefix, suffix = b"// Surrounding adapter code stays unchanged.\n", b"\n// End of adapter.\n"
+    original = prefix + builder.SPECULATION_DEPTH_OLD.encode() + suffix
+    expected = prefix + builder.SPECULATION_DEPTH_NEW.encode() + suffix
+    path.write_bytes(original)
+    monkeypatch.setattr(builder, "SPECULATION_DEPTH_SHA256", hashlib.sha256(original).hexdigest())
+
+    record = builder.patch_speculation_depth(dynamo)
+
+    assert path.read_bytes() == expected
+    assert record == {
+        "path": builder.SPECULATION_DEPTH_PATH,
+        "before_sha256": hashlib.sha256(original).hexdigest(),
+        "after_sha256": hashlib.sha256(expected).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("fault", ["hash", "missing_anchor", "duplicate_anchor"])
+def test_simulation_dynamo_speculation_depth_patch_fails_without_writing(tmp_path, monkeypatch, fault):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    dynamo = tmp_path / "dynamo"
+    path = dynamo / builder.SPECULATION_DEPTH_PATH
+    path.parent.mkdir(parents=True)
+    anchor_count = {"hash": 1, "missing_anchor": 0, "duplicate_anchor": 2}[fault]
+    original = b"// Fixture adapter.\n" + builder.SPECULATION_DEPTH_OLD.encode() * anchor_count
+    path.write_bytes(original)
+    reviewed_sha = "0" * 64 if fault == "hash" else hashlib.sha256(original).hexdigest()
+    monkeypatch.setattr(builder, "SPECULATION_DEPTH_SHA256", reviewed_sha)
+
+    def unexpected_write(*args, **kwargs):
+        pytest.fail("failed compatibility validation must not write source files")
+
+    monkeypatch.setattr(Path, "write_bytes", unexpected_write)
+    monkeypatch.setattr(Path, "write_text", unexpected_write)
+    error = "reviewed source" if fault == "hash" else "anchor"
+    with pytest.raises(ValueError, match=error):
+        builder.patch_speculation_depth(dynamo)
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("field_type", [None, "u32", "usize"])
+@pytest.mark.parametrize("drift", [None, "source", "anchors", "role"])
+def test_simulation_dynamo_replay_cp_compatibility(tmp_path, monkeypatch, field_type, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / "src/replay/engine.rs"
+    api.parent.mkdir(parents=True)
+    field = f"pub prefill_context_parallel_size: {field_type}," if field_type else ""
+    api.write_text(
+        f"pub struct ReplayEngineConfig {{{field}}}\n"
+        f"pub struct ReplayRoleConfig {{{field if drift != 'role' else 'pub prefill_context_parallel_size: bool,'}}}\n"
+    )
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = "// synthetic adapter fixture\n" + "        num_gpu_blocks_is_explicit: Some(true),\n" * (
+        3 if drift == "anchors" else 4
+    )
+    adapter.write_text(source + ("// changed\n" if drift == "source" else ""))
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+    original = adapter.read_bytes()
+    if field_type == "usize" or drift in {"source", "role"} or (field_type and drift == "anchors"):
+        with pytest.raises(ValueError):
+            builder.patch_replay_context_parallelism(core, dynamo)
+        assert adapter.read_bytes() == original
+    else:
+        record = builder.patch_replay_context_parallelism(core, dynamo)
+        assert record["api_has_prefill_context_parallel_size"] == bool(field_type)
+        assert adapter.read_text().count("prefill_context_parallel_size: 1,") == (4 if field_type else 0)
+        assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+        if field_type is None:
+            assert adapter.read_bytes() == original
+
+
 @pytest.mark.parametrize("wrong_core", [False, True])
 def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wrong_core):
     from scripts.performance import build_simulation_dynamo as builder
@@ -3499,6 +3590,11 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     patched = []
     compatibility = {"api_has_state_bytes": True, "token_only_state_bytes": 0}
     literal_compatibility = [{"struct": "Request", "inserted_fields": ["session_id"]}]
+    speculation_compatibility = {
+        "path": builder.SPECULATION_DEPTH_PATH,
+        "before_sha256": "a" * 64,
+        "after_sha256": "b" * 64,
+    }
 
     def patch_handoff_timing(actual_core, actual_dynamo):
         assert actual_core == core.parent and actual_dynamo == dynamo
@@ -3510,9 +3606,24 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         patched.append(("literals", actual_core, actual_dynamo))
         return literal_compatibility
 
+    def patch_speculation_depth(actual_dynamo):
+        assert actual_dynamo == dynamo
+        patched.append(("speculation", actual_dynamo))
+        return speculation_compatibility
+
+    def patch_replay_context_parallelism(actual_core, actual_dynamo):
+        assert actual_core == core.parent and actual_dynamo == dynamo
+        patched.append(("replay", actual_core, actual_dynamo))
+        return {"prefill_context_parallel_size": 1}
+
     def check_output(args, **kwargs):
         if args[:2] == ["cargo", "metadata"]:
-            assert patched == [("handoff", core.parent, dynamo), ("literals", core.parent, dynamo)]
+            assert patched == [
+                ("handoff", core.parent, dynamo),
+                ("literals", core.parent, dynamo),
+                ("speculation", dynamo),
+                ("replay", core.parent, dynamo),
+            ]
             assert "--locked" not in args
             assert kwargs["cwd"] == bindings
             assert lock.read_bytes() == old_lock
@@ -3550,6 +3661,8 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder.subprocess, "run", run)
     monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
     monkeypatch.setattr(builder, "patch_optional_literal_fields", patch_optional_literal_fields)
+    monkeypatch.setattr(builder, "patch_speculation_depth", patch_speculation_depth)
+    monkeypatch.setattr(builder, "patch_replay_context_parallelism", patch_replay_context_parallelism)
     if wrong_core:
         with pytest.raises(ValueError, match="different AISimulate core"):
             builder.build(source, dynamo, output)
@@ -3563,6 +3676,8 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         assert provenance["aisimulate_sha"] == "a" * 40
         assert provenance["handoff_compatibility"] == compatibility
         assert provenance["literal_compatibility"] == literal_compatibility
+        assert provenance["speculation_compatibility"] == speculation_compatibility
+        assert provenance["replay_compatibility"] == {"prefill_context_parallel_size": 1}
         assert (output / "dynamo-build.patch").read_bytes() == b"dependency patch\n"
 
 
