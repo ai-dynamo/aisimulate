@@ -133,7 +133,7 @@ def test_canonical_mtp_host_config_roundtrips_and_preserves_cost_identity(agenti
     rank = runtime.execution_spec["spec"]["engine"]["rank"]
     assert rank["native_host_offload"] == _host_offload()
     assert rank["aic_nextn"] == 2
-    assert rank["aic_nextn_accept_rates"] == "1.0,0.5"
+    assert [float(rate) for rate in rank["aic_nextn_accept_rates"].split(",")] == [1.0, 0.5]
     assert rank["aic_mtp_seed"] == 17
     assert rank["timing_model"]["config"]["speculation"] == {"kind": "mtp", "params": {"depth": 2}}
     assert rank["timing_model"]["config"]["backend_version"] == "0.24.0"
@@ -205,8 +205,17 @@ def test_canonical_mtp_native_replay_restores_an_evicted_host_prefix(expected) -
     repeated = json.loads(_runtime.run_replay_json(json.dumps(payload)))
     assert report["completed_requests"] == 3
     assert report["total_output_tokens"] == 15
-    assert report["per_request"] == repeated["per_request"]
     records = {record["request_id"]: record for record in report["per_request"]}
+    repeated_records = {record["request_id"]: record for record in repeated["per_request"]}
+    # Replay assigns new internal UUIDs; authored request identity, progress,
+    # timings and every other recorded field must remain deterministic.
+    assert {
+        request_id: {key: value for key, value in record.items() if key != "uuid"}
+        for request_id, record in records.items()
+    } == {
+        request_id: {key: value for key, value in record.items() if key != "uuid"}
+        for request_id, record in repeated_records.items()
+    }
     assert records.keys() == {"seed", "evict", "restore"}
     assert all(record["output_length"] == record["requested_output_length"] == 5 for record in records.values())
     restored = records["restore"]
