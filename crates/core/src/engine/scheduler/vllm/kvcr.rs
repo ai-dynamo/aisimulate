@@ -6,21 +6,20 @@
 //! Modeled like a G3 restore (`g3_offload.rs`): staged pulls own their G2
 //! reservations, and request termination detaches rather than cancels.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use uuid::Uuid;
 
 use super::host_offload::{MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS, RestoreRounds};
 use crate::engine::KvHintSource;
-use crate::engine::host_offload::{
-    HostBlockKey, HostBlockMeta, HostTier, Lookup, StoreOutcome, TransferId,
-};
+use crate::engine::host_offload::{HostBlockKey, HostBlockMeta, HostTier, Lookup, TransferId};
 use crate::engine::kvcr::SharedKvcrRegistry;
 
 struct Stage {
     owner: Option<Uuid>,
     source: KvHintSource,
-    reservations: Vec<TransferId>,
+    reservation: TransferId,
     keys: Vec<HostBlockKey>,
 }
 
@@ -28,8 +27,14 @@ pub(super) struct VllmKvcrAdapter {
     registry: SharedKvcrRegistry,
     rank: KvHintSource,
     stages: BTreeMap<u64, Stage>,
+    /// Staged, not yet landed pulls of each attached owner. Like vLLM's
+    /// `WAITING_FOR_REMOTE_KVS`, such an owner is not looked up again until
+    /// they land.
+    pulling: FxHashMap<Uuid, usize>,
     attempted_at: f64,
-    attempted: BTreeSet<(Uuid, HostBlockKey)>,
+    /// Blocks each owner pulled at `attempted_at`; recorded only when a pull
+    /// can land, and be evicted again, at its own submit instant.
+    attempted: FxHashSet<(Uuid, HostBlockKey)>,
     pub(super) epoch: u64,
     /// Passes in which this rank scheduled work or emitted output.
     rank_progress: u64,
@@ -41,8 +46,9 @@ impl VllmKvcrAdapter {
             registry,
             rank,
             stages: BTreeMap::new(),
+            pulling: FxHashMap::default(),
             attempted_at: f64::NEG_INFINITY,
-            attempted: BTreeSet::new(),
+            attempted: FxHashSet::default(),
             epoch: 0,
             rank_progress: 0,
         }
@@ -52,8 +58,15 @@ impl VllmKvcrAdapter {
         self.rank_progress += 1;
     }
 
-    /// Reserve and pull the leading `keys` this rank lacks and `source` holds.
-    /// Returns true only when a pending transfer will wake the lookup.
+    /// Whether `owner` waits for a pull it staged.
+    pub(super) fn is_pulling(&self, owner: Uuid) -> bool {
+        self.pulling.contains_key(&owner)
+    }
+
+    /// Reserve and pull, as one transfer, the leading `keys` this rank lacks
+    /// and `source` holds. `keys` are the prompt blocks G1 lacks; the
+    /// reservation evicts none of them, local G2 hits included. Returns true
+    /// only when a pending transfer will wake the lookup.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn stage(
         &mut self,
@@ -79,33 +92,42 @@ impl VllmKvcrAdapter {
         };
         let mut src = source_g2.lock();
         let (mut deferred, mut partial) = (false, false);
-        let (mut pulled, mut reservations) = (Vec::new(), Vec::new());
-        for (index, key) in keys.iter().copied().enumerate() {
+        let (mut plan, mut no_room) = (None, None);
+        for key in keys.iter().copied() {
             match tier.lookup(key) {
-                Lookup::Hit => continue,
-                Lookup::Pending { .. } => {
-                    deferred = true;
-                    continue;
+                Lookup::Hit => {}
+                Lookup::Pending { .. } => deferred = true,
+                Lookup::Miss => {
+                    if self.attempted.contains(&(owner, key))
+                        || !matches!(src.lookup(key), Lookup::Hit)
+                    {
+                        partial = true;
+                        break;
+                    }
+                    // Protect every key G1 lacks, local G2 hits included.
+                    let plan = plan.get_or_insert_with(|| tier.plan_external(keys, now));
+                    if !tier.plan_reserve(plan, key) {
+                        (partial, no_room) = (true, Some(key));
+                        break;
+                    }
                 }
-                Lookup::Miss => {}
             }
-            if self.attempted.contains(&(owner, key)) || !matches!(src.lookup(key), Lookup::Hit) {
-                partial = true;
-                break;
-            }
-            let meta = meta.map(|meta| &meta[index..=index]);
-            let StoreOutcome::Prepared { transfer_id, .. } =
-                tier.reserve_external(client, owner, &[key], meta, now)
-            else {
-                partial = true;
-                break;
-            };
-            pulled.push(key);
-            reservations.push(transfer_id);
         }
-        if pulled.is_empty() {
+        let plan = plan.filter(|plan| !plan.reserved().is_empty());
+        let pulled = plan
+            .as_ref()
+            .map(|plan| plan.reserved().to_vec())
+            .unwrap_or_default();
+        let reservation = plan.map(|plan| {
+            let meta = meta.map(|meta| planned_meta(keys, meta, &pulled));
+            tier.reserve_planned(client, owner, plan, meta, now)
+        });
+        if let Some(key) = no_room {
+            tier.note_external_capacity_retry(owner, key, now);
+        }
+        let Some(reservation) = reservation else {
             return deferred;
-        }
+        };
         src.pin_external(&pulled);
         drop(src);
         let id = registry.submit(self.rank, source, pulled.len(), partial, now);
@@ -117,15 +139,19 @@ impl VllmKvcrAdapter {
                  continuing without further peer fetches"
             );
         }
+        let lands_at_submit = registry.lands_at_submit();
         drop(registry);
-        self.attempted
-            .extend(pulled.iter().map(|key| (owner, *key)));
+        if lands_at_submit {
+            self.attempted
+                .extend(pulled.iter().map(|key| (owner, *key)));
+        }
+        *self.pulling.entry(owner).or_default() += 1;
         self.stages.insert(
             id,
             Stage {
                 owner: Some(owner),
                 source,
-                reservations,
+                reservation,
                 keys: pulled,
             },
         );
@@ -144,10 +170,18 @@ impl VllmKvcrAdapter {
             let stage = self
                 .stages
                 .remove(&id)
-                .expect("a KVCR pull owns its G2 reservations");
-            for reservation in stage.reservations {
-                tier.complete_external_from_kvcr(reservation);
+                .expect("a KVCR pull owns its G2 reservation");
+            if let Some(owner) = stage.owner {
+                let pulls = self
+                    .pulling
+                    .get_mut(&owner)
+                    .expect("an attached pull counts for its owner");
+                *pulls -= 1;
+                if *pulls == 0 {
+                    self.pulling.remove(&owner);
+                }
             }
+            tier.complete_external_from_kvcr(stage.reservation);
             registry
                 .source(stage.source)
                 .expect("a pull's source stays registered until it lands")
@@ -160,17 +194,16 @@ impl VllmKvcrAdapter {
 
     /// Forget `owner` without cancelling its pulls; their blocks still land.
     pub(super) fn release(&mut self, owner: Uuid) -> bool {
-        let mut detached = false;
+        if self.pulling.remove(&owner).is_none() {
+            return false;
+        }
         for stage in self.stages.values_mut() {
             if stage.owner == Some(owner) {
                 stage.owner = None;
-                detached = true;
             }
         }
-        if detached {
-            self.epoch += 1;
-        }
-        detached
+        self.epoch += 1;
+        true
     }
 
     pub(super) fn note_loaded(&self, blocks: usize) {
@@ -188,10 +221,25 @@ impl VllmKvcrAdapter {
     }
 }
 
+/// Router identities of the `planned` keys, which appear in `keys` in order.
+pub(super) fn planned_meta(
+    keys: &[HostBlockKey],
+    meta: &[HostBlockMeta],
+    planned: &[HostBlockKey],
+) -> Vec<HostBlockMeta> {
+    let mut planned = planned.iter().peekable();
+    keys.iter()
+        .zip(meta)
+        .filter(|(key, _)| planned.next_if(|planned| *planned == *key).is_some())
+        .map(|(_, meta)| meta.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::KvcrConfig;
+    use crate::engine::host_offload::StoreOutcome;
     use crate::engine::host_offload::{C, HostTierHandle, private};
     use crate::engine::kvcr::{KvcrPullCounts, KvcrRegistry, KvcrStats};
 
@@ -318,6 +366,91 @@ mod tests {
                 partial: 0
             }
         );
+    }
+
+    #[test]
+    fn a_pull_is_one_reservation_and_one_stored_event() {
+        let f = Fixture::new(&[0, 1, 2, 3], &[]);
+        let (mut adapter, mut restore) = (f.adapter(), RestoreRounds::default());
+        let keys = f.keys(&[0, 1, 2, 3]);
+        let meta = (0..4_u64)
+            .map(|position| HostBlockMeta {
+                parent: position.checked_sub(1),
+                tokens_hash: position,
+                position: position as usize,
+                session_id: None,
+            })
+            .collect::<Vec<_>>();
+        let mut target = f.target.lock();
+        target.subscribe(C);
+        assert!(adapter.stage(
+            &mut target,
+            C,
+            f.owner,
+            f.source,
+            &mut restore,
+            &keys,
+            Some(&meta),
+            0.0
+        ));
+        f.registry.lock().unwrap().start_parked();
+        let Lookup::Pending { transfer_id } = target.lookup(keys[0]) else {
+            panic!("the pull reserves its blocks")
+        };
+        for key in &keys {
+            assert_eq!(target.lookup(*key), Lookup::Pending { transfer_id });
+        }
+        // A pull with first-byte latency cannot land at its submit instant,
+        // so it records no attempted blocks.
+        assert!(adapter.attempted.is_empty());
+        assert!(adapter.advance(&mut target, 10.0));
+        let events = target.take_events(C);
+        let [crate::engine::KvEventData::Stored(stored)] = events.as_slice() else {
+            panic!("one batched Stored event per pull, got {events:?}")
+        };
+        assert_eq!(stored.blocks.len(), 4);
+    }
+
+    #[test]
+    fn a_pull_never_evicts_a_local_hit_of_its_prefix() {
+        // Two-block target G2: k0 is the prefix's local hit and the least
+        // recently used block; k9 belongs to nobody here.
+        let f = Fixture::with_registry(1.0, 1.0, 2, &[1], &[0, 9]);
+        let (mut adapter, mut restore) = (f.adapter(), RestoreRounds::default());
+        let keys = f.keys(&[0, 1]);
+        let mut target = f.target.lock();
+        assert!(adapter.stage_at(&mut target, f.owner, f.source, &mut restore, &keys, 0.0));
+        assert_eq!(target.lookup(keys[0]), Lookup::Hit);
+        assert_eq!(target.lookup(HostBlockKey::new(9)), Lookup::Miss);
+        assert!(adapter.advance(&mut target, 10.0));
+        assert_eq!(target.lookup(keys[1]), Lookup::Hit);
+        // With no victim outside the prefix, the rank does not pull at all.
+        let f = Fixture::with_registry(1.0, 1.0, 1, &[1], &[0]);
+        let (mut adapter, mut restore) = (f.adapter(), RestoreRounds::default());
+        let mut target = f.target.lock();
+        assert!(!adapter.stage_at(&mut target, f.owner, f.source, &mut restore, &keys, 0.0));
+        assert_eq!(target.lookup(keys[0]), Lookup::Hit);
+        assert_eq!(f.source_pins(&keys[1..]), vec![0]);
+        assert!(!adapter.is_pulling(f.owner));
+    }
+
+    #[test]
+    fn an_owner_is_pulling_until_its_pull_lands_or_it_is_released() {
+        let f = Fixture::new(&[0, 1], &[]);
+        let (mut adapter, mut restore) = (f.adapter(), RestoreRounds::default());
+        let mut target = f.target.lock();
+        let keys = f.keys(&[0]);
+        assert!(adapter.stage_at(&mut target, f.owner, f.source, &mut restore, &keys, 0.0));
+        assert!(adapter.is_pulling(f.owner));
+        assert!(adapter.advance(&mut target, 10.0));
+        assert!(!adapter.is_pulling(f.owner));
+        let keys = f.keys(&[0, 1]);
+        assert!(adapter.stage_at(&mut target, f.owner, f.source, &mut restore, &keys, 10.0));
+        assert!(adapter.release(f.owner));
+        assert!(!adapter.is_pulling(f.owner));
+        assert!(!adapter.release(f.owner));
+        assert!(adapter.advance(&mut target, 20.0));
+        assert_eq!(target.lookup(keys[1]), Lookup::Hit);
     }
 
     #[test]

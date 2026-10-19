@@ -412,6 +412,12 @@ impl KvcrRegistry {
         self.in_flight.contains_key(&worker_id)
     }
 
+    /// Whether a pull can land at its own submit instant: no first-byte
+    /// latency and unlimited bandwidth.
+    pub(crate) fn lands_at_submit(&self) -> bool {
+        self.config.latency_to_first_byte_ms == 0.0 && self.config.bandwidth_gbps == 0.0
+    }
+
     pub(crate) fn note_loaded(&mut self, blocks: usize) {
         self.stats.loaded_blocks += blocks as u64;
     }

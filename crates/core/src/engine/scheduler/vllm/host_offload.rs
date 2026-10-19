@@ -314,7 +314,15 @@ impl VllmHostOffloadAdapter {
         if request.activated().is_some() {
             return HostLookup::Miss;
         }
-        if matches!(request.load, Some(LoadState::Loading(_))) {
+        // vLLM skips a request waiting for its async connector load
+        // (`WAITING_FOR_REMOTE_KVS`) without a lookup or LRU touch until the
+        // load finishes; a landing pull or H2D completion wakes it.
+        if matches!(request.load, Some(LoadState::Loading(_)))
+            || self
+                .kvcr
+                .as_ref()
+                .is_some_and(|kvcr| kvcr.is_pulling(request.owner))
+        {
             return HostLookup::Deferred;
         }
         let Self {
@@ -1923,17 +1931,23 @@ mod tests {
             latency_to_first_byte_ms: 0.0,
             bandwidth_gbps: 0.0,
         };
-        // The target's one-block G2 cannot hold the two-block prefix, so each
-        // round's pull evicts the block the previous round pulled.
+        // A pull never evicts its own prefix, but the target's one-block G2
+        // holds only one of two one-block prefixes, so each request's pull
+        // evicts the block the other request pulled just before.
         let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [2, 1]);
-        let owner = Uuid::from_u128(912);
-        let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
-        for key in host.prompt_keys.clone() {
-            seed_host(&mut source, key);
-        }
-        host.kv_hint = Some(ranks[0]);
+        let mut requests =
+            [(912, vec![1, 2, 3, 4]), (914, vec![5, 6, 7, 8])].map(|(id, tokens)| {
+                let (sequence, lease, mut host) = request(Uuid::from_u128(id), tokens);
+                for key in host.prompt_keys.clone() {
+                    seed_host(&mut source, key);
+                }
+                host.kv_hint = Some(ranks[0]);
+                (sequence, lease, host)
+            });
         let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
-        let cost = raw_cost(&manager, &sequence, &lease);
+        let costs = requests
+            .each_ref()
+            .map(|(sequence, lease, _)| raw_cost(&manager, sequence, lease));
         // Rank progress before round 10 starts the count over.
         let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
         for round in 0..rounds {
@@ -1941,20 +1955,77 @@ mod tests {
                 target.note_rank_progress();
             }
             let now = round as f64;
-            let lookup = target.lookup(&mut host, &sequence, &cost, 4, now);
-            assert!(matches!(lookup, HostLookup::Deferred), "round {round}");
-            registry.lock().unwrap().start_parked();
-            assert!(target.advance(&mut manager, now).completed_any);
+            for ((sequence, _, host), cost) in requests.iter_mut().zip(&costs) {
+                let lookup = target.lookup(host, sequence, cost, 4, now);
+                assert!(matches!(lookup, HostLookup::Deferred), "round {round}");
+                registry.lock().unwrap().start_parked();
+                assert!(target.advance(&mut manager, now).completed_any);
+            }
         }
-        // Past the bound the request computes instead of pulling again.
+        // Past the bound neither request pulls again: the first computes its
+        // evicted block, the second loads the block its last pull left.
         let now = rounds as f64;
+        let [first, second] = &mut requests;
         assert!(matches!(
-            target.lookup(&mut host, &sequence, &cost, 4, now),
+            target.lookup(&mut first.2, &first.0, &costs[0], 4, now),
             HostLookup::Miss
         ));
+        assert!(matches!(
+            target.lookup(&mut second.2, &second.0, &costs[1], 4, now),
+            HostLookup::Hit(_)
+        ));
         let stats = registry.lock().unwrap().stats();
-        assert_eq!(stats.bypassed, 1);
-        assert_eq!(stats.pulls.success + stats.pulls.partial, rounds as u64);
+        assert_eq!(stats.bypassed, 2);
+        assert_eq!(stats.pulls.success + stats.pulls.partial, 2 * rounds as u64);
+    }
+
+    #[test]
+    fn a_pull_in_flight_defers_its_owner_without_a_lookup_or_lru_touch() {
+        let config = crate::engine::KvcrConfig {
+            latency_to_first_byte_ms: 1.0,
+            bandwidth_gbps: 0.0,
+        };
+        let (registry, ranks, [mut source, mut target]) = kvcr_workers(config, [4, 4]);
+        let owner = Uuid::from_u128(915);
+        let (sequence, lease, mut host) = request(owner, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let [local, pulled] = [host.prompt_keys[0], host.prompt_keys[1]];
+        let other = HostBlockKey::new(77);
+        // `other` is newer than `local`; a lookup would move `local` behind it.
+        let t = seed_host(&mut source, pulled)
+            .max(seed_host(&mut target, local))
+            .max(seed_host(&mut target, other));
+        host.kv_hint = Some(ranks[0]);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let cost = raw_cost(&manager, &sequence, &lease);
+        assert!(matches!(
+            target.lookup(&mut host, &sequence, &cost, 4, t),
+            HostLookup::Deferred
+        ));
+        registry.lock().unwrap().start_parked();
+        assert!(target.kvcr.as_ref().unwrap().is_pulling(owner));
+        target.host.lock().touch(other);
+        let recency = |target: &VllmHostOffloadAdapter| target.host.lock().lru_order();
+        let before = recency(&target);
+        assert_eq!(before, [local, other]);
+        let epoch = target.kvcr.as_ref().unwrap().epoch;
+        for now in [t, t + 0.5] {
+            assert!(matches!(
+                target.lookup(&mut host, &sequence, &cost, 4, now),
+                HostLookup::Deferred
+            ));
+        }
+        assert_eq!(recency(&target), before, "no LRU touch while pulling");
+        assert_eq!(target.kvcr.as_ref().unwrap().epoch, epoch, "no new stage");
+        assert_eq!(registry.lock().unwrap().stats().pulls.success, 0);
+        // The landing wakes the owner, whose next lookup hits the whole prefix.
+        assert!(target.advance(&mut manager, t + 1.0).completed_any);
+        assert!(!target.kvcr.as_ref().unwrap().is_pulling(owner));
+        let HostLookup::Hit(hit) = target.lookup(&mut host, &sequence, &cost, 4, t + 1.0) else {
+            panic!("the landed pull extends the local hit");
+        };
+        assert_eq!(hit.keys, vec![local, pulled]);
+        let stats = registry.lock().unwrap().stats();
+        assert_eq!((stats.pulls.success, stats.blocks), (1, 1));
     }
 
     #[test]

@@ -95,6 +95,27 @@ pub(crate) enum StoreOutcome {
     },
 }
 
+/// Read-only plan of one external reservation, built in prompt order. Each
+/// planned key takes a free slot or else the least recently used evictable
+/// block outside `protected`, as a one-key reservation at that point would;
+/// [`HostTier::reserve_planned`] then applies the plan as one transfer.
+pub(crate) struct ExternalPlan {
+    free: usize,
+    protected: FxHashSet<HostBlockKey>,
+    /// LRU node of the last planned victim.
+    cursor: Option<NonZeroU32>,
+    victims: Vec<HostBlockKey>,
+    evicted: FxHashSet<HostBlockKey>,
+    reserved: Vec<HostBlockKey>,
+}
+
+impl ExternalPlan {
+    /// The planned keys, in plan order.
+    pub(crate) fn reserved(&self) -> &[HostBlockKey] {
+        &self.reserved
+    }
+}
+
 /// Result of scheduling an H2D selected by a framework adapter.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum LoadOutcome {
@@ -480,8 +501,35 @@ impl HostTier {
                 structurally_unfittable,
             };
         }
+        let stored_blocks = missing.len();
+        let transfer_id = self.admit(
+            client,
+            request_id,
+            &victims,
+            missing,
+            missing_meta,
+            now_ms,
+            kind,
+        );
+        StoreOutcome::Prepared {
+            transfer_id,
+            stored_blocks,
+        }
+    }
 
-        for victim in &victims {
+    /// Evict `victims`, then admit `missing` as one pending transfer.
+    #[allow(clippy::too_many_arguments)]
+    fn admit(
+        &mut self,
+        client: u64,
+        request_id: Uuid,
+        victims: &[HostBlockKey],
+        missing: Vec<HostBlockKey>,
+        missing_meta: Vec<Option<HostBlockMeta>>,
+        now_ms: f64,
+        kind: Kind,
+    ) -> TransferId {
+        for victim in victims {
             let mut entry = self
                 .entries
                 .remove(victim)
@@ -498,7 +546,7 @@ impl HostTier {
             });
         }
         if self.meta_retained() {
-            for victim in &victims {
+            for victim in victims {
                 self.meta.remove(victim);
             }
             if !victims.is_empty() {
@@ -529,7 +577,6 @@ impl HostTier {
                     .is_none()
             );
         }
-        let stored_blocks = missing.len();
         if kind == Kind::Store {
             self.observe(HostOffloadObservation {
                 request_id,
@@ -551,10 +598,7 @@ impl HostTier {
                 deadline: None,
             },
         );
-        StoreOutcome::Prepared {
-            transfer_id,
-            stored_blocks,
-        }
+        transfer_id
     }
 
     /// Pure feasibility check: no LRU touch, allocation, eviction or observation.
@@ -577,7 +621,135 @@ impl HostTier {
             == needed
     }
 
-    /// Secondary reads reserve real G2 entries without fabricating a D2H job.
+    /// Start planning one external reservation that never evicts `protected`.
+    /// Settles transfers due by `now` first, as the reservation itself does.
+    pub(crate) fn plan_external(&mut self, protected: &[HostBlockKey], now: f64) -> ExternalPlan {
+        self.prepare_mutation(now);
+        ExternalPlan {
+            free: self.config.capacity_blocks - self.entries.len(),
+            protected: protected.iter().copied().collect(),
+            cursor: None,
+            victims: Vec::new(),
+            evicted: FxHashSet::default(),
+            reserved: Vec::new(),
+        }
+    }
+
+    /// [`Self::lookup`] after the victims `plan` has chosen so far.
+    pub(crate) fn planned_lookup(&self, plan: Option<&ExternalPlan>, key: HostBlockKey) -> Lookup {
+        if plan.is_some_and(|plan| plan.evicted.contains(&key)) {
+            Lookup::Miss
+        } else {
+            self.lookup(key)
+        }
+    }
+
+    /// Add one key, absent after the plan's victims so far, to `plan`. False,
+    /// leaving `plan` unchanged, when neither a free slot nor a victim is left.
+    pub(crate) fn plan_reserve(&self, plan: &mut ExternalPlan, key: HostBlockKey) -> bool {
+        debug_assert!(self.planned_lookup(Some(plan), key) == Lookup::Miss);
+        if let Some(free) = plan.free.checked_sub(1) {
+            plan.free = free;
+        } else {
+            // The LRU holds exactly the resident, unpinned blocks, so each
+            // block past the cursor is a candidate; earlier ones are victims
+            // or protected.
+            // Planning borrows the tier immutably, so the cursor node stays
+            // linked until the plan is applied.
+            let Some((node, victim)) = self
+                .lru
+                .oldest_after(plan.cursor)
+                .find(|(_, key)| !plan.protected.contains(key))
+            else {
+                return false;
+            };
+            debug_assert!(self.entries.get(&victim).is_some_and(|entry| {
+                entry.state == EntryState::Resident
+                    && entry.load_pins == 0
+                    && entry.lru_slot == Some(node)
+            }));
+            plan.cursor = Some(node);
+            plan.victims.push(victim);
+            plan.evicted.insert(victim);
+        }
+        plan.reserved.push(key);
+        true
+    }
+
+    /// [`Self::can_reserve_external_prefix`] after the victims and keys
+    /// `plan` has chosen so far.
+    pub(crate) fn plan_can_reserve_prefix(
+        &self,
+        plan: &ExternalPlan,
+        keys: &[HostBlockKey],
+    ) -> bool {
+        let protected: FxHashSet<_> = keys.iter().copied().collect();
+        let missing = protected
+            .iter()
+            .filter(|key| {
+                (plan.evicted.contains(key) || !self.entries.contains_key(key))
+                    && !plan.reserved.contains(key)
+            })
+            .count();
+        let needed = missing.saturating_sub(plan.free);
+        self.lru
+            .victims(needed, |key| {
+                !protected.contains(&key)
+                    && !plan.evicted.contains(&key)
+                    && self.entries.get(&key).is_some_and(|entry| {
+                        entry.state == EntryState::Resident && entry.load_pins == 0
+                    })
+            })
+            .len()
+            == needed
+    }
+
+    /// Apply `plan` as one external reservation: evict its victims, then
+    /// reserve its keys. `meta`, when given, follows [`ExternalPlan::reserved`].
+    pub(crate) fn reserve_planned(
+        &mut self,
+        client: u64,
+        owner: Uuid,
+        plan: ExternalPlan,
+        meta: Option<Vec<HostBlockMeta>>,
+        now: f64,
+    ) -> TransferId {
+        assert!(
+            !plan.reserved.is_empty(),
+            "an external plan reserves a block"
+        );
+        let now_ms = self.prepare_mutation(now);
+        let meta = match meta {
+            Some(meta) => meta.into_iter().map(Some).collect(),
+            None => vec![None; plan.reserved.len()],
+        };
+        assert_eq!(meta.len(), plan.reserved.len());
+        self.admit(
+            client,
+            owner,
+            &plan.victims,
+            plan.reserved,
+            meta,
+            now_ms,
+            Kind::External,
+        )
+    }
+
+    /// Record that an external reservation stopped at `key` for lack of space.
+    pub(crate) fn note_external_capacity_retry(&self, owner: Uuid, key: HostBlockKey, now: f64) {
+        self.observe(HostOffloadObservation {
+            request_id: owner,
+            event: HostOffloadObservationData::CapacityRetry {
+                at_ms: now.max(self.current_time_ms),
+                blocks: &[key],
+                structurally_unfittable: false,
+            },
+        });
+    }
+
+    /// Reserve G2 entries for `keys` without fabricating a D2H job. Adapters
+    /// reserve through [`Self::reserve_planned`]; tests seed with this.
+    #[cfg(test)]
     pub(crate) fn reserve_external(
         &mut self,
         client: u64,
@@ -1308,6 +1480,11 @@ pub(crate) mod tests {
 
         pub(crate) fn is_resident(&self, key: HostBlockKey) -> bool {
             self.lookup(key) == Lookup::Hit
+        }
+
+        /// Evictable blocks, least recently used first.
+        pub(crate) fn lru_order(&self) -> Vec<HostBlockKey> {
+            self.lru.order()
         }
 
         pub(crate) fn pins(&self, key: HostBlockKey) -> usize {

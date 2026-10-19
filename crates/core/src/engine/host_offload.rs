@@ -22,6 +22,6 @@ pub(crate) use registry::{G2Binding, G2Registry, HostClient};
 #[cfg(test)]
 pub(crate) use tier::tests::{C, private};
 pub(crate) use tier::{
-    CompletedTransfer, HostBlockKey, HostBlockMeta, HostLink, HostTier, HostTierConfig,
-    LoadOutcome, Lookup, StoreOutcome, TransferId,
+    CompletedTransfer, ExternalPlan, HostBlockKey, HostBlockMeta, HostLink, HostTier,
+    HostTierConfig, LoadOutcome, Lookup, StoreOutcome, TransferId,
 };

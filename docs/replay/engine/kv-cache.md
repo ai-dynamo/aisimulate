@@ -283,7 +283,13 @@ The model simplifies KVCR:
   landed pull: as soon as it lands if the rank's worker is idle, otherwise when
   that worker's current pass ends. The pulled blocks become usable in the
   rank's G2 at the same point.
-- The rank reserves G2 slots only for the blocks the source holds.
+- The rank reserves G2 slots only for the blocks the source holds, all in one
+  reservation per pull. A pull never evicts from the rank's G2 a block of the
+  hinted prompt that the rank's G1 does not hold; it stops at the first block
+  it has no other room for. G2 copies of prompt blocks already in G1 stay
+  evictable, since the request does not load them.
+- While its pull is in flight, a request is not looked up again, as vLLM skips
+  a request that waits for remote KV.
 - Pulls do not fail or time out, and the first pull between two ranks has no
   connection setup cost.
 - A pull moves one block share per tensor-parallel GPU. KV that each GPU
