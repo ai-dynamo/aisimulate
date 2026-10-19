@@ -352,19 +352,44 @@ def test_max_kv_slots_returns_one_when_budget_exhausted(monkeypatch) -> None:
     assert backend._max_kv_slots(model, database, isl=512, osl=512) == 1
 
 
-def test_run_mixed_reserves_decode_slots_from_the_budget(monkeypatch) -> None:
-    # ctx_tokens is the TOTAL per-step budget: cap decoders at min(Little, KV), then
-    # hand the base only the leftover prefill tokens.
-    backend = VLLMXPUBackend()
+def _capture_mixed_step(monkeypatch, captured):
+    """Mirror base run_agg's own `self.run_mixed(...)` call and capture what the base receives."""
     monkeypatch.setattr(VLLMXPUBackend, "_visual_context_tokens", lambda self, *a, **k: 0)
     monkeypatch.setattr(VLLMXPUBackend, "_max_kv_slots", lambda self, *a, **k: 3)
-    captured = {}
     monkeypatch.setattr(VLLMBackend, "run_mixed", lambda self, m, d, rc, step: captured.setdefault("step", step))
+    monkeypatch.setattr(
+        VLLMBackend,
+        "run_agg",
+        lambda self, model, database, runtime_config, **kw: self.run_mixed(model, database, runtime_config, kw["step"]),
+    )
+
+
+def test_agg_run_mixed_reserves_decode_slots_from_the_budget(monkeypatch) -> None:
+    # Agg sweep: ctx_tokens is the TOTAL per-step budget, so cap decoders at min(Little, KV)
+    # and hand the base only the leftover prefill tokens.
+    backend = VLLMXPUBackend()
+    captured = {}
+    _capture_mixed_step(monkeypatch, captured)
     rc = SimpleNamespace(isl=100, osl=100)
-    backend.run_mixed(MagicMock(), MagicMock(), rc, MixedStepInput(context_tokens=1000, num_decode_requests=50))
+    step = MixedStepInput(context_tokens=1000, num_decode_requests=50)
+    backend.run_agg(MagicMock(), MagicMock(), rc, step=step)
     # steady_running = round(1000*100/200)=500; cap = min(500, 3) = 3.
     assert captured["step"].num_decode_requests == 3
     assert captured["step"].context_tokens == 1000 - 3
+
+
+def test_direct_run_mixed_estimates_the_scheduled_step_as_given(monkeypatch) -> None:
+    # Public API: InferenceSession hands over already-scheduled work, so neither the
+    # budget conversion nor the occupancy cap may rewrite the caller's counts.
+    from aisimulate.sdk.inference_session import InferenceSession
+
+    backend = VLLMXPUBackend()
+    captured = {}
+    _capture_mixed_step(monkeypatch, captured)
+    rc = SimpleNamespace(isl=100, osl=100)
+    step = MixedStepInput(context_tokens=1000, num_decode_requests=50)
+    InferenceSession(model=MagicMock(), database=MagicMock(), backend=backend).run_mixed(rc, step)
+    assert captured["step"] == step
 
 
 def test_prefill_heavy_boundary_prices_decode_steps() -> None:
@@ -406,32 +431,25 @@ def test_run_agg_scopes_kv_slot_state_to_the_call(monkeypatch, raises) -> None:
     assert backend._agg_ctx_tokens is None and backend._agg_free_gpu_frac is None
 
 
-def test_direct_run_mixed_kv_cap_is_independent_of_call_history(monkeypatch) -> None:
-    # Outside run_agg, the KV cap uses the step's own ctx budget, not a previous run_agg's.
+def test_direct_run_mixed_is_independent_of_call_history(monkeypatch) -> None:
+    # A prior agg sweep must not change what a later direct run_mixed estimates.
     backend = VLLMXPUBackend()
-    seen = []
+    captured_direct = []
     monkeypatch.setattr(VLLMXPUBackend, "_visual_context_tokens", lambda self, *a, **k: 0)
-    monkeypatch.setattr(
-        VLLMXPUBackend,
-        "_get_memory_usage",
-        lambda self, *a, num_tokens, **k: seen.append(num_tokens)
-        or {"weights": 0.0, "activations": 0.0, "nccl": 0.0, "others": 0.0},
-    )
-    monkeypatch.setattr(VLLMBackend, "run_mixed", lambda self, m, d, rc, step: step)
+    monkeypatch.setattr(VLLMXPUBackend, "_max_kv_slots", lambda self, *a, **k: 3)
+    monkeypatch.setattr(VLLMBackend, "run_mixed", lambda self, m, d, rc, step: captured_direct.append(step) or step)
 
     def fake_base_run_agg(self, model, database, runtime_config, **kwargs):
         self._resolve_agg_kwargs(kwargs, isl=1024, osl=128, backend_version="0.28.0")
+        self.run_mixed(model, database, runtime_config, MixedStepInput(context_tokens=8192, num_decode_requests=99))
         return "summary"
 
     monkeypatch.setattr(VLLMBackend, "run_agg", fake_base_run_agg)
-    model = MagicMock()
-    model.get_kvcache_bytes_per_sequence.return_value = 1
-    database = SimpleNamespace(system_spec={"gpu": {"mem_capacity": 1 << 30}}, version="0.28.0")
     rc = SimpleNamespace(isl=1024, osl=128)
     step = MixedStepInput(context_tokens=1000, num_decode_requests=4)
 
-    first = backend.run_mixed(model, database, rc, step)
-    backend.run_agg(model, database, rc, ctx_tokens=8192)  # a prior call with a different ctx budget
-    second = backend.run_mixed(model, database, rc, step)
-    assert seen == [1000, 1000]
-    assert first == second
+    first = backend.run_mixed(MagicMock(), MagicMock(), rc, step)
+    backend.run_agg(MagicMock(), MagicMock(), rc, ctx_tokens=8192)  # agg sweep in between
+    second = backend.run_mixed(MagicMock(), MagicMock(), rc, step)
+    assert first == second == step
+    assert [c for c in captured_direct if c == step] == [step, step]

@@ -648,7 +648,12 @@ def benchmark_vllm_allreduce(
                         dev_mod.synchronize()
                     graph = graph_cls()
 
-                    with graph_ctx(graph, pool=graph_pool, stream=graph_capture_context.stream):
+                    capture = (
+                        torch.cuda.graph(graph, pool=graph_pool, stream=graph_capture_context.stream)
+                        if is_cuda
+                        else graph_ctx(graph, stream=graph_capture_context.stream)
+                    )
+                    with capture:
                         outputs = []
                         for inp in input_tensors:
                             out = vllm_mods["tensor_model_parallel_all_reduce"](inp)

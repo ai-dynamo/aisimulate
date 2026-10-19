@@ -128,10 +128,13 @@ class VLLMXPUBackend(VLLMBackend):
         return extra
 
     def run_agg(self, model, database, runtime_config, **kwargs):
-        # Scope the stash to this call so direct run_mixed callers never see a stale value.
+        # Scope the budget/occupancy modeling and its stash to this call, so direct
+        # run_mixed callers keep the step they scheduled.
+        self._in_agg = True
         try:
             return super().run_agg(model, database, runtime_config, **kwargs)
         finally:
+            self._in_agg = False
             self._agg_free_gpu_frac = self._agg_ctx_tokens = None
 
     def _max_kv_slots(
@@ -284,7 +287,11 @@ class VLLMXPUBackend(VLLMBackend):
         """ctx-semantics change vs the base backend: our step.context_tokens (the `--ctx-tokens`
         arg) is vLLM's --max-num-batched-tokens -- the TOTAL per-step budget shared by prefill AND
         decode. The base bills it as PREFILL tokens with decode stacked on top, so here we reserve
-        the decode slots out of the budget and hand the base only the leftover prefill tokens."""
+        the decode slots out of the budget and hand the base only the leftover prefill tokens.
+
+        Agg-sweep only: a direct caller's step is already scheduled, so it is estimated as given."""
+        if not getattr(self, "_in_agg", False):
+            return super().run_mixed(model, database, runtime_config, step)
         # Concurrent decoders = min(requested, Little's-law cap, KV slots).
         isl = int(runtime_config.isl or 0) + self._visual_context_tokens(model, runtime_config)
         osl = int(runtime_config.osl or 0)
