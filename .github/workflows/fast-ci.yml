@@ -35,7 +35,7 @@ concurrency:
 jobs:
   policy:
     name: Repository Policy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       EXPECTED_SHA: ${{ inputs.expected_sha }}
@@ -111,7 +111,7 @@ jobs:
 
   python-static:
     name: Python Static Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -189,7 +189,7 @@ jobs:
 
   rust-format:
     name: Rust Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       TARGET_SHA: ${{ inputs.expected_sha || github.event.pull_request.head.sha || github.sha }}
@@ -211,7 +211,7 @@ jobs:
     name: Fast CI Success
     if: ${{ always() }}
     needs: [policy, python-static, rust-format]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     env:
       POLICY_RESULT: ${{ needs.policy.result }}
