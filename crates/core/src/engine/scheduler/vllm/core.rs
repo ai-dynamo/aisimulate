@@ -1724,7 +1724,7 @@ impl VllmCore {
         self.state
             .requests
             .get(&uuid)
-            .map(|request| request.sequence.lease.physical_owned_block_count())
+            .map(|request| request.sequence.lease.resident_block_count())
             .unwrap_or(0)
     }
 
@@ -2566,7 +2566,7 @@ impl VllmCore {
             .state
             .requests
             .get(&selected)
-            .map(|request| request.sequence.lease.resident_block_count())
+            .map(|request| request.sequence.lease.physical_owned_block_count())
             .unwrap_or_default();
         if let (Some(adapter), Some(host)) = (
             self.native_host_offload.as_mut(),
