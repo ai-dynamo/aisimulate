@@ -6,12 +6,14 @@
 
 use crate::engine::config::{G3OffloadConfig, G3Scope};
 use crate::engine::host_offload::HostBlockKey;
+use crate::engine::offload_lru::Lru;
 pub(crate) use crate::engine::offload_transfer::Direction;
 use crate::engine::offload_transfer::{self, FairTransfers};
 use anyhow::{Result, ensure};
 use rustc_hash::FxHashSet;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
@@ -57,7 +59,18 @@ struct Entry {
     pending: bool,
     pins: usize,
     writer: usize,
-    touched: u64,
+    /// This block's node in its pool's LRU once its write completes.
+    lru_slot: Option<NonZeroU32>,
+}
+
+/// Capacity and recency of one G3 namespace.
+#[derive(Default)]
+struct Pool {
+    /// Resident and pending blocks.
+    used: usize,
+    /// Resident blocks, least recently probed or transferred first. A
+    /// completed job's blocks become newest together, in key order.
+    lru: Lru,
 }
 
 struct Job {
@@ -82,10 +95,11 @@ pub(crate) struct G3Tier {
     next_worker_id: usize,
     block_bytes: usize,
     entries: BTreeMap<(usize, HostBlockKey), Entry>,
+    pools: BTreeMap<usize, Pool>,
     jobs: BTreeMap<u64, Job>,
     transfers: FairTransfers,
     completed: BTreeMap<usize, Vec<Completion>>,
-    ordinal: u64,
+    last_job_id: u64,
     pub(crate) completion_epoch: u64,
     pub stats: G3Stats,
 }
@@ -124,10 +138,11 @@ impl G3Tier {
             next_worker_id: workers,
             block_bytes,
             entries: BTreeMap::new(),
+            pools: BTreeMap::new(),
             jobs: BTreeMap::new(),
             transfers: FairTransfers::default(),
             completed: (0..workers).map(|worker| (worker, Vec::new())).collect(),
-            ordinal: 0,
+            last_job_id: 0,
             completion_epoch: 0,
             stats: G3Stats::default(),
         })))
@@ -165,6 +180,7 @@ impl G3Tier {
         self.completed.remove(&worker);
         if self.config.scope == G3Scope::WorkerLocal {
             self.entries.retain(|(pool, _), _| *pool != worker);
+            self.pools.remove(&worker);
         }
         Ok(())
     }
@@ -186,17 +202,17 @@ impl G3Tier {
     }
 
     pub(crate) fn probe(&mut self, worker: usize, key: HostBlockKey) -> Probe {
-        let identity = (self.pool(worker), key);
+        let pool = self.pool(worker);
         self.stats.lookup_probes += 1;
-        self.ordinal += 1;
-        match self.entries.get_mut(&identity) {
+        match self.entries.get_mut(&(pool, key)) {
             None => Probe::Miss,
             Some(entry) if entry.pending => {
                 self.stats.lookup_pending += 1;
                 Probe::Pending
             }
             Some(entry) => {
-                entry.touched = self.ordinal;
+                let lru = &mut self.pools.get_mut(&pool).expect("G3 pool").lru;
+                lru.touch(&mut entry.lru_slot, key);
                 self.stats.lookup_hits += 1;
                 Probe::Resident
             }
@@ -226,17 +242,12 @@ impl G3Tier {
             return None;
         }
         if direction == Direction::Write {
-            let used = self.entries.keys().filter(|(p, _)| *p == pool).count();
-            let free = self.config.num_g3_blocks - used;
-            let mut victims = self
-                .entries
-                .iter()
-                .filter(|((p, key), e)| {
-                    *p == pool && !e.pending && e.pins == 0 && !protected.contains(key)
-                })
-                .map(|(key, entry)| (entry.touched, *key))
-                .collect::<Vec<_>>();
-            victims.sort_unstable();
+            let Pool { used, lru } = self.pools.entry(pool).or_default();
+            let free = self.config.num_g3_blocks - *used;
+            let entries = &self.entries;
+            let victims = lru.victims(keys.len().saturating_sub(free), |key| {
+                entries[&(pool, key)].pins == 0 && !protected.contains(&key)
+            });
             // Keep the leading new blocks that fit, preserving any blocks of
             // this prefix already stored. Pending writes and read pins retain
             // their capacity; only accepted blocks own source pins and bytes.
@@ -244,21 +255,20 @@ impl G3Tier {
             if keys.is_empty() {
                 return None;
             }
-            let needed = keys.len().saturating_sub(free);
-            for (_, key) in victims.into_iter().take(needed) {
-                self.entries.remove(&key);
+            for key in victims {
+                let mut entry = self.entries.remove(&(pool, key)).unwrap();
+                lru.remove(&mut entry.lru_slot);
+                *used -= 1;
                 self.stats.evictions += 1;
             }
             for key in &keys {
-                self.entries.insert(
-                    (pool, *key),
-                    Entry {
-                        pending: true,
-                        pins: 0,
-                        writer: worker,
-                        touched: 0,
-                    },
-                );
+                let entry = Entry {
+                    pending: true,
+                    pins: 0,
+                    writer: worker,
+                    lru_slot: None,
+                };
+                *used += usize::from(self.entries.insert((pool, *key), entry).is_none());
             }
         } else {
             if keys
@@ -271,8 +281,8 @@ impl G3Tier {
                 self.entries.get_mut(&(pool, *key)).unwrap().pins += 1;
             }
         }
-        self.ordinal += 1;
-        let id = self.ordinal;
+        self.last_job_id += 1;
+        let id = self.last_job_id;
         self.io_mut(direction).submitted_jobs += 1;
         let now = self.transfers.now();
         let (worker_gbps, shared_gbps) = match direction {
@@ -309,8 +319,8 @@ impl G3Tier {
         Some(id)
     }
 
-    pub(crate) fn job_keys(&self, id: u64) -> Vec<HostBlockKey> {
-        self.jobs[&id].keys.clone()
+    pub(crate) fn job_keys(&self, id: u64) -> &[HostBlockKey] {
+        &self.jobs[&id].keys
     }
 
     fn io_mut(&mut self, direction: Direction) -> &mut G3IoStats {
@@ -341,9 +351,11 @@ impl G3Tier {
     fn finish(&mut self, id: u64, job: Job, now: f64) {
         self.completion_epoch += 1;
         let pool = self.pool(job.worker);
-        self.ordinal += 1;
-        for key in &job.keys {
-            let entry = self.entries.get_mut(&(pool, *key)).unwrap();
+        let lru = &mut self.pools.get_mut(&pool).expect("G3 pool").lru;
+        let mut cohort = job.keys.clone();
+        cohort.sort_unstable();
+        for key in cohort {
+            let entry = self.entries.get_mut(&(pool, key)).unwrap();
             match job.direction {
                 Direction::Write => entry.pending = false,
                 Direction::Read => {
@@ -351,7 +363,7 @@ impl G3Tier {
                     self.stats.cross_worker_read_blocks += u64::from(entry.writer != job.worker);
                 }
             }
-            entry.touched = self.ordinal;
+            lru.touch(&mut entry.lru_slot, key);
         }
         let bytes = (job.keys.len() * self.block_bytes) as u64;
         let io = self.io_mut(job.direction);
@@ -391,7 +403,9 @@ impl G3Tier {
             let pool = self.pool(job.worker);
             for key in &job.keys {
                 if job.direction == Direction::Write {
-                    self.entries.remove(&(pool, *key));
+                    if self.entries.remove(&(pool, *key)).is_some() {
+                        self.pools.get_mut(&pool).expect("G3 pool").used -= 1;
+                    }
                 } else {
                     self.entries.get_mut(&(pool, *key)).unwrap().pins -= 1;
                 }

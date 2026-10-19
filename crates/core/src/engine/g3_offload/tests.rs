@@ -29,7 +29,7 @@ fn oversized_writes_retain_the_leading_blocks_that_fit() {
         let mut tier = shared.lock().unwrap();
         let cohort = [key(3), key(1), key(2)];
         let write = tier.submit(0, Direction::Write, &cohort, 0.0).unwrap();
-        assert_eq!(tier.job_keys(write), cohort[..2]);
+        assert_eq!(tier.job_keys(write), &cohort[..2]);
         assert_eq!(tier.snapshot().pending_blocks, 2);
         let done = tier.take_completed(0, 2.0);
         assert_eq!(done.len(), 1);
@@ -74,6 +74,30 @@ fn partial_writes_preserve_pending_pinned_and_existing_prefix_blocks() {
         assert_eq!(tier.snapshot().resident_blocks, 3);
         assert_eq!(tier.snapshot().pending_blocks, 0);
         assert_eq!(tier.entries[&(0, key(2))].pins, 0);
+    }
+}
+
+#[test]
+fn eviction_follows_probe_and_completion_recency() {
+    for scope in [G3Scope::WorkerLocal, G3Scope::ClusterShared] {
+        let mut cfg = config(scope);
+        cfg.num_g3_blocks = 3;
+        let shared = G3Tier::new(cfg, 1, 100).unwrap();
+        let mut tier = shared.lock().unwrap();
+        // One completion makes 3 and 1 newest together, in key order.
+        tier.submit(0, Direction::Write, &[key(3), key(1)], 0.0)
+            .unwrap();
+        tier.submit(0, Direction::Write, &[key(2)], 0.0).unwrap();
+        tier.advance(0.0);
+        tier.submit(0, Direction::Write, &[key(4)], 0.0).unwrap();
+        assert_eq!(tier.probe(0, key(1)), Probe::Miss);
+        // A hit refreshes 3, so 2 is now the oldest.
+        assert_eq!(tier.probe(0, key(3)), Probe::Resident);
+        tier.advance(0.0);
+        tier.submit(0, Direction::Write, &[key(5)], 0.0).unwrap();
+        assert_eq!(tier.probe(0, key(2)), Probe::Miss);
+        assert_eq!(tier.probe(0, key(3)), Probe::Resident);
+        assert_eq!(tier.snapshot().evictions, 2);
     }
 }
 
