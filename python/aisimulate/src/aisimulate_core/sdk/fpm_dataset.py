@@ -94,7 +94,7 @@ def _resolve_manifest_path(manifest_path: str | Path) -> Path:
     path = Path(manifest_path)
     if path.is_file():
         return path.resolve()
-    if path.is_absolute() or path.exists():
+    if path.is_absolute():
         raise FileNotFoundError(f"FPM manifest not found: {manifest_path}")
     # Existing local files take precedence over packaged manifest identifiers.
     relative = _relative_path(str(manifest_path))

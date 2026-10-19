@@ -298,6 +298,15 @@ def test_packaged_manifest_materializes_by_id(dataset, packaged_dataset):
     assert len(calls) == 2
 
 
+def test_local_directory_does_not_shadow_packaged_manifest_id(dataset, packaged_dataset, monkeypatch):
+    path, _, _, _, _ = dataset
+    builtin = packaged_dataset / "profiles/example_fpm/hf_dataset.json"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_bytes(path.read_bytes())
+    monkeypatch.chdir(builtin.parent.parent)
+    assert fpm_dataset.list_fpm_profiles("example_fpm")[0]["manifest"] == str(builtin)
+
+
 def test_legacy_identity_retains_existing_offline_cache_key(dataset):
     path, manifest, bodies, calls, cache = dataset
     entry = manifest["profiles"]["gb300-full"]
