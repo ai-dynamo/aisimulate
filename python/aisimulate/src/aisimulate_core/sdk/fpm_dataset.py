@@ -131,8 +131,6 @@ def _profile_files(entry: dict) -> list[dict]:
         raise ValueError("FPM profile must contain files")
     targets = set()
     for item in files:
-        if item.get("source", "dataset") not in ("dataset", "package"):
-            raise ValueError(f"unknown FPM file source: {item['source']!r}")
         _relative_path(item["path"])
         target = _relative_path(item["target"])
         if target in targets:
@@ -140,8 +138,14 @@ def _profile_files(entry: dict) -> list[dict]:
         targets.add(target)
         if not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
             raise ValueError(f"invalid SHA256 for {target}")
+    packaged_system = entry.get("packaged_system")
+    if packaged_system is not None:
+        if not isinstance(packaged_system, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", packaged_system):
+            raise ValueError("packaged_system must name an installed system")
+        if f"{packaged_system}.yaml" in targets:
+            raise ValueError("packaged_system must not replace a dataset system YAML")
     parquets = {target for target in targets if target.endswith("/fpm_forward_perf.parquet")}
-    if not parquets or not any(target.endswith(".yaml") for target in targets):
+    if not parquets or (packaged_system is None and not any(target.endswith(".yaml") for target in targets)):
         raise ValueError("FPM profile requires a system YAML and a parquet table")
     for target in parquets:
         if target.removesuffix(".parquet") + ".metadata.json" not in targets:
@@ -178,13 +182,11 @@ def list_fpm_profiles(manifest_path: str | Path | None = None) -> list[dict]:
     return result
 
 
-def _packaged_file(item: dict) -> Path:
-    source = (_SYSTEMS_DIRECTORY / item["path"]).resolve()
+def _packaged_system_bytes(system: str) -> bytes:
+    source = (_SYSTEMS_DIRECTORY / f"{system}.yaml").resolve()
     if not source.is_relative_to(_SYSTEMS_DIRECTORY.resolve()) or not source.is_file():
-        raise ValueError(f"missing or unsafe packaged FPM file: {item['path']}")
-    if hashlib.sha256(source.read_bytes()).hexdigest() != item["sha256"]:
-        raise ValueError(f"packaged FPM SHA256 mismatch: {item['path']}")
-    return source
+        raise ValueError(f"missing or unsafe packaged system: {system}")
+    return source.read_bytes()
 
 
 def materialize_fpm_profile(
@@ -197,11 +199,12 @@ def materialize_fpm_profile(
 ) -> Path:
     """Return a verified ``systems_path`` pinned by a local or packaged manifest.
 
-    Manifests pin an immutable dataset revision and each file's SHA256. Files
-    default to ``source: dataset``; ``source: package`` copies a hash-pinned file
-    from the installed systems directory. This does not turn a reference system
-    configuration into collection evidence. Legacy ``identity`` is descriptive
-    metadata only; native schema and query checks enforce execution identity.
+    Manifests pin an immutable dataset revision and each file's SHA256. An
+    explicit ``packaged_system`` uses the installed hardware YAML when collection
+    YAML is unavailable. Its actual bytes enter the cache key and verification;
+    they remain a reference configuration, not collection evidence. Legacy
+    ``identity`` is descriptive metadata only; native schema and query checks
+    enforce execution identity.
 
     Offline mode never downloads. ``allow_unqualified`` permits diagnostic
     reproduction without granting serving admission. The complete manifest entry
@@ -220,7 +223,17 @@ def materialize_fpm_profile(
             UserWarning,
             stacklevel=2,
         )
-    identity = json.dumps({"repo": repo, "revision": revision, "profile": entry}, sort_keys=True).encode()
+    cache_identity = {"repo": repo, "revision": revision, "profile": entry}
+    system_file = None
+    if entry.get("packaged_system") is not None:
+        system_bytes = _packaged_system_bytes(entry["packaged_system"])
+        system_file = {
+            "target": f"{entry['packaged_system']}.yaml",
+            "sha256": hashlib.sha256(system_bytes).hexdigest(),
+        }
+        cache_identity["packaged_system_sha256"] = system_file["sha256"]
+        files = [*files, system_file]
+    identity = json.dumps(cache_identity, sort_keys=True).encode()
     digest = hashlib.sha256(identity).hexdigest()
     root = (
         Path(cache_dir)
@@ -235,19 +248,14 @@ def materialize_fpm_profile(
         return destination
     if local_files_only:
         raise FileNotFoundError(f"pinned FPM profile is not cached: {profile}")
-    # Fail on missing or mismatched package data before starting any downloads.
-    package_sources = {
-        item["target"]: _packaged_file(item) for item in files if item.get("source", "dataset") == "package"
-    }
     root.mkdir(parents=True, exist_ok=True)
     temporary = Path(tempfile.mkdtemp(prefix=".download-", dir=root))
     try:
-        for item in files:
+        if system_file is not None:
+            (temporary / system_file["target"]).write_bytes(system_bytes)
+        for item in entry["files"]:
             output = temporary / item["target"]
             output.parent.mkdir(parents=True, exist_ok=True)
-            if item.get("source", "dataset") == "package":
-                shutil.copyfile(package_sources[item["target"]], output)
-                continue
             url = f"https://huggingface.co/datasets/{repo}/resolve/{revision}/{quote(item['path'], safe='/')}"
             with urlopen(_download_request(url), timeout=120) as response, output.open("wb") as stream:
                 shutil.copyfileobj(response, stream)

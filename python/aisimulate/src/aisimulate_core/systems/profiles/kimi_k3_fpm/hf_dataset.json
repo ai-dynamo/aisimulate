@@ -2,7 +2,6 @@
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
   "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
-  "system_config_revision": "c3f77c22deed711e6f7fb3f1ea730bdf3d7fee53",
   "profiles": {
     "gb300-vllm-fp8-block-tp8-ep8-kv-off-v0.1.dev19262": {
       "admission": "development",
@@ -23,26 +22,9 @@
           "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "0b3c4bf1002d2cd111a7bf42aeb74436312b684f9c10323599b5898120689915"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-fp8-block-tp8-ep8-kv-on-v0.1.dev19262": {
       "admission": "development",
@@ -63,26 +45,9 @@
           "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "0b3c4bf1002d2cd111a7bf42aeb74436312b684f9c10323599b5898120689915"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0": {
       "admission": "development",
@@ -113,26 +78,9 @@
           "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/engine-config.json",
           "target": "provenance/engine-config.json",
           "sha256": "da1a76aca943787c2f460ebf9beb15d7af0eeff8906990636a322237c07dbb8a"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-mxfp4-tp8-dcp8-synthetic-attention-boundary-v0.29.0": {
       "admission": "quarantined",
@@ -163,26 +111,9 @@
           "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/engine-config.json",
           "target": "provenance/engine-config.json",
           "sha256": "da1a76aca943787c2f460ebf9beb15d7af0eeff8906990636a322237c07dbb8a"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     }
   }
 }

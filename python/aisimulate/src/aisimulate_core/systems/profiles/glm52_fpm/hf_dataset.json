@@ -2,7 +2,6 @@
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
   "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
-  "system_config_revision": "c3f77c22deed711e6f7fb3f1ea730bdf3d7fee53",
   "profiles": {
     "b200_sxm-vllm-nvfp4-tp1-dp8-ep8-kv-off": {
       "admission": "development",
@@ -23,26 +22,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/dep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "6aee20557875928aecba3da951d8f3277ee887be57a471095f7aca43bf3d89ec"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-nvfp4-tp1-dp8-ep8-kv-on": {
       "admission": "development",
@@ -63,26 +45,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/dep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "6aee20557875928aecba3da951d8f3277ee887be57a471095f7aca43bf3d89ec"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-nvfp4-tp1-dp8-ep8-real-seeded": {
       "admission": "development",
@@ -103,26 +68,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/dep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "6aee20557875928aecba3da951d8f3277ee887be57a471095f7aca43bf3d89ec"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-nvfp4-tp8-ep8-kv-off": {
       "admission": "development",
@@ -143,26 +91,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/tep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "436344cc4c86e5501ec5e8de4c0e22a422da71dec92dc2c320d8221e414378e1"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-nvfp4-tp8-ep8-kv-on": {
       "admission": "development",
@@ -183,26 +114,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/tep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "436344cc4c86e5501ec5e8de4c0e22a422da71dec92dc2c320d8221e414378e1"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-nvfp4-tp8-ep8-real-seeded": {
       "admission": "development",
@@ -223,26 +137,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/b200-sxm/vllm/0.25.1/tep8/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "436344cc4c86e5501ec5e8de4c0e22a422da71dec92dc2c320d8221e414378e1"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "gb200-vllm-nvfp4-tp1-dp16-ep16": {
       "admission": "development",
@@ -263,26 +160,9 @@
           "path": "data/nvidia--GLM-5.2-NVFP4/gb200/vllm/0.28.0/dep16/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "39217309a1f974d7dcf387dcd2d77bc4991eaa02b9155f4dd92d127edd04abce"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb200.yaml",
-          "target": "gb200.yaml",
-          "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb200"
     }
   }
 }

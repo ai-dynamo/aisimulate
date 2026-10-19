@@ -123,7 +123,10 @@ download and every cache reuse. `--local-files-only` (SDK:
 `local_files_only=True`) permits verified cached data only and never downloads;
 `--cache-dir` (SDK: `cache_dir`) selects the cache location. Keep materialized
 roots unchanged. A new pin produces a new cache root, while corrupt cached
-files fail verification.
+files fail verification. For profiles with `packaged_system`, the cache identity
+also includes the installed hardware YAML's actual SHA-256. If those bytes change
+after a package update, materialize a new root. Offline use requires a cache
+prepared for the currently installed hardware bytes as well as the dataset pin.
 
 ### Pin format and admission
 
@@ -132,13 +135,12 @@ files fail verification.
 | `format_version` | `1` for the pin-manifest format; independent of the timing sidecar schema version. |
 | `repo_id` | Hugging Face dataset repository, such as `nvidia/aisimulate-fpm-dataset`. |
 | `revision` | Full lowercase 40-character dataset commit SHA; branches and tags are rejected. |
-| `system_config_revision` | AISimulate source commit for bundled system/policy reference snapshots, when used; separate from the dataset revision. |
 | `profiles.<key>.admission` | `serving`, `development`, or `quarantined`. Only `serving` materializes by default. |
-| `profiles.<key>.files` | Files required for this root, including the timing pair and a system YAML. Retain published resource/provenance artifacts where available. |
-| `files[].path` | Relative POSIX source path within the pinned dataset, or within packaged `aisimulate_core/systems` for `source: package`. |
+| `profiles.<key>.files` | Pinned dataset files, including the timing pair and an archived system YAML when available. Retain published resource/provenance artifacts where available. |
+| `files[].path` | Relative POSIX source path within the pinned dataset. |
 | `files[].sha256` | Full lowercase SHA-256 of the exact source bytes, also verified after materialization. |
 | `files[].target` | Relative POSIX destination within this profile's systems root. |
-| `files[].source` | Omit for a dataset file; `package` explicitly selects a hash-pinned bundled reference file. |
+| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisimulate_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
 | `profiles.<key>.system_config_source` | Provenance annotation. `packaged_reference_not_collection` identifies a reference YAML when the dataset lacks the collection-time YAML. |
 | `profiles.<key>.admission_reason` | Review context for the declared admission, including missing qualification evidence. |
 | `profiles.<key>.identity` | Legacy descriptive metadata only. The downloader does not compare it with table rows or a requested deployment. |
@@ -155,16 +157,16 @@ loading and canonical model queries still enforce their schema, provenance and
 exact deployment checks.
 
 Prefer the archived collection-time system YAML. Some historical publications
-lack that artifact; their new pins explicitly use a hash-pinned packaged YAML
+lack that artifact; their new pins explicitly request the installed hardware YAML
+through `packaged_system`,
 with `system_config_source: packaged_reference_not_collection` and are not
-serving-admitted. This reference supplies loader configuration;
-it does not establish the collected system's settings. Package policy files such
-as `query_versions.yaml` and `attention_lane_defaults.yaml` are also reference
-files. These files live in versioned snapshots under
-`systems/profiles/published_fpm_systems/`, so later changes to the ordinary
-packaged defaults do not change an existing pin. Do not present them as observed
-collection provenance or silently replace an archived YAML. DeepSeek V4.1 and
-GLM-5.3-Flash retain their existing archived
+serving-admitted. This current hardware reference supplies loader configuration;
+it does not establish the collected system's settings. The materializer copies
+only that hardware YAML from the package. Attention-lane defaults retain the
+loader's ordinary package fallback, and the profile root has no release-slot
+aliases from `query_versions.yaml`: use the exact recorded `backend_version`.
+Do not present installed references as collection provenance or silently replace
+an archived YAML. DeepSeek V4.1 and GLM-5.3-Flash retain their existing archived
 system configurations and admission decisions.
 
 MiniMax-M3-NVFP4 currently has published measurement artifacts but no loadable FPM
@@ -180,10 +182,10 @@ The collection or dataset-PR author owns the AISimulate follow-up PR after a
 dataset change merges; the performance-model CODEOWNERS review it. Pin the merged
 dataset commit, verify every file hash and canonical target, retain provenance
 and applicable notices, and review each profile's admission against its evidence.
-For changed packaged references, add a new snapshot with its source revision and
-reviewed hashes; preserve historical snapshots. Do not advance a pin automatically
-or change admission merely because a download
-or smoke query succeeds. Changes to these manifests go through ordinary repository
+Hardware-reference changes belong in the canonical packaged system YAML; the
+materializer accounts for changed bytes when selecting a cache root. Do not
+advance a pin automatically or change admission merely because a download or
+smoke query succeeds. Changes to these manifests go through ordinary repository
 review; no registry service is required.
 
 Materialization verifies storage integrity and applies the manifest's admission

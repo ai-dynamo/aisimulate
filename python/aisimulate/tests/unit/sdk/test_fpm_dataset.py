@@ -207,31 +207,57 @@ def packaged_dataset(dataset, monkeypatch, tmp_path):
     systems = tmp_path / "installed-systems"
     systems.mkdir()
     (systems / "gb300.yaml").write_bytes(bodies["gb300.yaml"])
-    item = manifest["profiles"]["gb300-full"]["files"][0]
-    item.update(source="package", path="gb300.yaml")
+    entry = manifest["profiles"]["gb300-full"]
+    entry["files"].pop(0)
+    entry["packaged_system"] = "gb300"
     path.write_text(json.dumps(manifest))
     monkeypatch.setattr(fpm_dataset, "_SYSTEMS_DIRECTORY", systems)
     return systems
 
 
-def test_package_system_yaml_is_pinned_and_cache_is_self_contained(dataset, packaged_dataset):
+def test_installed_system_yaml_is_copied_without_global_policy_files(dataset, packaged_dataset):
     path, _, bodies, calls, cache = dataset
+    for policy in ("query_versions.yaml", "attention_lane_defaults.yaml"):
+        (packaged_dataset / policy).write_text("installed global policy")
     staged = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
     assert (staged / "gb300.yaml").read_bytes() == bodies["gb300.yaml"]
+    assert not (staged / "query_versions.yaml").exists()
+    assert not (staged / "attention_lane_defaults.yaml").exists()
     assert len(calls) == 2
-    # A verified existing cache remains usable even if the package later changes.
-    (packaged_dataset / "gb300.yaml").unlink()
     assert fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True) == staged
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("mutation", ["hash", "missing", "escape", "source"])
-def test_invalid_package_source_fails_before_download(dataset, packaged_dataset, tmp_path, mutation):
+def test_installed_system_changes_select_a_new_cache_without_changing_old_roots(dataset, packaged_dataset):
+    path, _, bodies, calls, cache = dataset
+    original = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    changed = bodies["gb300.yaml"] + b"# updated hardware configuration\n"
+    (packaged_dataset / "gb300.yaml").write_bytes(changed)
+    with pytest.raises(FileNotFoundError, match="not cached"):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True)
+    assert len(calls) == 2
+    updated = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert updated != original
+    assert (original / "gb300.yaml").read_bytes() == bodies["gb300.yaml"]
+    assert (updated / "gb300.yaml").read_bytes() == changed
+    assert fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True) == updated
+    assert len(calls) == 4
+
+
+def test_copied_system_yaml_is_verified_on_cache_reuse(dataset, packaged_dataset):
+    path, _, _, calls, cache = dataset
+    staged = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    (staged / "gb300.yaml").write_bytes(b"corruption")
+    with pytest.raises(ValueError, match="SHA256"):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mutation", ["missing", "escape", "collision"])
+def test_invalid_packaged_system_fails_before_download(dataset, packaged_dataset, tmp_path, mutation):
     path, manifest, bodies, calls, cache = dataset
     source = packaged_dataset / "gb300.yaml"
-    if mutation == "hash":
-        source.write_bytes(b"changed reference configuration")
-    elif mutation == "missing":
+    if mutation == "missing":
         source.unlink()
     elif mutation == "escape":
         outside = tmp_path / "outside.yaml"
@@ -239,12 +265,28 @@ def test_invalid_package_source_fails_before_download(dataset, packaged_dataset,
         source.unlink()
         source.symlink_to(outside)
     else:
-        manifest["profiles"]["gb300-full"]["files"][0]["source"] = "unknown"
+        manifest["profiles"]["gb300-full"]["files"].append(
+            {
+                "path": "archive/gb300.yaml",
+                "target": "gb300.yaml",
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        )
         path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError):
         fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
     assert not calls
     assert not cache.exists()
+
+
+@pytest.mark.parametrize("system", ["../gb300", "nested/gb300", r"nested\gb300", "gb300.yaml", 123])
+def test_packaged_system_must_be_a_system_name(dataset, packaged_dataset, system):
+    path, manifest, _, calls, cache = dataset
+    manifest["profiles"]["gb300-full"]["packaged_system"] = system
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="packaged_system"):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert not calls
 
 
 def test_profiles_with_same_loader_target_remain_isolated(dataset):
@@ -352,9 +394,9 @@ def test_cli_requires_unambiguous_action(monkeypatch, args):
     assert exc.value.code == 2
 
 
-def test_shipped_manifest_package_files_are_intact():
+def test_shipped_profiles_reference_installed_systems():
     for row in fpm_dataset.list_fpm_profiles():
         manifest = json.loads(Path(row["manifest"]).read_text())
-        for item in manifest["profiles"][row["profile"]]["files"]:
-            if item.get("source") == "package":
-                fpm_dataset._packaged_file(item)
+        entry = manifest["profiles"][row["profile"]]
+        if entry.get("packaged_system") is not None:
+            assert fpm_dataset._packaged_system_bytes(entry["packaged_system"])

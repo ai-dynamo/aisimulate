@@ -93,25 +93,20 @@ with synthetic attention KV and the nonuniform prefill records are not part of
 this primary profile.
 
 The publication lacks a collection-time system YAML. This development pin
-explicitly uses the recorded packaged-reference snapshot of `gb300.yaml`,
-`query_versions.yaml` and `attention_lane_defaults.yaml`; their hashes are checked
-alongside the dataset files. The manifest marks the system configuration as
-`packaged_reference_not_collection`. These reference files do not establish the
-collected runtime's system or communication-library configuration.
+uses `packaged_system: gb300` to copy the installed canonical `gb300.yaml` into
+the root. Its actual hash participates in cache identity and verification.
+The manifest marks it as `packaged_reference_not_collection`: this current
+hardware reference does not establish the collected runtime's system or
+communication-library configuration. If the installed hardware YAML changes,
+materialize a new root before using it offline.
 
 The decode measurements use warmed MLA KV and **random KDA state**. They are
 calibration data, not held-out accuracy evidence. See the retained
 `engine-config.json` for measurement conditions and known unknowns.
 
-This profile uses a custom vLLM `0.29.0` build. Allow its literal version to be
-queried outside the pinned reference version-slot policy for this session:
-
-```bash
-export AIC_ALLOW_UNLISTED_VERSIONS=1
-```
-
-This permits version selection; model/topology/precision matching stays strict.
-For another profile whose backend version is already queryable, omit the override.
+This profile uses a custom vLLM `0.29.0` build. The materialized root has no
+release-slot policy, so use that exact `backend_version` below. No version-policy
+override is needed; model, topology and precision matching remain strict.
 
 ### A2. Query the canonical model
 

@@ -2,7 +2,6 @@
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
   "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
-  "system_config_revision": "c3f77c22deed711e6f7fb3f1ea730bdf3d7fee53",
   "profiles": {
     "b200_sxm-vllm-fp8-block-tp1-dp4-ep4-kv-off": {
       "admission": "development",
@@ -23,26 +22,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "9c1aaa14ffbf271477ef0b942e4a9a03a64442e9f742181c92f5d0104715ab56"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-block-tp1-dp4-ep4-kv-on": {
       "admission": "development",
@@ -63,26 +45,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "9c1aaa14ffbf271477ef0b942e4a9a03a64442e9f742181c92f5d0104715ab56"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-block-tp4-ep4-kv-off": {
       "admission": "development",
@@ -103,26 +68,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "bedafa1cce7614c8f5e8f1815efd346400dddbe6e103e47839d8e05dc0268e9b"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-block-tp4-ep4-kv-on": {
       "admission": "development",
@@ -143,26 +91,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "bedafa1cce7614c8f5e8f1815efd346400dddbe6e103e47839d8e05dc0268e9b"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp1-dp2-ep2": {
       "admission": "development",
@@ -183,26 +114,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep2/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "a8f360532f80ab04d341e490c6f26be545a43d49b3f34eba6bcccbceb70de9f1"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp1-dp4-ep4": {
       "admission": "development",
@@ -223,26 +137,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "08909b3e10d3c1b5d0e262d1f0031f4dcc0691eede4e1d974e84d90b818d1fe8"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp2": {
       "admission": "development",
@@ -263,26 +160,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp2/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "6c3a71ff4c996edc1d475b599ebf588f78dccde67963ab6d142bed68c7543c50"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp4": {
       "admission": "development",
@@ -303,26 +183,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "933856cabfbb76c5a59bacff222560eeee9035ab5214516f313ffd4e4034efa4"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp2-ep2": {
       "admission": "development",
@@ -343,26 +206,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep2/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "78a953c6d5d30f9a6e8827b7cb1e5dbdbca6bd20b1b8e244c63e7c433ff25bc0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp4-ep4-kv-off": {
       "admission": "development",
@@ -383,26 +229,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "35a3ad4b20f33b0c9ad9482653237ea444cad164a8482ecabc2214eb03a52d02"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp4-ep4-kv-on": {
       "admission": "development",
@@ -423,26 +252,9 @@
           "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "35a3ad4b20f33b0c9ad9482653237ea444cad164a8482ecabc2214eb03a52d02"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/h200_sxm.yaml",
-          "target": "h200_sxm.yaml",
-          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "h200_sxm"
     }
   }
 }

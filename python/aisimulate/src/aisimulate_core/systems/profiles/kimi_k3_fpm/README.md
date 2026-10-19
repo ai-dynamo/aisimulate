@@ -18,9 +18,10 @@ comparator is `quarantined`. All require `allow_unqualified=True`.
 Publication does not establish serving qualification. KV variants and comparator
 tables retain separate profiles and cache roots.
 
-The package-sourced YAML files are pinned
-[reference system configurations](../published_fpm_systems/c3f77c22deed/README.md),
-not archived collection configurations. No collection system YAML is published
-for these tables at the pinned dataset revision. Native schema and exact-cell
-validation still apply after materialization; profile names describe published
-configuration labels and do not override table identity.
+`packaged_system` selects the canonical hardware YAML from the installed
+`aisimulate_core/systems` directory. The materializer copies it into the profile
+root and includes its actual hash in cache identity and verification. This is a
+current hardware reference, not an archived collection configuration. No
+collection system YAML is published for these tables at the pinned dataset
+revision. Native schema and exact-cell validation still apply after
+materialization; profile names do not override table identity.

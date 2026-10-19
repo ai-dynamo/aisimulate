@@ -1119,8 +1119,9 @@ model weights or collection implementation are bundled in these directories.
 - License: Apache-2.0, as declared in the dataset card at the pinned revision;
   the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
 - Modifications: separate deployment roots, explicit development/diagnostic
-  admission, canonical loader targets and references to pinned AISimulate system
-  configuration snapshots. Source artifact bytes are unchanged when downloaded.
+  admission, canonical loader targets and explicit references to installed
+  AISimulate hardware configurations. Source artifact bytes are unchanged when
+  downloaded.
 
 The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
 DeepSeek V4.1 source archives; it is not a license grant for these six models.

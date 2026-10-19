@@ -2,7 +2,6 @@
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
   "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
-  "system_config_revision": "c3f77c22deed711e6f7fb3f1ea730bdf3d7fee53",
   "profiles": {
     "b200_sxm-vllm-fp8-tp1-dp4-ep4-kv-off": {
       "admission": "development",
@@ -23,26 +22,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Flash-0731/b200-sxm/vllm/0.25.1/dep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "47ef17ea0301cbb87e8b151a0ed497eea3de4337f08a60402fce5cba32c8a465"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-tp1-dp4-ep4-kv-on": {
       "admission": "development",
@@ -63,26 +45,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Flash-0731/b200-sxm/vllm/0.25.1/dep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "47ef17ea0301cbb87e8b151a0ed497eea3de4337f08a60402fce5cba32c8a465"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-tp4-ep4-kv-off": {
       "admission": "development",
@@ -103,26 +68,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Flash-0731/b200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "cbd649945283408663d63c918872b7233ea464007c325acc414808e84d3c288a"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     },
     "b200_sxm-vllm-fp8-tp4-ep4-kv-on": {
       "admission": "development",
@@ -143,26 +91,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Flash-0731/b200-sxm/vllm/0.25.1/tep4/manifest.json",
           "target": "provenance/manifest.json",
           "sha256": "cbd649945283408663d63c918872b7233ea464007c325acc414808e84d3c288a"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/b200_sxm.yaml",
-          "target": "b200_sxm.yaml",
-          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "b200_sxm"
     }
   }
 }

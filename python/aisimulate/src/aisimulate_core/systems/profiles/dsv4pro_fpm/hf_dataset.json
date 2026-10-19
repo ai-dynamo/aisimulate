@@ -2,7 +2,6 @@
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
   "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
-  "system_config_revision": "c3f77c22deed711e6f7fb3f1ea730bdf3d7fee53",
   "profiles": {
     "gb300-vllm-fp8-block-tp1-dp8-ep8-kv-off": {
       "admission": "development",
@@ -28,26 +27,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/provenance/dep8-prefill-kvoff-full4096-1.4.0-20260904-021313-j3545916/resolved-config-node0.json",
           "target": "provenance/dep8-prefill-kvoff-full4096-1.4.0-20260904-021313-j3545916/resolved-config-node0.json",
           "sha256": "cae8450359ebbac740ea0ce1343023fcf3d5758b373e3d72b39fb253b286eb6c"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-fp8-block-tp1-dp8-ep8-kv-on": {
       "admission": "development",
@@ -73,26 +55,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/provenance/dep8-prefill-kvon-full4096-1.4.0-20260904-021313-j3545915/resolved-config-node0.json",
           "target": "provenance/dep8-prefill-kvon-full4096-1.4.0-20260904-021313-j3545915/resolved-config-node0.json",
           "sha256": "5cf3e450a98317fb8b7039aea84e064821ba68c99145215e7308e8ea90ebb633"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-fp8-block-tp8-ep8-kv-off": {
       "admission": "development",
@@ -118,26 +83,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/provenance/tep8-prefill-kvoff-full4096-1.4.0-20260903-122359-j3530507/resolved-config-node0.json",
           "target": "provenance/tep8-prefill-kvoff-full4096-1.4.0-20260903-122359-j3530507/resolved-config-node0.json",
           "sha256": "8d1f8c77d7afa50ba9df1cc531a075935c416a6fed562c10606e4f9451624e9a"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     },
     "gb300-vllm-fp8-block-tp8-ep8-kv-on": {
       "admission": "development",
@@ -163,26 +111,9 @@
           "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/provenance/tep8-prefill-kvon-full4096-1.4.0-20260903-113631-j3529760/resolved-config-node0.json",
           "target": "provenance/tep8-prefill-kvon-full4096-1.4.0-20260903-113631-j3529760/resolved-config-node0.json",
           "sha256": "d742d1860e004d134404163497ece5214961b0de520b918ef19c5a15c351a233"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/gb300.yaml",
-          "target": "gb300.yaml",
-          "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/query_versions.yaml",
-          "target": "query_versions.yaml",
-          "sha256": "3b66f1e8610c0fc85569b544973dc3c28fa55d7e78d9046475d236df3a29a0c0"
-        },
-        {
-          "source": "package",
-          "path": "profiles/published_fpm_systems/c3f77c22deed/attention_lane_defaults.yaml",
-          "target": "attention_lane_defaults.yaml",
-          "sha256": "bb6d8de07ade8b9e7cc0b1b94772b5fa204ee05051f38cbe4996d856b7d3a355"
         }
-      ]
+      ],
+      "packaged_system": "gb300"
     }
   }
 }
