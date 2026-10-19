@@ -1720,9 +1720,12 @@ def resolved_tables():
     }
 
 
-def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_path, monkeypatch):
+@pytest.mark.parametrize("resolution_stage", [None, "checkpoint_revision", "mtp_acceptance_missing"])
+def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_path, monkeypatch, resolution_stage):
     _, run = artifact
     data = resolved_tables()
+    if resolution_stage:
+        data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "conc": 128})
     tables_path = tmp_path / "resolved-tables.json"
     tables_path.write_text(json.dumps(data))
     manifest = tmp_path / "resolved-manifest.json"
@@ -1730,6 +1733,8 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     predictor = campaign.run_child
 
     def predict(point, timeout):
+        if point.get("resolution_error"):
+            return campaign.predict_resolved_point(point)
         result = predictor(point, timeout)
         result["row"].update(
             aic_status="failed",
@@ -1748,6 +1753,11 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
                 **point,
                 "deployment": resolved_point()["deployment"],
                 "evidence": {"recipe_sha256": "f" * 64},
+                **(
+                    {"resolution_error": [{"stage": resolution_stage, "message": "missing evidence"}]}
+                    if resolution_stage and point["benchmark"]["id"] == 2
+                    else {}
+                ),
             }
             for point in points
         ],
@@ -1780,7 +1790,12 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
         ]
     )
     results = json.loads((evidence / "results.json").read_text())
-    assert results[0]["row"]["aic_status"] == "failed"
+    evaluated = [result for result in results if result["outcome"] == "evaluated"]
+    assert evaluated[0]["row"]["aic_status"] == "failed"
+    if resolution_stage:
+        assert qualification["exclusion_reasons"] == {"source_unresolved": 1}
+        unresolved = next(point for point in resolved if point.get("resolution_error"))
+        assert unresolved["resolution_error"][0]["stage"] == resolution_stage
     assert summary["totals"]["rows"] == 1
     assert summary["totals"]["aic"]["status_counts"]["failed"] == 1
     assert summary["totals"]["aic"]["coverage_pct"] == 0
@@ -2515,3 +2530,16 @@ def test_mtp_resolution_requires_point_acceptance_and_keeps_provenance(
     else:
         assert not result["resolution_error"]
         assert calls
+
+
+def test_mtp_staleness_uses_current_cohort_without_changing_stp():
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    stp, _ = select_points(data)
+    data["configs"].append({**data["configs"][0], "id": 2, "spec_method": "mtp"})
+    data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "config_id": 2, "date": "2026-01-01"})
+    points, stats = select_points(data, include_mtp=True)
+    assert points == stp
+    assert stats["excluded"] == {"stale": 1}
+    assert len(points) + sum(stats["excluded"].values()) == 2

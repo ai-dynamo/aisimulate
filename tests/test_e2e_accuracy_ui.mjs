@@ -214,8 +214,8 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows + 3, published: data.totals.rows,
-    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1 },
+    selected: data.totals.rows + 4, published: data.totals.rows,
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1, source_unresolved: 1 },
     selection_policy: "latest-complete-config-run-v1",
   };
   const app = setup(async () => response(data));
@@ -229,7 +229,9 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_topology_mismatch/);
+  assert.match(app.element("provenance-content").innerHTML, /source_unresolved/);
   for (const change of [
+    { exclusion_reasons: { mtp_acceptance_missing: 1 } },
     { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
     { advisory: false }, { published: data.totals.rows + 1 },
     { selection_policy: undefined }, { selection_policy: "unknown-policy" },

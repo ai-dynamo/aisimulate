@@ -59,11 +59,14 @@ def select_points(tables, max_age_days=180, *, include_mtp=False):
         excluded[stage] += len(drops)
     # Same reference as gym's default: newest row after dedupe/image coherence.
     fresh = []
-    # Independent reference dates preserve the ordinary-decoding cohort exactly.
+    # Keep STP unchanged; age MTP against the newest eligible measurement.
+    reference_date = max((row.date for row in rows), default=None)
     for method in ("none", "mtp"):
         group = [row for row in rows if row.spec_method == method]
         if group:
-            kept, drops = apply_config_staleness(group, max_age_days=max_age_days)
+            kept, drops = apply_config_staleness(
+                group, max_age_days=max_age_days, dump_max_date=reference_date if method == "mtp" else None
+            )
             fresh.extend(kept)
             excluded["stale"] += len(drops)
     rows = fresh

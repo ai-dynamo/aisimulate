@@ -496,6 +496,13 @@ def replay_chart_metrics(metrics, total_gpus):
 
 
 def predict_resolved_point(point):
+    if point.get("resolution_error"):
+        return {
+            "id": point["id"],
+            "outcome": "unsupported",
+            "reason": "source_unresolved",
+        }
+
     from aisimulate.runner import EngineReplayRunnerFactory
     from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
     from scripts.e2e_accuracy.source.estimate import estimate_kwargs
@@ -503,12 +510,6 @@ def predict_resolved_point(point):
     from scripts.e2e_accuracy.source.replay import replay_spec as resolved_replay_spec
     from scripts.e2e_accuracy.source.schema import SiliconRow
 
-    if point.get("resolution_error"):
-        return {
-            "id": point["id"],
-            "outcome": "unsupported",
-            "reason": point["resolution_error"][0].get("stage", "source_unresolved"),
-        }
     deployment = point["deployment"]
     config, bench = point["config"], point["benchmark"]
     api_name, adapter_name = predictor_module_names(importlib.metadata.distribution("aisimulate").files or ())

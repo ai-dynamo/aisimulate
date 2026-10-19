@@ -22,6 +22,7 @@ from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
     InvalidRunnerError,
+    _materialize_engine_role,
 )
 from aisimulate.sweeper import (
     AdapterReplaySpec,
@@ -33,6 +34,7 @@ from aisimulate.sweeper import (
 )
 from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+from scripts.e2e_accuracy.source.replay import engine_args
 
 pytestmark = [
     pytest.mark.unit,
@@ -2890,3 +2892,27 @@ def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
     tokenization = {"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}
     configured = json.loads(canonical_json(_spec(deployment=_tokenization_deployment(tokenization))))
     assert configured["backend_deployment"]["tokenization"] == tokenization
+
+
+@pytest.mark.parametrize("accepted,rates", [(0.25, "0.25,0"), (1.25, "1,0.25")])
+def test_gym_mtp_acceptance_reaches_runner_scheduler_and_timing(accepted, rates):
+    deployment = dict(
+        backend="sglang",
+        system="h200_sxm",
+        model_path="test/model",
+        roles={
+            "aggregated": dict(
+                topology=dict(tp=1, pp=1, attention_dp=1, moe_tp=1, moe_ep=1),
+                quantization=dict(gemm="bf16", moe="bf16"),
+                args=dict(kv_cache_dtype="bf16"),
+                mtp=dict(depth=2, accepted_draft_tokens=accepted),
+            )
+        },
+    )
+    args = engine_args(deployment, "aggregated", "0.5.14")
+    args["num_gpu_blocks"] = 16  # Explicit capacity avoids a model download.
+    rank = _materialize_engine_role("sglang", "0.5.14", {}, args, "aggregated")["rank"]
+    assert rank["aic_nextn_accept_rates"] == rates
+    assert rank["aic_nextn"] == 2
+    assert rank["timing_model"]["config"]["nextn"] == 2
+    assert rank["timing_model"]["config"]["forward_model"] == "op_level"

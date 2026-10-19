@@ -97,10 +97,14 @@ resolver; fetching current metadata cannot prove the measured revision.
 
 ## MTP campaign inputs
 
+Public exclusions use the stable `source_unresolved` reason. Detailed resolver
+stages remain in resolved-point evidence; they are not public exclusion keys.
+
 The dataset manifest opts into `gym-resolved-config-v3`. The v2 policy and the
 selector's default retain their STP-only behavior. V3 adds MTP after the same
-deduplication, image-coherence, and 180-day freshness rules, using independent
-STP/MTP reference dates so existing STP selection does not change. Log reuse is
+deduplication, image-coherence, and 180-day freshness rules. STP keeps its own
+reference date; MTP ages against the newest eligible STP or MTP measurement so
+stopped MTP collection cannot remain current indefinitely. Log reuse is
 counted across the entire measurement table before sharding or deduplication.
 
 `mtp.py` reads benchmark-linked public InferenceX server logs, retains their URL
