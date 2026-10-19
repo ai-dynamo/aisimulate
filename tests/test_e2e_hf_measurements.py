@@ -1,0 +1,254 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+from cryptography.exceptions import InvalidTag
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from scripts.e2e_accuracy import hf_measurements as hf
+from scripts.e2e_accuracy import private_artifacts
+from scripts.e2e_accuracy.source.cohort import select_points
+
+
+@pytest.fixture
+def manifest():
+    return dict(
+        schema_version=2,
+        repo_id=hf.REPO_ID,
+        revision="a" * 40,
+        release_tag="hf/" + "a" * 40,
+        selection_policy=hf.POLICY,
+        max_age_days=180,
+    )
+
+
+@pytest.fixture
+def record():
+    return dict(
+        model="test-model",
+        hardware="h100",
+        framework="vllm",
+        precision="fp8",
+        spec_method="none",
+        disagg=False,
+        is_multinode=False,
+        prefill_tp=1,
+        prefill_ep=1,
+        prefill_dp_attention=False,
+        prefill_num_workers=0,
+        decode_tp=8,
+        decode_ep=1,
+        decode_dp_attention=False,
+        decode_num_workers=1,
+        num_prefill_gpu=0,
+        num_decode_gpu=8,
+        id=123,
+        date="2026-10-17",
+        isl=1024,
+        osl=128,
+        conc=32,
+        metrics={"mean_ttft": 0.1, "mean_tpot": 0.01},
+        image="test-image",
+        benchmark_type="single_turn",
+        run_url="https://github.com/SemiAnalysisAI/InferenceX/actions/runs/987/attempts/2",
+    )
+
+
+def test_resolve_pins_private_commit(monkeypatch, manifest):
+    info = SimpleNamespace(private=True, sha="b" * 40)
+    monkeypatch.setattr(hf, "HfApi", lambda: SimpleNamespace(repo_info=lambda *a, **k: info))
+    resolved = hf.resolve_latest_manifest(manifest)
+    assert resolved["revision"] == "b" * 40 and manifest["revision"] == "a" * 40
+    info.private = False
+    with pytest.raises(ValueError, match="private"):
+        hf.resolve_latest_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        dict(revision="main"),
+        dict(repo_id="other/repo"),
+        dict(selection_policy="gym-resolved-config-v2"),
+        dict(schema_version=True),
+        dict(max_age_days=True),
+        dict(release_tag="hf/" + "b" * 40),
+    ],
+)
+def test_invalid_hf_manifest(manifest, change):
+    with pytest.raises(ValueError):
+        hf.validate_manifest(manifest | change)
+
+
+def test_exact_producer_attempt_only(monkeypatch, record):
+    calls = []
+    run = dict(id=987, run_attempt=2, head_sha="b" * 40)
+
+    def get(url, **kwargs):
+        calls.append(url)
+        return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: run)
+
+    monkeypatch.setattr(hf.requests, "get", get)
+    assert hf.producer_metadata(record["run_url"])["head_sha"] == "b" * 40
+    assert calls == ["https://api.github.com/repos/SemiAnalysisAI/InferenceX/actions/runs/987/attempts/2"]
+    assert hf.producer_metadata(record["run_url"].removesuffix("/attempts/2")) == {}
+    run["run_attempt"] = 3
+    with pytest.raises(ValueError, match="identity"):
+        hf.producer_metadata(record["run_url"])
+
+
+def test_deleted_producer_has_no_invented_revision(monkeypatch, record):
+    monkeypatch.setattr(hf.requests, "get", lambda *a, **k: SimpleNamespace(status_code=404))
+    assert "head_sha" not in hf.producer_metadata(record["run_url"])
+
+
+def test_local_configuration_identity_and_cohort(record):
+    run = dict(head_sha="b" * 40, github_run_id="987", run_attempt=2)
+    tables = hf.to_tables([record, record | dict(id=124, conc=64)], {record["run_url"]: run})
+    assert len(tables["configs"]) == 1
+    config_id = tables["configs"][0]["id"]
+    assert config_id.startswith("hf:") and len(config_id) == 67
+    assert hf.to_tables([dict(reversed(list(record.items())))], {})["configs"][0]["id"] == config_id
+    assert hf.to_tables([record | dict(decode_tp=4)], {})["configs"][0]["id"] != config_id
+    points, _ = select_points(tables)
+    assert len(points) == 2
+    assert all(p["source_row"]["head_sha"] == "b" * 40 for p in points)
+    with pytest.raises(ValueError, match="conflicting HF benchmark"):
+        hf.to_tables([record, record | dict(conc=64)], {})
+
+
+@pytest.fixture
+def cache(tmp_path, monkeypatch, record):
+    artifacts = {}
+
+    def register(path, payload, schema, rows=None):
+        local = tmp_path / path
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(payload)
+        artifacts[path] = local
+        return dict(
+            path=path,
+            sha256=hashlib.sha256(payload).hexdigest(),
+            bytes=len(payload),
+            schema=schema,
+            **({"rows": rows} if rows is not None else {}),
+        )
+
+    row = dict(
+        observation_id="inferencex:123",
+        record_sha256=hashlib.sha256(hf.canonical(record)).hexdigest(),
+        raw_record_json=hf.canonical(record).decode(),
+    )
+    table = pa.Table.from_pylist([row]).replace_schema_metadata({b"schema_id": b"inferencex-observations-v1"})
+    output = pa.BufferOutputStream()
+    pq.write_table(table, output)
+    ref = register(
+        "data/e2e/inferencex/observations.parquet", output.getvalue().to_pybytes(), "inferencex-observations-v1", 1
+    )
+    partitions = [
+        dict(source_model=record["model"], hardware=record["hardware"], framework=record["framework"], artifacts=[ref])
+    ]
+    snapshot = dict(
+        schema_version="inferencex-input-snapshot/v1",
+        snapshot_id="test",
+        completeness="complete",
+        partitions=partitions,
+        counts={"observations_distinct": 1},
+        source_scope={"kind": "api-current-model-view"},
+    )
+    ref = register("data/e2e/inferencex/snapshot.json", hf.canonical(snapshot), "inferencex-input-snapshot/v1")
+    index = dict(
+        schema_version="e2e-source-index/v1",
+        source_kind="inferencex",
+        snapshot_id="test",
+        snapshot=ref,
+        partitions=partitions,
+    )
+    register(hf.INDEX_PATH, hf.canonical(index), "e2e-source-index/v1")
+    calls = []
+
+    def download(repo, path, **kwargs):
+        calls.append((repo, path, kwargs))
+        return artifacts[path]
+
+    monkeypatch.setattr(hf, "hf_hub_download", download)
+    monkeypatch.setattr(
+        hf, "producer_metadata", lambda url: dict(head_sha="b" * 40, github_run_id="987", run_attempt=2)
+    )
+    return artifacts, calls
+
+
+def test_fetch_only_verified_observations_at_exact_commit(cache, manifest, tmp_path):
+    artifacts, calls = cache
+    output = hf.fetch(manifest, tmp_path / "out")
+    tables = json.loads(output.read_text())
+    assert len(tables["benchmark_results"]) == 1
+    assert {c[1] for c in calls} == set(artifacts)
+    assert all(c[0] == hf.REPO_ID and c[2] == dict(repo_type="dataset", revision="a" * 40) for c in calls)
+    artifacts["data/e2e/inferencex/observations.parquet"].write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="checksum"):
+        hf.fetch(manifest, tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "data/e2e/../x", "data/e2e/inferencex/../../x", "other/file"])
+def test_unsafe_artifact_paths(manifest, path):
+    with pytest.raises(ValueError, match="unsafe"):
+        hf.download(manifest, path)
+
+
+@pytest.fixture
+def sealed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "synthetic-test-secret")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "test/repo")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "rows.json").write_bytes(b"private-test-row" * 100000)
+    encrypted = tmp_path / "encrypted"
+    private_artifacts.transfer(source, encrypted, decrypt=False)
+    return source, encrypted, tmp_path / "opened"
+
+
+def test_private_artifact_streaming_roundtrip(sealed):
+    source, encrypted, opened = sealed
+    assert (encrypted / "rows.json.enc").read_bytes() != (source / "rows.json").read_bytes()
+    private_artifacts.transfer(encrypted, opened, decrypt=True)
+    assert (opened / "rows.json").read_bytes() == (source / "rows.json").read_bytes()
+
+
+@pytest.mark.parametrize("damage", ["token", "run", "path", "bytes"])
+def test_private_artifact_tamper_never_leaves_plaintext(sealed, monkeypatch, damage):
+    _, encrypted, opened = sealed
+    path = encrypted / "rows.json.enc"
+    if damage == "token":
+        monkeypatch.setenv("HF_TOKEN", "different-secret")
+    elif damage == "run":
+        monkeypatch.setenv("GITHUB_RUN_ID", "456")
+    elif damage == "path":
+        path.rename(encrypted / "other.json.enc")
+    else:
+        data = bytearray(path.read_bytes())
+        data[-20] ^= 1
+        path.write_bytes(data)
+    with pytest.raises(InvalidTag):
+        private_artifacts.transfer(encrypted, opened, decrypt=True)
+    assert not list(opened.rglob("*"))
+
+
+def test_private_artifact_rejects_symlinks_and_plaintext(sealed):
+    source, encrypted, opened = sealed
+    (encrypted / "link").symlink_to(source / "rows.json")
+    with pytest.raises(ValueError, match="symlink"):
+        private_artifacts.transfer(encrypted, opened, decrypt=True)
+    (encrypted / "link").unlink()
+    with pytest.raises(ValueError, match="unencrypted"):
+        private_artifacts.transfer(source, opened, decrypt=True)
