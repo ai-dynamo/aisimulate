@@ -889,15 +889,14 @@ impl HostTier {
     }
 
     /// Make blocks that became evictable together the newest, in key order.
-    fn touch_cohort(&mut self, keys: &[HostBlockKey]) {
-        let mut keys = keys.to_vec();
+    fn touch_cohort(&mut self, keys: &mut [HostBlockKey]) {
         keys.sort_unstable();
         for key in keys {
             let entry = self
                 .entries
-                .get_mut(&key)
+                .get_mut(key)
                 .expect("evictable host block disappeared");
-            self.lru.touch(&mut entry.lru_slot, key);
+            self.lru.touch(&mut entry.lru_slot, *key);
         }
     }
 
@@ -1098,7 +1097,7 @@ impl HostTier {
                 entry.load_pins += usize::from(hold);
             }
             if !hold {
-                self.touch_cohort(&blocks);
+                self.touch_cohort(&mut blocks.clone());
             }
             self.mark_resident(&blocks);
             self.observe(HostOffloadObservation {
@@ -1286,7 +1285,7 @@ impl HostTier {
                 newly_unpinned.push(*key);
             }
         }
-        self.touch_cohort(&newly_unpinned);
+        self.touch_cohort(&mut newly_unpinned);
     }
 
     /// Private lanes require due completions to be ticked first; a shared pool
@@ -1408,91 +1407,49 @@ pub(crate) mod tests {
     }
 
     impl Lru {
+        /// Bounded so that a corrupted, cyclic list fails the comparison.
         fn order(&self) -> Vec<HostBlockKey> {
-            self.oldest_first().collect()
-        }
-    }
-
-    /// The epoch-ordered set that the linked list replaced.
-    #[derive(Default)]
-    struct EpochLru {
-        clock: u64,
-        touched_at: FxHashMap<HostBlockKey, u64>,
-        oldest_first: BTreeSet<(u64, HostBlockKey)>,
-    }
-
-    impl EpochLru {
-        fn touch_cohort(&mut self, keys: &[HostBlockKey]) {
-            if keys.is_empty() {
-                return;
-            }
-            self.clock += 1;
-            for key in keys {
-                self.remove(*key);
-                self.touched_at.insert(*key, self.clock);
-                assert!(self.oldest_first.insert((self.clock, *key)));
-            }
-        }
-
-        fn remove(&mut self, key: HostBlockKey) {
-            if let Some(epoch) = self.touched_at.remove(&key) {
-                assert!(self.oldest_first.remove(&(epoch, key)));
-            }
-        }
-
-        fn order(&self) -> Vec<HostBlockKey> {
-            self.oldest_first.iter().map(|(_, key)| *key).collect()
+            self.oldest_first().take(self.nodes.len()).collect()
         }
     }
 
     #[test]
-    fn lru_order_matches_epoch_order() {
+    fn lru_matches_move_to_back_list() {
         let mut rng = StdRng::seed_from_u64(7);
         let mut lru = Lru::default();
         // `HostTier` keeps each block's node in its entry.
-        let mut slots = FxHashMap::<HostBlockKey, Option<NonZeroU32>>::default();
-        let mut reference = EpochLru::default();
-        let random_key = |rng: &mut StdRng| key(rng.random_range(0..64));
+        let mut slots = [None; 64];
+        let mut expected = Vec::new();
         for _ in 0..20_000 {
-            match rng.random_range(0..4) {
+            let index = rng.random_range(0..slots.len());
+            let block = key(index as u64);
+            match rng.random_range(0..3) {
                 0 => {
-                    let block = random_key(&mut rng);
-                    lru.touch(slots.entry(block).or_default(), block);
-                    reference.touch_cohort(&[block]);
+                    lru.touch(&mut slots[index], block);
+                    expected.retain(|key| *key != block);
+                    expected.push(block);
                 }
                 1 => {
-                    // As `HostTier::touch_cohort`; a cohort may be empty or repeat a key.
-                    let mut keys: Vec<_> = (0..rng.random_range(0..8))
-                        .map(|_| random_key(&mut rng))
-                        .collect();
-                    reference.touch_cohort(&keys);
-                    keys.sort_unstable();
-                    for block in keys {
-                        lru.touch(slots.entry(block).or_default(), block);
-                    }
-                }
-                2 => {
-                    let block = random_key(&mut rng);
-                    lru.remove(slots.entry(block).or_default());
-                    reference.remove(block);
+                    lru.remove(&mut slots[index]);
+                    expected.retain(|key| *key != block);
                 }
                 _ => {
                     let count = rng.random_range(0..8);
                     let skipped = rng.random_range(0..3);
                     let is_eligible = |key: HostBlockKey| key.sequence_hash() % 3 != skipped;
-                    let expected: Vec<_> = reference
-                        .order()
-                        .into_iter()
+                    let victims: Vec<_> = expected
+                        .iter()
+                        .copied()
                         .filter(|key| is_eligible(*key))
                         .take(count)
                         .collect();
-                    assert_eq!(lru.victims(count, is_eligible), expected);
+                    assert_eq!(lru.victims(count, is_eligible), victims);
                 }
             }
-            assert_eq!(lru.order(), reference.order());
+            assert_eq!(lru.order(), expected);
         }
         // Removed nodes are reused: the slab holds at most every key plus the sentinel.
-        assert!(lru.nodes.len() <= 65);
+        assert!(lru.nodes.len() <= slots.len() + 1);
     }
 
     #[derive(Debug, PartialEq)]
