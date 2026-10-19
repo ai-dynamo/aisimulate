@@ -23,3 +23,8 @@ not archived collection configurations. No collection system YAML is published
 for these tables at the pinned dataset revision. Native schema and exact-cell
 validation still apply after materialization; profile names describe published
 configuration labels and do not override table identity.
+
+The current built-in model-name construction path rejects the
+`InklingForConditionalGeneration` architecture. These pins provide artifact
+access for a compatible consumer; they do not add that architecture to the
+canonical model registry.

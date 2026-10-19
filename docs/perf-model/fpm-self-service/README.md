@@ -191,7 +191,10 @@ gate. It does not establish resource capacity, workload coverage, or prediction
 accuracy. Preserve these separate results and perform
 [matched serving validation](implementation.md#stage-6-matched-serving) for the
 intended deployment. This reuse path also does not expand guided onboarding's
-backend, topology, or execution-identity support.
+backend, topology, or execution-identity support, or the built-in model registry.
+For example, the current model-name construction path rejects Inkling's
+`InklingForConditionalGeneration` architecture even though its artifacts can be
+materialized; a compatible consumer is still required.
 
 ## Workflow
 
