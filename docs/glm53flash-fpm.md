@@ -33,7 +33,7 @@ Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `estimation_mode="fpm_interpolation"` and the profile identity's
 `backend_version`.
 
-The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blocked; use `--allow-unqualified` only for diagnostic reproduction. It uses system `b300_sxm`, FP8 KV, TP4 and vLLM `0.31.0`. Its expanded table has 427 prefill and 175 decode measurements. Its collection covers batch sizes up to 32 and per-request contexts up to 131,072 tokens. [Collection and validation evidence](../benchmarks/evidence/glm53flash-b300-20261019/refinement/README.md) records the exact scope and limitations.
+The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blocked; use `--allow-unqualified` only for diagnostic reproduction. It uses system `b300_sxm`, FP8 KV, TP4 and vLLM `0.31.0`. Its expanded table has 427 prefill and 175 decode measurements. Its collection covers batch sizes up to 32 and per-request contexts up to 131,072 tokens. Validation covers align-4 forward-pass inputs only; end-to-end serving, cache reuse, 1M context and a supported DynoSim dependency pair remain unqualified.
 
 ## vLLM producer
 
