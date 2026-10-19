@@ -171,6 +171,13 @@ class FpmSpeculativeExecutionProfile(_ProfileModel):
     draft_revision: Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
     timing_scope: Literal["model_step_cuda"]
 
+    @field_validator("draft_model")
+    @classmethod
+    def _draft_model(cls, value: str) -> str:
+        if value != value.strip() or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+            raise ValueError("draft_model must be nonblank, trimmed, and contain no control characters")
+        return value
+
 
 class FpmDeploymentProfile(_ProfileModel):
     """One hardware, runtime, topology, precision and optional serving-role identity."""
