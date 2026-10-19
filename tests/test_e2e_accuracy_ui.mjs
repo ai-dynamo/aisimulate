@@ -833,7 +833,8 @@ test("standalone PR preview displays its exact branch and cannot enter a public 
   assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
 });
 
-test("configuration assumptions stay labeled and count mismatches fail", () => {
+for (const policy of ["gym-resolved-config-v2", "gym-resolved-config-v3"]) {
+test(`configuration assumptions stay labeled and count mismatches fail (${policy})`, () => {
   const data = withTopology();
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
@@ -849,8 +850,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows, published: data.totals.rows,
-    backend_versions: ["0.25.1"], exclusion_reasons: {}, selection_policy: "gym-resolved-config-v2",
+    selected: data.totals.rows + 1, published: data.totals.rows,
+    backend_versions: ["0.25.1"], exclusion_reasons: {source_unresolved: 1}, selection_policy: policy,
     configuration: { profile: "coverage-experiment/1", counts },
   };
   const app = harness();
@@ -861,6 +862,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   assert.throws(() => app.run("validateSummary(data)"), /configuration coverage/);
 });
 
+
+}
 
 test("tabs preserve selected topology and shareable exclusion settings", async () => {
   const app = setup(async () => response(withTopology()));

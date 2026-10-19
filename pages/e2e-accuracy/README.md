@@ -103,7 +103,9 @@ New campaigns use `gym-resolved-config-v3` to include NVIDIA single-turn MTP
 measurements alongside STP. **Decoding: All / STP / MTP** filters both views,
 recomputes point-level MAPE and coverage, and persists as `?spec=mtp` or
 `?spec=none`. Older snapshots remain readable; they need a new evaluation to
-populate MTP curves. Publishing this UI alone does not generate predictions.
+populate MTP curves. Both publication and browser validation accept the v3 policy,
+including campaigns with `source_unresolved` exclusions. Publishing this UI alone
+does not generate predictions.
 
 MTP topology labels identify speculative decoding. The point configuration shows
 `mtp_depth`, `mtp_accepted_draft_tokens` (excluding the base token), and
