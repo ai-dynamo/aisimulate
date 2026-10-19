@@ -10,7 +10,7 @@ use crate::engine::offload_lru::Lru;
 pub(crate) use crate::engine::offload_transfer::Direction;
 use crate::engine::offload_transfer::{self, FairTransfers};
 use anyhow::{Result, ensure};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -94,7 +94,7 @@ pub(crate) struct G3Tier {
     config: G3OffloadConfig,
     next_worker_id: usize,
     block_bytes: usize,
-    entries: BTreeMap<(usize, HostBlockKey), Entry>,
+    entries: FxHashMap<(usize, HostBlockKey), Entry>,
     pools: BTreeMap<usize, Pool>,
     jobs: BTreeMap<u64, Job>,
     transfers: FairTransfers,
@@ -137,7 +137,7 @@ impl G3Tier {
             config,
             next_worker_id: workers,
             block_bytes,
-            entries: BTreeMap::new(),
+            entries: FxHashMap::default(),
             pools: BTreeMap::new(),
             jobs: BTreeMap::new(),
             transfers: FairTransfers::default(),
