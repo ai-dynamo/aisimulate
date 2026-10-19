@@ -304,6 +304,92 @@ def test_wait_ready_rejects_terminal_or_foreign_allocation(runner, monkeypatch, 
     assert runner.hosts == []
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX transport process groups")
+def test_execute_observes_later_node_failure_while_first_node_is_alive(runner, monkeypatch):
+    from collector.fpm_forward import runner as campaign
+
+    readiness = runner.cell_dir / "first-node-ready"
+    children, failures, cancellations = {}, {}, []
+    original_popen = subprocess.Popen
+    original_cancel = campaign.CommandScope.cancel
+    monkeypatch.setattr(campaign, "_COMMAND_TERMINATION_GRACE_SECONDS", 0.1)
+
+    def popen(args, **kwargs):
+        child = original_popen(args, **kwargs)
+        children[args[-1]] = child
+        return child
+
+    def cancel(scope):
+        cancellations.append((scope, children["node0000"].poll() is None))
+        return original_cancel(scope)
+
+    def command(unit, _command, *, timeout):
+        script = (
+            "import pathlib,sys,time; "
+            "print(sys.argv[-1] + ' stdout', flush=True); "
+            "print(sys.argv[-1] + ' stderr', file=sys.stderr, flush=True); "
+        )
+        if unit == "node0000":
+            script += "pathlib.Path(sys.argv[1]).write_text('ready'); time.sleep(30)"
+        else:
+            deadline = time.monotonic() + 5
+            while not readiness.exists():
+                assert time.monotonic() < deadline, "first node did not start"
+                time.sleep(0.005)
+            script += "sys.exit(17)"
+        try:
+            return campaign._run_command([sys.executable, "-c", script, str(readiness), unit], timeout=timeout)
+        except subprocess.CalledProcessError as error:
+            failures[unit] = error
+            raise
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(campaign.CommandScope, "cancel", cancel)
+    monkeypatch.setattr(runner, "_exec", command)
+    try:
+        # A broken executor is bounded by the first node's command timeout.
+        with pytest.raises(subprocess.CalledProcessError) as caught:
+            runner.execute(["node0000", "node0001"], timeout_seconds=5)
+    finally:
+        for child in children.values():
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=2)
+
+    assert caught.value is failures["node0001"]
+    assert caught.value.returncode == 17
+    assert len(cancellations) == 1 and cancellations[0][1]
+    scope = cancellations[0][0]
+    assert scope.cancelled and scope.inflight == 0 and not scope.processes
+    assert children["node0000"].returncode == -signal.SIGTERM
+    assert children["node0001"].returncode == 17
+    for unit in ("node0000", "node0001"):
+        for stream in ("stdout", "stderr"):
+            assert (runner.cell_dir / "logs" / f"{unit}.{stream}.log").read_text() == f"{unit} {stream}\n"
+    with campaign._ACTIVE_COMMANDS_LOCK:
+        assert not campaign._ACTIVE_COMMANDS
+
+
+def test_execute_retains_all_successful_node_logs(runner, monkeypatch):
+    second_started = threading.Event()
+    finished = []
+
+    def command(unit, _command, *, timeout):
+        if unit == "node0000":
+            assert second_started.wait(5)
+        else:
+            second_started.set()
+        finished.append(unit)
+        return subprocess.CompletedProcess([], 0, stdout=f"{unit} stdout\n", stderr=f"{unit} stderr\n")
+
+    monkeypatch.setattr(runner, "_exec", command)
+    runner.execute(["node0000", "node0001"])
+    assert sorted(finished) == ["node0000", "node0001"]
+    for unit in finished:
+        for stream in ("stdout", "stderr"):
+            assert (runner.cell_dir / "logs" / f"{unit}.{stream}.log").read_text() == f"{unit} {stream}\n"
+
+
 @pytest.mark.parametrize("interrupt", [signal.SIGINT, signal.SIGTERM])
 @pytest.mark.parametrize("child_mode", ["cooperative", "ignore_term", "pipe_descendant"])
 @pytest.mark.skipif(os.name != "posix", reason="POSIX transport process groups")

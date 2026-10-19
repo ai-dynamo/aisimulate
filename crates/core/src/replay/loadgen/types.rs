@@ -237,6 +237,9 @@ pub struct AgenticNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) source_play_ordinal: Option<usize>,
     pub(super) session_id: String,
+    /// Legacy grouping identity synthesized by the loader, not serving identity.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) synthetic_session_id: bool,
     pub(super) model: String,
     pub(super) input_length: usize,
     pub(super) max_output_tokens: usize,

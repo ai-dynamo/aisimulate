@@ -552,10 +552,18 @@ examples. The manifest supplies profiles, dependencies, timeouts, and output
 assertions; the harness reads the commands from README and records per-block
 logs and results locally. See `--help` for the available profiles and options.
 
-## Weekly PR review digest
+## Slack review digest and weekly PIC
 
-`Slack weekly review digest` runs each Monday at 17:07 America/Los_Angeles.
+`Slack review digest` runs each Monday and Thursday at 09:00 America/Los_Angeles.
 It counts PRs opened and merged in the preceding seven local calendar days,
 excluding the start boundary and including the current time. It also reports
 the current non-draft review queue and lists open PRs older than five days.
 Manual dispatch remains available with dry-run enabled by default.
+
+The weekly PIC changes on Monday at 09:00 Pacific. The Actions variable
+`SLACK_REVIEW_ROTATION` holds the ordered roster, start date, and dated OOO
+overrides; it can be edited without a PR. The Slack webhook workflow requires
+a `review_pic` **User ID** variable inserted as a mention in the channel
+message, and must be republished after template changes. Missing or invalid
+rotation configuration stops delivery. See the
+[setup and configuration guide](../../DEVELOPMENT.md#slack-review-digest-and-weekly-pic).

@@ -509,6 +509,7 @@ fn core_request(request: Request) -> DirectRequest {
         output_token_ids: request.output_token_ids,
         uuid: Some(request.request_id),
         arrival_timestamp_ms: None,
+        session_id: request.session_id,
     }
 }
 
@@ -766,6 +767,7 @@ mod tests {
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: 20,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -786,6 +788,7 @@ mod tests {
                     tokens: (10..22).collect(),
                     max_output_tokens: 1,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: first_end_ms,
@@ -925,6 +928,7 @@ mod tests {
                     tokens,
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms,
@@ -969,6 +973,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        session_id: None,
                     },
                 },
                 CommandContext {
@@ -997,6 +1002,7 @@ mod tests {
                     tokens: vec![1, 2, 3, 4],
                     max_output_tokens: output_token_ids.len(),
                     output_token_ids: Some(output_token_ids),
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: 0.0,
@@ -1114,6 +1120,7 @@ mod tests {
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1135,6 +1142,7 @@ mod tests {
                     tokens: vec![31, 32, 33, 34],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 0.5,
@@ -1192,6 +1200,7 @@ mod tests {
                     tokens: vec![41, 42, 43, 44],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms + 1.0,
@@ -1248,6 +1257,7 @@ mod tests {
                         tokens: tokens.clone(),
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        session_id: None,
                     }),
                     CommandContext {
                         now_ms,
@@ -1285,6 +1295,7 @@ mod tests {
                     tokens: vec![21, 22, 23, 24],
                     max_output_tokens: 0,
                     output_token_ids: None,
+                    session_id: None,
                 }),
                 CommandContext {
                     now_ms: h2d_due_ms - 0.5,
@@ -1376,6 +1387,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
+                        session_id: None,
                     },
                 },
                 CommandContext {
@@ -1444,6 +1456,7 @@ mod tests {
                         tokens,
                         max_output_tokens: 8,
                         output_token_ids: None,
+                        session_id: None,
                     }),
                     CommandContext {
                         now_ms: 0.0,
@@ -1499,6 +1512,7 @@ mod tests {
                         tokens: vec![1, 2, 3, 4],
                         max_output_tokens: 1,
                         output_token_ids: Some(vec![5]),
+                        session_id: None,
                     },
                 },
                 CommandContext {
@@ -1591,6 +1605,7 @@ mod tests {
                         tokens: (1..=9).collect(),
                         max_output_tokens: 2,
                         output_token_ids: None,
+                        session_id: None,
                     },
                 },
                 0.0,
@@ -1639,6 +1654,7 @@ mod tests {
                         tokens: (1..=9).collect(),
                         max_output_tokens: 1,
                         output_token_ids: None,
+                        session_id: None,
                     },
                 },
                 now_ms,

@@ -3,11 +3,14 @@
 
 mod admission;
 mod engine;
+mod tokenization;
 mod types;
 
 pub(crate) use admission::{AdmissionQueue, ReplayReadyArrival};
 pub use admission::{NoReplayMetadata, ReplayAdmissionMetadata};
 pub(crate) use engine::EngineComponent;
+pub use tokenization::TokenizationLatency;
+pub(crate) use tokenization::TokenizationStage;
 pub use types::ReplayEngineObservation;
 pub(crate) use types::ReplayMode;
 pub use types::TrafficStats;

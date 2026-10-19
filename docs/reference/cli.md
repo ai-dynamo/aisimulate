@@ -52,6 +52,23 @@ illustrate the output format. Captured detail examples are simulation results, n
 The CLI deliberately does not expose field-specific flags such as `--request-per-second` or
 `--num-workers`. YAML is the authoritative semantic configuration surface.
 
+### Eager execution and CUDA graphs
+
+These flags control the vLLM worker used for FPM collection. `--enforce-eager`
+is a worker flag, not an `aisimulate predict` or `onboard init` option.
+
+| Setting | CUDA graphs | `torch.compile` |
+|---|---|---|
+| Worker `--enforce-eager` | Disabled; eager execution. | Disabled. |
+| Collector `--fpm-enforce-eager` | Disabled; emits worker `--enforce-eager`. | Disabled. |
+| Onboarding `--cudagraph-mode NONE` / worker `cudagraph_mode=NONE` | Disabled. | Unchanged; may remain enabled. |
+
+See [vLLM's compilation guide](https://docs.vllm.ai/en/stable/design/debug_vllm_compile/)
+for the worker flag semantics. DSV4.1 onboarding automatically selects the
+required eager setting from model metadata; users need no extra flag. The
+[FPM self-service guide](../perf-model/fpm-self-service/implementation.md#serving-roles-and-cuda-graph-settings)
+explains the current qualification limit and conflicting graph settings.
+
 <a id="override-semantics"></a>
 
 ### Override Semantics

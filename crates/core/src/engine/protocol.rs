@@ -22,6 +22,9 @@ pub struct Request {
     /// output position, so reusing a request ID reproduces the same stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Optional session attribution; does not affect scheduling or cache identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Commands supported by the standalone scheduler.
@@ -118,6 +121,9 @@ pub struct StoredBlocks {
     pub start_position: Option<usize>,
     /// Blocks in sequence order.
     pub blocks: Vec<KvBlock>,
+    /// Session of the request making these blocks visible, not exclusive ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// Runtime-neutral KV event payload.
@@ -365,4 +371,38 @@ pub struct PassCompletionEffects {
 pub struct PendingPass {
     pub(crate) started_at_ms: f64,
     pub(crate) effects: PassCompletionEffects,
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn optional_session_metadata_is_json_compatible() {
+        let request_json = serde_json::json!({"request_id": Uuid::nil(), "tokens": [1, 2], "max_output_tokens": 1});
+        let mut request: Request = serde_json::from_value(request_json).unwrap();
+        assert!(request.session_id.is_none());
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("session_id")
+                .is_none()
+        );
+        request.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<Request>(serde_json::to_value(&request).unwrap()).unwrap(),
+            request
+        );
+        let legacy = serde_json::json!({"event_id": 1, "dp_rank": 0, "data": {"stored": {"parent_hash": null, "blocks": []}}});
+        let mut event: KvEvent = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&event).unwrap(), legacy);
+        let KvEventData::Stored(stored) = &mut event.data else {
+            panic!("expected store");
+        };
+        stored.session_id = Some("session".into());
+        assert_eq!(
+            serde_json::from_value::<KvEvent>(serde_json::to_value(&event).unwrap()).unwrap(),
+            event
+        );
+    }
 }

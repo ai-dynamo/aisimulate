@@ -150,7 +150,13 @@ def _validate_performance_diagnostics(record: dict[str, Any]) -> None:
         fpm_coordinates(value["query"], f"{path}.query")
         require(
             value["resolution"]
-            in ("exact_lookup", "within_curve_interpolation", "cross_kv_interpolation", "cross_batch_interpolation"),
+            in (
+                "exact_lookup",
+                "within_curve_interpolation",
+                "cross_kv_interpolation",
+                "cross_batch_interpolation",
+                "kv_first_interpolation",
+            ),
             f"{path}.resolution",
             "a supported direct resolution",
         )

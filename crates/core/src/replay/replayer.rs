@@ -18,6 +18,7 @@ use crate::replay::artifact::{
 };
 use crate::replay::components::{
     AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
+    TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
@@ -284,6 +285,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     runtime_input: Option<ReplayRuntimeInput>,
     capture: ReplayCaptureOptions,
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
+    tokenization: Option<TokenizationLatency>,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -324,6 +326,7 @@ impl<C: ReplayComposition> Replayer<C> {
             runtime_input: None,
             capture: ReplayCaptureOptions::default(),
             telemetry: None,
+            tokenization: None,
         })
     }
 
@@ -354,6 +357,37 @@ impl<C: ReplayComposition> Replayer<C> {
             )));
         }
         self.telemetry = Some((sample_interval_ms, observer));
+        Ok(self)
+    }
+
+    /// Tokenize each request on the worker it was placed on before that
+    /// worker's engine sees it. Every worker of the entry role (aggregated or
+    /// prefill) has `workers` first-come, first-served tokenizer servers, and a
+    /// request takes `base_ms + per_input_token_ms * input_tokens` on one of
+    /// them. Latency metrics still start at arrival. Both costs zero, the
+    /// default, keeps direct dispatch.
+    pub fn with_tokenization(
+        mut self,
+        workers: usize,
+        base_ms: f64,
+        per_input_token_ms: f64,
+    ) -> ReplayResult<Self> {
+        if workers == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "tokenization workers must be positive".to_string(),
+            ));
+        }
+        for (name, value) in [
+            ("tokenization base_ms", base_ms),
+            ("tokenization per_input_token_ms", per_input_token_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "{name} must be finite and non-negative, got {value}"
+                )));
+            }
+        }
+        self.tokenization = TokenizationLatency::new(workers, base_ms, per_input_token_ms);
         Ok(self)
     }
 
@@ -407,6 +441,14 @@ impl<C: ReplayComposition> Replayer<C> {
             None
         };
         let telemetry = self.telemetry.take();
+        let tokenization = self.tokenization;
+        if tokenization.is_some()
+            && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        {
+            return Err(ReplayError::InvalidSpec(
+                "tokenization does not support worker scaling".to_string(),
+            ));
+        }
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
@@ -465,7 +507,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_tokenization(tokenization);
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
@@ -540,7 +583,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_tokenization(tokenization);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }
