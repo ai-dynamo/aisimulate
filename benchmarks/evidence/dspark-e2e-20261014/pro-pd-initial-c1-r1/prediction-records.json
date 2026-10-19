@@ -1,9 +1,0 @@
-{
-  "archive": "prediction-records.tar.gz",
-  "sha256": "faa5864e6aa233136a7996a028978f6efafc5e308d3f515dda93bbb5c2d92859",
-  "files": {
-    "prediction/replay-spec.json": "2467d56e78bd344e493de2ebfc5ae7ef03670f851a7ae197e8f73294991bc7eb",
-    "prediction/replay-report.json": "7d6e56413148c6284933860f93e2ded18cb4470d7cd6c0ea240531c47fe0c7d7",
-    "prediction/predictor-source.patch": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-  }
-}

@@ -1,7 +1,0 @@
-W1015 12:54:16.105000 1172741 torch/utils/cpp_extension.py:178] No CUDA runtime is found, using CUDA_HOME='/usr/local/cuda'
-Traceback (most recent call last):
-  File "/workspace/jobs/dspark-full-20261015/queue/preflight.py", line 16, in <module>
-    from vllm.entrypoints.openai.api_server import make_arg_parser
-ImportError: cannot import name 'make_arg_parser' from 'vllm.entrypoints.openai.api_server' (/usr/local/lib/python3.12/dist-packages/vllm/entrypoints/openai/api_server.py)
-srun.real: error: nsc-svg-slurm-1-cpu-56: task 0: Exited with exit code 1
-srun.real: Terminating StepId=2267303.0

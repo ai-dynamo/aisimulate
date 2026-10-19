@@ -135,4 +135,4 @@ mixed step still contribute their own decode cost.
 These settings model prompt boundaries, not a complete connector simulator.
 Physical block transfer padding,
 heterogeneous-TP redistribution and transport overlap still require matched
-runtime evidence. See the [collection campaign](../../../benchmarks/evidence/dspark-e2e-20261014/COLLECTION.md).
+runtime evidence.

@@ -658,20 +658,6 @@ adaptations of, the named DeepSeek model repositories:
 | `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
 | `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
 
-The unmodified evidence configuration
-`benchmarks/evidence/dspark-e2e-20261014/configs/pro0813/config.json` and its
-embedded copies in `smoke-pro-eager/replay-config.yaml`,
-`smoke-pro-graph/replay-config.yaml`, and
-`pro-initial-c1-r1/replay-config.yaml` come from
-`deepseek-ai/DeepSeek-V4-Pro-0813@72e1d3230f6c080a530b0a1d46f8eb4602340597/config.json`.
-Copyright (c) 2023 DeepSeek. MIT; the adjacent evidence directory preserves the
-upstream license. The Replay YAML combines the unchanged configuration with
-original campaign settings. The generated Replay specifications, reports and
-archived source/configuration snapshots in these evidence directories retain
-the same attribution for embedded configuration content.
-Source: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/blob/72e1d3230f6c080a530b0a1d46f8eb4602340597/config.json
-License: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro-0813/blob/72e1d3230f6c080a530b0a1d46f8eb4602340597/LICENSE
-
 The V4.1 descriptor and performance formulas in `src/aisimulate_core/sdk/deepseek_v41.py`,
 `src/aisimulate_core/sdk/models/deepseek_v41.py`, and repository-root
 `crates/core/src/perfmodel/operators/dsv41.rs` are AISimulate performance-model
@@ -1350,9 +1336,8 @@ Additional original paths are `vllm/models/deepseek_v41/common/engram.py`,
 `vllm/models/deepseek_v41/nvidia/flashmla.py`,
 `vllm/v1/attention/backends/mla/sparse_swa.py`,
 `vllm/v1/worker/worker_base.py`, and `vllm/entrypoints/llm.py`.
-The KV-coverage audit and exact-only regression in
-`benchmarks/evidence/dspark-e2e-20261014/{COLLECTION.md,model-support.json}` and
-`crates/core/src/perfmodel/perf_database/dsv41_native.rs` also derive execution
+The exact-only regression in
+`crates/core/src/perfmodel/perf_database/dsv41_native.rs` also derives execution
 boundaries from the same pinned runtime's
 `vllm/models/deepseek_v41/{compressor,sparse_mla}.py` and
 `vllm/models/deepseek_v41/common/ops/fused_compress_quant_cache.py`.
@@ -1390,8 +1375,7 @@ project and NVIDIA CORPORATION & AFFILIATES. Apache-2.0.
 Source: https://github.com/vllm-project/vllm/tree/ac9126e58aa7bbab1856ba6593ba4d5003fea516
 License: https://github.com/vllm-project/vllm/blob/ac9126e58aa7bbab1856ba6593ba4d5003fea516/LICENSE
 
-The V4.1 native observer, its source manifest, regression tests, and
-`benchmarks/evidence/dspark-e2e-20261014/v41-installed-source-audit.json`
+The V4.1 native observer, its source manifest and regression tests
 additionally describe modified source installed in runtime image
 `sha256:3d17635c5aa0340e2f2502c067ce4b587d8e7dc678195e90b71142490dc6d71c`.
 This immutable image includes a decoder replay patch beyond the base revision:
@@ -1399,115 +1383,10 @@ This immutable image includes a decoder replay patch beyond the base revision:
 `vllm/models/deepseek_v41/decoder_replay_layers.py`,
 `vllm/models/deepseek_v41/nvidia/model_state.py`, and
 `vllm/models/deepseek_v41/nvidia/decoder_replay_cudagraph.py`.
-The manifest identifies each installed source by SHA256; the evidence retains
-the upstream hashes and audited eager-only semantics. These original adapters
+The manifest identifies each installed source by SHA256. These original adapters
 and derived descriptions are modified; no serving kernels are copied.
 Copyright contributors to the vLLM project. Apache-2.0, under the source and
 license URLs above.
-
-`benchmarks/evidence/dspark-e2e-20261014/pd-installed-source-audit.json`
-contains modified source-derived descriptions and hashes for the same immutable
-runtime image and base revision. In addition to the NIXL connector subtree,
-it covers `vllm/distributed/kv_transfer/kv_connector/utils.py`,
-`vllm/config/vllm.py`, `vllm/v1/core/sched/scheduler.py`,
-`vllm/v1/engine/core_client.py`, `vllm/v1/worker/gpu/{model_runner,kv_connector}.py`,
-`vllm/v1/worker/gpu/model_states/{__init__,interface,default}.py`,
-`vllm/v1/worker/gpu/spec_decode/dflash/{speculator,cudagraph}.py`,
-`vllm/v1/worker/gpu/spec_decode/dspark/speculator.py`, and Pro target/draft
-source under `vllm/models/deepseek_v4/`. Copyright contributors to the vLLM
-project. Apache-2.0, source and license URLs above; no serving kernels are copied.
-
-The original CPU cache-receipt adapter
-`benchmarks/evidence/dspark-e2e-20261014/reconcile_pro_cache.py`, its tests,
-`agentx-pro-context-capacity-plan.json` and adjacent README adapt the shared
-allocation and scheduling contracts in
-`vllm/v1/kv_cache_interface.py`, `vllm/config/vllm.py`, and
-`vllm/v1/core/{kv_cache_utils.py,sched/scheduler.py}` at revision
-`ac9126e58aa7bbab1856ba6593ba4d5003fea516` (source and license URLs above).
-These are modified derivations; no runtime allocator is copied. Copyright
-contributors to the vLLM project. Apache-2.0.
-The archived `cache-adapter-v1-source.tar.gz` retains the earlier adapter and
-tests under this same source, revision and license attribution.
-
-The original read-only observer `source_pool_observer.py`, its CPU behavior
-tests `test_source_pool_observer.py`, source manifest `source_pool_sources.json`,
-and adjacent collection/overhead evidence under
-`benchmarks/evidence/dspark-e2e-20261014/` adapt the same immutable runtime's
-`vllm/v1/core/{block_pool,kv_cache_manager,kv_cache_coordinator,single_type_kv_cache_manager}.py`,
-`vllm/v1/core/sched/{scheduler,async_scheduler}.py`, `vllm/config/scheduler.py`
-and `vllm/v1/engine/core.py`. Installed source hashes match revision
-`ac9126e58aa7bbab1856ba6593ba4d5003fea516` in the image identified above.
-These are modified independent adapters; no allocator or scheduler algorithm
-is copied. Copyright contributors to the vLLM project. Apache-2.0, source and
-license URLs above.
-
-The source-derived boundary audit
-`benchmarks/evidence/dspark-e2e-20261014/pd-drained-pool-boundary-source-audit.json`
-and its `qualification-20261015/audit.py` checks and per-window receipts describe the same
-pinned runtime's physical cache and metrics contracts. Additional original paths
-are `vllm/v1/metrics/loggers.py`, `vllm/v1/engine/async_llm.py`, and
-`vllm/v1/engine/output_processor.py`, alongside the cache and scheduler paths
-above. These are modified contract descriptions; no serving source is copied.
-Copyright contributors to the vLLM project. Apache-2.0, source revision and
-license URLs above. The audit preserves installed source hashes and line anchors.
-
-The campaign runtime feasibility and control descriptions in
-`benchmarks/evidence/dspark-e2e-20261014/runtime-collection-feasibility.json`,
-`pro-pd-followup-independent-review.json`, `freeze_acceptance.py`, and
-`synthetic-control-v4-pro-k3.json`, together with the launch-contract portions of
-`serve_smoke.py`, `serve_role.py`, `pd_driver.py`, `agg-smoke.sh`, `pd-smoke.sh`,
-`submit_matrix.py`, their tests, and frozen `queue-20261015/` launch manifests,
-are original, modified adaptations of those pinned vLLM configuration and
-transfer contracts. Additional original paths are `vllm/config/speculative.py`
-(the bonus-inclusive synthetic acceptance length and minimum-variance schedule),
-`vllm/config/attention.py`, and
-`vllm/distributed/kv_transfer/kv_connector/v1/nixl/{base_scheduler,base_worker}.py`.
-The feasibility record identifies the installed model and draft source hashes
-in the immutable image above. Measured pilot values are campaign observations;
-no upstream measurements or implementation are copied. Copyright contributors
-to the vLLM project; Apache-2.0, source revision and license URLs above.
-
-The 56 submitted `.sbatch` scripts listed by `plan.json` in
-`benchmarks/evidence/dspark-e2e-20261014/queue-20261015/` and
-`benchmarks/evidence/dspark-e2e-20261014/phaseb-queue-20261015/` retain their exact
-submitted bytes. The configuration adaptations have the vLLM provenance above.
-Original orchestration and modifications: Copyright (c) 2026 NVIDIA CORPORATION
-& AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0.
-Their copyright and license are recorded here instead of changing the immutable
-scripts; the repository copyright checker pins both manifests and script hashes.
-
-The P/D collection client
-`benchmarks/evidence/dspark-fixed-20261014/collect_pd.py` adapts (modified) the
-Mooncake HTTP handshake from
-`examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py` at
-vLLM commit `98dff2a81d747d1dba01a47f939f48c3526d4206` (v0.29.0).
-Copyright contributors to the vLLM project. Apache-2.0.
-Source: https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/examples/disaggregated/mooncake_connector/mooncake_connector_proxy.py
-License: https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
-
-## InferenceX AgentX P/D configuration evidence
-
-`benchmarks/evidence/dspark-fixed-20261014/agentx-pd-audit.json` contains modified
-extractions of configuration and measurement fields from InferenceX workflow
-`36425419107`, attempt 3, at commit
-`f4ad60fba73439cf4833a674e6a84feb2014bfaf`. Copyright SemiAnalysis and InferenceX
-contributors. Licensed under Apache-2.0; the full license is reproduced in the
-root `LICENSE`.
-
-Source recipe:
-https://github.com/SemiAnalysisAI/InferenceX/blob/f4ad60fba73439cf4833a674e6a84feb2014bfaf/inferencex-e2e/benchmarks/multi_node/srt-slurm-recipes/dsv4/vllm/gb200-fp4/agentx/disagg-1p1d-dep8-dep8-c32-dspark5.yaml
-
-Generated source artifacts:
-https://github.com/SemiAnalysisAI/InferenceX/actions/runs/36425419107/attempts/3
-Artifact IDs 11092304949, 11092647256 and 11092552440 contain the benchmark JSON,
-`conc_32/aiperf_artifacts/profile_export_aiperf.json`, per-request records,
-`sweep_26842.log`, worker `*_config.json` and `fingerprint_*_w0.json` files.
-The derived audit records their SHA-256 identities and extraction status. It
-also records selected fields from public sibling-point API responses, with
-source URLs and hashes. Raw archives and serving source code are not vendored.
-
-Upstream license:
-https://github.com/SemiAnalysisAI/InferenceX/blob/f4ad60fba73439cf4833a674e6a84feb2014bfaf/LICENSE
 
 ## AIPerf live AgentX warmup lifecycle
 
@@ -1521,121 +1400,3 @@ Licensed under Apache-2.0. No upstream async runtime code is vendored.
 
 Source: https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py
 License: https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE
-
-The campaign entrypoints, context probes and capture adapters under
-`benchmarks/evidence/dspark-e2e-20261014/` (`agentx_phaseb.py`,
-`agentx_server.py`, `agentx_context_audit.py`, `agentx_capture.py`,
-`agentx_import.py`, `agentx_native_inputs.py`, `agentx_run.py`, `agentx-run.sh`, their tests,
-and `agentx_corpus_pin/`) are original, modified adaptations of the same pinned
-producer's configuration, dataset, lifecycle and export contracts. Their adjacent
-manifests and documentation derive identity and lifecycle facts from those sources.
-Copyright NVIDIA CORPORATION & AFFILIATES and AIPerf contributors; Apache-2.0.
-No upstream producer implementation or corpus contents are vendored.
-
-Original paths at that revision, under `src/aiperf/`:
-
-- `dataset/loader/{base_hf_dataset,semianalysis_cc_traces_weka,weka_trace,weka_trace_models}.py`
-- `dataset/composer/public.py`
-- `timing/strategies/agentic_replay.py` and `timing/trajectory_source.py`
-- `workers/session_manager.py` and `timing/branch_orchestrator.py`
-- `common/models/{dataset_models,record_models}.py`
-- `common/models/{branch,prerequisites}.py`
-- `post_processors/raw_record_writer_processor.py`
-- `records/record_processor_service.py`
-- `config/resolution/plan.py` and `config/flags/cli_config.py`
-- `plugin/plugins.yaml`
-
-The optional diagnostic token-echo contract and native Pro/V4.1/Kimi formatter probes also
-follow vLLM `ac9126e58aa7bbab1856ba6593ba4d5003fea516`, paths
-`vllm/entrypoints/openai/chat_completion/{protocol,serving}.py` and
-`vllm/tokenizers/{deepseek_v4,deepseek_v4_encoding,deepseek_v41,deepseek_v41_encoding}.py`,
-`vllm/tokenizers/{registry,hf}.py`, and
-`vllm/renderers/{kimi_k3,params,registry}.py`.
-The P/D lifecycle wrapper `agentx_run.py` invokes the unmodified proxy from
-`tests/v1/kv_connector/nixl_integration/toy_proxy_server.py` at the same revision.
-Derived files include `agentx_corpus_pin/probe_native_context.py`,
-`agentx-native-context-v41-probe.json`, `agentx-context-preflight-v41.json`,
-`agentx-native-context-kimi-probe.json`, `agentx-context-preflight-kimi.json`, and
-`agentx-collection-readiness.json` under the campaign directory above, alongside
-the existing Pro context witnesses. Copyright contributors to the vLLM project;
-Apache-2.0. These are modified contract adaptations; the native formatters are
-imported externally, not copied into this repository.
-Source: https://github.com/vllm-project/vllm/tree/ac9126e58aa7bbab1856ba6593ba4d5003fea516
-License: https://github.com/vllm-project/vllm/blob/ac9126e58aa7bbab1856ba6593ba4d5003fea516/LICENSE
-
-Corpus identity: `semianalysisai/cc-traces-weka-062126` at
-`23f152f6f0f9399a85901b89a6458def0ef16729`; its README declares Apache-2.0.
-Evidence stores hashes, counts and bounds, not the source dataset.
-Source: https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126/tree/23f152f6f0f9399a85901b89a6458def0ef16729
-
-## External Kimi K3 tokenizer used by the AgentX CPU witness
-
-`benchmarks/evidence/dspark-e2e-20261014/agentx_corpus_pin/probe_native_context.py`
-invokes the externally installed tokenizer from `moonshotai/Kimi-K3` at immutable
-revision `f831ab66814297da540d832a5235f8e904f29d06`. The imported original paths are
-`tokenization_kimi.py` and `encoding_k3.py`; the adjacent Kimi context witness and
-preflight JSON files record their identities and measured token counts. The
-original harness adapts the Apache-2.0 vLLM renderer call contract documented
-above. No Moonshot tokenizer or XTML implementation is copied, modified or
-vendored into AISimulate. The external model repository uses the custom Kimi K3
-License, not Apache-2.0 or MIT. Copyright (c) 2026 Moonshot AI.
-
-Source: https://huggingface.co/moonshotai/Kimi-K3/tree/f831ab66814297da540d832a5235f8e904f29d06
-License: https://huggingface.co/moonshotai/Kimi-K3/blob/f831ab66814297da540d832a5235f8e904f29d06/LICENSE
-
-The upstream license is reproduced for the external dependency identity:
-
-```text
-Kimi K3 License
-
-Copyright (c) 2026 Moonshot AI
-
-Permission is hereby granted, free of charge, to any person (the "Licensee")
-obtaining a copy of this software — including the model weights, parameters,
-configuration files, inference and training code, and associated documentation
-(collectively, the "Software") — to deal in the Software without restriction.
-This includes, without limitation, the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of the Software; to run,
-deploy, fine-tune, or otherwise modify the Software and create derivative works
-from it; and to permit persons to whom the Software is furnished to do so, in
-each case subject to the following conditions:
-
-1. The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software. Licensee's use of the
-Software must comply with applicable laws and regulations.
-
-2. "Model as a Service" means giving a third party access to language model
-inference or fine-tuning (e.g., via API) in a manner that allows such third
-party to exercise meaningful control over the inputs, parameters, or training
-data. This does not include (a) end-user products with model capabilities solely
-embedded within specific features or harnesses, or (b) mere relaying of requests
-to models hosted by others.
-
-If the Licensee or any of its affiliates operates a Model as a Service business,
-and the aggregate revenue of the Licensee and its affiliates exceeds 20 million
-US dollars (or the equivalent in other currencies) in total over any consecutive
-12 months, the Licensee must enter into a separate agreement with Moonshot AI
-before using the Software or its derivative works for any commercial purpose.
-
-3. If the Software (or any derivative works thereof) is used for any of the
-Licensee's commercial products or services that have more than 100 million
-monthly active users, or more than 20 million US dollars (or equivalent in other
-currencies) in monthly revenue, "Kimi K3" must be prominently displayed on the
-user interface of such product or service.
-
-4. The requirements set forth in Sections 2 and 3 do not apply to: (a) internal
-use of the Software, defined as any use that does not make the Software, its
-outputs, or its underlying capabilities available to third parties; or (b) any
-use of the Software accessed through Moonshot AI's official products or
-certified inference partners.
-
-5. THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED ON AN “AS IS”
-BASIS, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
-LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE
-AND NONINFRINGEMENT. IN NO EVENT SHALL MOONSHOT AI OR ITS AFFILIATES OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-For any questions regarding this license, please contact <license@moonshot.ai>.
-```

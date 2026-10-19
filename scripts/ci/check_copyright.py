@@ -12,7 +12,6 @@ gap.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import subprocess
 import sys
@@ -53,35 +52,6 @@ VENDORED_FILES = {
     "pages/fpm-accuracy/assets/plotly.min.js": "28498fa2ea4ba45c8633218088eb223436ca0ca02fc57027fd6fa841ad1901f9",
     "pages/fpm-accuracy/assets/PLOTLY-LICENSE.txt": "764f5e789cad7b339fa1dce1b88f8e316bc39433d265a5754738f31888ad8b2b",
 }
-
-
-# Exact submitted scripts are immutable evidence; centralized attribution is in
-# THIRD_PARTY_NOTICES.md. Pin the manifests as well as every listed script.
-PROVENANCE_MANIFESTS = {
-    "benchmarks/evidence/dspark-e2e-20261014/queue-20261015/plan.json": (
-        "9325e44f0fec5fab363f716701134972d27c14dd3caf141efe6d4efde2fea4ed"
-    ),
-    "benchmarks/evidence/dspark-e2e-20261014/phaseb-queue-20261015/plan.json": (
-        "0dcf7e4a44c747f4b773574f2278d5d30a7583bd192553cc508005473867eb7d"
-    ),
-}
-
-
-def verified_provenance_files(root: Path) -> set[str]:
-    verified = set()
-    for name, digest in PROVENANCE_MANIFESTS.items():
-        manifest = root / name
-        if hashlib.sha256(manifest.read_bytes()).hexdigest() != digest:
-            raise ValueError(f"modified provenance manifest: {name}")
-        for job in json.loads(manifest.read_bytes())["jobs"]:
-            script = job["script"]
-            if Path(script).name != script:
-                raise ValueError(f"invalid provenance script name: {script}")
-            path = manifest.parent / script
-            if hashlib.sha256(path.read_bytes()).hexdigest() != job["script_sha256"]:
-                raise ValueError(f"modified provenance script: {path}")
-            verified.add(path.relative_to(root).as_posix())
-    return verified
 
 
 def invalid_vendored_files(root: Path) -> list[str]:
@@ -129,16 +99,7 @@ def main() -> int:
     if invalid:
         print("Missing or modified pinned third-party files: " + ", ".join(invalid))
         return 1
-    try:
-        provenance = verified_provenance_files(Path.cwd())
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f"Invalid pinned provenance: {error}")
-        return 1
-    sources = [
-        Path(name)
-        for name in tracked
-        if name and name not in VENDORED_FILES and name not in provenance and is_source(Path(name))
-    ]
+    sources = [Path(name) for name in tracked if name and name not in VENDORED_FILES and is_source(Path(name))]
 
     missing: list[str] = []
     for path in sources:

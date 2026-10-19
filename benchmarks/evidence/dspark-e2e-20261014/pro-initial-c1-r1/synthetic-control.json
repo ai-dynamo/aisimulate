@@ -1,7 +1,0 @@
-{
-  "accepted_tokens": 2.77,
-  "synthetic_acceptance_length": 3.77,
-  "frozen_before_measurement": true,
-  "source": "AgentX result 442741",
-  "producer": "vllm/config/speculative.py::_acceptance_length_to_rates@ac9126e58aa7bbab1856ba6593ba4d5003fea516"
-}

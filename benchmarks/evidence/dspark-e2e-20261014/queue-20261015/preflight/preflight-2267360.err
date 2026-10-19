@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/workspace/jobs/dspark-full-20261015/queue/preflight.py", line 33, in <module>
-    raise ValueError("Expected one serving CLI parser definition; inspect actual-image sources")
-ValueError: Expected one serving CLI parser definition; inspect actual-image sources
-srun.real: error: nsc-svg-slurm-1-cpu-56: task 0: Exited with exit code 1
-srun.real: Terminating StepId=2267360.0

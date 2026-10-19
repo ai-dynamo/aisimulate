@@ -177,11 +177,10 @@ Explore the automation helpers under `python/aisimulate/tools/automation/`.
 
 This project is licensed under Apache 2.0. All contributions must include SPDX license headers and DCO sign-off.
 
-Exact submitted benchmark scripts retained as immutable evidence may carry their
-copyright and license in `THIRD_PARTY_NOTICES.md`. The copyright checker permits
-only scripts listed in explicitly hash-pinned provenance manifests, verifies each
-script hash, and rejects missing or changed artifacts. Unlisted scripts still
-require inline SPDX headers; this is not a directory or file-extension exemption.
+Keep new benchmark measurements, run logs, and campaign artifacts under
+`benchmarks/evidence/`. This directory is ignored for local experiments; existing
+tracked evidence remains versioned. Do not make shipped code or CI depend on
+local campaign files.
 
 ## Daily Slack review digest
 

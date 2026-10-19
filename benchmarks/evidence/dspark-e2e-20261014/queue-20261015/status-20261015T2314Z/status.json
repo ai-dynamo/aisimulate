@@ -1,6 +1,0 @@
-{
-  "status": "failed",
-  "model_key": "kimi-k3",
-  "k": 3,
-  "error": "TimeoutError: server startup exceeded 6000 seconds"
-}

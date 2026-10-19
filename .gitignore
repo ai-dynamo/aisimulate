@@ -1,6 +1,11 @@
 # OS metadata
 .DS_Store
 
+# Local benchmark measurements, run logs, and campaign-only tests.
+/benchmarks/evidence/
+/python/aisimulate/tests/unit/tools/test_dspark_campaign_comparison.py
+/python/aisimulate/tests/unit/tools/test_dspark_campaign_prediction.py
+
 # Python environments, caches, and build output
 .venv*/
 dist/

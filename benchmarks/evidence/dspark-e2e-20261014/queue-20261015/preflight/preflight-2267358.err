@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/workspace/jobs/dspark-full-20261015/queue/preflight.py", line 16, in <module>
-    from vllm.entrypoints.openai.cli_args import make_arg_parser
-ModuleNotFoundError: No module named 'vllm.entrypoints.openai.cli_args'
-srun.real: error: nsc-svg-slurm-1-cpu-56: task 0: Exited with exit code 1
-srun.real: Terminating StepId=2267358.0

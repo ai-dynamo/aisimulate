@@ -138,37 +138,3 @@ def test_vendor_integrity_fails_closed(checker, tmp_path, fault):
     else:
         path.unlink()
     assert checker.invalid_vendored_files(tmp_path) == [name]
-
-
-def test_submitted_provenance_scripts_are_exact_and_narrow(checker):
-    verified = checker.verified_provenance_files(ROOT)
-    assert len(verified) == 56
-    assert all(Path(name).suffix == ".sbatch" for name in verified)
-    assert "benchmarks/evidence/dspark-e2e-20261014/queue-20261015/unlisted.sbatch" not in verified
-
-
-@pytest.mark.parametrize("fault", ["manifest", "script", "missing_script"])
-def test_submitted_provenance_tampering_fails_closed(checker, tmp_path, fault):
-    for name in checker.PROVENANCE_MANIFESTS:
-        path = tmp_path / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((ROOT / name).read_bytes())
-    for name in checker.verified_provenance_files(ROOT):
-        (tmp_path / name).write_bytes((ROOT / name).read_bytes())
-    name = next(iter(checker.PROVENANCE_MANIFESTS))
-    path = tmp_path / name
-    if fault != "manifest":
-        path = next(path.parent.glob("*.sbatch"))
-    if fault == "missing_script":
-        path.unlink()
-    else:
-        path.write_bytes(path.read_bytes() + b"changed")
-    with pytest.raises((ValueError, OSError)):
-        checker.verified_provenance_files(tmp_path)
-
-
-def test_unlisted_batch_script_still_requires_header(checker, tmp_path):
-    path = tmp_path / "unlisted.sbatch"
-    path.write_text("#!/bin/bash\necho example\n")
-    assert checker.is_source(path)
-    assert not checker.has_required_license_identifier(path.read_text())
