@@ -13,7 +13,7 @@ configuration (prefix/radix cache on). Text only, pure TP, DP = PP = EP = 1.
 |---|---|---|---|
 | GB300 | FP8 TP2/TP4, NVFP4 TP1/TP2/TP4 | FP8 TP2/TP4, NVFP4 TP2/TP4 | FP8 |
 | GB200 | FP8 TP4, NVFP4 TP2 | FP8 TP4, NVFP4 TP2/TP4 | FP8 |
-| B300 | FP8 TP2, NVFP4 TP1/TP2/TP4 | FP8 TP2/TP4, NVFP4 TP2/TP4 | FP8 |
+| B300 SXM | FP8 TP2, FP8 TP4 (development), NVFP4 TP1/TP2/TP4 | FP8 TP2/TP4, NVFP4 TP2/TP4 | FP8 |
 | H200 | FP8 TP4/TP8 | FP8 TP4/TP8 | BF16 |
 | H100 | FP8 TP8 | FP8 TP8 | BF16 |
 
@@ -23,10 +23,11 @@ FP8 TP1 does not fit on one GPU. Hopper profiles use BF16 KV for both backends.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
 repository. They are published in `nvidia/aisimulate-fpm-dataset`
-([discussion 15](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/15),
-[discussion 20](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/20)).
+([GB300 discussion 15](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/15),
+[experimental B300 discussion 19](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/19),
+[GB200/B300/H200/H100 discussion 20](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/20)).
 [`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
-pins the 28 profiles to dataset commit
+pins the 29 profiles to immutable dataset revision
 `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a` and records each file's SHA-256.
 Profile keys are `<system>-<backend>-<fp8|nvfp4>-tp<N>` with system `gb300`,
 `gb200`, `b300`, `h200` or `h100`, for example `gb300-vllm-nvfp4-tp1` or
@@ -36,6 +37,8 @@ Profile keys are `<system>-<backend>-<fp8|nvfp4>-tp<N>` with system `gb300`,
 `materialize_fpm_profile`) and pass the printed root as `systems_paths`, with
 `estimation_mode="fpm_interpolation"` and the profile identity's
 `backend_version`.
+
+The experimental B300 key is `b300-vllm-fp8-tp4`. Default materialization is blocked; use `--allow-unqualified` only for diagnostic reproduction. It uses system `b300_sxm`, FP8 KV, TP4 and vLLM `0.31.0`. Its expanded table has 427 prefill and 175 decode measurements. Its collection covers batch sizes up to 32 and per-request contexts up to 131,072 tokens. Validation covers align-4 forward-pass inputs only; end-to-end serving, cache reuse, 1M context and a supported DynoSim dependency pair remain unqualified.
 
 ## vLLM producer
 
