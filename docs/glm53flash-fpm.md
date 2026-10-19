@@ -25,7 +25,7 @@ repository. They are published in `nvidia/aisimulate-fpm-dataset`
 [experimental B300 discussion 19](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/19)).
 [`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
 pins the ten profiles to immutable dataset revision
-`8dcf3ad20c46677c56cb3375fd107176cce9d0f7` and records each file's SHA-256.
+`21c7ea4bf528db1426e3184846eda6cdf7208cff` and records each file's SHA-256.
 Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `gb300-vllm-nvfp4-tp1` or `gb300-sglang-fp8-tp2`. Materialize one with
 `python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
