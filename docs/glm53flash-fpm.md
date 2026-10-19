@@ -5,14 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # GLM-5.3-Flash FPM
 
-Whole-forward (FPM) profiles for GLM-5.3-Flash, collected with engine-native
-timing on the default serving configuration (prefix/radix cache on). Text
-only, pure TP1/2/4/8, DP = PP = EP = 1. The producer and client have no system
-gate: whether a deployment fits a system (for example H100, H200, B300, GB200
-or GB300) is decided when the runtime loads weights and allocates KV, and a
-deployment that does not fit fails observably.
-
-Published GB300 profiles:
+Whole-forward (FPM) profiles for GLM-5.3-Flash on GB300, collected with
+engine-native timing on the default serving configuration (prefix/radix cache
+on). Text only, pure TP, DP = PP = EP = 1.
 
 | Backend | Runtime | Deployments |
 |---|---|---|
@@ -21,7 +16,7 @@ Published GB300 profiles:
 
 Checkpoints: `zai-org/GLM-5.3-Flash@eb9eb208eb0d988989d07a6a12d0fdeb5f52574a`
 and `nvidia/GLM-5.3-Flash-NVFP4@09b04e5e74bca08ca8549fc736d4cdd8624bfde3`.
-FP8 TP1 does not fit on one GPU of any of these systems.
+FP8 TP1 does not fit on one GB300.
 
 The tables (`fpm_forward_perf.{parquet,metadata.json}`) are not stored in this
 repository. They are published in `nvidia/aisimulate-fpm-dataset`
@@ -29,7 +24,7 @@ repository. They are published in `nvidia/aisimulate-fpm-dataset`
 [`hf_dataset.json`](../python/aisimulate/src/aisimulate_core/systems/profiles/glm53flash_fpm/hf_dataset.json)
 pins the nine profiles to its merge commit
 `08771888388a1ce9cd8d421b2e42f353fd5e2abb` and records each file's SHA-256.
-Profile keys are `<system>-<backend>-<fp8|nvfp4>-tp<N>`, for example
+Profile keys are `gb300-<backend>-<fp8|nvfp4>-tp<N>`, for example
 `gb300-vllm-nvfp4-tp1` or `gb300-sglang-fp8-tp2`. Materialize one with
 `python -m aisimulate_core.sdk.fpm_dataset <manifest> <key>` (or
 `materialize_fpm_profile`) and pass the printed root as `systems_paths`, with
@@ -133,3 +128,12 @@ prefix length.
 
 The pinned checkpoints are listed in `DefaultHFModels`, so model configs
 resolve offline from the bundled copies.
+
+## Systems and parallelism
+
+The producer and the SGLang client have no system gate and accept pure TP1, TP2,
+TP4 and TP8 (DP = PP = EP = 1). Whether a deployment fits a system (for example
+H100, H200, B300, GB200 or GB300) is decided when the runtime loads weights and
+allocates KV; a deployment that does not fit fails observably. FP8 TP1 does not
+fit on one GPU of any of these systems. Profile keys in `hf_dataset.json`
+follow `<system>-<backend>-<fp8|nvfp4>-tp<N>`.
