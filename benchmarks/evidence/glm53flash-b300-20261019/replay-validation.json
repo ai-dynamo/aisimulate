@@ -1,0 +1,24 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "case": "replay-final",
+      "completed_requests": 2,
+      "input_tokens": 1024,
+      "output_tokens": 4,
+      "prefix_cache_reused_ratio": 0.0
+    },
+    {
+      "case": "replay-batched-final",
+      "completed_requests": 16,
+      "input_tokens": 8192,
+      "output_tokens": 256,
+      "prefix_cache_reused_ratio": 0.0
+    }
+  ],
+  "consumer_source_revision": "c9e7363bf5983b980fe6622f7b064ee7adff5f5d",
+  "profile_parquet_sha256": "e75fd1e15bddec1d9a2952f113b2015130e71284fc7ac5934d38d50c009e5419",
+  "admission": "development",
+  "independent_accuracy_passed": false,
+  "scope": "Finite CPU replay completion only; prefill interpolation validation failed; no serving/cache-reuse accuracy claim"
+}

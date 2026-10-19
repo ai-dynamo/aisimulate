@@ -1,0 +1,544 @@
+{
+  "schema_version": 3,
+  "prefill": [
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 12,
+      "total_kv_read_tokens": 256,
+      "rows": [
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 4096,
+      "rows": [
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 1,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 16384,
+      "rows": [
+        [
+          192,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 24,
+      "total_kv_read_tokens": 512,
+      "rows": [
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 8192,
+      "rows": [
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 2,
+      "total_prefill_tokens": 384,
+      "total_kv_read_tokens": 32768,
+      "rows": [
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 48,
+      "total_kv_read_tokens": 1024,
+      "rows": [
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 16384,
+      "rows": [
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 4,
+      "total_prefill_tokens": 768,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 96,
+      "total_kv_read_tokens": 2048,
+      "rows": [
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 384,
+      "total_kv_read_tokens": 32768,
+      "rows": [
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 8,
+      "total_prefill_tokens": 1536,
+      "total_kv_read_tokens": 131072,
+      "rows": [
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 192,
+      "total_kv_read_tokens": 4096,
+      "rows": [
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ],
+        [
+          12,
+          256
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 768,
+      "total_kv_read_tokens": 65536,
+      "rows": [
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ],
+        [
+          48,
+          4096
+        ]
+      ]
+    },
+    {
+      "batch_size": 16,
+      "total_prefill_tokens": 3072,
+      "total_kv_read_tokens": 262144,
+      "rows": [
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ],
+        [
+          192,
+          16384
+        ]
+      ]
+    }
+  ],
+  "decode": [
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 303
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 9003
+    },
+    {
+      "batch_size": 1,
+      "total_kv_read_tokens": 48003
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 606
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 18006
+    },
+    {
+      "batch_size": 2,
+      "total_kv_read_tokens": 96006
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 1212
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 36012
+    },
+    {
+      "batch_size": 4,
+      "total_kv_read_tokens": 192012
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 2424
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 72024
+    },
+    {
+      "batch_size": 8,
+      "total_kv_read_tokens": 384024
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 4848
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 144048
+    },
+    {
+      "batch_size": 16,
+      "total_kv_read_tokens": 768048
+    }
+  ]
+}

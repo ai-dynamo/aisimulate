@@ -1,0 +1,155 @@
+{
+  "calibration_data_path_check": {
+    "decode": {
+      "mape_percent": 0.0,
+      "max_absolute_percentage_error": 0.0,
+      "requested": 147,
+      "supported": 147,
+      "unsupported": 0
+    },
+    "prefill": {
+      "mape_percent": 0.0,
+      "max_absolute_percentage_error": 0.0,
+      "requested": 212,
+      "supported": 212,
+      "unsupported": 0
+    }
+  },
+  "calibration_self_queries_are_accuracy": false,
+  "consumer": {
+    "native_api": true,
+    "native_extension": "/opt/aisimulate-current/python/aisimulate/src/aisimulate/_runtime.abi3.so",
+    "package": "/opt/aisimulate-current/python/aisimulate/src/aisimulate_core/__init__.py",
+    "package_version": "0.13.0",
+    "source_revision": "c9e7363bf5983b980fe6622f7b064ee7adff5f5d"
+  },
+  "estimator": {
+    "correction_ready_buckets": 0,
+    "last_warning": null,
+    "provenance": {
+      "config": {
+        "attention_backend": null,
+        "attention_dp": 1,
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": null,
+        "database_mode": "SILICON",
+        "dcp": null,
+        "decoder_replay": false,
+        "enable_eplb": false,
+        "enable_shared_layer": false,
+        "estimation_mode": "fpm_interpolation",
+        "estimator_config": {
+          "correction": {
+            "enabled": true,
+            "factor_bounds": {
+              "max": 2.0,
+              "min": 0.5
+            },
+            "feature_space": "legacy_workload",
+            "max_batch_size": 512,
+            "max_kv_tokens": 2000000,
+            "max_num_tokens": 8192,
+            "min_observations": 5,
+            "sampling": {
+              "bins_per_axis": [
+                4,
+                4
+              ],
+              "max_observations": 64
+            }
+          },
+          "features": {
+            "attention_kv_weight": 1.0,
+            "ffn_token_weight": 1.0,
+            "prefill_attention_pair_weight": 1.0
+          },
+          "fpm_interpolation": {
+            "method": "sol"
+          },
+          "fpm_regression": {
+            "fit": {
+              "kind": "standardized_nnls",
+              "rebuild_interval": null,
+              "singular_ridge_scale": 1e-09
+            },
+            "min_observations": 5,
+            "sampling": {
+              "bins_per_axis": [
+                4,
+                4
+              ],
+              "max_observations": 64
+            }
+          },
+          "op_level": {}
+        },
+        "fallback_policy": "deny",
+        "fmha_quant_mode": null,
+        "fpm_fmha_quant_mode": "fp8",
+        "fpm_profile": null,
+        "gemm_quant_mode": null,
+        "kv_block_size": null,
+        "kvcache_quant_mode": "fp8",
+        "model": "zai-org/GLM-5.3-Flash",
+        "moe_backend": null,
+        "moe_ep_size": 1,
+        "moe_kernel_source": null,
+        "moe_quant_mode": null,
+        "moe_tp_size": 4,
+        "nextn": 0,
+        "pp": 1,
+        "speculation": null,
+        "strict_provenance": true,
+        "system": "b300_sxm",
+        "systems_paths": [
+          "/experiment/glm53-b300-contribution-20261019/profile"
+        ],
+        "tp": 4,
+        "transfer_policy": [
+          "xshape",
+          "xquant",
+          "xprofile",
+          "xop"
+        ],
+        "wideep_num_slots": null,
+        "worker_type": "aggregated"
+      },
+      "requested_estimation_mode": "fpm_interpolation",
+      "selected_estimation_mode": "fpm_interpolation",
+      "selected_systems_root": "/experiment/glm53-b300-contribution-20261019/profile",
+      "selection_failures": []
+    },
+    "readiness": "ready",
+    "retained_observations": 0,
+    "source": "aic"
+  },
+  "holdout_passed": false,
+  "holdout_threshold_percent_per_phase": 10.0,
+  "independent_holdout": {
+    "decode": {
+      "mape_percent": 5.628600138944493,
+      "max_absolute_percentage_error": 49.72928807346639,
+      "requested": 15,
+      "supported": 15,
+      "unsupported": 0
+    },
+    "prefill": {
+      "mape_percent": 30.930797872048213,
+      "max_absolute_percentage_error": 252.95974304949507,
+      "requested": 15,
+      "supported": 13,
+      "unsupported": 2
+    }
+  },
+  "observed_latency_removed_from_queries": true,
+  "repeat_comparison": {
+    "canonical_fresh_population_qualification": "incomplete: one fresh full-grid repeat; source-inclusive CV is diagnostic",
+    "independent_launches_including_source": 2,
+    "max_source_inclusive_cv_percent": 4.483901675910669,
+    "points": 359,
+    "points_above_5_percent_cv": 0
+  },
+  "scope": "Native timing integrity and independent forward-step checks; no production/cache-reuse or DynoSim pairing qualification",
+  "serving_accuracy": "not_assessed"
+}
