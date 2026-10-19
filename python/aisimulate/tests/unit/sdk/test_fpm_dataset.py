@@ -6,6 +6,8 @@
 import hashlib
 import io
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -197,3 +199,153 @@ def test_concurrent_downloaders_publish_one_complete_profile(dataset, monkeypatc
     assert list(cache.iterdir()) == [results[0]]
     for target, body in bodies.items():
         assert (results[0] / target).read_bytes() == body
+
+
+@pytest.fixture
+def packaged_dataset(dataset, monkeypatch, tmp_path):
+    path, manifest, bodies, _, _ = dataset
+    systems = tmp_path / "installed-systems"
+    systems.mkdir()
+    (systems / "gb300.yaml").write_bytes(bodies["gb300.yaml"])
+    item = manifest["profiles"]["gb300-full"]["files"][0]
+    item.update(source="package", path="gb300.yaml")
+    path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(fpm_dataset, "_SYSTEMS_DIRECTORY", systems)
+    return systems
+
+
+def test_package_system_yaml_is_pinned_and_cache_is_self_contained(dataset, packaged_dataset):
+    path, _, bodies, calls, cache = dataset
+    staged = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert (staged / "gb300.yaml").read_bytes() == bodies["gb300.yaml"]
+    assert len(calls) == 2
+    # A verified existing cache remains usable even if the package later changes.
+    (packaged_dataset / "gb300.yaml").unlink()
+    assert fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True) == staged
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("mutation", ["hash", "missing", "escape", "source"])
+def test_invalid_package_source_fails_before_download(dataset, packaged_dataset, tmp_path, mutation):
+    path, manifest, bodies, calls, cache = dataset
+    source = packaged_dataset / "gb300.yaml"
+    if mutation == "hash":
+        source.write_bytes(b"changed reference configuration")
+    elif mutation == "missing":
+        source.unlink()
+    elif mutation == "escape":
+        outside = tmp_path / "outside.yaml"
+        outside.write_bytes(bodies["gb300.yaml"])
+        source.unlink()
+        source.symlink_to(outside)
+    else:
+        manifest["profiles"]["gb300-full"]["files"][0]["source"] = "unknown"
+        path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert not calls
+    assert not cache.exists()
+
+
+def test_profiles_with_same_loader_target_remain_isolated(dataset):
+    path, manifest, bodies, _, cache = dataset
+    first = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    target = "data/gb300/sglang/dev-example/fpm_forward_perf.parquet"
+    original = bodies[target]
+    bodies[target] = b"different deployment table"
+    other = json.loads(json.dumps(manifest["profiles"]["gb300-full"]))
+    other["files"][1]["sha256"] = hashlib.sha256(bodies[target]).hexdigest()
+    manifest["profiles"]["gb300-other"] = other
+    path.write_text(json.dumps(manifest))
+    second = fpm_dataset.materialize_fpm_profile(path, "gb300-other", cache_dir=cache)
+    assert first != second
+    assert (first / target).read_bytes() == original
+    assert (second / target).read_bytes() == bodies[target]
+
+
+def test_discovery_lists_admission_without_download_or_cache(dataset, packaged_dataset):
+    path, manifest, _, calls, cache = dataset
+    manifest["profiles"]["gb300-full"]["admission"] = "development"
+    builtin = packaged_dataset / "profiles/example_fpm/hf_dataset.json"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_text(json.dumps(manifest))
+    secondary = builtin.with_name("four_gpu_hf_dataset.json")
+    secondary.write_text(json.dumps(manifest))
+    expected = {
+        "manifest": str(builtin),
+        "profile": "gb300-full",
+        "admission": "development",
+        "repo_id": manifest["repo_id"],
+        "revision": manifest["revision"],
+    }
+    assert fpm_dataset.list_fpm_profiles("example_fpm") == [expected]
+    assert fpm_dataset.list_fpm_profiles(builtin) == [expected]
+    assert fpm_dataset.list_fpm_profiles("example_fpm/four_gpu_hf_dataset.json") == [
+        {**expected, "manifest": str(secondary)}
+    ]
+    assert fpm_dataset.list_fpm_profiles() == [{**expected, "manifest": str(secondary)}, expected]
+    assert not calls
+    assert not cache.exists()
+
+
+def test_packaged_manifest_materializes_by_id(dataset, packaged_dataset):
+    path, _, _, calls, cache = dataset
+    builtin = packaged_dataset / "profiles/example_fpm/hf_dataset.json"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_bytes(path.read_bytes())
+    by_id = fpm_dataset.materialize_fpm_profile("example_fpm", "gb300-full", cache_dir=cache)
+    assert fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True) == by_id
+    assert len(calls) == 2
+
+
+def test_legacy_identity_retains_existing_offline_cache_key(dataset):
+    path, manifest, bodies, calls, cache = dataset
+    entry = manifest["profiles"]["gb300-full"]
+    entry["identity"] = {"model_path": "example/model", "tp": 2}
+    path.write_text(json.dumps(manifest))
+    fingerprint = json.dumps(
+        {"repo": manifest["repo_id"], "revision": manifest["revision"], "profile": entry}, sort_keys=True
+    ).encode()
+    existing = cache / hashlib.sha256(fingerprint).hexdigest()
+    for target, body in bodies.items():
+        file = existing / target
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(body)
+    assert fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, local_files_only=True) == existing
+    assert not calls
+
+
+def test_local_manifest_precedes_packaged_id(dataset, packaged_dataset, monkeypatch):
+    path, _, _, _, _ = dataset
+    monkeypatch.chdir(path.parent)
+    assert fpm_dataset.list_fpm_profiles(path.name)[0]["manifest"] == str(path)
+
+
+@pytest.mark.parametrize("name", ["missing_fpm", "../outside", r"example_fpm\hf_dataset.json"])
+def test_invalid_packaged_manifest_id(dataset, packaged_dataset, name):
+    with pytest.raises((FileNotFoundError, ValueError)):
+        fpm_dataset.list_fpm_profiles(name)
+
+
+def test_discovery_cli(dataset, monkeypatch, capsys):
+    path, _, _, calls, _ = dataset
+    monkeypatch.setattr(sys, "argv", ["fpm_dataset", str(path), "--list"])
+    fpm_dataset.main()
+    assert json.loads(capsys.readouterr().out) == fpm_dataset.list_fpm_profiles(path)
+    assert not calls
+
+
+@pytest.mark.parametrize("args", [[], ["example_fpm"], ["example_fpm", "profile", "--list"]])
+def test_cli_requires_unambiguous_action(monkeypatch, args):
+    monkeypatch.setattr(sys, "argv", ["fpm_dataset", *args])
+    with pytest.raises(SystemExit) as exc:
+        fpm_dataset.main()
+    assert exc.value.code == 2
+
+
+def test_shipped_manifest_package_files_are_intact():
+    for row in fpm_dataset.list_fpm_profiles():
+        manifest = json.loads(Path(row["manifest"]).read_text())
+        for item in manifest["profiles"][row["profile"]]["files"]:
+            if item.get("source") == "package":
+                fpm_dataset._packaged_file(item)
