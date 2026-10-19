@@ -211,6 +211,8 @@ def test_canonical_sol_constructor_and_saved_identity(path, backend):
 def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
     # TP8 is the FP8 deployment for 80/141 GiB Hopper GPUs (the payload
     # inventory exceeds TP4 headroom on H100). SOL needs only the system spec.
+    # The pinned SM90 runtimes serve only BF16 KV, so the served identity is
+    # requested explicitly.
     config = ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",
         system=system,
@@ -219,6 +221,7 @@ def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
         tp=8,
         moe_tp_size=8,
         moe_ep_size=1,
+        kvcache_quant_mode="bfloat16",
         database_mode="SOL",
         estimation_mode="op_level",
         fallback_policy="deny",
@@ -226,6 +229,7 @@ def test_sol_tp8_fp8_is_constructible_on_hopper(backend, system):
     model = RustForwardPassPerfModel.best_available(config)
     try:
         assert model.diagnostics()["provenance"]["config"]["tp"] == 8
+        assert model.diagnostics()["provenance"]["config"]["kvcache_quant_mode"] == "bfloat16"
         assert model.static_phase_latency(batch_size=4, input_tokens=8192, output_tokens=2, prefill=True) > 0
         assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) > 0
     finally:
