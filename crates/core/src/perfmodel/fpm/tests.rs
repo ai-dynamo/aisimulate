@@ -12,9 +12,9 @@ use super::model::{
 };
 use super::options::{validate_options, validate_regression_options};
 use super::{
-    ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
-    ForwardPassPerfSource, ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
-    LEARNED_SCHEMA_VERSION,
+    CorrectionMode, ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionWorkloadKind,
+    ForwardPassWorkerType, LEARNED_SCHEMA_VERSION,
 };
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::operators::op::Op;
@@ -2586,6 +2586,100 @@ fn learned_model_applies_online_correction_after_tuning() {
         ForwardPassPerfSource::LearnedWithCorrection
     );
     assert_close(model.max_correction_factor().unwrap(), 1.5);
+}
+
+#[test]
+fn learned_auto_uses_hybrid_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = ForwardPassPerfModel::from_learned(
+            &learned_decode_artifact_json(),
+            ForwardPassPerfOptions {
+                correction_mode: mode,
+                max_batch_size: 4,
+                max_kv_tokens: 1000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The fixture predicts 20 ms above four requests; 30 ms feedback gives
+        // a 1.5 factor outside fixed bounds. Fixed must ignore these observations.
+        model
+            .tune_with_fpms(&vec![vec![decode_fpm(8, 1000, 0.030)]; 5])
+            .unwrap();
+        for (batch, kv, raw_ms, inside) in [
+            (4, 1000, 10.0, true),
+            (5, 1000, 20.0, false),
+            (4, 1001, 10.0, false),
+        ] {
+            let corrected =
+                mode == CorrectionMode::DynamicLocal || (!inside && mode != CorrectionMode::Fixed);
+            let expected = if corrected { raw_ms * 1.5 } else { raw_ms };
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(batch, kv, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                expected,
+            );
+        }
+        // Repeated tuning uses the uncorrected 10 ms base, not the already
+        // corrected prediction. Fixed/hybrid's boundary cell must settle at 5 ms.
+        for _ in 0..10 {
+            model
+                .tune_with_fpms(&[vec![decode_fpm(4, 1000, 0.005)]])
+                .unwrap();
+        }
+        if mode != CorrectionMode::DynamicLocal {
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(4, 1000, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                5.0,
+            );
+        }
+    }
+}
+
+#[test]
+fn native_auto_keeps_fixed_correction_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = native_model(ForwardPassPerfOptions {
+            correction_mode: mode,
+            max_num_tokens: 10,
+            ..Default::default()
+        });
+        let query = prefill_fpm(20, 0.0);
+        let raw_ms = model
+            .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+            .unwrap()
+            .unwrap();
+        model
+            .tune_with_fpms(&vec![vec![prefill_fpm(20, raw_ms * 1.5 / 1000.0)]; 5])
+            .unwrap();
+        let expected = if matches!(mode, CorrectionMode::Auto | CorrectionMode::Fixed) {
+            raw_ms
+        } else {
+            raw_ms * 1.5
+        };
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(&[query])
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
 }
 
 #[test]

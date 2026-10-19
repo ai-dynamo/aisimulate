@@ -229,3 +229,86 @@ impl CorrectionBuckets {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hybrid_uses_fixed_geometry_even_for_cold_and_empty_cells() {
+        for ndim in [1, 2] {
+            let options = ForwardPassPerfOptions {
+                correction_mode: CorrectionMode::Hybrid,
+                ..Default::default()
+            };
+            let ranges = vec![AxisRange::from_zero_to(100); ndim];
+            let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
+            for _ in 0..5 {
+                hybrid.add_observation(vec![200.0; ndim], 20.0, 10.0);
+            }
+            // Dynamic is ready but fixed has no evidence. The inclusive upper
+            // boundary and all cold in-grid cells must still use fixed's 1.0.
+            assert_eq!(hybrid.correction_factor_for(&vec![100.0; ndim]), 1.0);
+            assert_eq!(hybrid.correction_factor_for(&vec![25.0; ndim]), 1.0);
+            for axis in 0..ndim {
+                let mut outside = vec![100.0; ndim];
+                outside[axis] = 101.0;
+                assert_eq!(hybrid.correction_factor_for(&outside), 2.0);
+            }
+
+            for _ in 0..5 {
+                hybrid.add_observation(vec![100.0; ndim], 5.0, 10.0);
+            }
+            assert_eq!(hybrid.correction_factor_for(&vec![100.0; ndim]), 0.5);
+            assert_eq!(hybrid.correction_factor_for(&vec![0.0; ndim]), 1.0);
+            // Dynamic receives in-grid feedback too: the recent median of five
+            // ratios 2 and five ratios 0.5 is 1.25, used beyond observed bounds.
+            assert_eq!(hybrid.correction_factor_for(&vec![300.0; ndim]), 1.25);
+        }
+    }
+
+    #[test]
+    fn hybrid_preserves_both_full_histories_through_eviction() {
+        for ndim in [1, 2] {
+            let options = ForwardPassPerfOptions {
+                correction_mode: CorrectionMode::Hybrid,
+                max_observations: 10,
+                min_observations: 5,
+                ..Default::default()
+            };
+            let ranges = vec![AxisRange::from_zero_to(100); ndim];
+            let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
+            let CorrectionBuckets::Hybrid(stores) = &hybrid else {
+                panic!("hybrid must construct both stores");
+            };
+            // Clone the sampler seed to avoid pre-existing fixed eviction tie
+            // nondeterminism obscuring a change in history or policy selection.
+            let mut fixed = stores.fixed.clone();
+            let mut dynamic = DynamicCorrection::new(&options, ndim);
+            for i in 0..80 {
+                let x = vec![[0.0, 25.0, 100.0, 200.0][i % 4]; ndim];
+                let observed = [5.0, 10.0, 15.0][i % 3];
+                hybrid.add_observation(x.clone(), observed, 10.0);
+                fixed.add_observation(x.clone(), observed, 10.0);
+                dynamic.add_observation(x, observed, 10.0);
+                for coordinate in [0.0, 25.0, 50.0, 100.0, 101.0, 200.0, 300.0] {
+                    let query = vec![coordinate; ndim];
+                    let expected = if coordinate <= 100.0 {
+                        fixed.correction_factor_for(&query)
+                    } else {
+                        dynamic.correction_factor_for(&query)
+                    };
+                    assert_eq!(
+                        hybrid.correction_factor_for(&query).to_bits(),
+                        expected.to_bits()
+                    );
+                }
+            }
+            let CorrectionBuckets::Hybrid(stores) = hybrid else {
+                unreachable!()
+            };
+            assert_eq!(stores.fixed.observation_count(), 10);
+            assert_eq!(stores.dynamic, dynamic);
+        }
+    }
+}

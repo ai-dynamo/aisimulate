@@ -273,3 +273,185 @@ fn median(values: &mut [f64]) -> f64 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::perfmodel::fpm::options::validate_options;
+
+    #[test]
+    fn bounds_expand_and_rebucket_only_on_feedback() {
+        for ndim in [1, 2] {
+            let options = ForwardPassPerfOptions {
+                min_observations: 1,
+                ..Default::default()
+            };
+            let mut correction = DynamicCorrection::new(&options, ndim);
+            let original = [100.0, 1000.0][..ndim].to_vec();
+            correction.add_observation(original.clone(), 20.0, 10.0);
+            let original_log = correction.log_coordinates(&original).unwrap();
+            assert_eq!(correction.bucket_key(original_log), Some([0, 0]));
+
+            // New evidence covers zero and coordinates beyond the fixed limits.
+            correction.add_observation(vec![0.0; ndim], 20.0, 10.0);
+            let upper = [100_000.0_f64, 3_000_000.0][..ndim].to_vec();
+            correction.add_observation(upper.clone(), 20.0, 10.0);
+            for (axis, hi) in upper.iter().enumerate() {
+                assert_eq!(correction.log_bounds.unwrap()[axis], [0.0, hi.ln_1p()]);
+            }
+            assert_ne!(correction.bucket_key(original_log), Some([0, 0]));
+            assert!(
+                correction
+                    .factors
+                    .contains_key(&correction.bucket_key(original_log).unwrap())
+            );
+            assert_eq!(correction.observation_count(), 3);
+
+            let before = correction.clone();
+            for query in [original, upper, vec![10_000_000.0; ndim]] {
+                // Every observation has ratio 2, so local and global answers are 2.
+                assert_eq!(correction.correction_factor_for(&query), 2.0);
+            }
+            assert_eq!(
+                correction, before,
+                "queries must not grow bounds or age rows"
+            );
+        }
+    }
+
+    #[test]
+    fn local_shrinkage_and_recent_fallback_for_empty_and_outside_queries() {
+        let mut correction = DynamicCorrection::new(&ForwardPassPerfOptions::default(), 1);
+        for _ in 0..20 {
+            correction.add_observation(vec![0.0], 20.0, 10.0);
+        }
+        for _ in 0..16 {
+            correction.add_observation(vec![100.0], 5.0, 10.0);
+        }
+        // Twenty local ratios of 2 have equal weight to the recent median 0.5:
+        // their geometric mean is exactly 1. No capacity eviction has occurred.
+        assert_eq!(correction.observation_count(), 36);
+        assert!((correction.correction_factor_for(&[0.0]) - 1.0).abs() < 1e-12);
+        assert_eq!(correction.correction_factor_for(&[100.0]), 0.5);
+        let empty = correction.bucket_key([10.0_f64.ln_1p(), 0.0]).unwrap();
+        assert!(!correction.factors.contains_key(&empty));
+        assert_eq!(correction.correction_factor_for(&[10.0]), 0.5);
+        assert_eq!(correction.correction_factor_for(&[1000.0]), 0.5);
+    }
+
+    #[test]
+    fn recent_fifo_can_become_ready_for_small_valid_budgets() {
+        for (capacity, minimum) in [(1, 1), (10, 5), (10, 6), (10, 10), (64, 64)] {
+            let options = ForwardPassPerfOptions {
+                max_observations: capacity,
+                min_observations: minimum,
+                ..Default::default()
+            };
+            validate_options(&options).unwrap();
+            let mut correction = DynamicCorrection::new(&options, 1);
+            for _ in 0..minimum - 1 {
+                correction.add_observation(vec![10.0], 15.0, 10.0);
+            }
+            assert!(!correction.is_ready());
+            assert_eq!(correction.correction_factor_for(&[100.0]), 1.0);
+            correction.add_observation(vec![10.0], 15.0, 10.0);
+            assert!(correction.is_ready());
+            assert_eq!(correction.correction_factor_for(&[100.0]), 1.5);
+            assert!(correction.primary.len() + correction.recent.len() <= capacity);
+            if capacity - minimum < minimum {
+                assert_eq!(correction.ready_bucket_count(), 0);
+                assert_eq!(correction.correction_factors(), vec![1.5]);
+            }
+        }
+    }
+
+    #[test]
+    fn age_expiry_removes_sparse_old_sample_without_contracting_bounds() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 8,
+            min_observations: 1,
+            ..Default::default()
+        };
+        let mut correction = DynamicCorrection::new(&options, 1);
+        correction.add_observation(vec![0.0], 20.0, 10.0);
+        // The singleton at zero survives capacity eviction from the full bucket.
+        for _ in 0..15 {
+            correction.add_observation(vec![100.0], 5.0, 10.0);
+        }
+        assert_eq!(correction.primary[0].admission, 0);
+        assert!(correction.correction_factor_for(&[0.0]) > 0.5);
+        let bounds = correction.log_bounds;
+
+        // With age limit 16, admission 17 expires row 0, independently of capacity.
+        correction.add_observation(vec![100.0], 5.0, 10.0);
+        assert!(correction.primary.iter().all(|row| row.admission > 0));
+        assert_eq!(correction.log_bounds, bounds);
+        assert_eq!(correction.correction_factor_for(&[0.0]), 0.5);
+    }
+
+    #[test]
+    fn eviction_removes_oldest_from_fullest_bucket_with_stable_ties() {
+        let options = ForwardPassPerfOptions {
+            max_observations: 4,
+            min_observations: 1,
+            bucket_shape: Some([2, 1]),
+            ..Default::default()
+        };
+        let mut correction = DynamicCorrection::new(&options, 1);
+        for x in [0.0, 100.0, 100.0, 100.0] {
+            correction.add_observation(vec![x], 10.0, 10.0);
+        }
+        let ids = |c: &DynamicCorrection| {
+            c.primary
+                .iter()
+                .map(|row| row.admission)
+                .collect::<Vec<_>>()
+        };
+        // Three primary slots: retain the sparse oldest row; evict row 1.
+        assert_eq!(ids(&correction), vec![0, 2, 3]);
+        correction.add_observation(vec![0.0], 10.0, 10.0);
+        // Two rows per bucket now tie; the lower-coordinate bucket loses row 0.
+        assert_eq!(ids(&correction), vec![2, 3, 4]);
+        assert_eq!(correction.recent.front().unwrap().admission, 4);
+    }
+
+    #[test]
+    fn invalid_feedback_does_not_mutate_cold_or_ready_state() {
+        for ready in [false, true] {
+            let mut correction = DynamicCorrection::new(&ForwardPassPerfOptions::default(), 2);
+            if ready {
+                for _ in 0..5 {
+                    correction.add_observation(vec![10.0, 20.0], 15.0, 10.0);
+                }
+            }
+            let before = correction.clone();
+            for x in [
+                vec![],
+                vec![1.0],
+                vec![1.0, 2.0, 3.0],
+                vec![-1.0, 20.0],
+                vec![10.0, f64::NAN],
+                vec![f64::INFINITY, 20.0],
+            ] {
+                correction.add_observation(x.clone(), 15.0, 10.0);
+                assert_eq!(correction.correction_factor_for(&x), 1.0);
+                assert_eq!(correction, before);
+            }
+            for (observed, base) in [
+                (0.0, 1.0),
+                (-1.0, 1.0),
+                (f64::NAN, 1.0),
+                (f64::INFINITY, 1.0),
+                (1.0, 0.0),
+                (1.0, -1.0),
+                (1.0, f64::NAN),
+                (1.0, f64::INFINITY),
+                (f64::MAX, f64::MIN_POSITIVE),
+                (f64::MIN_POSITIVE, f64::MAX),
+            ] {
+                correction.add_observation(vec![1e9, 1e9], observed, base);
+                assert_eq!(correction, before, "invalid ratio {observed}/{base}");
+            }
+        }
+    }
+}
