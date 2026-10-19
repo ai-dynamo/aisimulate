@@ -418,3 +418,50 @@ fn prefill_ranks_pull_from_each_other_in_pd() {
         "{error}"
     );
 }
+
+#[test]
+fn a_landed_pull_does_not_block_a_later_g2_hit_that_holds_g1() {
+    // DP rank 0 is the source and DP rank 1 the target. Each rank has five
+    // 4-token G1 blocks and enough G2 to keep every prompt; H2D moves a 1 MB
+    // block in 10 ms.
+    let mut rank = kvcr_rank(json!({"latency_to_first_byte_ms": 1.0, "bandwidth_gbps": 1.0}));
+    rank["num_gpu_blocks"] = json!(5);
+    rank["native_host_offload"] = json!({"num_host_blocks": 16, "h2d_bandwidth_gbps": 0.1});
+    let on = |mut request: Value, dp_rank: u32| {
+        request["dp_rank"] = json!(dp_rank);
+        request
+    };
+    let evict: Vec<u32> = (41..58).collect();
+    let requests = vec![
+        // The source computes LONG; the target computes OTHER and offloads
+        // its two blocks, then a 17-token prompt evicts them from G1.
+        on(request("seed", 0.0, &LONG), 0),
+        on(request("b_seed", 0.0, &OTHER), 1),
+        on(request("evict", 20.0, &evict), 1),
+        // A pulls LONG's three blocks over [100, 104) and waits.
+        on(hinted("a", 100.0, &LONG, 0), 1),
+        // B then hits its two blocks in G2 and reserves three G1 blocks for
+        // the load over [101, 121). A's pull lands at 104, but A needs four
+        // G1 blocks and only two are free until B runs. In FCFS order A would
+        // hold the queue head forever; B, which owns the G1, must run first.
+        on(request("b", 101.0, &OTHER), 1),
+    ];
+    let report = run(aggregated(1), json!({"dp_size": 2, "rank": rank}), requests).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 5);
+    assert_eq!(report.kvcr.unwrap().pulls.success, 1);
+    let admitted = |id: &str| {
+        let record = report
+            .per_request
+            .iter()
+            .find(|record| record.request_id.as_deref() == Some(id))
+            .unwrap();
+        (
+            record.first_admit_ms,
+            record.first_admission_host_reused_input_tokens,
+        )
+    };
+    // B runs once its load lands and finishes at 122; A then loads its three
+    // blocks over [122, 152).
+    assert_eq!(admitted("b"), (Some(121.0), Some(8)));
+    assert_eq!(admitted("a"), (Some(152.0), Some(12)));
+}

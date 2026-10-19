@@ -507,6 +507,17 @@ def test_kvcr_rejects_pipeline_parallelism() -> None:
         CorePredictionConfig.model_validate({"engine": engine})
 
 
+def test_kvcr_rejects_prefill_context_parallelism() -> None:
+    engine = _prediction_engine()
+    worker = engine["workers"]["aggregated"]
+    worker["kv_cache"].update(host_offload=_host_offload(), kvcr={})
+    worker["parallelism"] = {**worker.get("parallelism", {}), "prefill_context": 2}
+    with pytest.raises(ValidationError, match="kvcr does not support prefill context parallelism"):
+        CorePredictionConfig.model_validate({"engine": engine})
+    worker["parallelism"]["prefill_context"] = 1
+    CorePredictionConfig.model_validate({"engine": engine})
+
+
 def test_kvcr_recommendation_is_rejected_not_silently_dropped() -> None:
     engine = _recommendation_engine()
     engine["workers"]["aggregated"]["kv_cache"].update(host_offload=_host_offload(), kvcr={})

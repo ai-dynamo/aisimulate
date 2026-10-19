@@ -314,7 +314,8 @@ KVCR supports vLLM aggregated workers with any `attention_data`, and pulls
 between the prefill ranks of P/D. Workers may be fixed or Planner-scaled; a
 draining worker is removed only after every pull from or into it has landed and
 been taken by its target. Rejected: missing or `cluster_shared` `host_offload`,
-`g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1, and `recommend`.
+`g3_offload` together with `kvcr`, `kvcr` on the decode role, `parallelism.pipeline` above 1,
+`parallelism.prefill_context` above 1 (native `prefill_context_parallel_size`), and `recommend`.
 Everything G2 rejects is rejected too, including SGLang and TensorRT-LLM.
 
 Hints come from the placement policy (see

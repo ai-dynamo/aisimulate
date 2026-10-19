@@ -1393,6 +1393,10 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
             raise ValueError("kvcr supports aggregated and prefill workers only")
         if worker.kv_cache.kvcr is not None and worker.parallelism.pipeline > 1:
             raise ValueError("kvcr does not support pipeline parallelism (parallelism.pipeline must be 1)")
+        if worker.kv_cache.kvcr is not None and (worker.parallelism.prefill_context or 1) > 1:
+            raise ValueError(
+                "kvcr does not support prefill context parallelism (parallelism.prefill_context must be 1)"
+            )
 
 
 def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:

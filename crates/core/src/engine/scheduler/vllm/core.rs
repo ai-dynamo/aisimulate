@@ -1826,10 +1826,6 @@ impl VllmCore {
             .native_host_offload
             .as_ref()
             .and_then(|a| a.retry_epoch());
-        let has_g3 = self
-            .native_host_offload
-            .as_ref()
-            .is_some_and(|a| a.has_g3());
         self.kv_manager.begin_step();
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
@@ -1962,7 +1958,11 @@ impl VllmCore {
                 && self.native_host_offload.is_some()
                 && self.state.has_materialized_waiting());
             let prioritize_connector_waiting = self.native_host_offload.is_some();
-            let g1_owner = has_g3.then_some(()).and_then(|()| {
+            // A G3 or KVCR restore can wake a connector waiter ahead of one
+            // that already holds reserved G1 for its load; serve that owner
+            // first so the restored head cannot block the space it waits for.
+            // A rank without G3 that has never pulled keeps plain G2 order.
+            let g1_owner = retry_epoch_before.and_then(|_| {
                 self.state.connector_waiting.iter().copied().find(|uuid| {
                     self.state.connector_waiting_members.contains(uuid)
                         && !self.state.connector_deadline_waiting_members.contains(uuid)

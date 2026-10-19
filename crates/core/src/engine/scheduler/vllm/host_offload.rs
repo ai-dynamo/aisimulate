@@ -250,10 +250,6 @@ impl VllmHostOffloadAdapter {
             .then(|| self.g3.as_ref().map_or(0, |g3| g3.epoch) + kvcr_epoch + self.load_epoch)
     }
 
-    pub(super) fn has_g3(&self) -> bool {
-        self.g3.is_some()
-    }
-
     pub(super) fn note_rank_progress(&mut self) {
         if let Some(g3) = &mut self.g3 {
             g3.note_rank_progress();

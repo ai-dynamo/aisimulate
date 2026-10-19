@@ -15,7 +15,9 @@ use serde::Serialize;
 
 use crate::engine::g3_offload::is_zero;
 use crate::engine::host_offload::HostTierHandle;
-use crate::engine::offload_transfer::{self, Direction, FairTransfers};
+use rustc_hash::FxHashMap;
+
+use crate::engine::offload_transfer::{self, ClientEvent, Direction, FairTransfers};
 use crate::engine::{KvHintSource, KvcrConfig};
 
 pub(crate) type SharedKvcrRegistry = Arc<Mutex<KvcrRegistry>>;
@@ -84,6 +86,11 @@ pub(crate) struct KvcrRegistry {
     /// the next timestamp.
     parked: Vec<u64>,
     transfers: FairTransfers,
+    /// Each source client's next transfer event, valid while not
+    /// `client_events_stale`. Every target's deadline query reads it, so the
+    /// jobs are scanned once per transfer change rather than per query.
+    client_events: FxHashMap<u64, ClientEvent>,
+    client_events_stale: bool,
     /// Started, not yet landed pulls per target, counted by source client.
     moving: BTreeMap<KvHintSource, BTreeMap<u64, usize>>,
     /// Landed pulls not yet taken by their target, in landing order.
@@ -104,6 +111,8 @@ impl KvcrRegistry {
             pulls: BTreeMap::new(),
             parked: Vec::new(),
             transfers: FairTransfers::default(),
+            client_events: FxHashMap::default(),
+            client_events_stale: false,
             moving: BTreeMap::new(),
             landed: BTreeMap::new(),
             in_flight: BTreeMap::new(),
@@ -270,6 +279,7 @@ impl KvcrRegistry {
             client_rate: offload_transfer::bytes_per_ms(self.config.bandwidth_gbps),
             shared_rate: f64::INFINITY,
         });
+        self.client_events_stale = true;
     }
 
     /// Move transfers to `now`; count and queue the pulls that land.
@@ -289,7 +299,26 @@ impl KvcrRegistry {
         {
             self.start_parked();
         }
-        for (id, at_ms) in self.transfers.advance(now) {
+        let before_ms = self.transfers.now();
+        // At or before the transfer clock, `advance` can only finish events
+        // due by then. Without one, it would rescan every job to change
+        // nothing, as each rank taking its landings at one instant would.
+        if now <= before_ms {
+            self.refresh_client_events();
+            if self
+                .client_events
+                .values()
+                .all(|event| event.at > before_ms)
+            {
+                return;
+            }
+        }
+        let finished = self.transfers.advance(now);
+        // Moving the clock or finishing a pull changes the remaining events.
+        if self.transfers.now() != before_ms || !finished.is_empty() {
+            self.client_events_stale = true;
+        }
+        for (id, at_ms) in finished {
             let pull = &self.pulls[&id];
             let clients = self
                 .moving
@@ -358,15 +387,25 @@ impl KvcrRegistry {
     /// first-byte or completion event of a source its moving pulls read from.
     /// A pull's rate depends only on the other pulls from its source, so
     /// another source's events cannot move this target's landings earlier.
-    pub(crate) fn next_deadline(&self, target: KvHintSource) -> Option<f64> {
+    pub(crate) fn next_deadline(&mut self, target: KvHintSource) -> Option<f64> {
         if let Some(&(_, at_ms)) = self.landed.get(&target).and_then(|landed| landed.first()) {
             return Some(at_ms);
         }
-        self.moving
-            .get(&target)?
+        if !self.moving.contains_key(&target) {
+            return None;
+        }
+        self.refresh_client_events();
+        self.moving[&target]
             .keys()
-            .filter_map(|&client| self.transfers.next_client_event(client))
+            .filter_map(|client| self.client_events.get(client).map(|event| event.at))
             .min_by(f64::total_cmp)
+    }
+
+    fn refresh_client_events(&mut self) {
+        if self.client_events_stale {
+            self.transfers.next_client_events(&mut self.client_events);
+            self.client_events_stale = false;
+        }
     }
 
     pub(crate) fn has_work(&self, worker_id: u64) -> bool {
@@ -556,6 +595,26 @@ mod tests {
         r.start_parked();
         assert_eq!(r.take_landed(rank(1, 0), 7.0), vec![(id, 7.0)]);
         assert_eq!(r.stats().remote_deliver_ms, 0.0);
+    }
+
+    #[test]
+    fn a_pull_due_at_the_transfer_clock_lands_at_that_instant() {
+        let shared = registry(0.0, 0.0);
+        let mut r = shared.lock().unwrap();
+        for worker in 0..3 {
+            join(&mut r, worker, 1);
+        }
+        // Target 1 moves the clock to 5; target 2's pull landed at 0 stays
+        // untaken, so the registry is not idle.
+        let early = r.submit(rank(2, 0), rank(0, 0), 1, false, 0.0);
+        r.start_parked();
+        assert!(r.take_landed(rank(1, 0), 5.0).is_empty());
+        // An unlimited pull submitted at the clock is due at the clock itself.
+        let due = r.submit(rank(1, 0), rank(0, 0), 1, false, 5.0);
+        r.start_parked();
+        assert_eq!(r.next_deadline(rank(1, 0)), Some(5.0));
+        assert_eq!(r.take_landed(rank(1, 0), 5.0), vec![(due, 5.0)]);
+        assert_eq!(r.take_landed(rank(2, 0), 5.0), vec![(early, 0.0)]);
     }
 
     #[test]

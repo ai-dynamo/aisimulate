@@ -467,6 +467,13 @@ impl ReplayEngineFactory {
                 "kvcr does not support pipeline parallelism (pp must be 1)".into(),
             ));
         }
+        // A pull moves G2 bytes times the tensor-parallel size; it does not
+        // model how prefill context parallelism shards the prompt's KV.
+        if kvcr_config.is_some() && role.prefill_context_parallel_size > 1 {
+            return Err(ReplayError::InvalidSpec(
+                "kvcr does not support prefill context parallelism (pcp must be 1)".into(),
+            ));
+        }
         if g3_config.is_some() && dp_size.get() != 1 {
             return Err(ReplayError::InvalidSpec(
                 "g3_offload supports only dp_size=1".into(),
@@ -888,6 +895,30 @@ mod kvcr_tests {
             "{:?}",
             plain.err()
         );
+    }
+
+    #[test]
+    fn kvcr_rejects_prefill_context_parallelism() {
+        let config = |kvcr, pcp| ReplayEngineConfig {
+            rank: rank(kvcr),
+            prefill_context_parallel_size: pcp,
+            ..Default::default()
+        };
+        for stage in [WorkerStage::Aggregated, WorkerStage::Prefill] {
+            let Err(error) = role_factory(&config(Some(KvcrConfig::default()), 2), stage) else {
+                panic!("kvcr with pcp=2 must be rejected");
+            };
+            assert!(matches!(error, ReplayError::InvalidSpec(_)), "{error}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("kvcr does not support prefill context parallelism"),
+                "{error}"
+            );
+            assert!(role_factory(&config(Some(KvcrConfig::default()), 1), stage).is_ok());
+        }
+        // Prefill context parallelism alone is not KVCR's to reject.
+        assert!(role_factory(&config(None, 2), WorkerStage::Prefill).is_ok());
     }
 }
 
