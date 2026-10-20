@@ -190,6 +190,7 @@ pub enum Op {
     Glm53Router(Glm53RouterOp),
     Glm53Ffn(Glm53FfnOp),
     Glm53Primitive(Glm53PrimitiveOp),
+    MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,6 +289,7 @@ impl Op {
             Op::Glm53Mhc(o) => o.weight_bytes(),
             Op::Glm53Router(o) => o.weight_bytes(),
             Op::Glm53Ffn(o) => o.weight_bytes(),
+            Op::MeasuredComposite(o) => o.weight_bytes,
             Op::Glm53Primitive(o) => o.weight_bytes(),
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
@@ -353,6 +355,7 @@ impl Op {
             Op::Glm53Mhc(o) => &o.name,
             Op::Glm53Router(o) => &o.name,
             Op::Glm53Ffn(o) => &o.name,
+            Op::MeasuredComposite(o) => &o.name,
             Op::Glm53Primitive(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
@@ -407,6 +410,7 @@ impl Op {
             Op::Glm53Mhc(o) => o.name = name,
             Op::Glm53Router(o) => o.name = name,
             Op::Glm53Ffn(o) => o.name = name,
+            Op::MeasuredComposite(o) => o.name = name,
             Op::Glm53Primitive(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
@@ -451,6 +455,7 @@ impl Op {
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         match self {
             Op::TokenScale(o) => o.op.set_scale_factor(scale_factor),
+            Op::MeasuredComposite(o) => o.scale_factor = scale_factor,
             Op::Gemm(o) => o.scale_factor = scale_factor,
             Op::Embedding(o) => o.scale_factor = scale_factor,
             Op::Elementwise(o) => o.scale_factor = scale_factor,
@@ -576,6 +581,7 @@ impl Op {
             Op::Glm53Mhc(op) => op.query(db, ctx),
             Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
             Op::Glm53Ffn(op) => op.query(db, ctx),
+            Op::MeasuredComposite(op) => op.query(db, ctx),
             Op::Glm53Primitive(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {

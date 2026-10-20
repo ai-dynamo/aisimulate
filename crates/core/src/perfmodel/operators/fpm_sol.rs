@@ -111,6 +111,9 @@ pub(crate) fn op_sol_latency_ms(
             let ratio = f64::from(o.numerator) / f64::from(o.denominator);
             op_sol_latency_ms(&o.op, db, x * ratio, batch * ratio, s, prefix)
         }
+        Op::MeasuredComposite(_) => Err(AicError::InvalidEngineConfig(
+            "measured composite has no SOL model".into(),
+        )),
         Op::Gemm(o) => Ok(gemm_sol(o, spec, x)),
         Op::Embedding(o) => Ok(embedding_sol(o, spec, x)),
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),

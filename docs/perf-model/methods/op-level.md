@@ -33,6 +33,75 @@ Data-source inheritance and empirical transfer are different. A row inherited
 from an approved measured donor is still collected data. An estimated
 cross-shape or cross-precision transfer must retain its transfer provenance.
 
+## External execution profiles
+
+An externally stored profile can supply a qualified operation graph and exact
+measured composite scopes without adding its measurements or runtime identity
+to the package. It uses the same `RustForwardPassPerfModel.best_available`
+constructor and Rust operation executor as ordinary op-level prediction.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `estimator_config.op_level.execution_profile` | Unset | Opt in to a qualified external graph for one phase. |
+| `execution_profile.path` | Required when selected | Absolute path to the external JSON profile. |
+| `execution_profile.sha256` | Required when selected | Lowercase SHA-256 of the exact profile bytes; preserved in saved configuration and provenance. |
+
+Set `estimation_mode: op_level`, `fallback_policy: deny`, `database_mode: SILICON`,
+`enable_shared_layer: false`, and `estimator_config.correction.enabled: false`.
+Choose `worker_type: prefill` or `decode`, an explicit backend version and a
+single PP/attention-DP/CP/DCP rank. Speculation, decoder replay, automatic
+estimator selection and shared-source inheritance are not supported.
+Supply the external hardware and performance-data root through `systems_paths`.
+
+The version-1 profile JSON has these required fields:
+
+| Field | Contract |
+| --- | --- |
+| `schema_version` | `1`. |
+| `basis` | The complete ordinary compiled `EngineSpec` used to qualify the profile. Both operation lists and every engine identity field must match the current compiler output; only `engine.systems_path` is excluded from comparison. |
+| `worker_type` | `prefill` or `decode`, matching the caller. |
+| `ops` | Replacement operations for that phase, in execution order, using the existing externally tagged operation format. Resident weight bytes must match the original phase. |
+| `retained_files` | Bundle-relative `path`, lowercase `sha256`, and `size_bytes` for every required hardware YAML, source/version metadata file and retained operation table. |
+
+Profile authors can inspect an ordinary `compile_engine` result using the
+internal `_native.engine_spec_json_from_bincode(bytes)` helper. This is an
+authoring aid, not a separate prediction constructor. Compiler/schema changes
+that alter the basis require requalification and a new profile pin.
+
+`MeasuredComposite` is an exact, latency-only operation with `name`, `system`,
+`backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
+Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
+
+- Prefill: `[batch, new_tokens_per_request, cached_prefix_per_request]`.
+- Decode: `[batch, total_attention_length, 0]`.
+
+Latencies and repetition factors must be finite and positive. The operator
+multiplies the measured scope latency by its repetition factor. It performs
+no interpolation, extrapolation, correction, or SOL substitution. Missing
+cells fail explicitly. Composite estimates report `estimated` source and zero
+energy to indicate missing energy evidence. Existing operations keep their
+own lookup rules. Profiles may use `Overlap` for parallel operation groups;
+fallback graphs, speculative token scaling, whole-forward, vision and other
+nested stage wrappers are rejected.
+
+Construction verifies the profile pin, compares the actual compiled basis,
+and copies verified retained-file bytes into engine-owned storage. Lazy table
+reads use that snapshot, including on their first query. Changed files fail a
+new construction; they cannot change an existing model. Bundle paths cannot
+escape the root or traverse symlinks. Missing retained inputs fail normally
+during database loading or readiness checks.
+
+Use `predict_prefill_latency(batch, total_input_length, prefix)` or
+`predict_decode_latency_total(batch, total_past_kv_tokens)` for the selected
+phase. Decode requires equal past-KV lengths across the batch. The other phase,
+mixed steps and aggregate telemetry fail explicitly. These profiles do not
+qualify scheduler-inclusive Replay, Planner sizing, or end-to-end serving
+accuracy. Broader support requires separately qualified execution and data.
+
+Profile files, saved configurations and diagnostics can reveal runtime
+identities or private paths. Keep them with their source dataset; the package
+does not upload or download profiles automatically.
+
 ## Empirical utilization and transfers
 
 The native [utilization estimator](../../../crates/core/src/perfmodel/operators/util_empirical.rs)

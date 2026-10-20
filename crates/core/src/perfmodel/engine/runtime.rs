@@ -344,6 +344,8 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
+    pub(crate) profile_snapshot: Option<tempfile::TempDir>,
+    profile_phase: Option<bool>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -357,6 +359,23 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
+    fn check_profile_phase(&self, prefill: bool) -> Result<(), AicError> {
+        if self.profile_phase.is_some_and(|phase| phase != prefill) {
+            return Err(crate::operators::measured_composite::invalid(
+                "query phase is not qualified by this profile",
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_profile_telemetry(&self) -> Result<(), AicError> {
+        if self.profile_phase.is_some() {
+            return Err(crate::operators::measured_composite::invalid(
+                "execution profiles require direct homogeneous phase queries; mixed/aggregate telemetry is not qualified",
+            ));
+        }
+        Ok(())
+    }
     /// Build an `Engine` from a spec and a pre-loaded database.
     ///
     /// Extracts the op lists and the `nextn` scalar from `spec.engine`. The
@@ -396,6 +415,22 @@ impl Engine {
             generation_ops: spec.generation_ops,
             db,
             nextn,
+            profile_snapshot: None,
+            profile_phase: match spec
+                .engine
+                .extra
+                .get("execution_profile_phase")
+                .map(String::as_str)
+            {
+                None => None,
+                Some("prefill") => Some(true),
+                Some("decode") => Some(false),
+                _ => {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "invalid profile phase",
+                    ));
+                }
+            },
         })
     }
 
@@ -673,6 +708,7 @@ impl Engine {
         coverage: Option<&mut FpmQueryCoverage>,
         mut on_op: impl FnMut(&Op, PerformanceResult),
     ) -> Result<f64, AicError> {
+        self.check_profile_phase(true)?;
         // Python raises `ValueError` when `effective_isl <= 0`; mirror that.
         if runtime.prefix >= runtime.isl {
             return Err(AicError::InvalidEngineConfig(format!(
@@ -754,6 +790,7 @@ impl Engine {
         stride: u32,
         mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
+        self.check_profile_phase(false)?;
         let bs = runtime
             .batch_size
             .saturating_mul(self.nextn.saturating_add(1));
@@ -906,6 +943,16 @@ impl Engine {
         total_past_kv_tokens: u32,
         coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<f64, AicError> {
+        if self.profile_phase.is_some() {
+            self.check_profile_phase(false)?;
+            if batch_size == 0 || total_past_kv_tokens % batch_size != 0 {
+                return Err(crate::operators::measured_composite::invalid(
+                    "decode profile requires a positive homogeneous batch",
+                ));
+            }
+            return self.predict_decode_latency(batch_size, total_past_kv_tokens / batch_size, 2);
+        }
+
         self.forward_pass_time_ms_with_coverage(
             &[ForwardPassMetrics {
                 scheduled_requests: crate::ScheduledRequestMetrics {
@@ -1028,6 +1075,7 @@ impl Engine {
         gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<[f64; 4], AicError> {
+        self.reject_profile_telemetry()?;
         if ctx_tokens == 0 && gen_tokens == 0 {
             return Ok([0.0; 4]);
         }
@@ -1351,6 +1399,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<f64, AicError> {
+        self.check_profile_phase(false)?;
         if gen_tokens == 0 {
             return Ok(0.0);
         }
@@ -1527,6 +1576,7 @@ impl Engine {
         prefix: u32,
         prefill: bool,
     ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        self.check_profile_phase(prefill)?;
         use super::diagnostics::{
             ExecutedFallback, OperationDetails, SolDiagnostics, StaticOperationDiagnostics,
         };
@@ -1947,6 +1997,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(true)?;
         let mut out = PerOpFold::new("context");
         for &i in indices {
             let op = self.context_ops.get(i).ok_or_else(|| {
@@ -1981,6 +2032,7 @@ impl Engine {
         prefix: u32,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(false)?;
         let mut out = PerOpFold::new("generation");
         for &i in indices {
             let op = self.generation_ops.get(i).ok_or_else(|| {
@@ -2192,6 +2244,7 @@ impl Engine {
         capture: bool,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
+        self.reject_profile_telemetry()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),

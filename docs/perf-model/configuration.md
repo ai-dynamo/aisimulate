@@ -173,6 +173,10 @@ cost-model support does not imply broader scheduler support.
 and Replay, then parsed and validated in Rust. Unknown fields report their
 nested paths. The supported namespaces are:
 
+- `op_level.execution_profile`: optional pinned external operation graph, with
+  an absolute `path` and lowercase `sha256`. See
+  [external execution profiles](methods/op-level.md#external-execution-profiles)
+  for admission, data isolation and query limits.
 - `features`: `attention_kv_weight`, `prefill_attention_pair_weight`, and
   `ffn_token_weight`, each defaulting to 1.0. These currently affect regression
   only; positive finite values are required when regression is constructed.

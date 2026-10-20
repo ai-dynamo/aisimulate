@@ -31,6 +31,7 @@ pub(crate) mod py_ops;
 pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
+pub mod execution_profile;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;

@@ -833,6 +833,19 @@ mod tests {
                 children: vec![],
                 measured: vec![],
             }),
+            OpSpec::MeasuredComposite(crate::operators::measured_composite::MeasuredCompositeOp {
+                name: "measured".into(),
+                system: "testsys".into(),
+                backend: "vllm".into(),
+                version: "1.0".into(),
+                is_context: true,
+                weight_bytes: 0.0,
+                scale_factor: 1.0,
+                cells: vec![crate::operators::measured_composite::MeasuredCell {
+                    shape: [1, 4, 0],
+                    latency_ms: 2.0,
+                }],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -883,6 +896,7 @@ mod tests {
                 | OpSpec::Glm53Router(_)
                 | OpSpec::Glm53Ffn(_)
                 | OpSpec::Glm53Primitive(_)
+                | OpSpec::MeasuredComposite(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
@@ -991,15 +1005,25 @@ mod tests {
             vec![36, 37, 38, 39, 40],
             "V41 appended indices moved"
         );
+        assert_eq!(
+            index_of(all_op_variants().last().unwrap()),
+            46,
+            "MeasuredComposite index moved"
+        );
         // GLM-5.3-Flash variants append after the V41 variants.
-        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).map(index_of).collect();
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(41)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             glm_appended,
             vec![41, 42, 43, 44, 45],
             "GLM appended indices moved"
         );
         assert_eq!(
-            46,
+            47,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
