@@ -30,6 +30,7 @@ mod dynamic_correction;
 mod estimator;
 mod evidence;
 mod learned;
+mod learned_online;
 mod metrics;
 mod model;
 mod options;

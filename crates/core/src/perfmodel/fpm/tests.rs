@@ -3061,3 +3061,160 @@ fn learned_model_refuses_request_features_without_lists() {
     // Artifacts without a metadata key expose an empty object, not null.
     assert!(model.learned_metadata().unwrap().is_object());
 }
+
+fn canonical_learned_fixture(path: &std::path::Path) -> crate::ForwardPassPerfModelConfig {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.backend_version = Some("test-version".into());
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.artifact_path = Some(path.to_owned());
+    config
+}
+
+#[test]
+fn canonical_learned_freezes_forest_and_preserves_resolved_content_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    std::fs::write(&path, learned_decode_artifact_json()).unwrap();
+    let mut config = canonical_learned_fixture(&path);
+    config.estimator_config.correction.enabled = false;
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let resolved = model.provenance().unwrap().config.clone();
+    assert_eq!(
+        resolved.estimator_config.correction.mode,
+        CorrectionMode::Hybrid
+    );
+    assert_eq!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .source_sha256
+            .as_ref()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .artifact_path
+            .as_ref()
+            .unwrap()
+            .is_absolute()
+    );
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        false
+    );
+    let before = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+        .unwrap();
+    model
+        .tune_with_fpms(&vec![vec![decode_fpm(2, 1000, 0.050)]; 8])
+        .unwrap();
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+            .unwrap(),
+        before
+    );
+    assert_eq!(model.diagnostics().retained_observations, 0);
+    let reloaded = ForwardPassPerfModel::best_available(
+        serde_json::from_str(&serde_json::to_string(&resolved).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reloaded.provenance().unwrap().config, resolved);
+    assert!(model.flush_updates().is_err());
+    assert!(
+        model
+            .save_online_checkpoint(dir.path().join("snapshot"))
+            .is_err()
+    );
+    std::fs::write(&path, format!("{}\n", learned_decode_artifact_json())).unwrap();
+    assert!(
+        ForwardPassPerfModel::best_available(resolved)
+            .unwrap_err()
+            .to_string()
+            .contains("source_sha256")
+    );
+}
+
+#[test]
+fn canonical_learned_validates_optional_metadata_and_never_falls_back_on_bad_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    let config = canonical_learned_fixture(&path);
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    artifact["metadata"]["identity"] =
+        super::learned_online::canonical_learned_identity(&config).unwrap();
+    std::fs::write(&path, artifact.to_string()).unwrap();
+    let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        true
+    );
+    let mut wrong = config.clone();
+    wrong.system = "another-gpu".into();
+    wrong.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert!(
+        ForwardPassPerfModel::best_available(wrong)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata.identity")
+    );
+    std::fs::write(&path, "not a JSON forest").unwrap();
+    let mut malformed = config;
+    malformed.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert!(ForwardPassPerfModel::best_available(malformed).is_err());
+}
+
+#[test]
+fn canonical_learned_selection_is_explicit_and_online_rejects_cascaded_correction() {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    assert_eq!(
+        config.candidate_modes(),
+        vec![
+            crate::EstimationMode::OpLevel,
+            crate::EstimationMode::FpmInterpolation,
+            crate::EstimationMode::FpmRegression
+        ]
+    );
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert_eq!(
+        config.candidate_modes(),
+        vec![
+            crate::EstimationMode::FpmLearned,
+            crate::EstimationMode::OpLevel,
+            crate::EstimationMode::FpmInterpolation,
+            crate::EstimationMode::FpmRegression
+        ]
+    );
+    config.estimator_config.fpm_learned.adaptation = super::LearnedAdaptation::Online;
+    config.estimator_config.fpm_learned.checkpoint_path = Some("unused-checkpoint".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("correction.enabled=false")
+    );
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned.artifact_path = Some("unused-artifact".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one")
+    );
+}

@@ -50,10 +50,10 @@ pub use perfmodel::{
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
-    FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, LinearFitConfig,
-    OpLevelConfig, RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind,
-    RegressionSamplingConfig, RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig,
-    UnrecordedFpmQuantMode,
+    FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
+    LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
+    RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
+    RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig, UnrecordedFpmQuantMode,
 };
 
 #[cfg(feature = "python")]

@@ -1,0 +1,41 @@
+{
+  "checks": [
+    {
+      "command": "cargo test --locked -p aisimulate-core --lib perfmodel::fpm::learned_online --no-default-features",
+      "result": "44 passed after final root-histogram reuse, source-byte binding, publication reservation, and export-identity changes"
+    },
+    {
+      "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python/aisimulate/.venv/bin/pytest -p no:timeout -q -c python/aisimulate/pytest.ini python/aisimulate/tests/unit/sdk/test_fpm_online_export.py",
+      "result": "23 passed (sklearn1.9.1, pyarrow24.0.0)"
+    },
+    {
+      "command": "pytest -p no:timeout python/aisimulate/tests/unit/sdk/test_fpm_learned.py::test_feature_list_is_unique_and_bounded",
+      "result": "1 passed after retaining existing duplicate-feature guard"
+    },
+    {
+      "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python/aisimulate/.venv/bin/pytest -p no:timeout -q -c python/aisimulate/pytest.ini python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py",
+      "result": "10 passed on earlier release extension before final source-byte binding/root-histogram optimization; final extension rerun is separate qualification"
+    },
+    {
+      "command": "ruff check imported Python exporter and three test modules",
+      "result": "passed"
+    }
+  ],
+  "current_files_sha256": {
+    "crates/core/src/perfmodel/fpm/learned.rs": "a093cc70b721b913085cba640fca727b170ce8a2d6ccee63aff56f6a1f7a09c7",
+    "crates/core/src/perfmodel/fpm/learned_online.rs": "b2027c76addcee586bfa077b97c90e2b1abf8976f27c9e680704ac62144049b6",
+    "crates/core/src/perfmodel/fpm/learned_online/checkpoint.rs": "8513a2f97719e99a3cfa17d1a763bc765bb4d5a93c329184cba515da7b28946d",
+    "crates/core/src/perfmodel/fpm/learned_online/fitting.rs": "4e44cc3a629a6a429d5b52cb84eefcdb61ada38d6925759dbb062b107ef0063c",
+    "crates/core/src/perfmodel/fpm/learned_online/grouped_history_tests.rs": "3c3ec9503c2be9fd99a03334a86d863bcc8aa8b05856f082c4d4fa36461962ee",
+    "crates/core/src/perfmodel/fpm/learned_online/tests.rs": "1e0e31efd08fc259ceaae1611cd9708643b7eccc18e9651a2c615ef6b7918be0",
+    "python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py": "8a0a0fe0ba68ad364d694e84e4d20a16e3b6c2ba519ea1aa856e4a993a6c3a61",
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_export.py": "1dd353108b3bc653a5a856a3543234fd69d2429e3585bb259ffc41ebbb94dbe6",
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py": "47421ee3bcd96663b53135b2b2bc855c28e1abe48485b0619a40e65ff6cdbfad",
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py": "71cfaf1de050e5084fcb8d3c135942a35909b68efda355488d150aa2a678fdcf"
+  },
+  "limits": [
+    "Final rebuilt Python native integration and independent structural reference rerun are recorded separately.",
+    "No production performance qualification is inferred from these numerical and checkpoint unit tests."
+  ],
+  "schema": "aisimulate_online_import_validation_v1"
+}
