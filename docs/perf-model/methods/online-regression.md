@@ -34,6 +34,10 @@ forest can update binned trees from feedback. Its loss, historical evidence,
 retention and update rules are documented in the
 [learned-model design](../fpm_ml/design.md#44-online-binned-tree-adaptation) and
 [canonical field reference](../configuration.md#learned-forest-and-online-fitting-controls).
+The learned estimator also supports a
+[causal expert selector](../fpm_ml/design.md#45-hybrid-calibration-with-a-causal-selector)
+between a frozen hybrid-calibrated forest and an online forest. Its EWMA errors
+and switch counters are separate from regression fitting and readiness.
 The worker-ownership and predict-before-feedback requirements below apply to
 both estimators; their fitting algorithms and readiness are separate.
 

@@ -9,7 +9,8 @@ explicit `estimation_mode="fpm_learned"`. The
 `aisimulate_core.sdk.fpm_learned` module trains and exports its source artifacts.
 Frozen adaptation preserves the forest and can calibrate its predictions;
 online adaptation updates its binned trees from subsequent feedback.
-Both run through the standalone model's complete-iteration telemetry API. The
+The causal selector runs both experts and chooses using their prior errors.
+All three run through the standalone model's complete-iteration telemetry API. The
 current engine replay/CLI/Sweeper phase interface does not carry those metrics
 and rejects learned execution; it does not synthesize request features.
 
@@ -355,6 +356,8 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
    `missing_left`, `<=` threshold goes left), sums leaf values onto `baseline`, and
    applies `exp` for the `log_ms` target. A kind without a store returns `None`; a
    non-finite result is an error.
+   Finite predictions have a floor of $10^{-6}$ milliseconds after the output
+   transform, before any calibration multiplier.
 3. `learned_base_ms` (in `model.rs`) refuses with `InvalidForwardPassMetrics` when the
    artifact uses any `req_*` / `slot*` feature and the step has no usable lists on an
    active rank; idle steps return `Some(0.0)`. Regression-store weights never affect the
@@ -380,6 +383,8 @@ The canonical control is `estimator_config.fpm_learned.adaptation: online`.
 This standalone online estimator requires `correction.enabled: false`; its
 reported latency is the adaptive forest's prediction. Frozen adaptation remains
 the separate option for applying hybrid calibration to an unchanged forest.
+Combined `causal_selector` adaptation uses these same online fitting rules for
+its adaptive expert and separate hybrid calibration for its frozen expert.
 The [configuration table](../configuration.md#learned-forest-and-online-fitting-controls)
 defines every online parameter, its default, units and valid range.
 
@@ -389,11 +394,15 @@ Let $y_i>0$ be an observed latency in milliseconds. A `log_ms` forest learns
 $z_i=\log y_i$ and predicts
 
 $$
-F(x)=b+\sum_{t=1}^{T} f_t(x),\qquad \widehat y(x)=\exp F(x).
+F(x)=b+\sum_{t=1}^{T} f_t(x),\qquad
+\widehat y(x)=\max(10^{-6},\exp F(x)).
 $$
 
-For an `ms` artifact, use $z_i=y_i$ and the identity output transform. Online
-fitting supports squared error. Squared log error measures multiplicative
+For an `ms` artifact, use $z_i=y_i$ and the identity output transform.
+Inference applies the same $10^{-6}$-millisecond floor after that transform.
+The floor is an inference safeguard; fitting derivatives use the unclipped
+forest prefix in target space. Online fitting supports squared error.
+Squared log error measures multiplicative
 errors symmetrically in log space; it is not the same objective as MAPE.
 The unweighted derivative for observation $i$ at the prefix before tree $t$ is
 $g_i=F_{<t}(x_i)-z_i$, with Hessian $h_i=1$. For row weights $w_i$, a region has
@@ -594,6 +603,239 @@ and pending counts, update/fallback counts and retained bytes separately in
 `learned_online_diagnostics()`. Host update cost and predicted serving latency
 are different quantities; measure preparation, queries, fitting and memory at
 the intended history size and feedback cadence.
+
+### 4.5 Hybrid calibration with a causal selector
+
+`adaptation: causal_selector` keeps the calibrated forest and online forest as
+independent experts. Calibration can adjust the scale of a trained response
+surface while preserving its structure; tree adaptation can change that
+surface. Their errors need not improve together. The selector compares their
+recent observed errors in the workload region where each comparison applies.
+It makes no claim that either expert dominates across deployments or that
+online selection improves every sequence.
+
+#### Experts and independent state
+
+Let $w$ identify a model instance owned by one worker, $s$ a learned forest
+store, and $q$ a calibration query kind. The selector key is
+
+$$
+k=(w,s,q).
+$$
+
+The forest store $s$ is selected from the complete rank list and is one of
+`pure_prefill`, `pure_decode`, `contains_locally_mixed`, or
+`cross_rank_aggregated`. The query kind $q$ is prefill, decode or mixed,
+selected by the existing correction feature extractor's critical rank.
+It uses prefill tokens for a prefill query, decode requests and decode KV
+tokens for decode, and prefill tokens and decode KV tokens for mixed. The
+critical rank maximizes the sum of those coordinates. These query coordinates
+are separate from the learned forest's full feature vector $x$.
+
+There are up to 12 store/query keys per worker instance. Some combinations
+cannot occur for a particular worker role, but no key borrows another key's
+error evidence. Each forest store also owns its own three correction stores.
+For example, a cross-rank aggregated iteration can select a prefill critical
+rank; its evidence must not warm the pure-prefill forest's selector or
+calibrator. The online fitter still pools all admitted query kinds assigned
+to the same forest store. A `worker_id` field in telemetry does not multiplex
+independent models; callers own one instance per worker.
+
+For forest features $x$ and calibration coordinates $u$, define the expert
+predictions immediately before an observation's label is admitted:
+
+$$
+C_k(x,u)=c_k(u)F_{0,s}(x),\qquad A_s(x)=F_{\mathrm{online},s}(x).
+$$
+
+Here $F_{0,s}$ is the immutable seed predictor in milliseconds, including its
+output transform and prediction floor; $c_k$ is the PR493 hybrid calibration
+factor; and $F_{\mathrm{online},s}$ is the most recently published adaptive predictor.
+Both forests start from the same training checkpoint. Only the adaptive forest
+changes its trees. Calibration receives ratios against $F_{0,s}$ for its
+entire lifetime, so publishing an adaptive forest cannot invalidate or reset
+those ratios. The adaptive prediction has no correction multiplier.
+
+#### The stable expert's hybrid factor
+
+For admitted latency $y>0$, calibration stores the absolute ratio
+
+$$
+r=\operatorname{clip}_{[l,h]}\left(\frac{y}{F_{0,s}(x)}\right),
+$$
+
+where the default lower and upper factor bounds are $l=0.5$ and $h=2.0$.
+A disabled bound leaves that side unclamped. The denominator is always the
+uncorrected frozen prediction, never the selected prediction or a previously
+corrected value.
+
+Let $D_q$ be the fixed grid's configured domain for query kind $q$. Its upper
+limits default to 8,192 prefill tokens, 512 decode requests and 2,000,000 decode
+KV tokens, using the axes above; all endpoints are included. The hybrid factor
+is
+
+$$
+c_k(u)=\begin{cases}
+c^{\mathrm{fixed}}_k(u),&u\in D_q,\\
+c^{\mathrm{dynamic}}_k(u),&u\notin D_q.
+\end{cases}
+$$
+
+The fixed factor is the median ratio in the query's raw-coordinate bucket once
+the fixed store has `min_observations` retained samples. It is 1 for an empty
+bucket or an unready store. This neutral in-domain result is preserved even
+if the dynamic policy has enough samples. The hybrid boundary never depends
+on selector errors, store readiness or expanding dynamic bounds.
+
+The dynamic policy bins $\log(1+u)$ with bounds expanded by admitted feedback.
+Let $m_G$ be the median ratio in its recent FIFO, or 1 while that FIFO has fewer
+than `min_observations` samples. When the primary set is ready and the query
+has a populated local bucket containing $n_b$ ratios with median $m_b$, its
+factor is
+
+$$
+c^{\mathrm{dynamic}}_k(u)=\operatorname{clip}_{[l,h]}
+\exp\left[\frac{n_b}{n_b+20}\log m_b+
+\frac{20}{n_b+20}\log m_G\right].
+$$
+
+Otherwise it uses $m_G$, including outside the current dynamic bounds. The
+constant 20 is the calibration shrinkage support, not the selector warmup or
+the online history ramp. Both fixed and dynamic policies receive the same
+frozen-base ratio; the fixed policy rejects samples outside $D_q$.
+The dynamic policy also rejects a ratio that overflows or underflows before
+clipping. Offering one admitted label to both policies therefore does not imply
+that both retain a sample; their existing PR493 admission rules remain in force.
+
+For correction capacity $M$ and readiness threshold $m$, each policy has its
+own $M$-slot budget. Within the dynamic budget, the recent FIFO has
+$\max(\lfloor M/4\rfloor,m)$ slots and the primary set has the remainder.
+Primary retention balances occupied buckets; dynamic samples expire after
+$2M$ admissions to that calibration key. The two dynamic sets can contain
+the same observation. Correction capacity, online recent-window capacity,
+and selector comparison count are three different quantities.
+
+Canonical `correction.sampling.bins_per_axis: [2, 2]` means four total buckets:
+four prefill intervals or a 2-by-2 decode/mixed grid. This is the legacy
+`bucket_count: 4` setting, sometimes abbreviated `b4`; `[4, 4]` means 16 total
+buckets and is the API default. An explicit `M=32`, `b4`, `[0.5, 2.0]` profile
+changes calibration retention and geometry without changing the online loss
+or selector equations. See the [configuration example](learned-forward-pass-model.md#hybrid-calibration-with-a-causal-selector)
+for its exact canonical fields.
+
+For this profile, $M=32$ and `min_observations=5` allocate eight recent FIFO
+slots and 24 primary slots within dynamic calibration, plus a separate
+32-slot fixed budget for each store/query key. `b4` uses the 2-by-2 grid above.
+`W64` retains up to 64 online rows per forest store; the selector's
+$N_0=10$ warmup instead counts comparisons per store/query key. With
+$\alpha=0.025$, an old error contribution halves in about 27.38 comparisons
+of that key. Online `history_weight=0.1` assigns 90% of loss mass to recent
+rows after the 32-row retained-support ramp completes; all historical rows
+remain represented, rather than retaining only 10% of them.
+
+#### Error evidence and switching
+
+Index only valid admitted comparisons of key $k$ by $n=1,2,\ldots$. For expert
+$e\in\{C,A\}$, use its prediction before feedback to compute fractional APE:
+
+$$
+\ell_{k,n}^{e}=\left|\frac{\widehat y_{k,n}^{e}}{y_{k,n}}-1\right|.
+$$
+
+The loss is not clipped; 0.1 means 10% error. Predictions and labels must be
+finite and strictly positive, and the loss and updated averages must remain
+finite. Invalid or overflowing comparisons are rejected before admission.
+Calibration bounds constrain ratios, not this selector loss. Online fitting
+continues to minimize weighted squared error in the checkpoint target space;
+it does not fit APE.
+
+With `alpha` $\alpha$, each key and expert maintains
+
+$$
+E_{k,1}^{e}=\ell_{k,1}^{e},\qquad
+E_{k,n}^{e}=(1-\alpha)E_{k,n-1}^{e}+\alpha\ell_{k,n}^{e}
+\quad(n>1).
+$$
+
+The first comparison initializes the average directly, avoiding a zero-loss
+startup prior. Larger $\alpha$ follows new errors more quickly. For
+$0<\alpha<1$, an old contribution halves every
+$\log(1/2)/\log(1-\alpha)$ comparisons of that key; $\alpha=1$ uses only the
+latest loss. Queries, unadmitted labels and comparisons belonging to other
+keys do not advance this clock. There is no wall-clock decay or separate
+freshness reset for a rarely observed key.
+
+Let $a_{k,n-1}$ be the active expert before comparison $n$, initially $C$,
+and let $b$ be the other expert. After updating both averages and incrementing
+the key's count, the challenger qualifies exactly when
+
+$$
+Q_{k,n}=\left[n\ge N_0\right]\;\land\;
+\left[E_{k,n}^{b}<(1-\delta)E_{k,n}^{a_{k,n-1}}\right],
+$$
+
+where $N_0$ is `warmup` and $\delta$ is `margin`. The test is symmetric: after
+online becomes active, the calibrated expert must satisfy the same relative
+advantage to switch back. Equality does not qualify, even when the margin is
+zero. If both errors are zero, the active expert remains selected.
+
+For `persistence` $P$, increment a key's streak when $Q_{k,n}$ holds and reset
+it to zero otherwise. Once the streak reaches $P$, set $a_{k,n}=b$ and reset
+the streak. Otherwise retain the active expert. A streak is consecutive in
+that key's comparisons, so unrelated labels neither extend nor interrupt it.
+The resulting choice serves subsequent queries of the key. The current
+observation's prediction used $a_{k,n-1}$ and cannot benefit from its own label.
+
+Defaults are $\alpha=0.025$, $N_0=10$, $\delta=0.025$ and $P=1$. The online
+profile name `W64` means `recent_window: 64`; its FIFO capacity is independent
+of the selector's `warmup: 10` comparisons per key. For example,
+with active EWMA 0.20, a margin of 0.025 requires challenger error strictly
+below 0.195. This is a 2.5% relative improvement over active error, not a
+2.5-percentage-point reduction in MAPE. Warmup limits sparse early decisions;
+margin requires an advantage; persistence requires repeated evidence. These
+controls do not establish a statistical confidence guarantee.
+
+#### Admission, failures and supported lifecycle
+
+For each chronological iteration, the caller first estimates latency, then
+supplies the complete observation to `tune_with_fpms` before any later update.
+Tuning computes both expert predictions from the state before feedback and
+stages the selector transition. A successful online admission then offers the
+label to calibration and commits selector evidence once, regardless of which
+expert is active. Thus an inactive adaptive expert keeps learning, and an
+inactive stable expert keeps calibrating. Feedback from future or unadmitted
+observations has no role in the gate.
+
+Online admission and forest publication are separate events. If a label enters
+the pending batch but fitting fails, it is still offered to calibration once,
+and selector evidence advances once using the pre-feedback predictions. The
+published adaptive forest remains unchanged. `flush_updates()` retries the pending fitting work
+without repeating that label's calibration or selector comparison. An
+observation rejected before admission changes neither history. Re-submitting
+an already admitted label would be another observation, not a retry protocol.
+
+The API computes comparison predictions during tuning; it does not retain
+per-query tickets. Delayed or reordered feedback therefore does not reproduce
+the original predictions when intervening updates occurred. Use synchronous
+chronological estimate/tune pairs and separate instances for separate workers.
+The prediction method itself is read-only with respect to these histories.
+
+Combined construction accepts a training seed and starts fresh stable
+calibration, online recent state and selector evidence. A standalone online
+runtime checkpoint does not contain the combined histories and is rejected.
+`save_online_checkpoint()` and `export_learned_artifact()` reject combined
+models until a format can preserve both experts, every correction store and
+every selector key together. `learned_selector_diagnostics()` exposes selection
+state; `learned_online_diagnostics()` exposes the adaptive fitting state. Neither
+diagnostic snapshot is a resumable model.
+
+The selector adds constant-size error state per key, while the stable forest
+and its correction stores add their own memory and update costs. Feedback
+needs both expert predictions as well as calibration and online fitting work.
+Measure these costs separately from serving-latency accuracy. Hyperparameter
+selection and evaluation must use disjoint chronological data; evaluating all
+labels is useful for reporting, but only the declared admitted labels may
+update either expert or the selector.
 
 ## 5. Evaluation method
 

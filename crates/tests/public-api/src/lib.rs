@@ -132,6 +132,27 @@ pub fn online_forest_model(
     ForwardPassPerfModel::best_available(config)
 }
 
+/// Combined selection remains a mode of the canonical learned estimator.
+pub fn calibrated_online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{LearnedAdaptation, SelectorConfig};
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.adaptation = LearnedAdaptation::CausalSelector;
+    config.estimator_config.fpm_learned.checkpoint_path = Some(checkpoint.to_owned());
+    config.estimator_config.correction.enabled = true;
+    config.estimator_config.selector = SelectorConfig {
+        alpha: 0.025,
+        warmup: 10,
+        margin: 0.025,
+        persistence: 1,
+    };
+    let model = ForwardPassPerfModel::best_available(config)?;
+    let _scopes = model.learned_selector_diagnostics();
+    Ok(model)
+}
+
 pub fn online_forest_checkpoint(
     model: &mut ForwardPassPerfModel,
     path: &Path,

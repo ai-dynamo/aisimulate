@@ -2195,6 +2195,16 @@ impl PyForwardPassPerfModel {
             .transpose()
     }
 
+    fn learned_selector_diagnostics(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_selector_diagnostics()
+            .map(|value| {
+                serde_json::to_string(&value)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
     fn learned_online_diagnostics(&self) -> PyResult<Option<String>> {
         self.inner
             .learned_online_diagnostics()

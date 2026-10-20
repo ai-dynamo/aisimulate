@@ -58,7 +58,8 @@ pub use fpm::{
     FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
     LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
     RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
-    RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig, UnrecordedFpmQuantMode,
+    RegressionUpdatePolicy, SelectorConfig, SplineFitConfig, SplineSearchConfig,
+    UnrecordedFpmQuantMode,
 };
 pub use fpm::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,

@@ -394,6 +394,13 @@ impl OnlineLearner {
         }
     }
 
+    /// Monotonic admitted-label count, including a row whose fit failed pending retry.
+    pub(crate) fn accepted_observations_for(&self, kind: Kind) -> u64 {
+        self.stores
+            .get(&kind)
+            .map_or(0, |state| state.counters.accepted)
+    }
+
     /// Accepted recent and pending rows, excluding immutable historical anchors.
     pub(crate) fn retained_observations(&self) -> usize {
         self.stores

@@ -8,6 +8,10 @@
 //! through [`crate::perfmodel::engine::Engine::forward_pass_time_ms`]. The online
 //! correction / regression / diagnostics / readiness logic is engine-agnostic.
 
+#[path = "combined.rs"]
+mod combined;
+use combined::CalibratedOnlineModel;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -94,6 +98,8 @@ pub enum ForwardPassPerfSource {
     LearnedWithCorrection,
     /// A checkpoint-backed forest with bounded online updates.
     LearnedOnline,
+    /// Per-store/query causal selection between calibrated frozen and online forests.
+    LearnedCausalSelector,
 }
 
 /// Readiness state reported by `ForwardPassPerfDiagnostics`.
@@ -317,6 +323,7 @@ enum ForwardPassPerfMode {
         identity_verified: bool,
         corrections: WorkloadStores<CorrectionBuckets>,
     },
+    CausalSelector(Box<CalibratedOnlineModel>),
 }
 
 impl ForwardPassPerfModel {
@@ -417,7 +424,9 @@ impl ForwardPassPerfModel {
             }
         }
         let identity_verified = settings.checkpoint_path.is_some() || artifact_identity.is_some();
-        let online = if settings.adaptation == super::LearnedAdaptation::Online {
+        let stable = (settings.adaptation == super::LearnedAdaptation::CausalSelector)
+            .then(|| learned.clone());
+        let mut online = if settings.adaptation != super::LearnedAdaptation::Frozen {
             Some(OnlineLearner::load(
                 settings
                     .checkpoint_path
@@ -431,13 +440,25 @@ impl ForwardPassPerfModel {
             None
         };
         let options = config.estimator_config.correction_options();
-        Ok(Self {
-            mode: ForwardPassPerfMode::Learned {
+        let mode = if let Some(stable) = stable {
+            ForwardPassPerfMode::CausalSelector(Box::new(CalibratedOnlineModel::new(
+                stable,
+                learned,
+                online.take().expect("combined owns an online learner"),
+                identity_verified,
+                &options,
+                &config.estimator_config.selector,
+            )?))
+        } else {
+            ForwardPassPerfMode::Learned {
                 learned,
                 online,
                 identity_verified,
                 corrections: WorkloadStores::with_options(&options),
-            },
+            }
+        };
+        Ok(Self {
+            mode,
             options,
             last_warning: None,
             provenance: None,
@@ -704,6 +725,7 @@ impl ForwardPassPerfModel {
                     .store(feature.workload_kind)
                     .predict_metrics(feature.x, metrics_by_rank)
             }
+            ForwardPassPerfMode::CausalSelector(model) => model.predict(metrics_by_rank),
             ForwardPassPerfMode::Learned {
                 learned,
                 corrections,
@@ -858,6 +880,7 @@ impl ForwardPassPerfModel {
                             metrics_by_rank,
                         )?;
                 }
+                ForwardPassPerfMode::CausalSelector(model) => model.observe(metrics_by_rank)?,
                 ForwardPassPerfMode::Learned {
                     learned,
                     online,
@@ -948,6 +971,15 @@ impl ForwardPassPerfModel {
                     provenance: self.provenance.clone(),
                 }
             }
+            ForwardPassPerfMode::CausalSelector(model) => ForwardPassPerfDiagnostics {
+                source: ForwardPassPerfSource::LearnedCausalSelector,
+                readiness: ForwardPassPerfReadiness::Ready,
+                retained_observations: model.online.retained_observations()
+                    + model.correction_count(),
+                correction_ready_buckets: model.ready_bucket_count(),
+                last_warning: self.last_warning.clone(),
+                provenance: self.provenance.clone(),
+            },
             ForwardPassPerfMode::Learned {
                 corrections,
                 online,
@@ -986,6 +1018,22 @@ impl ForwardPassPerfModel {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),
             ForwardPassPerfMode::Regression { regression, .. } => regression.diagnostics(),
+            ForwardPassPerfMode::CausalSelector(model) => {
+                workload_kinds_for(model.stable.worker_type())
+                    .iter()
+                    .copied()
+                    .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
+                        workload_kind,
+                        ready: model.stable.has_store(workload_kind)
+                            && model.learned.has_store(workload_kind),
+                        retained_observations: model
+                            .online
+                            .retained_observations_for(workload_kind)
+                            + model.store_correction_count(workload_kind),
+                        spline: None,
+                    })
+                    .collect()
+            }
             ForwardPassPerfMode::Learned {
                 learned, online, ..
             } => workload_kinds_for(learned.worker_type())
@@ -1011,6 +1059,7 @@ impl ForwardPassPerfModel {
     pub fn learned_feature_names(&self) -> Option<&[String]> {
         match &self.mode {
             ForwardPassPerfMode::Learned { learned, .. } => Some(learned.feature_names()),
+            ForwardPassPerfMode::CausalSelector(model) => Some(model.stable.feature_names()),
             _ => None,
         }
     }
@@ -1022,6 +1071,7 @@ impl ForwardPassPerfModel {
     pub fn learned_metadata(&self) -> Option<&serde_json::Value> {
         match &self.mode {
             ForwardPassPerfMode::Learned { learned, .. } => Some(learned.metadata()),
+            ForwardPassPerfMode::CausalSelector(model) => Some(model.stable.metadata()),
             _ => None,
         }
     }
@@ -1029,6 +1079,12 @@ impl ForwardPassPerfModel {
     /// Fit pending observations in every online store, including partial batches.
     /// Prediction and checkpoint saving never implicitly flush pending feedback.
     pub fn flush_updates(&mut self) -> Result<(), AicError> {
+        if let ForwardPassPerfMode::CausalSelector(model) = &mut self.mode {
+            for kind in model.learned.store_kinds() {
+                model.online.flush(kind, &mut model.learned)?;
+            }
+            return Ok(());
+        }
         let ForwardPassPerfMode::Learned {
             learned,
             online: Some(online),
@@ -1048,6 +1104,9 @@ impl ForwardPassPerfModel {
     /// Export the current forest as a frozen inference artifact, without fitting.
     pub fn export_learned_artifact(&self) -> Result<String, AicError> {
         match &self.mode {
+            ForwardPassPerfMode::CausalSelector(_) => Err(AicError::UnsupportedModel(
+                "combined artifact export is unsupported: a forest alone cannot preserve calibration and selector state".into(),
+            )),
             ForwardPassPerfMode::Learned {
                 learned,
                 identity_verified,
@@ -1084,6 +1143,9 @@ impl ForwardPassPerfModel {
         &self,
         path: impl AsRef<std::path::Path>,
     ) -> Result<(), AicError> {
+        if matches!(&self.mode, ForwardPassPerfMode::CausalSelector(_)) {
+            return Err(AicError::UnsupportedModel("combined checkpoint saving is unsupported: frozen calibration and selector state must also be preserved".into()));
+        }
         let ForwardPassPerfMode::Learned {
             learned,
             online: Some(online),
@@ -1099,6 +1161,12 @@ impl ForwardPassPerfModel {
 
     /// Online update counters and deployment identity verification status.
     pub fn learned_online_diagnostics(&self) -> Option<serde_json::Value> {
+        if let ForwardPassPerfMode::CausalSelector(model) = &self.mode {
+            let mut value = model.online.diagnostics();
+            value["adaptation"] = "causal_selector".into();
+            value["identity_verified"] = model.identity_verified.into();
+            return Some(value);
+        }
         let ForwardPassPerfMode::Learned {
             online,
             identity_verified,
@@ -1118,6 +1186,15 @@ impl ForwardPassPerfModel {
         );
         object.insert("identity_verified".into(), (*identity_verified).into());
         Some(value)
+    }
+
+    /// Causal evidence and calibration readiness, isolated per model instance,
+    /// forest store and query type. Prediction does not mutate these counters.
+    pub fn learned_selector_diagnostics(&self) -> Option<serde_json::Value> {
+        match &self.mode {
+            ForwardPassPerfMode::CausalSelector(model) => Some(model.diagnostics()),
+            _ => None,
+        }
     }
 
     /// API:
@@ -1316,7 +1393,9 @@ impl ForwardPassPerfModel {
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
-            ForwardPassPerfMode::Regression { .. } | ForwardPassPerfMode::Learned { .. } => None,
+            ForwardPassPerfMode::Regression { .. }
+            | ForwardPassPerfMode::Learned { .. }
+            | ForwardPassPerfMode::CausalSelector(_) => None,
         }
     }
 
@@ -1344,6 +1423,7 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Native { corrections, .. } => corrections.correction_factors(),
             ForwardPassPerfMode::Regression { .. } => Vec::new(),
             ForwardPassPerfMode::Learned { corrections, .. } => corrections.correction_factors(),
+            ForwardPassPerfMode::CausalSelector(model) => model.correction_factors(),
         }
     }
 }

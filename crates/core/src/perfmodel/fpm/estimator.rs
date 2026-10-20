@@ -18,6 +18,7 @@ pub struct EstimatorConfig {
     pub fpm_interpolation: FpmInterpolationConfig,
     pub fpm_regression: FpmRegressionConfig,
     pub fpm_learned: FpmLearnedConfig,
+    pub selector: SelectorConfig,
     pub correction: CorrectionConfig,
 }
 
@@ -28,6 +29,46 @@ pub enum LearnedAdaptation {
     #[default]
     Frozen,
     Online,
+    CausalSelector,
+}
+
+/// Causal expert selection using admitted pre-update relative errors.
+/// Kept outside FpmLearnedConfig so standalone online checkpoint layout stays stable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SelectorConfig {
+    pub alpha: f64,
+    pub warmup: usize,
+    pub margin: f64,
+    pub persistence: usize,
+}
+
+impl Default for SelectorConfig {
+    fn default() -> Self {
+        Self {
+            alpha: 0.025,
+            warmup: 10,
+            margin: 0.025,
+            persistence: 1,
+        }
+    }
+}
+
+impl SelectorConfig {
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid =
+            |reason| AicError::InvalidEngineConfig(format!("estimator_config.selector: {reason}"));
+        if !self.alpha.is_finite() || !(0.0..=1.0).contains(&self.alpha) || self.alpha == 0.0 {
+            return Err(invalid("alpha must be finite and in (0, 1]"));
+        }
+        if !self.margin.is_finite() || !(0.0..1.0).contains(&self.margin) {
+            return Err(invalid("margin must be finite and in [0, 1)"));
+        }
+        if self.warmup == 0 || self.persistence == 0 {
+            return Err(invalid("warmup and persistence must be positive"));
+        }
+        Ok(())
+    }
 }
 
 /// Which parts of an online forest may change.
@@ -956,6 +997,7 @@ impl EstimatorConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         self.fpm_learned.validate()?;
+        self.selector.validate()?;
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;

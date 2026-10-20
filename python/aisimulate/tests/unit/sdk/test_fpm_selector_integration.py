@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Compare the combined native model with two independent canonical experts."""
+
+from __future__ import annotations
+
+import copy
+
+import pytest
+
+from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+from .test_fpm_online_integration import IDENTITY, iteration, train
+
+pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("persistence", [1, 3])
+def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, persistence):
+    _, seed, artifact = train(tmp_path)
+    correction = {
+        "enabled": True,
+        "mode": "hybrid",
+        "sampling": {"max_observations": 32, "bins_per_axis": [2, 2]},
+    }
+    selector = {"alpha": 0.5, "warmup": 3, "margin": 0.025, "persistence": persistence}
+
+    def load(adaptation):
+        return RustForwardPassPerfModel.best_available(
+            {
+                **IDENTITY,
+                "estimation_mode": "fpm_learned",
+                "estimator_config": {
+                    "correction": {"enabled": False} if adaptation == "online" else correction,
+                    "selector": selector,
+                    "fpm_learned": {
+                        "checkpoint_path": str(seed),
+                        "adaptation": adaptation,
+                        "update_mode": "leaf_only",
+                        "recent_window": 8,
+                        "update_every": 1,
+                        "history_weight": 0.01,
+                    },
+                },
+            }
+        )
+
+    stable, online, combined = [load(mode) for mode in ("frozen", "online", "causal_selector")]
+    assert stable.learned_selector_diagnostics() is None
+    assert online.learned_selector_diagnostics() is None
+    active, streak, switches = 0, 0, 0
+    errors = None
+    for n in range(1, 97):
+        row = iteration(n % 16)
+        # Fixed-grid positions, changing label regimes. The current label is
+        # never used for selection or prediction until tune_with_fpms admits it.
+        for rank in row:
+            rank["wall_time"] *= 1.8 if n <= 48 else 0.7
+        candidates = [model.estimate_forward_pass_time_ms(row) for model in (stable, online)]
+        before = combined.learned_selector_diagnostics()
+        assert combined.estimate_forward_pass_time_ms(row) == pytest.approx(candidates[active], rel=1e-13)
+        hidden_label = copy.deepcopy(row)
+        for rank in hidden_label:
+            rank["wall_time"] = 123.0
+        assert combined.estimate_forward_pass_time_ms(hidden_label) == combined.estimate_forward_pass_time_ms(row)
+        assert combined.learned_selector_diagnostics() == before
+
+        y = max(rank["wall_time"] for rank in row) * 1000
+        losses = [abs(value / y - 1) for value in candidates]
+        errors = (
+            losses
+            if errors is None
+            else [
+                (1 - selector["alpha"]) * old + selector["alpha"] * loss
+                for old, loss in zip(errors, losses, strict=True)
+            ]
+        )
+        preferred = n >= selector["warmup"] and errors[1 - active] < (1 - selector["margin"]) * errors[active]
+        streak = streak + 1 if preferred else 0
+        if streak >= persistence:
+            active, streak, switches = 1 - active, 0, switches + 1
+        for model in (stable, online, combined):
+            model.tune_with_fpms([row])
+        diagnostics = combined.learned_selector_diagnostics()
+        state = next(s for s in diagnostics["states"] if s["store"] == "pure_decode" and s["query_type"] == "decode")
+        assert state["observations"] == n
+        assert state["selected"] == ("stable", "online")[active]
+        assert state["stable_ewma"] == pytest.approx(errors[0], rel=1e-13)
+        assert state["online_ewma"] == pytest.approx(errors[1], rel=1e-13)
+        assert state["streak"] == streak
+        assert state["switches"] == switches
+        assert all(s["observations"] == 0 for s in diagnostics["states"] if s is not state)
+    assert switches > 0, "The reference trajectory must exercise a real branch switch."
+    assert stable.export_learned_artifact() == artifact
+    assert combined.learned_online_diagnostics()["stores"]["pure_decode"]["accepted_observations"] == 96
+    with pytest.raises(ValueError, match="selector"):
+        combined.export_learned_artifact()
+    destination = tmp_path / "unsupported-resume"
+    with pytest.raises(ValueError, match="selector"):
+        combined.save_online_checkpoint(destination)
+    assert not destination.exists()

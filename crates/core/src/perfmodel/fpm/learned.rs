@@ -388,17 +388,27 @@ impl LearnedForwardPassModel {
         kind: ForwardPassRegressionWorkloadKind,
         features: &IterationFeatureVector,
     ) -> Result<Option<f64>, AicError> {
-        let Some(store) = self.stores.get(&kind) else {
-            return Ok(None);
-        };
         let mut buf = [f64::NAN; FEATURE_COUNT];
         for (slot, &index) in self.feature_indices.iter().enumerate() {
             buf[slot] = features.values[index];
         }
-        let x = &buf[..self.feature_indices.len()];
+        self.predict_selected_ms(kind, &buf[..self.feature_indices.len()])
+    }
+
+    /// Prediction from this artifact's already-projected feature ABI. Combined
+    /// feedback shares this projection between both experts and the retained row.
+    pub(crate) fn predict_selected_ms(
+        &self,
+        kind: ForwardPassRegressionWorkloadKind,
+        x: &[f64],
+    ) -> Result<Option<f64>, AicError> {
+        debug_assert_eq!(x.len(), self.feature_indices.len());
+        let Some(store) = self.stores.get(&kind) else {
+            return Ok(None);
+        };
         let mut raw = store.baseline;
         for tree in &store.trees {
-            raw += tree_leaf_value(tree, &x);
+            raw += tree_leaf_value(tree, x);
         }
         let ms = match self.target {
             LearnedTarget::LogMs => raw.exp(),

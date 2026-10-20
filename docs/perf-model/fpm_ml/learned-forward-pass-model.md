@@ -17,11 +17,13 @@ through `RustForwardPassPerfModel.best_available(config)` with explicit
 | `fpm_regression` | Linear or spline fit | Online fitting per workload store | Admitted observations; can start untrained |
 | `fpm_learned`, `adaptation: frozen` | Fixed tree ensemble | Optional hybrid calibration | Inference artifact or checkpoint |
 | `fpm_learned`, `adaptation: online` | Adaptive binned tree ensemble | Tree updates; correction must be disabled | Training or saved online checkpoint |
+| `fpm_learned`, `adaptation: causal_selector` | Selected frozen calibrated or adaptive expert | Both experts learn; prior error evidence selects the next prediction | Training checkpoint |
 
 The learned mode does not use the anchor-library collector or a kvwarm
 self-benchmark. Its only input is the telemetry the engine already produces.
 
-Frozen calibration and online tree adaptation are standalone telemetry APIs:
+Frozen calibration, online tree adaptation and their causal selector are
+standalone telemetry APIs:
 pass complete `ForwardPassMetrics` for one iteration to the model returned by
 `best_available`. Engine replay, engine CLI prediction and Sweeper's current
 timing interfaces supply phase aggregates and cannot reconstruct the full
@@ -536,8 +538,10 @@ normalized deployment identity and report `identity_verified: true` in learned
 diagnostics. Legacy inference artifacts without identity metadata report
 `false`; the constructor still checks their worker role and content digest.
 The seed export's `identity` argument records identity in the checkpoint
-manifest. An inference snapshot preserves its artifact metadata; verify that
-metadata before relying on deployment checks when reloading the JSON alone.
+manifest and the artifact's `metadata.identity`. Passing `identity` without
+requesting an online seed also embeds it in the inference artifact; conflicting
+metadata is rejected. Inference export from a verified checkpoint retains this
+identity, including when its older artifact omitted the metadata.
 
 Diagnostics distinguish original historical observations from stored grouped
 representatives, retained recent rows, pending rows, publications and update
@@ -546,6 +550,118 @@ logical support. It does not make memory bounded solely by `recent_window`:
 immutable history, the forest and fitting statistics remain resident. Evaluate
 host update cost separately from prediction accuracy and latency; lazy refresh
 still performs periodic full work and may fall back to eager fitting.
+
+### Hybrid calibration with a causal selector
+
+`adaptation: causal_selector` runs two experts from the same training seed.
+The stable expert keeps the source forest unchanged and applies PR493 hybrid
+calibration. The adaptive expert updates its own forest with the online fitting
+controls above. Both receive each admitted observation. The selector returns
+one expert's prediction using only errors measured on earlier admitted labels;
+it does not average their latencies.
+
+The stable expert provides a fixed reference for calibration ratios while the
+adaptive expert can change splits and leaf values. This separation matters:
+calibrating against an evolving forest would mix ratios measured against
+different predictors. Publishing an adaptive update never changes the stable
+forest or resets its calibration history.
+
+The following explicit profile uses 32 calibration slots per policy and query
+kind, four correction buckets (2-by-2 for decode/mixed), factor bounds
+`[0.5, 2.0]`, and a 64-observation online window with 10% historical loss mass
+after a 32-observation support ramp. `b4` means four total buckets, not four
+per axis; `W64` means `recent_window: 64`, not selector warmup.
+These are application settings, separate from API defaults: correction capacity
+defaults to 64, online capacity to 2,048, and online fitting to eager batches of
+64. Selector defaults are `alpha=0.025`, `warmup=10`, `margin=0.025`, and
+`persistence=1`. Validate an explicit profile on disjoint chronological data
+for the deployment and feedback cadence where it will run.
+
+```python
+selector_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "checkpoint_path": "models/decode_online_seed",
+            "adaptation": "causal_selector",
+            "update_mode": "structural",
+            "recent_window": 64,
+            "update_every": 1,
+            "history_weight": 0.1,
+            "history_weight_ramp_observations": 32,
+            "history_bin_grouping": True,
+            "derivative_refresh": "lazy",
+            "eager_refresh_interval": 32,
+            "split_sampling_rate": 0.5,
+            "split_rank_tolerance": 0.01,
+        },
+        "correction": {
+            "enabled": True,
+            "mode": "hybrid",
+            "sampling": {"max_observations": 32, "bins_per_axis": [2, 2]},
+            "min_observations": 5,
+            "factor_bounds": {"min": 0.5, "max": 2.0},
+        },
+        "selector": {"alpha": 0.025, "warmup": 10, "margin": 0.025, "persistence": 1},
+    },
+)
+selected = RustForwardPassPerfModel.best_available(selector_config)
+
+# Complete one observation before processing the next iteration.
+predicted_ms = selected.estimate_forward_pass_time_ms([query_rank0])
+selected.tune_with_fpms([[observed_rank0]])
+print(selected.learned_selector_diagnostics())
+```
+
+Use one instance per worker and process observations in chronological order.
+`tune_with_fpms` computes both comparison predictions before admitting the
+label. The caller must estimate and then tune without intervening updates;
+this API has no saved prediction tickets for asynchronous or reordered labels.
+Prediction queries do not change the active expert, comparison counts or
+fitting state. The first ten comparisons of a fresh key therefore use the
+stable expert with the defaults; the tenth label can select online for the
+next query. Calibration's five-observation readiness threshold is a separate
+control from the selector's ten-comparison warmup.
+
+Evidence is local to `(worker instance, learned forest store, query kind)`.
+The four forest stores are `pure_prefill`, `pure_decode`,
+`contains_locally_mixed`, and `cross_rank_aggregated`. Query kinds are prefill,
+decode and mixed, inferred by the correction feature extractor from the
+critical rank. In an aggregated iteration these are different classifications:
+cross-rank prefill/decode work can use the cross-rank forest while the critical
+rank selects a prefill or decode calibration query. Each forest store owns
+independent correction histories for those three query kinds, and the selector
+keeps independent error evidence for all 12 possible pairs. The online forest
+still learns from all query kinds assigned to that forest store.
+
+The selector requires enabled hybrid correction and a training checkpoint.
+An inference artifact lacks the online training state; a standalone online
+runtime checkpoint lacks the stable calibration and selector histories.
+Neither is accepted as a combined source. A new construction starts with the
+seed forest, empty calibration and selector evidence, and stable selection.
+`save_online_checkpoint()` and `export_learned_artifact()` explicitly reject
+the combined model. Complete combined-state persistence is not yet supported;
+the standalone online save/resume example above applies only to `adaptation:
+online`.
+
+If an online fitting attempt fails after admitting a valid label, that label
+still advances selector evidence once and is offered to calibration once,
+subject to PR493's admission rules. For example, fixed calibration rejects
+out-of-grid samples and dynamic calibration rejects an overflowing or
+underflowed ratio before clipping. The unpublished forest and pending batch
+remain available for retry. Use `flush_updates()` to retry publication without
+re-counting the label, rather than submitting it again.
+An input rejected before admission changes neither calibration nor selector
+evidence. `learned_online_diagnostics()` reports fitting state, while
+`learned_selector_diagnostics()` reports each key's count, error averages,
+active expert, streak and switches. These counts have different meanings from
+retained calibration samples. The [mathematical design](design.md#45-hybrid-calibration-with-a-causal-selector)
+defines the loss, switching inequalities and update order.
 
 ## 4. Accuracy reference
 

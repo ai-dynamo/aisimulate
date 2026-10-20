@@ -53,7 +53,8 @@ pub use perfmodel::{
     FpmLearnedConfig, FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose,
     LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode, LinearFitConfig, OpLevelConfig,
     RegressionFeatureAxis, RegressionFitConfig, RegressionFitKind, RegressionSamplingConfig,
-    RegressionUpdatePolicy, SplineFitConfig, SplineSearchConfig, UnrecordedFpmQuantMode,
+    RegressionUpdatePolicy, SelectorConfig, SplineFitConfig, SplineSearchConfig,
+    UnrecordedFpmQuantMode,
 };
 
 #[cfg(feature = "python")]

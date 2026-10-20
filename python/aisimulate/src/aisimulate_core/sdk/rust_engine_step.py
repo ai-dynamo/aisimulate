@@ -474,12 +474,25 @@ class RustForwardPassPerfModel:
         raw = self._inner.learned_online_diagnostics()
         return None if raw is None else json.loads(raw)
 
+    def learned_selector_diagnostics(self) -> dict[str, Any] | None:
+        """Return causal selection evidence by forest store and query type.
+
+        Returns ``None`` unless ``fpm_learned.adaptation=causal_selector``.
+        Reading diagnostics does not admit observations or change selection.
+        """
+        raw = self._inner.learned_selector_diagnostics()
+        return None if raw is None else json.loads(raw)
+
     def flush_updates(self) -> None:
         """Publish pending online observations, including a partial update batch."""
         self._inner.flush_updates()
 
     def export_learned_artifact(self) -> dict[str, Any]:
-        """Return the current forest as an inference artifact, without fitting state."""
+        """Return the current forest as an inference artifact, without fitting state.
+
+        Combined selectors reject this operation: one forest cannot represent
+        both experts, calibration, and selection evidence.
+        """
         return json.loads(self._inner.export_learned_artifact())
 
     def save_online_checkpoint(self, path: str | os.PathLike[str]) -> None:
@@ -488,6 +501,8 @@ class RustForwardPassPerfModel:
         Reload with ``best_available`` and ``fpm_learned.checkpoint_path``.
         Configuration alone does not contain admitted observations. The target
         directory must not already exist, even if empty.
+        Combined selectors do not support full-state persistence and reject
+        this operation.
         """
         self._inner.save_online_checkpoint(os.fspath(path))
 

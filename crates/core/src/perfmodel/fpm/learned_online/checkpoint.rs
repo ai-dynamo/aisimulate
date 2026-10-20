@@ -244,6 +244,11 @@ pub(super) fn load(
         return Err(invalid("frozen inference must not initialize a learner"));
     }
     if m.schema == RUNTIME_SCHEMA {
+        if config.adaptation == LearnedAdaptation::CausalSelector {
+            return Err(invalid(
+                "causal_selector requires a training checkpoint; online runtime snapshots do not contain frozen calibration and selector state",
+            ));
+        }
         let (state_path, file) = checked_file(
             path,
             m.state_file

@@ -368,6 +368,23 @@ impl ForwardPassPerfModelConfig {
                     ));
                 }
             }
+            if learned.adaptation == super::LearnedAdaptation::CausalSelector {
+                if learned.checkpoint_path.is_none() {
+                    return Err(invalid_config(
+                        "causal_selector requires a training checkpoint_path",
+                    ));
+                }
+                if !self.estimator_config.correction.enabled
+                    || !matches!(
+                        self.estimator_config.correction.mode,
+                        super::CorrectionMode::Auto | super::CorrectionMode::Hybrid
+                    )
+                {
+                    return Err(invalid_config(
+                        "causal_selector requires correction.enabled=true and correction.mode='hybrid' (or auto)",
+                    ));
+                }
+            }
             if self.nextn != 0 || self.speculation.is_some() {
                 return Err(invalid_config(
                     "fpm_learned does not support speculative decoding",
