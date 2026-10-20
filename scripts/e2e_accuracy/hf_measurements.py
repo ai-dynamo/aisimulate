@@ -118,7 +118,7 @@ def producer_metadata(url):
         else:
             if retry == 2:
                 break
-            if response.status_code == 403 and "Retry-After" in response.headers:
+            if response.status_code in {403, 429} and "Retry-After" in response.headers:
                 value = response.headers["Retry-After"]
                 try:
                     seconds = int(value) if value.isdigit() else parsedate_to_datetime(value).timestamp() - time.time()

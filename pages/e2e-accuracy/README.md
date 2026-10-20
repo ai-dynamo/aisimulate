@@ -310,7 +310,7 @@ checkout and committed snapshots unchanged.
   local `hf:<sha256>` identities from the recorded configuration fields. These
   IDs never stand in for upstream IDs when matching archived runtime evidence.
   Producer lookups retry connection failures and HTTP 5xx up to three attempts,
-  with 1s/2s backoff. HTTP 403 retries require a valid `Retry-After` of at most
+  with 1s/2s backoff. HTTP 403/429 retries require a valid `Retry-After` of at most
   60s and honor that delay; other authorization failures fail immediately.
   Exact producer run/attempt URLs are resolved through GitHub's attempt API for
   their immutable source SHA. Missing/deleted provenance remains unresolved and

@@ -115,7 +115,9 @@ def test_deleted_producer_has_no_invented_revision(monkeypatch, record, status):
     assert "head_sha" not in hf.producer_metadata(record["run_url"])
 
 
-@pytest.mark.parametrize("failure", [502, 503, "connection", "timeout", "rate_limit", "rate_limit_date"])
+@pytest.mark.parametrize(
+    "failure", [502, 503, "connection", "timeout", "rate_limit", "rate_limit_date", "rate_limit_429"]
+)
 def test_producer_recovers_from_transient_failure(monkeypatch, record, failure):
     run = dict(id=987, run_attempt=2, head_sha="b" * 40)
     success = hf.requests.Response()
@@ -126,6 +128,9 @@ def test_producer_recovers_from_transient_failure(monkeypatch, record, failure):
     else:
         first = hf.requests.Response()
         first.status_code = 403 if str(failure).startswith("rate_limit") else failure
+        if failure == "rate_limit_429":
+            first.status_code = 429
+            first.headers["Retry-After"] = "5"
         first._content = b""
         first._content_consumed = True
         if failure == "rate_limit":
@@ -150,7 +155,9 @@ def test_producer_recovers_from_transient_failure(monkeypatch, record, failure):
     assert sleeps == [5 if str(failure).startswith("rate_limit") else 1]
 
 
-@pytest.mark.parametrize("failure", [502, "connection", 403, 401, "rate_limit", "long_rate_limit", "bad_rate_limit"])
+@pytest.mark.parametrize(
+    "failure", [502, "connection", 403, 401, 429, "rate_limit", "rate_limit_429", "long_rate_limit", "bad_rate_limit"]
+)
 def test_producer_retries_are_bounded(monkeypatch, record, failure):
     calls, sleeps = [], []
 
@@ -162,8 +169,10 @@ def test_producer_retries_are_bounded(monkeypatch, record, failure):
         response.status_code = 403 if isinstance(failure, str) else failure
         response._content = b""
         response._content_consumed = True
-        if failure == "rate_limit":
+        if failure in ("rate_limit", "rate_limit_429"):
             response.headers["Retry-After"] = "0"
+        if failure == "rate_limit_429":
+            response.status_code = 429
         if failure == "long_rate_limit":
             response.headers["Retry-After"] = "120"
         if failure == "bad_rate_limit":
@@ -174,7 +183,7 @@ def test_producer_retries_are_bounded(monkeypatch, record, failure):
     monkeypatch.setattr(hf.time, "sleep", sleeps.append)
     with pytest.raises(hf.requests.RequestException):
         hf.producer_metadata(record["run_url"])
-    retried = failure in (502, "connection", "rate_limit")
+    retried = failure in (502, "connection", "rate_limit", "rate_limit_429")
     assert len(calls) == (3 if retried else 1)
     assert sleeps == ([1, 2] if retried else [])
 
