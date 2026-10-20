@@ -86,5 +86,40 @@
       "fpm-ci-stub-tests.log": "167225943f1eed4e2ab2a063bac2148c131813a09ae7ddd88903d55bb90294fd"
     },
     "static_checks": "Ruff check and format --check with python/aisimulate/pyproject.toml passed for the helper and three affected modules; git diff --check passed."
+  },
+  "dependent_selector_validation": {
+    "rust_tree_revision": "2ae93bd5bbf2b1c94bc9b86e594dd70598d59783",
+    "additional_test_change": {
+      "path": "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py",
+      "sha256": "8f9d3fd8f6c4c4acb233d7e889825f6543907765a9a052c5c6d65ce951700107",
+      "description": "Explicitly register the shared training-dependency isolation fixture in the selector test module."
+    },
+    "rust": {
+      "command": "cargo test --locked -p aisimulate-core --lib --no-default-features --offline perfmodel::fpm:: -- --nocapture",
+      "passed": 259,
+      "failed": 0,
+      "log_sha256": "ab4a94333e5cdfa13fe49c8c9f7e7727dc55d34b73d343b814440e601193cb59"
+    },
+    "python": {
+      "pytest_args": [
+        "-c",
+        "python/aisimulate/pytest.ini",
+        "-p",
+        "no:timeout",
+        "-q",
+        "python/aisimulate/tests/unit/sdk/test_fpm_selector_integration.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_export.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py",
+        "python/aisimulate/tests/unit/sdk/test_fpm_learned.py"
+      ],
+      "invocation": "Same fresh-process Torch-stub injection, thread settings and post-pytest restoration assertion as ci_collection_fix.invocation.",
+      "passed": 60,
+      "failed": 0,
+      "warnings": 1,
+      "log_sha256": "9a5ed39f3bd7f2318a869d576bba81593d781d960b5139aabfd3de883af2850e",
+      "native_extension_scope": "Same pre-existing release extension and provenance as ci_collection_fix.native_extension; no rebuild for Python test-only changes."
+    },
+    "hygiene": "cargo fmt --all -- --check, Python-config Ruff check/format --check on the selector test, and git diff --check passed."
   }
 }

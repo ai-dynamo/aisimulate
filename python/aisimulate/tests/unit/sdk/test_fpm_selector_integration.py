@@ -11,6 +11,7 @@ import pytest
 
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
+from .fpm_training_support import isolate_training_dependencies as isolate_training_dependencies
 from .test_fpm_online_integration import IDENTITY, iteration, train
 
 pytestmark = pytest.mark.unit
