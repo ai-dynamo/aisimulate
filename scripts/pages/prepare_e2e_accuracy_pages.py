@@ -224,6 +224,9 @@ def public_contract(summary):
                                 "max_num_batched_tokens",
                                 "enable_prefix_caching",
                                 "forward_model",
+                                "mtp_depth",
+                                "mtp_accepted_draft_tokens",
+                                "mtp_acceptance_source",
                                 "prefill_tp",
                                 "prefill_ep",
                                 "prefill_num_workers",
@@ -286,7 +289,8 @@ def unpack_artifact(archive: bytes) -> dict:
         q["schema_version"] != 1
         or q["status"] != "complete"
         or q["advisory"] is not True
-        or q["selection_policy"] not in {"latest-complete-config-run-v1", "gym-resolved-config-v2"}
+        or q["selection_policy"]
+        not in {"latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3"}
     ):
         raise ValueError("campaign is not complete")
     for field in (

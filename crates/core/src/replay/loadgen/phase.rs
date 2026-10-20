@@ -681,7 +681,7 @@ mod tests {
         )
         .unwrap();
         let sampled = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         PreparedAgenticSnapshots::from_plays(
             (0..lanes)
@@ -982,7 +982,7 @@ mod tests {
         )
         .unwrap();
         let snapshots = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 17 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(17))
             .unwrap();
         let original = snapshots.plays[0]
             .materialize_prefix("prefill-only", 126)

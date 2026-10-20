@@ -10,6 +10,7 @@ const state = {
   excludeOutliers: false,
   excludeAbnormal: false,
   excludeMultinode: false,
+  specMethod: "all",
   hiddenSeries: new Set(),
   throughput: "output",
   view: "interactivity",
@@ -179,7 +180,7 @@ function renderSnapshot() {
       ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${snapshot.campaign.selection_policy === "gym-resolved-config-v2" ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${["gym-resolved-config-v2", "gym-resolved-config-v3"].includes(snapshot.campaign.selection_policy) ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -392,7 +393,7 @@ function topologyLabel(topology) {
   const parts = Object.entries(labels).filter(([key]) => topology.parallelism[key] != null &&
     (key === "tp_size" || topology.parallelism[key] !== 1))
     .map(([key, label]) => `${label} ${topology.parallelism[key]}`);
-  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method);
+  if (topology.spec_method && topology.spec_method !== "none") parts.push(topology.spec_method.toUpperCase());
   return parts.join(" · ") || "Default parallelism";
 }
 
@@ -626,7 +627,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    !["latest-complete-config-run-v1", "gym-resolved-config-v2"].includes(campaign.selection_policy) ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }
@@ -678,6 +679,7 @@ function updateLocation() {
     });
   }
   for (const [key, value] of Object.entries({tab: state.tab, outliers: state.excludeOutliers ? "1" : null,
+    spec: state.specMethod === "all" ? null : state.specMethod,
     abnormal: state.excludeAbnormal ? "1" : null, multinode: state.excludeMultinode ? "1" : null,
     throughput: state.throughput, view: state.view, hidden: [...state.hiddenSeries].join(",")})) {
     if (value) url.searchParams.set(key, value); else url.searchParams.delete(key);
@@ -880,7 +882,7 @@ function aggregateTopologies(topologies, quality = null) {
 }
 
 function filterSnapshot(data) {
-  if (!state.excludeMultinode && !state.excludeOutliers && !state.excludeAbnormal) return data;
+  if (state.specMethod === "all" && !state.excludeMultinode && !state.excludeOutliers && !state.excludeAbnormal) return data;
   if (!data || !data.models.every(m => m.workloads.every(w => w.gpus.every(g => Array.isArray(g.topologies))))) return data;
   const models = [];
   const all = [];
@@ -889,7 +891,8 @@ function filterSnapshot(data) {
     for (const workload of model.workloads) {
       const gpus = [], workloadTopologies = [];
       for (const gpu of workload.gpus) {
-        const topologies = gpu.topologies.filter(t => !state.excludeMultinode || !t.is_multinode);
+        const topologies = gpu.topologies.filter(t => (!state.excludeMultinode || !t.is_multinode) &&
+          (state.specMethod === "all" || t.spec_method === state.specMethod));
         if (!topologies.length) continue;
         gpus.push({...gpu, ...aggregateTopologies(topologies), topologies});
         workloadTopologies.push(...topologies);
@@ -910,6 +913,7 @@ function filterSnapshot(data) {
 }
 
 function restoreView(params) {
+  state.specMethod = ["none", "mtp"].includes(params.get("spec")) ? params.get("spec") : "all";
   state.tab = params.get("tab") === "details" ? "details" : "overview";
   state.excludeOutliers = params.get("outliers") === "1";
   state.excludeAbnormal = params.get("abnormal") === "1";
@@ -949,7 +953,9 @@ function renderView() {
   }
   if (details) { selectDefault(); renderDetails(); }
   else updateOutlierCounts(state.data?.models.flatMap(m => m.workloads.flatMap(w => w.gpus.flatMap(g => g.topologies || []))) || []);
+  document.getElementById("decoding-select").value = state.specMethod;
   const historical = state.data && !state.data.models.every(m => m.workloads.every(w => w.gpus.every(g => g.topologies)));
+  document.getElementById("decoding-select").disabled = Boolean(historical);
   document.getElementById("filter-note").textContent = historical
     ? "This historical snapshot has aggregates only. Regenerate its evaluation to enable point filters and charts."
     : "Filters apply to each predictor and latency metric independently. Outliers remain visible in pink. Missing predictions remain gaps.";
@@ -1098,6 +1104,14 @@ for (const [id, key] of [["outliers", "excludeOutliers"], ["abnormal", "excludeA
     renderSummary(); renderMatrix(); renderDrilldown(); renderView(); updateLocation();
   });
 }
+document.getElementById("decoding-select").addEventListener("change", event => {
+  state.specMethod = event.target.value;
+  if (!state.rawData) return;
+  state.data = filterSnapshot(state.rawData);
+  state.selection = null;
+  state.topologyId = null;
+  renderSummary(); renderMatrix(); renderDrilldown(); renderView(); updateLocation();
+});
 document.getElementById("close-point").addEventListener("click", () => document.getElementById("point-dialog").close());
 
 function updateOutlierCounts(topologies) {

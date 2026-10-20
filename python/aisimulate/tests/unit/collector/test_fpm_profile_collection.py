@@ -573,6 +573,81 @@ def test_profile_cannot_override_resolved_precision_or_backend(field, value, no_
         _plan(profile)
 
 
+def _pure_tp_collection_profile():
+    profile = _profile()
+    profile.update(model="MiniMaxAI/MiniMax-M2.7", architecture="MiniMaxM2ForCausalLM", model_revision="1" * 40)
+    deployment = profile["deployments"][0]
+    deployment.update(
+        system="h200_sxm",
+        tp=4,
+        dp=1,
+        moe_tp=4,
+        moe_ep=1,
+        gemm_quant_mode="fp8_block",
+        moe_quant_mode="fp8_block",
+        fmha_quant_mode="fp8",
+        kv_cache_dtype="fp8",
+    )
+    profile["deployments"] = [deployment]
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        max_gpus=4,
+        gpu_counts=(4,),
+        parallel_presets=("pure_tp",),
+    )
+    execution = {
+        "kind": "speculative_round",
+        "method": "eagle3",
+        "num_draft_tokens": 3,
+        "draft_model": "test/draft",
+        "draft_revision": "2" * 40,
+        "timing_scope": "model_step_cuda",
+    }
+    return profile, options, execution
+
+
+@pytest.mark.parametrize("worker_type", [None, "prefill", "decode", "aggregated"])
+def test_selected_speculative_profile_is_rejected_before_collection_admission(
+    monkeypatch, no_models_or_timing_data, worker_type
+):
+    profile, options, execution = _pure_tp_collection_profile()
+    profile["deployments"][0].update(execution_profile=execution, worker_type=worker_type)
+    options = replace(options, worker_type=worker_type)
+    monkeypatch.setattr(
+        planner,
+        "filter_memory_infeasible_topologies",
+        lambda **_kwargs: pytest.fail("unsupported speculative collection reached admission"),
+    )
+    with pytest.raises(ValueError, match="collection.*execution_profile"):
+        _plan(
+            profile,
+            options=options,
+            system="h200_sxm",
+            selected_ops={"attention_context", "attention_generation"},
+        )
+
+
+@pytest.mark.parametrize("unselected_by", ["system", "worker_type"])
+def test_unselected_speculative_deployment_does_not_block_ar_collection(no_models_or_timing_data, unselected_by):
+    profile, options, execution = _pure_tp_collection_profile()
+    selected = profile["deployments"][0]
+    selected["worker_type"] = "prefill"
+    options = replace(options, worker_type="prefill")
+    unselected = copy.deepcopy(selected)
+    unselected["execution_profile"] = execution
+    unselected[unselected_by] = "b200_sxm" if unselected_by == "system" else "decode"
+    profile["deployments"].append(unselected)
+    plan = _plan(
+        profile,
+        options=options,
+        system="h200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+    )
+    assert plan.cells
+    assert all(plan.deployment_profile(cell).execution_profile is None for cell in plan.cells)
+    assert all(cell.execution_identity == ("", "full", "none", "text") for cell in plan.cells)
+
+
 @pytest.mark.parametrize("kv_dtype", ["bfloat16", "fp8"])
 def test_minimax_selected_kv_precision_reaches_plan_and_worker(tmp_path, no_models_or_timing_data, kv_dtype):
     profile = _profile()

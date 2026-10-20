@@ -354,6 +354,86 @@ def test_sglang_bf16_kv_sol_reads_more_latent_bytes_and_keeps_fp8_unchanged():
     assert latency("bfloat16", True) >= latency("fp8", True)
 
 
+@pytest.mark.parametrize(("system", "kv"), [("h200_sxm", "bfloat16"), ("h100_sxm", "bfloat16"), ("b300_sxm", "fp8")])
+def test_external_root_tp8_sparse_rows_follow_the_kv_identity(tmp_path, system, kv):
+    # A staged external systems root (system YAML + exact-runtime GLM attention
+    # table) serves an SGLang TP8 deployment; the sparse rows are keyed by the
+    # deployment's KV dtype, so the other KV identity is never matched.
+    import shutil
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    root = tmp_path / "systems"
+    root.mkdir()
+    shutil.copy(Path(aisimulate_core.__file__).parent / "systems" / f"{system}.yaml", root / f"{system}.yaml")
+    model = build("zai-org/GLM-5.3-Flash", "sglang", tp=8, kvcache_quant_mode=common.KVCacheQuantMode[kv])
+    body = next(
+        spec["Glm53Attention"]
+        for spec in (json.loads(op._spec_json()) for op in model.context_ops)
+        if spec.get("Glm53Attention", {}).get("layer_kind") == "sparse_mla"
+    )
+    geometry = json.dumps(
+        {k: v for k, v in body.items() if k not in ("name", "measured")}, sort_keys=True, separators=(",", ":")
+    )
+    directory = root / f"data/{system}/glm53_attention/sglang/0.5.20"
+    directory.mkdir(parents=True)
+    sha = "a" * 64
+    pq.write_table(
+        pa.table(
+            {
+                "component": ["attention"] * 2,
+                "geometry": [geometry] * 2,
+                "batch_size": [2, 2],
+                "prefix": [0, 0],
+                "x": [512, 4096],
+                "latency": [1.5, 9.0],
+                "kernel_source": ["fixture"] * 2,
+                "measurement_scope": ["local_compute"] * 2,
+                "source_sha256": [sha] * 2,
+                "config_sha256": [sha] * 2,
+                "runtime_digest": ["sha256:" + sha] * 2,
+                "used_cuda_graph": [True] * 2,
+                "sample_count": [10, 10],
+                "kv_seed_regime": ["n/a"] * 2,
+                "execution_profile": ["full"] * 2,
+            }
+        ),
+        directory / "glm53_attention_module_perf.parquet",
+    )
+
+    def sources(kv_cache_dtype):
+        config = ForwardPassPerfModelConfig(
+            model="zai-org/GLM-5.3-Flash",
+            system=system,
+            backend="sglang",
+            backend_version="0.5.20",
+            worker_type="aggregated",
+            tp=8,
+            moe_tp_size=8,
+            moe_ep_size=1,
+            kvcache_quant_mode=kv_cache_dtype,
+            database_mode="HYBRID",
+            estimation_mode="op_level",
+            fallback_policy="deny",
+            systems_paths=[str(root)],
+        )
+        perf = RustForwardPassPerfModel.best_available(config)
+        try:
+            ops = perf.static_phase_diagnostics(batch_size=2, context_length=512, prefix=0, prefill=True)
+            return {op["source"] for op in ops if op["name"] in {f"attention_{i}" for i in range(3, 45, 4)}}
+        finally:
+            perf.close()
+
+    assert sources(kv) == {"silicon"}
+    if kv == "bfloat16":
+        # SM90: FP8 KV is not a served identity and is refused at construction.
+        with pytest.raises(ValueError, match="SM90"):
+            sources("fp8")
+    else:
+        assert sources("bfloat16") == {"sol"}
+
+
 def _config(database_mode, backend="vllm", **kwargs):
     return ForwardPassPerfModelConfig(
         model="zai-org/GLM-5.3-Flash",

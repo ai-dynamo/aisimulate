@@ -212,7 +212,9 @@ Every `Workload` field:
 | `trace_format` | `str` | `"mooncake"` | Replay-ready trace schema. A runner may validate supported formats. |
 | `arrival_speedup_ratio` | `float` | `1.0` | Scales the trace's inter-arrival times (open-loop trace only). `>1` speeds arrivals up. |
 | `agentic_lanes` | `int \| None` | `None` | Positive number of client play lanes for `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay; does not cap concurrent child requests. Requires `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`. |
-| `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
+| `agentic_snapshot` | `AgenticSnapshotOptions \| None` | `None` (unset) | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`) and the optional import fields below. Requires positive `agentic_lanes`, `source_type: trace`, `trace_path`, and `load_type: trace_timestamps`, with no `replay_concurrency`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
+| `agentic_snapshot.initial_selections` | `list[AgenticSnapshotSelection] \| None` | `None` (unset) | Exact imported `{source_play_id, t_star_ms}` cuts in lane order, with exactly one selection per `agentic_lanes`. Requires `corpus_cursor`; source IDs must exist in the input corpus and finite source-millisecond cuts must lie within the selected play's request-start bounds. Cuts are not re-sampled. |
+| `agentic_snapshot.corpus_cursor` | `int \| None` | `None` (unset) | Unsigned 64-bit next sequential source draw, including skipped draws. Requires `initial_selections` and must be at least their count; it may exceed the lane count. |
 | `agentic_warmup` | `bool` | `False` | Requires `agentic_snapshot` and positive lanes when enabled. Runs primers and ten warmup requests per lane before measured replay, preserving native cache state; see [warmup behavior](../replay/workloads.md#agentic-warmup). Failed preparation is retained as candidate evidence and excluded from ranking. |
 | `agentic_profile` | `AgenticProfileOptions \| None` | `None` (unset) | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `agentic_snapshot` and its agentic trace/lane controls; cannot be combined with `max_sim_time_ms`. Unset preserves finite replay. See [continuous profile](../replay/workloads.md#agentic-profile) for the complete configuration, results, and limits. |
 | `agentic_profile.duration_seconds` | `float` | `3600.0` when enabled | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. Stops new workload requests and replacement plays at the deadline. |
@@ -221,6 +223,10 @@ Every `Workload` field:
 | `agentic_profile.tree_idle_cap_seconds` | `float` | `300.0` when enabled | Positive finite idle cap for advancing a play's pending workload timers when that play has no outstanding requests. |
 | `agentic_profile.global_idle_cap_seconds` | `float` | `10.0` when enabled | Positive finite idle cap for advancing pending workload timers when the entire client workload has no outstanding requests. Engine completions and server cleanup keep their actual timestamps. |
 | `replay_concurrency` | `int \| None` | `None` | Closed-loop in-flight cap **for a trace**; when set, trace timestamps are ignored. For synthetic closed-loop use `concurrency` instead. |
+
+Seed-only snapshots retain the existing sampling behavior and serialize as
+`{seed: S}`; unset import fields are omitted. See [snapshot import](../replay/workloads.md#snapshot)
+for the reference exporter and exact-cut semantics.
 
 The synthetic fields are `isl`, `osl`, `request_rate`, `concurrency`, `kv_load_ratio`,
 `num_request_ratio`, `random_range_ratio`, and `random_seed`;

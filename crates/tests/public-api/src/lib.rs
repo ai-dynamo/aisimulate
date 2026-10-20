@@ -611,7 +611,7 @@ mod tests {
         }
         let graph = builder.finish().unwrap();
         let prepared = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         assert_eq!(prepared.snapshots().len(), 1);
         let evidence = &prepared.snapshots()[0];
