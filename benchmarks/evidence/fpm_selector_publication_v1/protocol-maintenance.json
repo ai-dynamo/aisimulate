@@ -1,0 +1,31 @@
+{
+  "changes": "SPDX headers, import cleanup, root-default Ruff formatting only. AST comparison excludes import declarations; all other executable syntax is equal.",
+  "schema_version": 1,
+  "scripts": {
+    "benchmark.py": {
+      "execution_original_sha256": "aed5690150b452b6b4d9ca042c70d774dba9f979cc68e6ccaf8133fc1001b7dc",
+      "maintained_copy_sha256": "aed5690150b452b6b4d9ca042c70d774dba9f979cc68e6ccaf8133fc1001b7dc",
+      "non_import_ast_equal": true
+    },
+    "controller.py": {
+      "execution_original_sha256": "1f942140450c9798bc4035fa7b52aae8a6cc44b743bbb1d2651bf799c6754507",
+      "maintained_copy_sha256": "5995f181b44dd82f42033470ab5de4bd83d1b2f61292e83b848aaead48bded3b",
+      "non_import_ast_equal": true
+    },
+    "cross-version.py": {
+      "execution_original_sha256": "a64972ac7d2f4e08b291645fa0169fab962e0ae757254c5363af69a80fc2578b",
+      "maintained_copy_sha256": "8ce45a2fa942a8bc4b71880a6907ff6b69ef12bfac945de612ae7c5a43abd046",
+      "non_import_ast_equal": true
+    },
+    "selector-benchmark.py": {
+      "execution_original_sha256": "c111dda3af054b6b39d981b33dec0c4f86476910d7276e94669ddc4855cef213",
+      "maintained_copy_sha256": "1eb72e69e1990c24519db9a3024169f714cf4c11857a5d6d846bf69450451653",
+      "non_import_ast_equal": true
+    },
+    "selector-controller.py": {
+      "execution_original_sha256": "fbaf79ca52cb6411f8bef92aaf376593e3d15eb21498f1991e901e2b2702c3bc",
+      "maintained_copy_sha256": "aed5462386f5f72a4e5a172ee7e44918fc065cdc8656fb6d349c65a51a28dd6e",
+      "non_import_ast_equal": true
+    }
+  }
+}
