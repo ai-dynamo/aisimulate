@@ -33,7 +33,7 @@ This page describes `estimation_mode: fpm_regression`. For the explicit
 forest can update binned trees from feedback. Its loss, historical evidence,
 retention and update rules are documented in the
 [online GBDT mathematics](../fpm_ml/online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) and
-[canonical field reference](../configuration.md#learned-forest-and-online-fitting-controls).
+[canonical field reference](../fpm_ml/configuration.md#learned-forest-and-online-fitting-controls).
 The learned estimator also supports a
 [causal expert selector](../fpm_ml/online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector)
 between a frozen hybrid-calibrated forest and an online forest. Its EWMA errors

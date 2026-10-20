@@ -20,7 +20,7 @@ telemetry. The current engine replay, engine CLI and Sweeper phase interfaces
 cannot supply those metrics and reject learned execution.
 
 For setup and usage, see the [learned-model workflow](learned-forward-pass-model.md).
-The [configuration reference](../configuration.md#learned-forest-and-online-fitting-controls)
+The [configuration reference](configuration.md#learned-forest-and-online-fitting-controls)
 provides field names, defaults and valid ranges alongside these equations.
 
 ## Online binned tree adaptation
@@ -38,7 +38,7 @@ reported latency is the adaptive forest's prediction. Frozen adaptation remains
 the separate option for applying hybrid calibration to an unchanged forest.
 Combined `causal_selector` adaptation uses these same online fitting rules for
 its adaptive expert and separate hybrid calibration for its frozen expert.
-The [configuration table](../configuration.md#learned-forest-and-online-fitting-controls)
+The [configuration table](configuration.md#learned-forest-and-online-fitting-controls)
 defines every online parameter, its default, units and valid range.
 
 ### Target, derivatives and leaf values
