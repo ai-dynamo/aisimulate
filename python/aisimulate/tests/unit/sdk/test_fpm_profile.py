@@ -915,6 +915,38 @@ def test_speculative_round_memory_rejects_declared_budget_without_analytical_fal
         profile_memory(nextn=3, context_length=1024, allow_naive_fallback=True)
 
 
+@pytest.mark.parametrize("entry", [memory.estimate_kv_cache, memory.estimate_num_gpu_blocks])
+@pytest.mark.parametrize("dcp", [None, 1, 2])
+def test_speculative_round_standalone_memory_preserves_dcp(speculative_profile, profile_memory, entry, dcp):
+    kwargs = dict(
+        max_num_tokens=8192,
+        max_batch_size=256,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.8,
+        tp_size=2,
+        moe_tp_size=2,
+        nextn=3,
+        fpm_profile=speculative_profile,
+        context_length=1024,
+        allow_naive_fallback=True,
+    )
+    if dcp is not None:
+        kwargs["dcp_size"] = dcp
+    if entry is memory.estimate_num_gpu_blocks:
+        kwargs["scheduler_block_size"] = 16
+
+    def estimate():
+        return entry("test/unknown-decoder", "test_gpu", "vllm", "0.25.1", **kwargs)
+
+    if dcp == 2:
+        with pytest.raises(ValueError, match="DCP"):
+            estimate()
+    elif entry is memory.estimate_kv_cache:
+        assert estimate()["total_kv_size_tokens"] == 60  # Observed 600-byte pool / 10 bytes per token.
+    else:
+        assert estimate() == 3  # floor(60 tokens / 16 tokens per block), not another draft deduction.
+
+
 def test_runtime_memory_selects_exact_role_capacity_and_scheduler(runtime_profile, profile_memory):
     prefill = runtime_profile["deployments"][0]
     prefill["worker_type"] = "prefill"
