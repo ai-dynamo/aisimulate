@@ -18,3 +18,13 @@ tables:
       collected_at: '2026-10-06'
       rows: 3036
       status: complete
+  msa_generation_module_perf:
+    rows: 2760
+    status: complete
+    collections:
+    - collector_ref: 0933cb3e612224a767eb664bbcba58166bfcd7af
+      collector_hash: sha256:90269709269816091a46df40479e4764c55fccb4e739305198a7be33f4ce7079
+      case_plan_hash: sha256:b6676b931334da8fe9377820df2f567101d1f238fd36ef121ec6c6afdc0a2ac2
+      collected_at: '2026-10-19'
+      rows: 2760
+      status: complete

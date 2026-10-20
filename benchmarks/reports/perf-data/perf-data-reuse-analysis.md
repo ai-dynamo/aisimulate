@@ -9,10 +9,10 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 
 ## Headline numbers
 
-- Total rows scanned: **30,557,788**
+- Total rows scanned: **30,560,548**
 - Within-framework cross-version dedup-able rows: **43,286** (~0.1%)
 - Tier distribution (groups / rows):
-  - `shared`: 1216 groups · 29,958,852 rows
+  - `shared`: 1216 groups · 29,961,612 rows
   - `shared_fallback`: 54 groups · 598,936 rows
 
 
@@ -1345,7 +1345,7 @@ Rows with a blank/`<unknown>` kernel_source are skipped during the scan (the cur
 | b200_sxm | `sglang_minimax_decode_triton_sparse_topk_radix` | shared | sglang | sglang:268 | 0 / 149 | 0 | — | — | — |
 | b200_sxm | `sglang_minimax_decode_triton_sparse_topk_split` | shared | sglang | sglang:3056 | 0 / 1698 | 69 | — | — | — |
 | b300_sxm | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:14352 | 0 / 14352 | 0 | — | — | — |
-| b300_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:3864 | 0 / 3864 | 0 | — | — | — |
+| b300_sxm | `msa_fmha_sm100` | shared | trtllm | trtllm:6624 | 0 / 6624 | 0 | — | — | — |
 | b300_sxm | `sglang_minimax_decode_triton_sparse_topk_radix` | shared | sglang | sglang:270 | 0 / 150 | 0 | — | — | — |
 | b300_sxm | `sglang_minimax_decode_triton_sparse_topk_split` | shared | sglang | sglang:3060 | 0 / 1700 | 87 | — | — | — |
 | gb200 | `MiniMaxM3SparseMSAImpl` | shared | vllm | vllm:14352 | 0 / 14352 | 0 | — | — | — |
@@ -1586,7 +1586,7 @@ Each row is one distinct `kernel_source` value seen in the corpus, with the unio
 | `moe_torch_flow_min_latency` | trtllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 229,950 |
 | `moe_torch_flow_nongated` | trtllm | moe_perf.parquet | b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server | 391,660 |
 | `moe_torch_flow_triton_fp8_block` | trtllm | moe_perf.parquet | rtx_pro_6000_server | 65,205 |
-| `msa_fmha_sm100` | trtllm | msa_context_module_perf.parquet, msa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 56,160 |
+| `msa_fmha_sm100` | trtllm | msa_context_module_perf.parquet, msa_generation_module_perf.parquet | b200_sxm, b300_sxm, gb200, gb300 | 58,920 |
 | `NCCL` | trtllm | nccl_perf.parquet | b300_sxm | 1,512 |
 | `NVLinkOneSided` | trtllm | trtllm_alltoall_perf.parquet | gb200 | 296 |
 | `NVLinkTwoSided` | trtllm | trtllm_alltoall_perf.parquet | gb200 | 1,800 |

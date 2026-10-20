@@ -1812,7 +1812,7 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300]
     frameworks: [trtllm]
-    total_raw_rows: 23736
+    total_raw_rows: 26496
     within_framework_dedup_rows: 0
   - op_file: msa_generation_module_perf.parquet
     kernel_source: 'sglang_minimax_decode_triton_sparse_topk_radix'
