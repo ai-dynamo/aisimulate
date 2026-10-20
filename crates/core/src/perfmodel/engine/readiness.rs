@@ -994,13 +994,11 @@ mod tests {
             .err()
             .expect("SM90 FP8 KV in sol_ops");
         assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
-        assert!(error.to_string().contains("bfloat16"), "{error}");
-        if let Err(error) = build(KvCacheQuantMode::Bfloat16) {
-            assert!(
-                !matches!(error, AicError::InvalidEngineConfig(ref m) if m.contains("SM90")),
-                "{error}"
-            );
+        let text = error.to_string();
+        for needle in ["SM90", "sparse-MLA KV", "bfloat16"] {
+            assert!(text.contains(needle), "{needle}: {text}");
         }
+        build(KvCacheQuantMode::Bfloat16).expect("BF16 KV in sol_ops builds on SM90");
     }
 
     #[test]
