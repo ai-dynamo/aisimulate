@@ -22,8 +22,8 @@ python -c 'import aisimulate, aisimulate._runtime; print(aisimulate.__file__); p
 
 ### Published packages
 
-The following example pins release `0.12.1`. Use its
-[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.12.1). Check the
+The following example pins release `0.13.0`. Use its
+[versioned documentation](https://github.com/ai-dynamo/aisimulate/tree/v0.13.0). Check the
 [PyPI release files](https://pypi.org/project/aisimulate/#files) and
 [GitHub releases](https://github.com/ai-dynamo/aisimulate/releases) for newer
 artifacts and use the documentation associated with the selected release.
@@ -32,7 +32,7 @@ artifacts and use the documentation associated with the selected release.
 python3.13 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install 'aisimulate==0.12.1'
+python -m pip install 'aisimulate==0.13.0'
 aisimulate --help
 ```
 
@@ -69,7 +69,7 @@ On Linux, check `uname -m` and `ldd --version`; on macOS, check `uname -m` and
 
 ```bash
 python -m pip download --no-deps --only-binary=:all: \
-  'aisimulate==0.12.1' --dest wheel-check
+  'aisimulate==0.13.0' --dest wheel-check
 ```
 
 This checks only AISimulate's wheel, not all transitive dependencies. A missing
