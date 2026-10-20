@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import asdict, fields
 
 from .filter import apply_filter_rules
+from .hf_bindings import reviewed_binding
 from .schema import SiliconRow
 from .staleness import apply_config_staleness, apply_image_coherence, dedupe_rows
 
@@ -77,7 +78,10 @@ def select_points(tables, max_age_days=180, *, include_mtp=False):
     ]
     for point in points:
         if point["config"]["spec_method"] == "mtp":
-            point["server_log_uses"] = log_uses.get(point["source_row"]["server_log_id"], 0)
+            binding = reviewed_binding(SiliconRow(**point["source_row"]))
+            point["server_log_uses"] = (
+                binding["server_log_uses"] if binding else log_uses.get(point["source_row"]["server_log_id"], 0)
+            )
     return points, {
         "measurement_date_through": max(bench["date"] for bench in benches.values()),
         "selected": len(points),
