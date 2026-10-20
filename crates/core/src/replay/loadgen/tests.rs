@@ -1177,6 +1177,51 @@ fn test_synthetic_images_precede_text_and_share_tokens_only_inside_pool() {
 }
 
 #[test]
+fn test_synthetic_hash_ids_are_dense_in_first_seen_order() {
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: 1,
+        num_sessions: 6,
+        turns_per_session: 2,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 2,
+        shared_prefix_ratio: 0.5,
+        num_prefix_groups: 2,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+        images: None,
+    })
+    .unwrap();
+
+    // Cached prefix, then group prefix, then unique blocks.
+    let first_session = &trace.sessions[0].turns;
+    assert_eq!(first_session[0].hash_ids, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(first_session[1].hash_ids, vec![0, 1, 2, 3, 8, 9, 10, 11]);
+
+    // Synthetic hash IDs become token values, so a block's ID is the number of
+    // distinct blocks seen before it.
+    let mut seen = HashSet::new();
+    for hash_id in trace
+        .sessions
+        .iter()
+        .flat_map(|session| &session.turns)
+        .flat_map(|turn| &turn.hash_ids)
+    {
+        if seen.insert(*hash_id) {
+            assert_eq!(*hash_id as usize, seen.len() - 1);
+        }
+    }
+}
+
+#[test]
 fn test_synthetic_arrival_mode_changes_timestamps_only() {
     let build = |first_turn_arrivals, arrival_seed| {
         Trace::synthetic(SyntheticTraceSpec {

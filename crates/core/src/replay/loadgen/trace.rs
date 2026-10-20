@@ -311,6 +311,32 @@ impl HashIdInterner {
     }
 }
 
+/// Dense synthetic block IDs in first-seen order. Only shared prefix blocks
+/// recur, so unique blocks take the next ID without a map entry.
+#[derive(Debug, Default)]
+struct SyntheticHashIds {
+    shared: FxHashMap<u64, u32>,
+    next_id: usize,
+}
+
+impl SyntheticHashIds {
+    fn unique(&mut self) -> Result<u32> {
+        let id = u32::try_from(self.next_id)
+            .context("trace contains more unique hash IDs than u32 can represent")?;
+        self.next_id += 1;
+        Ok(id)
+    }
+
+    fn shared(&mut self, hash_id: u64) -> Result<u32> {
+        if let Some(&id) = self.shared.get(&hash_id) {
+            return Ok(id);
+        }
+        let id = self.unique()?;
+        self.shared.insert(hash_id, id);
+        Ok(id)
+    }
+}
+
 pub fn validate_trace_files(format: TraceFileFormat, paths: &[PathBuf]) -> Result<()> {
     if paths.is_empty() {
         bail!("trace replay requires at least one trace file");
@@ -899,8 +925,7 @@ impl Trace {
             .first_turn_arrivals
             .timestamps(spec.num_sessions, spec.arrival_seed)?;
 
-        let mut next_unique_hash = 1_u64;
-        let mut hash_id_interner = HashIdInterner::default();
+        let mut synthetic_ids = SyntheticHashIds::default();
         for (session_idx, first_arrival_timestamp_ms) in first_arrivals.into_iter().enumerate() {
             let group_id = if spec.num_prefix_groups > 0 && spec.shared_prefix_ratio > 0.0 {
                 Some(rng.random_range(0..spec.num_prefix_groups) as u64)
@@ -918,7 +943,7 @@ impl Trace {
                         text_length
                     );
                 }
-                let (images, mut hash_ids) = synthetic_turn_images(&spec, &mut next_image);
+                let (images, image_hash_ids) = synthetic_turn_images(&spec, &mut next_image);
                 let input_length =
                     text_length + images.iter().map(ImageSpec::visual_tokens).sum::<usize>();
                 let num_blocks = input_length.div_ceil(spec.block_size);
@@ -926,28 +951,32 @@ impl Trace {
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
                 let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
                 let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
-                hash_ids.reserve(num_blocks.saturating_sub(hash_ids.len()));
+                let mut hash_ids = Vec::with_capacity(num_blocks);
 
+                for hash_id in image_hash_ids {
+                    hash_ids.push(synthetic_ids.shared(hash_id)?);
+                }
                 for block_idx in 0..cached_prefix_blocks {
-                    hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
+                    hash_ids.push(synthetic_ids.shared(0xCA_C0_0000_0000_0000 | block_idx as u64)?);
                 }
                 for block_idx in cached_prefix_blocks..grouped_prefix_blocks {
                     if let Some(group_id) = group_id {
-                        hash_ids.push(0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64);
+                        hash_ids.push(
+                            synthetic_ids.shared(
+                                0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64,
+                            )?,
+                        );
                     }
                 }
 
                 while hash_ids.len() < num_blocks {
-                    hash_ids.push(next_unique_hash);
-                    next_unique_hash = next_unique_hash
-                        .checked_add(1)
-                        .expect("synthetic hash id overflow");
+                    hash_ids.push(synthetic_ids.unique()?);
                 }
 
                 turns.push(TurnTrace {
                     input_length,
                     max_output_tokens,
-                    hash_ids: hash_id_interner.intern_all(hash_ids)?,
+                    hash_ids,
                     delay_after_previous_ms: if turn_idx == 0 {
                         0.0
                     } else {
