@@ -757,32 +757,29 @@ def _afd_total_gpus(deployment, topology: AFDTopology) -> int:
     return expected
 
 
-def _run_afd_phase(
+def _plan_afd_phase(
     engine: AFDForegroundEngine,
-    plans: dict[AFDPhase, tuple[float, int]],
-    *,
     phase: AFDPhase,
-    start_ms: float,
+    *,
     input_length: int,
     output_length: int,
-    passes: int,
 ) -> tuple[float, int]:
-    if not passes:
-        return start_ms, 0
-    # Every pass of a phase has the same evaluation, so plan one pass per run
-    # and repeat its step; the engine ends each pass at `start + step` too.
-    plan = plans.get(phase)
-    if plan is None:
-        planned = engine.execute_pass(
-            phase=phase,
-            now_ms=start_ms,
-            input_length=input_length,
-            output_length=output_length,
-        )
-        engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
-        plan = plans[phase] = (planned.evaluation.step_latency_ms, len(planned.intervals))
+    # Every pass of a phase has the same evaluation, so plan one pass to keep the
+    # engine's validation and reuse its step and interval count for every pass.
+    planned = engine.execute_pass(
+        phase=phase,
+        now_ms=0.0,
+        input_length=input_length,
+        output_length=output_length,
+    )
+    engine.complete_pass(planned.pass_id, now_ms=planned.end_ms)
+    return planned.evaluation.step_latency_ms, len(planned.intervals)
+
+
+def _run_afd_phase(plan: tuple[float, int], *, start_ms: float, passes: int) -> tuple[float, int]:
     step_ms, intervals_per_pass = plan
     cursor = start_ms
+    # Add one step per pass, as the engine does, so pass boundaries round identically.
     for _ in range(passes):
         cursor += step_ms
     return cursor, intervals_per_pass * passes
@@ -855,7 +852,11 @@ def _run_afd_replay(
             deployment.prefill_engine_args if companion.phase is AFDPhase.PREFILL else deployment.decode_engine_args
         )
         companion_available_ms = _startup_delay_ms(_required_engine_args(raw_args, companion.phase.value))
-    pass_plans: dict[AFDPhase, tuple[float, int]] = {}
+    afd_phases = (AFDPhase.PREFILL, AFDPhase.DECODE) if topology.phase is AFDPhase.BOTH else (topology.phase,)
+    pass_plans = {
+        phase: _plan_afd_phase(engine, phase, input_length=input_length, output_length=output_length)
+        for phase in afd_phases
+    }
     afd_passes = 0
     afd_intervals = 0
     batch_count = 0
@@ -897,23 +898,9 @@ def _run_afd_replay(
         decode_passes = max(output_length - 1, 0)
         if deployment.deployment_mode == "afd":
             prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, interval_count = _run_afd_phase(
-                engine,
-                pass_plans,
-                phase=AFDPhase.PREFILL,
-                start_ms=prefill_start,
-                input_length=input_length,
-                output_length=output_length,
-                passes=1,
-            )
+            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
             decode_end, decode_intervals = _run_afd_phase(
-                engine,
-                pass_plans,
-                phase=AFDPhase.DECODE,
-                start_ms=prefill_end,
-                input_length=input_length,
-                output_length=output_length,
-                passes=decode_passes,
+                pass_plans[AFDPhase.DECODE], start_ms=prefill_end, passes=decode_passes
             )
             afd_available_ms = decode_end
             afd_passes += 1 + decode_passes
@@ -921,15 +908,7 @@ def _run_afd_replay(
         elif topology.phase is AFDPhase.PREFILL:
             assert companion is not None
             prefill_start = max(batch_start, afd_available_ms)
-            prefill_end, interval_count = _run_afd_phase(
-                engine,
-                pass_plans,
-                phase=AFDPhase.PREFILL,
-                start_ms=prefill_start,
-                input_length=input_length,
-                output_length=output_length,
-                passes=1,
-            )
+            prefill_end, interval_count = _run_afd_phase(pass_plans[AFDPhase.PREFILL], start_ms=prefill_start, passes=1)
             afd_available_ms = prefill_end
             decode_end = prefill_end
             if decode_passes:
@@ -947,13 +926,7 @@ def _run_afd_replay(
             if decode_passes:
                 decode_start = max(prefill_end, afd_available_ms)
                 decode_end, interval_count = _run_afd_phase(
-                    engine,
-                    pass_plans,
-                    phase=AFDPhase.DECODE,
-                    start_ms=decode_start,
-                    input_length=input_length,
-                    output_length=output_length,
-                    passes=decode_passes,
+                    pass_plans[AFDPhase.DECODE], start_ms=decode_start, passes=decode_passes
                 )
                 afd_available_ms = decode_end
                 afd_passes += decode_passes
