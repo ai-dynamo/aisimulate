@@ -102,6 +102,56 @@ Profile files, saved configurations and diagnostics can reveal runtime
 identities or private paths. Keep them with their source dataset; the package
 does not upload or download profiles automatically.
 
+### Shared dataset layout and local preparation
+
+Public and private repositories use the same additive `catalog/dataset.json`
+contract (`aisim-dataset-index/v1`). Category entries reference hashed indexes;
+`aisim-category-index/v1` lists configuration identities and hashed manifests.
+Repository identity and authentication do not change the schema. Existing FPM
+catalogs remain accessible through an explicit `legacy-fpm` reference; their
+measurement protocols and historical paths are preserved.
+
+Operation tables live under
+`data/op-latency/<hardware>/<operation-family>/<framework>/<version>/`.
+They retain their original Parquet bytes, columns, units and collection metadata.
+Model-specific execution profiles and hardware descriptions live under
+`metadata/`; original input evidence belongs under `provenance/`. Predictions,
+comparisons and gap reports remain outside the dataset.
+
+An `aisim-artifact-manifest/v1` operation manifest records:
+
+| Field | Contract |
+| --- | --- |
+| `category`, `purpose` | `op-latency`, with `operation-tables` or `execution-profile`. |
+| `configuration_id`, `identity` | SHA-256 of the versioned canonical category, purpose and effective identity; preserve unknown fields as null with an unresolved source discriminator. Operation-table identities have no model partition. |
+| `requested_settings` | Original requested settings, or null; never substitute these for observed effective settings. |
+| `artifacts` | Stable ID, repository-relative path, role, format, schema identifier, SHA-256, bytes and Parquet row count. Optional `runtime_path` maps an input to the local systems directory. |
+| `provenance`, `evidence_gaps` | Original identities/revisions, collection evidence and explicit missing or unsupported facts. |
+
+Use the shared Python API with an already downloaded local selection:
+
+```python
+from pathlib import Path
+from aisimulate_core.datasets import check_manifest, prepare_execution_profile
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+root = Path("/local/pinned-dataset")
+manifest = "metadata/execution-profiles/example/prefill.manifest.json"
+check_manifest(root, manifest)
+config = prepare_execution_profile(root, manifest, Path("/local/prepared-prefill"))
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+The output directory must not exist. Preparation verifies the declared files,
+row counts, configuration identity and the profile's exact retained-input
+inventory. It copies unchanged inputs into the runtime layout and returns a
+canonical configuration with absolute local paths. It never regenerates the
+graph, changes measurement bytes, accesses the network or runs stored scripts.
+The caller keeps that directory for saved-config reloads. `check_dataset(root)`
+also verifies shared catalog references; existing FPM protocol validation is
+still separate. This adapter does not change the default operation database or
+implement the broader E2E/Operation DB migration in issue #435.
+
 ## Empirical utilization and transfers
 
 The native [utilization estimator](../../../crates/core/src/perfmodel/operators/util_empirical.rs)
