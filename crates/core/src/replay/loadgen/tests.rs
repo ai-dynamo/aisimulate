@@ -6,7 +6,9 @@ use std::collections::HashSet;
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 
-use super::trace::{synthesize_trace_tokens, validate_synthesizable_prompt};
+use super::trace::{
+    SharedBlocks, SyntheticHashIds, synthesize_trace_tokens, validate_synthesizable_prompt,
+};
 use super::*;
 
 fn write_trace(lines: &[serde_json::Value]) -> NamedTempFile {
@@ -1208,17 +1210,54 @@ fn test_synthetic_hash_ids_are_dense_in_first_seen_order() {
 
     // Synthetic hash IDs become token values, so a block's ID is the number of
     // distinct blocks seen before it.
+    let turns = trace.sessions.iter().flat_map(|session| &session.turns);
     let mut seen = HashSet::new();
-    for hash_id in trace
-        .sessions
-        .iter()
-        .flat_map(|session| &session.turns)
-        .flat_map(|turn| &turn.hash_ids)
-    {
+    for hash_id in turns.clone().flat_map(|turn| &turn.hash_ids) {
         if seen.insert(*hash_id) {
             assert_eq!(*hash_id as usize, seen.len() - 1);
         }
     }
+
+    // Every turn shares its first four blocks; each later block belongs to
+    // exactly one turn.
+    let prefix_ids = turns
+        .clone()
+        .flat_map(|turn| turn.hash_ids[..4].iter().copied())
+        .collect::<HashSet<_>>();
+    let mut suffix_ids = HashSet::new();
+    for hash_id in turns.flat_map(|turn| &turn.hash_ids[4..]) {
+        assert!(!prefix_ids.contains(hash_id) && suffix_ids.insert(*hash_id));
+    }
+}
+
+#[test]
+fn test_synthetic_hash_ids_number_each_shared_run_once() {
+    let mut ids = SyntheticHashIds::default();
+    let mut hash_ids = Vec::new();
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(0), 2)
+        .unwrap();
+    ids.fill_unique(&mut hash_ids, 3).unwrap();
+    // Group 1 << 16 once shared group 0's packed prefix keys.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(1 << 16), 1)
+        .unwrap();
+    // An image never shares a text group's blocks.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Image(0), 1)
+        .unwrap();
+    // A longer run reuses its IDs and numbers only its new blocks.
+    ids.extend_shared(&mut hash_ids, SharedBlocks::Group(0), 3)
+        .unwrap();
+    assert_eq!(hash_ids, vec![0, 1, 2, 3, 4, 0, 1, 5]);
+}
+
+#[test]
+fn test_synthetic_hash_ids_stop_at_u32_max() {
+    let mut ids = SyntheticHashIds::default();
+    ids.next_id = u32::MAX as usize;
+    let mut hash_ids = Vec::new();
+    ids.fill_unique(&mut hash_ids, 1).unwrap();
+    let error = ids.fill_unique(&mut hash_ids, 2).unwrap_err();
+    assert!(error.to_string().contains("more unique hash IDs than u32"));
+    assert_eq!(hash_ids, vec![u32::MAX]);
 }
 
 #[test]
