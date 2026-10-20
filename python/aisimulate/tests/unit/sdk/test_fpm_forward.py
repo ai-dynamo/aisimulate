@@ -199,6 +199,103 @@ def _model_config(**overrides) -> sdk_config.ModelConfig:
     return sdk_config.ModelConfig(**defaults)
 
 
+@pytest.fixture
+def fpm_database_probe(tmp_path, request):
+    """Invented K3 timings with real loader identity, not measured GPU data."""
+    from aisimulate_core.sdk.engine import _fpm_spec_dict
+    from aisimulate_core.sdk.fpm_identity import (
+        EXECUTION_COLUMNS,
+        LEGACY_EXECUTION_IDENTITY,
+        speculative_execution_identity,
+    )
+
+    speculative = getattr(request, "param", True)
+    execution = speculative_execution_identity(
+        "1" * 40,
+        {
+            "kind": "speculative_round",
+            "method": "eagle3",
+            "num_draft_tokens": 3,
+            "draft_model": "test/draft",
+            "draft_revision": "2" * 40,
+            "timing_scope": "model_step_cuda",
+        },
+    )
+    if not speculative:
+        execution = LEGACY_EXECUTION_IDENTITY
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", tmp_path / f"{SYSTEM}.yaml")
+    policy = "vllm_native_fpm_model_step_cuda_v1" if speculative else "dynamo_native_single_sample_v1"
+    rows, ops = [], {}
+    for phase, tokens, kv, latency in [("prefill", 32, 0, 11.0), ("decode", 0, 128, 7.0)]:
+        op = FPMForwardOp(phase, _model_config(), MODEL_PATH, sol_ops=[], execution=execution)
+        identity = dict(zip(_CELL_MATCH_COLUMNS, op._match_identity, strict=True))
+        row = _row(phase, 1, tokens, kv, latency if speculative else 2.0, identity=identity)
+        row.update(dict(zip(EXECUTION_COLUMNS, execution, strict=True)))
+        if speculative:
+            row.update(
+                kv_seed_regime="real_kv",
+                measurement_policy=policy,
+                timing_scope="model_step_cuda",
+                measurement_reduction="single_sample",
+                source_sample_count=1,
+            )
+        rows.append(row)
+        ops[phase] = _fpm_spec_dict(op)
+        ops[phase]["FpmForward"]["interpolation"] = "direct"
+    _write_pair(
+        str(tmp_path / "data" / SYSTEM / BACKEND / VERSION),
+        rows,
+        sidecar_overrides={
+            "schema_version": 7,
+            "measurement_policy": policy,
+            **({"timing_scope": "model_step_cuda"} if speculative else {}),
+        },
+    )
+    database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=str(tmp_path))
+    return EngineHandle.for_database(database, systems_path=str(tmp_path)), ops
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("entry", ["evaluate_ops_json", "evaluate_ops_sol_json"])
+@pytest.mark.parametrize("shape", ["direct", "nested", "sol_ops"])
+def test_database_probe_rejects_ad_hoc_sd_rounds(fpm_database_probe, phase, entry, shape):
+    handle, ops = fpm_database_probe
+    op = ops[phase]
+    if shape == "nested":
+        op = {"TokenScale": {"op": op, "numerator": 1, "denominator": 1}}
+        op = {"Overlap": {"name": "nested_overlap", "group_a": [], "group_b": [op]}}
+        op = {"Fallback": {"name": "nested_fallback", "primary": op, "fallback": []}}
+        op = {
+            "Dsv41Stage": {
+                "name": "nested_stage",
+                "is_context": phase == "prefill",
+                "decoder_replay": False,
+                "bounded": False,
+                "window_size": 128,
+                "children": [op],
+            }
+        }
+    elif shape == "sol_ops":
+        outer = dict(op["FpmForward"], sol_ops=[op])
+        outer["match_identity"] = list(outer["match_identity"])
+        outer["match_identity"][16] = "full"
+        op = {"FpmForward": outer}
+    with pytest.raises(ValueError, match="SD-round"):
+        getattr(handle, entry)(
+            json.dumps([op]), is_context=phase == "prefill", batch_size=1, s=32 if phase == "prefill" else 128
+        )
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("fpm_database_probe", [False], indirect=True)
+def test_database_probe_keeps_ad_hoc_ar_queries(fpm_database_probe, phase):
+    handle, ops = fpm_database_probe
+    result = handle.evaluate_ops_json(
+        json.dumps([ops[phase]]), is_context=phase == "prefill", batch_size=1, s=32 if phase == "prefill" else 128
+    )
+    assert result[0][1] == 2.0  # Synthetic AR row, not the 7/11 ms full K3 round.
+
+
 _NATIVE_FPM_CONTRACTS = {
     "vllm": (
         "vllm_native_fpm_prefix_seed_median_v1",
