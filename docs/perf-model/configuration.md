@@ -361,7 +361,7 @@ transform, baseline, tree count, per-tree capacity, learning rate, L2 penalty,
 minimum leaf support and maximum depth. They are verified when loading the
 checkpoint rather than independently overridden by online configuration.
 Original observation multiplicities govern minimum leaf support even when
-history is grouped. See [the mathematical contract](fpm_ml/design.md#44-online-binned-tree-adaptation)
+history is grouped. See [the mathematical contract](fpm_ml/online-gbdt-and-causal-selection.md#online-binned-tree-adaptation)
 for group weights, split ranks and derivative refresh.
 
 Normalization makes source paths absolute and records their content digest.
