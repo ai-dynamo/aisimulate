@@ -347,11 +347,13 @@ impl SyntheticHashIds {
 }
 
 fn fill_new_hash_ids(next_id: &mut usize, hash_ids: &mut Vec<u32>, len: usize) -> Result<()> {
-    let ids = *next_id..*next_id + len.saturating_sub(hash_ids.len());
-    // IDs run up to `u32::MAX` inclusive, as in `HashIdInterner`.
-    ensure!(ids.end <= 1 << 32, HASH_ID_OVERFLOW);
-    *next_id = ids.end;
-    hash_ids.extend(ids.map(|id| id as u32));
+    let end = next_id
+        .checked_add(len.saturating_sub(hash_ids.len()))
+        // IDs run up to `u32::MAX` inclusive, as in `HashIdInterner`.
+        .filter(|&end| end <= 1 << 32)
+        .context(HASH_ID_OVERFLOW)?;
+    hash_ids.extend((*next_id..end).map(|id| id as u32));
+    *next_id = end;
     Ok(())
 }
 

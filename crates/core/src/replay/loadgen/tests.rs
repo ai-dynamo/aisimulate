@@ -1257,6 +1257,8 @@ fn test_synthetic_hash_ids_stop_at_u32_max() {
     ids.fill_unique(&mut hash_ids, 1).unwrap();
     let error = ids.fill_unique(&mut hash_ids, 2).unwrap_err();
     assert!(error.to_string().contains("more unique hash IDs than u32"));
+    // A corrupt prompt length must not overflow the ID count either.
+    assert!(ids.fill_unique(&mut hash_ids, usize::MAX).is_err());
     assert_eq!(hash_ids, vec![u32::MAX]);
 }
 
