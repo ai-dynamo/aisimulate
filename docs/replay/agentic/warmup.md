@@ -200,6 +200,18 @@ The policy follows the accelerated request-count warmup contract in
    cursor. Restore original output lengths and dependency delays. A failed
    measurement reset commits neither this new frontier nor the cursor update.
 
+Live warmup compresses runtime waits, not the source timeline. At handoff,
+surviving timestamped streams retain their offsets from the original sampled
+cut; the profile subtracts one global minimum, not a separate minimum per
+lane. Consequently, source time skipped by accelerated warmup can reappear as
+initial idle in other lanes (subject to the configured per-tree/global idle
+caps). For example, a lane that advances far into a long play can wait while
+a freshly recycled lane starts at zero; this is not a scheduler stall. This
+matches the pinned reference's `_handoff_replay_offset_ms` and
+`_profiling_phase_t0_offset_ms` with its default spread phase starts. The
+reference's optional `--burst-phase-starts` mode instead re-anchors each lane;
+that alternative is not the policy modeled here.
+
 The formal request and trajectory cohorts exclude all preparation-only plays.
 Partially warmed active trees retain their cache/request identity but start
 their formal trajectory observation at the barrier. Formal lifecycle ordinals
