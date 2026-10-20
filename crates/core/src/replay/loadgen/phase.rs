@@ -375,6 +375,10 @@ impl AgenticPreparation {
         });
     }
 
+    pub(super) fn disable_replay_hashes(&mut self) {
+        self.include_replay_hashes = false;
+    }
+
     pub(super) fn contains(&self, uuid: Uuid) -> bool {
         self.index_by_uuid.contains_key(&uuid)
     }

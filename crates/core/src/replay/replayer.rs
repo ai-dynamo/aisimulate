@@ -407,6 +407,7 @@ impl<C: ReplayComposition> Replayer<C> {
         let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
+                skip_unread_replay_hashes::<C::Metadata>(&mut input, artifact_sink.is_some());
                 input
             }
             None => {
@@ -825,9 +826,24 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
     }
 }
 
+/// Skip per-arrival replay hashes when neither placement nor artifact capture
+/// reads them.
+fn skip_unread_replay_hashes<Metadata: ReplayAdmissionMetadata>(
+    input: &mut ReplayRuntimeInput,
+    capture_artifacts: bool,
+) {
+    if !Metadata::USES_REPLAY_HASHES
+        && !capture_artifacts
+        && let ReplayRuntimeInput::Workload(driver) = input
+    {
+        driver.disable_replay_hashes();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay::loadgen::{ReplayRequestHashes, SessionTrace, Trace, TurnTrace};
     use crate::replay::{
         ProviderSpec, ReplayAdapters, ReplayRequest, ReplayTopology, WorkerPoolSpec,
     };
@@ -996,6 +1012,58 @@ mod tests {
             .pop_front()
             .unwrap();
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
+    }
+
+    struct KeepsHashes;
+
+    impl ReplayAdmissionMetadata for KeepsHashes {
+        fn from_hashes(_hashes: Option<ReplayRequestHashes>) -> Self {
+            Self
+        }
+        fn for_prefill(self) -> Self {
+            self
+        }
+        fn max_output_tokens_override(&self) -> Option<usize> {
+            None
+        }
+        fn into_hashes(self) -> Option<ReplayRequestHashes> {
+            None
+        }
+    }
+
+    fn first_arrival_has_hashes(skip: impl FnOnce(&mut ReplayRuntimeInput)) -> bool {
+        let trace = Trace {
+            block_size: 2,
+            sessions: vec![SessionTrace {
+                session_id: "a".into(),
+                first_arrival_timestamp_ms: Some(0.0),
+                turns: vec![TurnTrace {
+                    input_length: 4,
+                    max_output_tokens: 1,
+                    hash_ids: vec![10, 11],
+                    ..Default::default()
+                }],
+            }],
+        };
+        let mut input = ReplayRuntimeInput::Workload(WorkloadDriver::new_trace(trace, 2).unwrap());
+        skip(&mut input);
+        let ReplayRuntimeInput::Workload(driver) = &mut input else {
+            unreachable!()
+        };
+        driver.pop_ready_compact(0.0, 1)[0].replay_hashes.is_some()
+    }
+
+    #[test]
+    fn workload_replay_hashes_are_derived_only_when_read() {
+        assert!(!first_arrival_has_hashes(|input| {
+            skip_unread_replay_hashes::<NoReplayMetadata>(input, false)
+        }));
+        assert!(first_arrival_has_hashes(|input| {
+            skip_unread_replay_hashes::<NoReplayMetadata>(input, true)
+        }));
+        assert!(first_arrival_has_hashes(|input| {
+            skip_unread_replay_hashes::<KeepsHashes>(input, false)
+        }));
     }
 }
 

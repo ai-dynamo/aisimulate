@@ -19,6 +19,10 @@ use crate::replay::protocol::DirectRequest;
 
 #[doc(hidden)]
 pub trait ReplayAdmissionMetadata: Sized {
+    /// Whether [`Self::from_hashes`] keeps the arrival replay hashes. When it
+    /// does not, replay skips deriving them unless artifact capture needs them.
+    const USES_REPLAY_HASHES: bool = true;
+
     fn from_hashes(hashes: Option<ReplayRequestHashes>) -> Self;
     fn for_prefill(self) -> Self;
     fn max_output_tokens_override(&self) -> Option<usize>;
@@ -28,6 +32,8 @@ pub trait ReplayAdmissionMetadata: Sized {
 pub type NoReplayMetadata = ();
 
 impl ReplayAdmissionMetadata for () {
+    const USES_REPLAY_HASHES: bool = false;
+
     #[inline]
     fn from_hashes(_hashes: Option<ReplayRequestHashes>) -> Self {}
 

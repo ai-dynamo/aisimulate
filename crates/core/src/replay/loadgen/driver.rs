@@ -2037,6 +2037,15 @@ impl WorkloadDriver {
         matches!(self.policy, SchedulingPolicy::Agentic(_))
     }
 
+    /// Stop deriving engine-block hashes for each arrival. Use this when no
+    /// placement policy or artifact sink reads them.
+    pub(crate) fn disable_replay_hashes(&mut self) {
+        self.include_replay_hashes = false;
+        if let Some(preparation) = &mut self.agentic_preparation {
+            preparation.disable_replay_hashes();
+        }
+    }
+
     pub fn new_trace(trace: Trace, engine_block_size: usize) -> Result<Self> {
         Self::new(
             trace,
