@@ -478,7 +478,7 @@ print(online.learned_online_diagnostics())
 
 The explicit settings illustrate a small recent window and historical mass
 balance; they are not universal accuracy defaults. Consult the
-[complete field table](../configuration.md#learned-forest-and-online-fitting-controls)
+[complete field table](configuration.md#learned-forest-and-online-fitting-controls)
 and [mathematical explanation](online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) before
 changing the fitting policy. Omitted controls use Rust's defaults, including
 structural updates and eager derivatives.
