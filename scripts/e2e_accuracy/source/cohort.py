@@ -10,10 +10,10 @@ from .filter import apply_filter_rules
 from .schema import SiliconRow
 from .staleness import apply_config_staleness, apply_image_coherence, dedupe_rows
 
-POLICY = "gym-resolved-config-v2"
+POLICY = "gym-resolved-config-v3"
 
 
-def select_points(tables, max_age_days=180):
+def select_points(tables, max_age_days=180, *, include_mtp=False):
     configs = {row["id"]: row for row in tables["configs"]}
     runs = {row["id"]: row for row in tables["workflow_runs"]}
     benches = {row["id"]: row for row in tables["benchmark_results"]}
@@ -51,15 +51,33 @@ def select_points(tables, max_age_days=180):
         ("superseded_row", dedupe_rows),
         ("superseded_image", apply_image_coherence),
     ):
-        rows, drops = operation(rows)
+        rows, drops = (
+            apply_filter_rules(rows, spec_method="all" if include_mtp else "none")
+            if stage == "source_filter"
+            else operation(rows)
+        )
         excluded[stage] += len(drops)
     # Same reference as gym's default: newest row after dedupe/image coherence.
-    rows, drops = apply_config_staleness(rows, max_age_days=max_age_days)
-    excluded["stale"] += len(drops)
+    fresh = []
+    # Keep STP unchanged; age MTP against the newest eligible measurement.
+    reference_date = max((row.date for row in rows), default=None)
+    for method in ("none", "mtp"):
+        group = [row for row in rows if row.spec_method == method]
+        if group:
+            kept, drops = apply_config_staleness(
+                group, max_age_days=max_age_days, dump_max_date=reference_date if method == "mtp" else None
+            )
+            fresh.extend(kept)
+            excluded["stale"] += len(drops)
+    rows = fresh
+    log_uses = Counter(str(b["server_log_id"]) for b in benches.values() if b.get("server_log_id") is not None)
     points = [
         {"config": configs[row.config_id], "benchmark": benches[row.bench_id], "source_row": asdict(row)}
         for row in rows
     ]
+    for point in points:
+        if point["config"]["spec_method"] == "mtp":
+            point["server_log_uses"] = log_uses.get(point["source_row"]["server_log_id"], 0)
     return points, {
         "measurement_date_through": max(bench["date"] for bench in benches.values()),
         "selected": len(points),

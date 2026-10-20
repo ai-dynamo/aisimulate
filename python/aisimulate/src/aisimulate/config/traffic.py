@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_serializer, model_validator
 
 from .common import Choices, IntegerRange, NumericRange, StrictModel
 
@@ -111,10 +111,33 @@ class TrafficStop(StrictModel):
     max_virtual_time_seconds: PositiveFloat | None = None
 
 
+class AgenticSnapshotSelection(StrictModel):
+    """An exact reference-selected initial cut, in lane order."""
+
+    source_play_id: str = Field(strict=True, min_length=1)
+    t_star_ms: NonNegativeFloat
+
+
 class AgenticSnapshotOptions(StrictModel):
     """Seed for deterministic initial AgentX request-boundary snapshots."""
 
     seed: int = Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
+    initial_selections: list[AgenticSnapshotSelection] | None = Field(default=None, min_length=1)
+    corpus_cursor: int | None = Field(default=None, strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
+
+    @model_validator(mode="after")
+    def _validate_reference_selection(self):
+        if (self.initial_selections is None) != (self.corpus_cursor is None):
+            raise ValueError("initial_selections and corpus_cursor must be specified together")
+        if self.initial_selections is not None and self.corpus_cursor < len(self.initial_selections):
+            raise ValueError("corpus_cursor cannot precede the initial lane draws")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        result = handler(self)
+        # Keep legacy seed-only saved configurations byte-for-byte compatible.
+        return {key: value for key, value in result.items() if value is not None}
 
 
 class AgenticProfileOptions(StrictModel):
@@ -267,6 +290,12 @@ class _TrafficConfigBase(StrictModel):
             raise ValueError("agentic_warmup requires agentic_snapshot")
         if load.agentic_snapshot is not None and load.agentic_lanes is None:
             raise ValueError("agentic_snapshot requires positive agentic_lanes")
+        if (
+            load.agentic_snapshot is not None
+            and load.agentic_snapshot.initial_selections is not None
+            and len(load.agentic_snapshot.initial_selections) != load.agentic_lanes
+        ):
+            raise ValueError("initial_selections must contain exactly one selection per lane")
         if isinstance(source, TraceSource):
             if load.type not in {"trace_timestamps", "concurrency"}:
                 raise ValueError("trace traffic requires trace_timestamps or concurrency load")

@@ -214,8 +214,8 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows + 3, published: data.totals.rows,
-    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1 },
+    selected: data.totals.rows + 4, published: data.totals.rows,
+    backend_versions: ["0.10.0"], exclusion_reasons: { adapter_unsupported: 2, adapter_topology_mismatch: 1, source_unresolved: 1 },
     selection_policy: "latest-complete-config-run-v1",
   };
   const app = setup(async () => response(data));
@@ -229,7 +229,9 @@ test("qualified campaign shows its run and exclusions and rejects unsafe provena
   assert.doesNotMatch(app.element("provenance-content").innerHTML, /default scheduler/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_unsupported/);
   assert.match(app.element("provenance-content").innerHTML, /adapter_topology_mismatch/);
+  assert.match(app.element("provenance-content").innerHTML, /source_unresolved/);
   for (const change of [
+    { exclusion_reasons: { mtp_acceptance_missing: 1 } },
     { run_id: "123/../../evil" }, { selected: 0 }, { commit_sha: "e".repeat(40) },
     { advisory: false }, { published: data.totals.rows + 1 },
     { selection_policy: undefined }, { selection_policy: "unknown-policy" },
@@ -831,7 +833,8 @@ test("standalone PR preview displays its exact branch and cannot enter a public 
   assert.match(mixed.element("error-banner").textContent, /cannot be mixed/);
 });
 
-test("configuration assumptions stay labeled and count mismatches fail", () => {
+for (const policy of ["gym-resolved-config-v2", "gym-resolved-config-v3"]) {
+test(`configuration assumptions stay labeled and count mismatches fail (${policy})`, () => {
   const data = withTopology();
   const revision = { branch: "main", commit_sha: "d".repeat(40) };
   data.snapshot.evaluated_revision = revision;
@@ -847,8 +850,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   data.snapshot.campaign = {
     ...revision, status: "complete", advisory: true, run_id: "123",
     wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
-    selected: data.totals.rows, published: data.totals.rows,
-    backend_versions: ["0.25.1"], exclusion_reasons: {}, selection_policy: "gym-resolved-config-v2",
+    selected: data.totals.rows + 1, published: data.totals.rows,
+    backend_versions: ["0.25.1"], exclusion_reasons: {source_unresolved: 1}, selection_policy: policy,
     configuration: { profile: "coverage-experiment/1", counts },
   };
   const app = harness();
@@ -859,6 +862,8 @@ test("configuration assumptions stay labeled and count mismatches fail", () => {
   assert.throws(() => app.run("validateSummary(data)"), /configuration coverage/);
 });
 
+
+}
 
 test("tabs preserve selected topology and shareable exclusion settings", async () => {
   const app = setup(async () => response(withTopology()));
@@ -1034,4 +1039,32 @@ test("models with only outlier predictions stay selectable and charted", async (
   assert.ok(app.run("selectedGpu()"));
   assert.match(app.element("details-view").innerHTML, /point aisimulate/);
   assert.match(app.element("details-view").innerHTML, /role="group"/);
+});
+
+
+test("decoding filter recomputes MAPE, keeps failures, and restores its URL", () => {
+  const data = withTopology();
+  const gpu = data.models[0].workloads[0].gpus[0];
+  const mtp = structuredClone(gpu.topologies[0]);
+  mtp.id = "fedcba9876543210";
+  mtp.spec_method = "mtp";
+  for (const point of mtp.points) if (point.status === "success") point.aisimulate.tpot_error_pct = 25;
+  gpu.topologies.push(mtp);
+  const app = harness();
+  app.set("fixture", data);
+  app.run("state.excludeMultinode = true; state.rawData = filterSnapshot(fixture); state.excludeMultinode = false");
+  app.run('restoreView(new URL("https://example.com/?spec=mtp").searchParams)');
+  app.run("state.data = filterSnapshot(state.rawData)");
+  assert.equal(app.run("state.data.totals.rows"), 3);
+  assert.equal(app.run("state.data.totals.aisimulate.points"), 2);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 25);
+  assert.equal(app.run("state.data.models[0].workloads[0].gpus[0].topologies.length"), 1);
+  assert.match(app.run("topologyLabel(state.data.models[0].workloads[0].gpus[0].topologies[0])"), /MTP/);
+  app.run("updateLocation()");
+  assert.equal(new URL(app.location.href).searchParams.get("spec"), "mtp");
+  app.element("decoding-select").events.change({target: {value: "none"}});
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 0);
+  app.element("decoding-select").events.change({target: {value: "all"}});
+  assert.equal(app.run("state.data.totals.rows"), 6);
+  assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
 });
