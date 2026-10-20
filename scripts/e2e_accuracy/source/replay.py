@@ -48,6 +48,10 @@ def engine_args(deployment, role, database_version):
     args.update({name: spec["args"][name] for name in ENGINE_FIELDS if name in spec["args"]})
     kv = spec["args"]["kv_cache_dtype"]
     args["aic_kv_cache_dtype"] = {"fp8_e4m3": "fp8", "bf16": "bfloat16"}.get(kv, kv)
+    if mtp := spec.get("mtp"):
+        args.update(
+            aic_nextn=mtp["depth"], aic_nextn_accepted=mtp["accepted_draft_tokens"], aic_forward_model="op_level"
+        )
     return args
 
 

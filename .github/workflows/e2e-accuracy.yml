@@ -45,7 +45,7 @@ jobs:
       github.repository == 'ai-dynamo/aisimulate' &&
       (github.ref == 'refs/heads/main' ||
       (github.event_name == 'workflow_dispatch' && inputs.preview && startsWith(github.ref, 'refs/heads/pull-request/')))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

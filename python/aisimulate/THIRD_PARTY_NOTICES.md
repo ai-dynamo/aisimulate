@@ -1130,6 +1130,35 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    limitations under the License.
 ```
 
+## Published FPM dataset pin manifests
+
+The `hf_dataset.json` manifests and adjacent attribution README files under
+`python/aisimulate/src/aisimulate_core/systems/profiles/` in
+`minimax_m27_fpm/`, `dsv4pro_fpm/`, `dsv4flash_fpm/`, `glm52_fpm/`,
+`kimi_k3_fpm/` and `inkling_fpm/` adapt published NVIDIA collection metadata
+into hash-pinned download indexes (modified). No external timing tables,
+model weights or collection implementation are bundled in these directories.
+
+- Source: https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a
+- Immutable revision: `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`.
+- Original paths: configuration `manifest.json` files and `fpm/*.metadata.json`
+  under `data/MiniMaxAI--MiniMax-M2.7/`, `data/deepseek-ai--DeepSeek-V4-Pro/`,
+  `data/deepseek-ai--DeepSeek-V4-Flash-0731/`, `data/nvidia--GLM-5.2-NVFP4/`,
+  `data/moonshotai--Kimi-K3/` and `data/thinkingmachines--Inkling-NVFP4/`.
+  Each derived pin records the exact artifact paths and SHA-256 values.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0, as declared in the dataset card at the pinned revision;
+  the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
+- Modifications: separate deployment roots, explicit development/diagnostic
+  admission, canonical loader targets and explicit references to installed
+  AISimulate hardware configurations. Source artifact bytes are unchanged when
+  downloaded.
+
+The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
+DeepSeek V4.1 source archives; it is not a license grant for these six models.
+This attribution relies on the dataset card for the indexed collection metadata
+and does not relicense model weights, producer code or their upstream projects.
+
 ## AISim FPM Gym
 
 - Source: https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-fpm-gym

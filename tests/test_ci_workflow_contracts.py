@@ -113,7 +113,7 @@ def test_forward_perf_selects_before_allocating_the_benchmark_runner():
     assert set(workflow["on"]) == {"push", "workflow_dispatch"}
     selector = workflow["jobs"]["select"]
     compare = workflow["jobs"]["compare"]
-    assert selector["runs-on"] == "ubuntu-latest"
+    assert selector["runs-on"] == "ubuntu-24.04"
     assert "python scripts/performance/select_forward_perf.py" in _run_commands(selector)
     assert compare["needs"] == "select"
     assert compare["if"] == "needs.select.outputs.run_comparison == 'true'"
@@ -3078,7 +3078,7 @@ def test_simulation_performance_rollout_and_revision_contract():
     assert "workflow_dispatch" in workflow["on"]
     assert "if" not in selector
     assert workflow["concurrency"]["group"].startswith("simulation-performance-")
-    assert selector["runs-on"] == "ubuntu-latest"
+    assert selector["runs-on"] == "ubuntu-24.04"
     assert "python scripts/performance/select_simulation_perf.py" in _run_commands(selector)
     comparison = workflow["jobs"]["compare"]
     assert comparison["if"] == "needs.select.outputs.run_comparison == 'true'"

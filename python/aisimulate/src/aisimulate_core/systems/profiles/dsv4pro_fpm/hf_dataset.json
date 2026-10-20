@@ -1,0 +1,119 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
+  "profiles": {
+    "gb300-vllm-fp8-block-tp1-dp8-ep8-kv-off": {
+      "admission": "development",
+      "admission_reason": "Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.parquet",
+          "sha256": "bb4e4dc9e7d623f1bc26655f7d17b6e88b7a9e1508ec3d094f5f6ba2ce9119eb"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.metadata.json",
+          "sha256": "7434bf8037d88b4f74febfc1bcac1501e0aa807dcbcdac1728902084a1135747"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "ceb0cb88c7fb32c3e8371c48a0a265f652ef228dd2e1b708872d9100415a59bf"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/provenance/dep8-prefill-kvoff-full4096-1.4.0-20260904-021313-j3545916/resolved-config-node0.json",
+          "target": "provenance/dep8-prefill-kvoff-full4096-1.4.0-20260904-021313-j3545916/resolved-config-node0.json",
+          "sha256": "cae8450359ebbac740ea0ce1343023fcf3d5758b373e3d72b39fb253b286eb6c"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-fp8-block-tp1-dp8-ep8-kv-on": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.parquet",
+          "sha256": "a2a7ad7d9d0e8e3f3d33d3d3d1bba63d1fda04db77ca612a654d93188d640d1a"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.metadata.json",
+          "sha256": "e5c8680d80f3d40cd236c0f4aadd0e34de582a0c5d0e6c6de5168a8a46133130"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "ceb0cb88c7fb32c3e8371c48a0a265f652ef228dd2e1b708872d9100415a59bf"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/dep8/fpm/provenance/dep8-prefill-kvon-full4096-1.4.0-20260904-021313-j3545915/resolved-config-node0.json",
+          "target": "provenance/dep8-prefill-kvon-full4096-1.4.0-20260904-021313-j3545915/resolved-config-node0.json",
+          "sha256": "5cf3e450a98317fb8b7039aea84e064821ba68c99145215e7308e8ea90ebb633"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-fp8-block-tp8-ep8-kv-off": {
+      "admission": "development",
+      "admission_reason": "Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.parquet",
+          "sha256": "82308752cc46479563ca3432bd4fa56c2672528a4c3fd4bdf2c8d299d1fb6b1d"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.metadata.json",
+          "sha256": "a068346d5e573c598d0c07db9347ae2f365c63907a15ccc04ee47de9fd01f4d7"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "7233996a4714ab5c1c2b0f3babd388bb65372c1d9b0f12670fc731c09321c4cb"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/provenance/tep8-prefill-kvoff-full4096-1.4.0-20260903-122359-j3530507/resolved-config-node0.json",
+          "target": "provenance/tep8-prefill-kvoff-full4096-1.4.0-20260903-122359-j3530507/resolved-config-node0.json",
+          "sha256": "8d1f8c77d7afa50ba9df1cc531a075935c416a6fed562c10606e4f9451624e9a"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-fp8-block-tp8-ep8-kv-on": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.parquet",
+          "sha256": "713b4ebb651510f9b89e8f30a4ca29f1ba78e3a768480c70497994e4f653b542"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/gb300/vllm/0.26.0/fpm_forward_perf.metadata.json",
+          "sha256": "4300933cb077104fad73a152d08a6bfc77a708a689a657b7c045ebb84fe8233d"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "7233996a4714ab5c1c2b0f3babd388bb65372c1d9b0f12670fc731c09321c4cb"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4-Pro/gb300/vllm/0.26.0/tep8/fpm/provenance/tep8-prefill-kvon-full4096-1.4.0-20260903-113631-j3529760/resolved-config-node0.json",
+          "target": "provenance/tep8-prefill-kvon-full4096-1.4.0-20260903-113631-j3529760/resolved-config-node0.json",
+          "sha256": "d742d1860e004d134404163497ece5214961b0de520b918ef19c5a15c351a233"
+        }
+      ],
+      "packaged_system": "gb300"
+    }
+  }
+}
