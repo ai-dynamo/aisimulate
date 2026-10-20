@@ -28,6 +28,7 @@ pub const AGENTIC_SNAPSHOT_SCHEMA_V1: &str = "aisimulate.agentic.snapshot.v1";
 #[serde(deny_unknown_fields)]
 pub struct AgenticSnapshotSelection {
     pub source_play_id: String,
+    /// Loaded graph clock: per-play-relative for Weka, source clock for Mooncake.
     pub t_star_ms: f64,
 }
 
