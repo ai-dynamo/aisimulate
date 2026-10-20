@@ -367,7 +367,7 @@ transform, baseline, tree count, per-tree capacity, learning rate, L2 penalty,
 minimum leaf support and maximum depth. They are verified when loading the
 checkpoint rather than independently overridden by online configuration.
 Original observation multiplicities govern minimum leaf support even when
-history is grouped. See [the mathematical contract](fpm_ml/design.md#44-online-binned-tree-adaptation)
+history is grouped. See [the mathematical contract](fpm_ml/online-gbdt-and-causal-selection.md#online-binned-tree-adaptation)
 for group weights, split ranks and derivative refresh.
 
 Normalization makes source paths absolute and records their content digest.
@@ -454,7 +454,7 @@ experts before that label changes their state; a switch affects later queries.
 The interface does not retain a prediction ticket for delayed or reordered
 feedback. `learned_selector_diagnostics()` exposes the key-specific evidence.
 See [the selector workflow](fpm_ml/learned-forward-pass-model.md#hybrid-calibration-with-a-causal-selector)
-and [its equations](fpm_ml/design.md#45-hybrid-calibration-with-a-causal-selector).
+and [its equations](fpm_ml/online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector).
 
 For fit configuration see [Online regression](methods/online-regression.md).
 For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md).

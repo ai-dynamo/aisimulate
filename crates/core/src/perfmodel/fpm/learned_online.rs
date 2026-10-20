@@ -3,7 +3,7 @@
 
 //! Native online squared-error fitting. Algorithm provenance and the differences
 //! from Lin et al. (arXiv:2502.01634v1) are documented in
-//! docs/perf-model/fpm_ml/design.md. The exact local source import is recorded in
+//! docs/perf-model/fpm_ml/online-gbdt-and-causal-selection.md. The exact local source import is recorded in
 //! benchmarks/evidence/fpm_online_publication_v1/source-import.json.
 //! This is an independent implementation, not a translation of the authors' code.
 

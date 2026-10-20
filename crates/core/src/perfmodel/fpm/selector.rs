@@ -7,7 +7,8 @@
 //! improvement must persist before switching. Selection reads never admit
 //! labels. The caller computes both expert predictions before feedback, then
 //! stages and commits the corresponding evidence only when the observation is
-//! admitted. See `docs/perf-model/fpm_ml/design.md` for the complete recurrence.
+//! admitted. See `docs/perf-model/fpm_ml/online-gbdt-and-causal-selection.md`
+//! for the complete recurrence.
 
 use super::estimator::SelectorConfig;
 use super::model::{ForwardPassRegressionWorkloadKind as Store, WorkloadKind as Query};

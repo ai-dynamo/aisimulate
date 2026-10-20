@@ -31,8 +31,9 @@ learned feature vector. They reject learned execution at construction, even
 when the configuration itself parses. This release does not populate missing
 rank or request features from mean phase values.
 
-Design rationale, model details, evaluation method and the full result tables are in
-[`design.md`](design.md).
+The original PR 280 design rationale, model details, evaluation method and result
+tables are in [`design.md`](design.md). Online update equations, causal selection
+and hyperparameter semantics are in [the mathematical explanation](online-gbdt-and-causal-selection.md).
 
 ## 1. Collect the FPM stream
 
@@ -480,7 +481,7 @@ print(online.learned_online_diagnostics())
 The explicit settings illustrate a small recent window and historical mass
 balance; they are not universal accuracy defaults. Consult the
 [complete field table](../configuration.md#learned-forest-and-online-fitting-controls)
-and [mathematical design](design.md#44-online-binned-tree-adaptation) before
+and [mathematical explanation](online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) before
 changing the fitting policy. Omitted controls use Rust's defaults, including
 structural updates and eager derivatives.
 
@@ -660,7 +661,7 @@ An input rejected before admission changes neither calibration nor selector
 evidence. `learned_online_diagnostics()` reports fitting state, while
 `learned_selector_diagnostics()` reports each key's count, error averages,
 active expert, streak and switches. These counts have different meanings from
-retained calibration samples. The [mathematical design](design.md#45-hybrid-calibration-with-a-causal-selector)
+retained calibration samples. The [mathematical explanation](online-gbdt-and-causal-selection.md#hybrid-calibration-with-a-causal-selector)
 defines the loss, switching inequalities and update order.
 
 ## 4. Accuracy reference
