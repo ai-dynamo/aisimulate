@@ -149,6 +149,7 @@ impl AgenticPreparation {
             include_replay_hashes,
             AgenticWarmupPolicy::RepeatedPrefixes,
             10_000.0,
+            1.0,
         )
     }
 
@@ -158,7 +159,12 @@ impl AgenticPreparation {
         include_replay_hashes: bool,
         policy: AgenticWarmupPolicy,
         primer_idle_cap_ms: f64,
+        speedup: f64,
     ) -> Result<Self> {
+        ensure!(
+            speedup.is_finite() && speedup > 0.0,
+            "warmup speedup must be finite and greater than zero"
+        );
         ensure!(
             engine_block_size > 0,
             "warmup engine block size must be positive"
@@ -288,7 +294,7 @@ impl AgenticPreparation {
                     .iter()
                     .map(|&index| {
                         let start = lane.snapshot.context.recorded_start_ms(index);
-                        let lead = (lane.snapshot.evidence.t_star_ms - start)
+                        let lead = ((lane.snapshot.evidence.t_star_ms - start) / speedup)
                             .max(0.0)
                             .min(primer_idle_cap_ms);
                         max_lead_ms = max_lead_ms.max(lead);
@@ -1041,6 +1047,37 @@ mod tests {
             identity.cache_id,
             evidence.requests.last().unwrap().identity.cache_id
         );
+    }
+
+    #[test]
+    fn live_primers_scale_source_leads_before_runtime_cap() {
+        // The fixture's two historical requests start at 0/20ms, with a 50ms
+        // cut: source leads are 50/30ms. Divide first, cap in runtime units,
+        // then align the largest lead to zero (no engine work is scaled).
+        for (speedup, cap_ms, second_ms) in [
+            (2.0, 10_000.0, 10.0),
+            (0.5, 10_000.0, 40.0),
+            (2.0, 20.0, 5.0),
+        ] {
+            let mut driver = WorkloadDriver::new_agentic_warmup_with_policy(
+                prepared(1, 50.0),
+                64,
+                true,
+                speedup,
+                AgenticWarmupPolicy::LiveTrajectoryV1,
+                cap_ms,
+            )
+            .unwrap();
+            let first = driver.pop_ready(0.0, 100);
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].authored_request_id.as_deref(), Some("a-history"));
+            assert_eq!(driver.next_ready_time_ms(), Some(second_ms));
+            assert!(driver.pop_ready(second_ms - 1.0, 100).is_empty());
+            let second = driver.pop_ready(second_ms, 100);
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0].authored_request_id.as_deref(), Some("b-history"));
+            assert_eq!(second[0].request.arrival_timestamp_ms, Some(second_ms));
+        }
     }
 
     #[test]

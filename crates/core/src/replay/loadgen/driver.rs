@@ -1461,6 +1461,7 @@ impl WorkloadDriver {
                 include_replay_hashes,
                 policy,
                 primer_idle_cap_ms,
+                speedup,
             )?
         };
         let mut driver = Self::new_agentic_snapshots(
