@@ -559,8 +559,9 @@ impl RadixCache {
         self.prefix_match_hashes_from(self.root, 0, page_keys).0 * self.page_size
     }
 
-    /// Read-only prefix match that resumes from `hint` when it was recorded for the same page
-    /// hashes and its node is unchanged, and updates `hint` for the next call.
+    /// Read-only prefix match that resumes from `hint` when its node is unchanged, and updates
+    /// `hint` for the next call. `hint` must come from a match of the same request's page hashes,
+    /// which only grow, so the prefix it covers is unchanged.
     ///
     /// Content on the path to the hinted node can only change by evicting that node (its
     /// descendants go first) or by changing its own tail in place; splits keep the path intact.
@@ -1349,7 +1350,7 @@ mod tests {
         cache.evict(2);
         check(&cache, &mut hint, 0);
 
-        // A new child below the hinted internal node, then a split above it.
+        // A new child below the hinted internal node, then splits above and at the hinted node.
         let mut cache = RadixCache::new(100, 1);
         let mut hint = None;
         cache.insert(&[1, 2, 3, 9], &[0, 1, 2, 3]);
@@ -1358,6 +1359,8 @@ mod tests {
         cache.insert(&[1, 2, 3, 4, 5], &[0, 1, 2, 5, 6]);
         check(&cache, &mut hint, 5);
         cache.insert(&[1, 7], &[0, 7]);
+        check(&cache, &mut hint, 5);
+        cache.insert(&[1, 2, 3, 4, 7], &[0, 1, 2, 5, 8]);
         check(&cache, &mut hint, 5);
     }
 

@@ -30,6 +30,9 @@ pub(crate) struct RadixRequestLease {
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
+    /// Resume point of this request's last admission match. A KV-blocked queue head repeats the
+    /// same whole-prompt match on every pass.
+    admission_match_hint: Option<PrefixMatchHint>,
     last_node: Option<NodeId>,
     pub(crate) session_id: Option<String>,
 }
@@ -110,6 +113,7 @@ impl RadixRequestLease {
             cached_tokens,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
+            admission_match_hint: None,
             last_node: Some(last_node),
             session_id: None,
         }
@@ -143,9 +147,6 @@ pub struct SglangKvManager {
     /// concurrent requests hold duplicate pages, are counted in `extra_hash_refs`.
     live_hashes: FxHashSet<SequenceHash>,
     extra_hash_refs: FxHashMap<SequenceHash, usize>,
-    /// Resume point of the last waiting request's admission match. A KV-blocked queue head
-    /// repeats the same whole-prompt match on every pass.
-    admission_match_hint: Option<(uuid::Uuid, PrefixMatchHint)>,
 }
 
 pub struct DecodeTokenReservation {
@@ -240,7 +241,6 @@ impl SglangKvManager {
             page_hash_present: FixedBitSet::with_capacity(event_pages),
             live_hashes: FxHashSet::default(),
             extra_hash_refs: FxHashMap::default(),
-            admission_match_hint: None,
         }
     }
 
@@ -302,21 +302,18 @@ impl SglangKvManager {
         &self.cache
     }
 
-    /// Read-only whole-prompt match for a waiting request (`Req.init_next_round_input`).
+    /// Read-only match of a waiting request's first `pages` page hashes
+    /// (`Req.init_next_round_input`), resumed from the lease's previous match.
     pub(crate) fn admission_prefix_match(
-        &mut self,
-        request: uuid::Uuid,
-        page_keys: &[LocalBlockHash],
+        &self,
+        lease: &mut RadixRequestLease,
+        pages: usize,
     ) -> usize {
-        let mut hint = self
-            .admission_match_hint
-            .take()
-            .and_then(|(id, hint)| (id == request).then_some(hint));
+        let page_keys = &lease.page_hashes[..pages];
         let matched = self
             .cache
-            .prefix_match_hashes_len_hinted(page_keys, &mut hint);
+            .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
         debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
-        self.admission_match_hint = hint.map(|hint| (request, hint));
         matched
     }
 
