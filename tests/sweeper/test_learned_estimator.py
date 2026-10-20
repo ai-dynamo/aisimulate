@@ -38,10 +38,8 @@ def test_learned_configuration_round_trip_and_phase_only_replay_rejection(tmp_pa
         estimation_mode="fpm_learned",
         estimator_config=controls,
     )
-    assert (
-        SearchSpace.model_validate_json(space.model_dump_json()).estimator_config
-        == controls
-    )
+    restored_space = SearchSpace.model_validate_json(space.model_dump_json())
+    assert restored_space.estimator_config == controls
     config = CorePredictionConfig.model_validate(
         {
             "engine": {
