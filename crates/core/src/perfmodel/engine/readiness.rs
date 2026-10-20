@@ -190,7 +190,8 @@ fn glm53_tables(op: &Op, tables: &mut std::collections::BTreeSet<&'static str>) 
 /// Engine-construction guard shared by every entry point (forward-pass model,
 /// `EngineHandle`, `InferenceSession`, CLI) in every database mode: applies
 /// the SM90 GLM-5.3-Flash sparse-KV rule to every attention op, including
-/// ops nested in token-scale, overlap and fallback wrappers. No table is read.
+/// ops nested in token-scale, overlap, fallback, FPM (`sol_ops`) and DSV4.1
+/// stage wrappers. No table is read.
 pub(super) fn validate_glm53_kv<'a>(
     db: &PerfDatabase,
     ops: impl Iterator<Item = &'a Op>,
@@ -208,6 +209,10 @@ pub(super) fn validate_glm53_kv<'a>(
                 visit(db, &o.primary)?;
                 o.fallback.iter().try_for_each(|c| visit(db, c))
             }
+            // The FPM rewrite keeps the original phase graph as its SOL
+            // anchor, and DSV4.1 stages hold child ops; both are traversed.
+            Op::FpmForward(o) => o.sol_ops.iter().try_for_each(|c| visit(db, c)),
+            Op::Dsv41Stage(o) => o.children.iter().try_for_each(|c| visit(db, c)),
             _ => Ok(()),
         }
     }
@@ -930,6 +935,71 @@ mod tests {
                 }
                 build(KvCacheQuantMode::Bfloat16).unwrap();
             }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_nested_in_fpm_sol_ops_is_rejected_at_engine_build_on_sm90() {
+        use crate::perf_database::fpm_forward::tests::default_identity;
+        let root = systems();
+        let path = root.path().join("b200_sxm.yaml");
+        let mut spec: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        spec["gpu"]["sm_version"] = serde_yaml::to_value(Some(90)).unwrap();
+        std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+        let build = |kv| {
+            let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(DatabaseMode::Sol, TransferPolicy::ALL);
+            let config = serde_json::from_value(serde_json::json!({
+                "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                "model_name": "glm-fixture",
+                "system_name": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0",
+                "tp_size": 2, "pp_size": 1, "database_mode": DatabaseMode::Sol,
+            }))
+            .unwrap();
+            let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+            sparse.checkpoint_format = "fp8".into();
+            sparse.kv_cache_dtype = kv;
+            let fpm = |phase: FpmPhase, sparse: crate::operators::glm53flash::Glm53AttentionOp| {
+                Op::FpmForward(FpmForwardOp {
+                    name: format!("fpm_forward_{}", phase.as_str()),
+                    phase,
+                    model_path: "org/model-a".into(),
+                    match_identity: default_identity(2),
+                    weight_bytes: 0.0,
+                    verify_width: 1,
+                    interpolation: FpmInterpolation::Sol,
+                    sol_ops: vec![Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(Op::Glm53Attention(sparse)),
+                        numerator: 1,
+                        denominator: 1,
+                    })],
+                    original_fmha_quant_mode: None,
+                    dcp_size: None,
+                })
+            };
+            let mut decode = sparse.clone();
+            decode.is_context = false;
+            Engine::build(
+                EngineSpec::new(
+                    config,
+                    vec![fpm(FpmPhase::Prefill, sparse)],
+                    vec![fpm(FpmPhase::Decode, decode)],
+                ),
+                Arc::new(db),
+            )
+        };
+        let error = build(KvCacheQuantMode::Fp8)
+            .err()
+            .expect("SM90 FP8 KV in sol_ops");
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("bfloat16"), "{error}");
+        if let Err(error) = build(KvCacheQuantMode::Bfloat16) {
+            assert!(
+                !matches!(error, AicError::InvalidEngineConfig(ref m) if m.contains("SM90")),
+                "{error}"
+            );
         }
     }
 
