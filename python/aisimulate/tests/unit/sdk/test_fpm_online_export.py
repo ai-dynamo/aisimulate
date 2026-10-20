@@ -13,13 +13,15 @@ import pytest
 from aisimulate_core.sdk import fpm_learned
 
 from . import fpm_reference
+from .fpm_training_support import import_sklearn
+from .fpm_training_support import isolate_training_dependencies as isolate_training_dependencies
 
 pytestmark = pytest.mark.unit
 
 np = pytest.importorskip("numpy")
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
-sklearn = pytest.importorskip("sklearn")
+sklearn = import_sklearn()
 
 
 @pytest.fixture
