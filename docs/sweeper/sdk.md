@@ -97,7 +97,7 @@ spaces. Public config adapters and SDK providers are distinct contracts; see
 | `backend_version` | `None` | exact version for one backend, or a per-backend version mapping; omitted backends resolve once to latest |
 | `database_mode` | `SILICON` | forward-pass estimator data-source policy; see [performance-model configuration](../perf-model/configuration.md) |
 | `transfer_policy` | `None` (all) | Core-owned empirical-transfer preset or tier list; used only by `HYBRID` and `EMPIRICAL` |
-| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select an explicit mode |
+| `estimation_mode` | `auto` | search op-level, FPM interpolation, then regression; or select `op_level`, `fpm_interpolation`, `fpm_regression`, or `fpm_learned` explicitly. Learned models require the matching artifact/checkpoint and execution identity; they are never an automatic fallback. |
 | `fallback_policy` | `deny` | constrain explicit estimator selection; auto always searches the full priority order |
 | `estimator_config` | `{}` (Core defaults) | runtime tuning controls such as observation limits, regression buckets, correction bounds, and workload-axis capacity |
 | `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |

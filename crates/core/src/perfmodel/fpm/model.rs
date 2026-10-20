@@ -21,6 +21,9 @@ use super::correction::CorrectionBuckets;
 use super::coverage::{FpmCoverageState, FpmQueryCoverage};
 use super::estimator::{RegressionFitConfig, RegressionSamplingConfig};
 use super::learned::{IterationFeatureVector, LearnedForwardPassModel, load_learned};
+use super::learned_online::{
+    OnlineLearner, canonical_learned_identity, checkpoint_model_for_config,
+};
 use super::metrics::validate_forward_pass_metrics;
 use super::options::{
     CorrectionMode, ForwardPassPerfOptions, validate_options, validate_regression_options,
@@ -89,6 +92,8 @@ pub enum ForwardPassPerfSource {
     Learned,
     /// Learned model with at least one ready online-correction workload kind.
     LearnedWithCorrection,
+    /// A checkpoint-backed forest with bounded online updates.
+    LearnedOnline,
 }
 
 /// Readiness state reported by `ForwardPassPerfDiagnostics`.
@@ -308,6 +313,8 @@ enum ForwardPassPerfMode {
     /// estimate, with the same online-correction grid as `Native` on top.
     Learned {
         learned: LearnedForwardPassModel,
+        online: Option<OnlineLearner>,
+        identity_verified: bool,
         corrections: WorkloadStores<CorrectionBuckets>,
     },
 }
@@ -356,12 +363,85 @@ impl ForwardPassPerfModel {
         Ok(Self {
             mode: ForwardPassPerfMode::Learned {
                 learned,
+                online: None,
+                identity_verified: false,
                 corrections: WorkloadStores::with_options(&correction_options),
             },
             options,
             last_warning: None,
             provenance: None,
             is_correction_enabled: true,
+            query_coverage: None,
+        })
+    }
+
+    fn from_learned_config(config: &ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        let settings = &config.estimator_config.fpm_learned;
+        let mut learned = if let Some(path) = &settings.checkpoint_path {
+            checkpoint_model_for_config(path, config)?
+        } else {
+            use sha2::{Digest, Sha256};
+            let path = settings.artifact_path.as_ref().ok_or_else(|| {
+                AicError::InvalidEngineConfig("learned artifact_path is missing".into())
+            })?;
+            let bytes = std::fs::read(path).map_err(|source| AicError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            if settings
+                .source_sha256
+                .as_ref()
+                .is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest))
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "learned artifact source_sha256 changed after normalization".into(),
+                ));
+            }
+            let text = std::str::from_utf8(&bytes).map_err(|error| {
+                AicError::InvalidEngineConfig(format!("learned artifact is not UTF-8: {error}"))
+            })?;
+            LearnedForwardPassModel::from_json(text)?
+        };
+        if learned.worker_type() != config.worker_type {
+            return Err(AicError::InvalidEngineConfig(
+                "learned artifact worker_type does not match canonical model identity".into(),
+            ));
+        }
+        let artifact_identity = learned.metadata().get("identity");
+        if let Some(identity) = artifact_identity {
+            if identity != &canonical_learned_identity(config)? {
+                return Err(AicError::InvalidEngineConfig(
+                    "learned artifact metadata.identity does not match resolved deployment identity".into(),
+                ));
+            }
+        }
+        let identity_verified = settings.checkpoint_path.is_some() || artifact_identity.is_some();
+        let online = if settings.adaptation == super::LearnedAdaptation::Online {
+            Some(OnlineLearner::load(
+                settings
+                    .checkpoint_path
+                    .as_ref()
+                    .expect("validated online checkpoint"),
+                &mut learned,
+                settings,
+                config,
+            )?)
+        } else {
+            None
+        };
+        let options = config.estimator_config.correction_options();
+        Ok(Self {
+            mode: ForwardPassPerfMode::Learned {
+                learned,
+                online,
+                identity_verified,
+                corrections: WorkloadStores::with_options(&options),
+            },
+            options,
+            last_warning: None,
+            provenance: None,
+            is_correction_enabled: config.estimator_config.correction.enabled,
             query_coverage: None,
         })
     }
@@ -475,6 +555,21 @@ impl ForwardPassPerfModel {
                     last_error = Some(error);
                     continue;
                 }
+            }
+            if mode == EstimationMode::FpmLearned {
+                // Invalid source bytes and identity never trigger fallback.
+                let mut model = Self::from_learned_config(&config)?;
+                let mut resolved = config.clone();
+                resolved.estimation_mode = mode;
+                resolved.fallback_policy = ForwardPassFallbackPolicy::Deny;
+                model.provenance = Some(ForwardPassPerfProvenance {
+                    config: resolved,
+                    selected_systems_root: None,
+                    requested_estimation_mode,
+                    selected_estimation_mode: mode,
+                    selection_failures: failures,
+                });
+                return Ok(model);
             }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
@@ -612,16 +707,17 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Learned {
                 learned,
                 corrections,
+                ..
             } => {
                 let Some(base) = learned_base_ms(learned, metrics_by_rank)? else {
                     return Ok(None);
                 };
-                if base == 0.0 {
-                    return Ok(Some(0.0));
+                if base == 0.0 || !self.is_correction_enabled {
+                    return Ok(Some(base));
                 }
                 // A non-zero base implies scheduled work, so the correction
                 // features exist; fall back to no correction defensively.
-                let factor = IterationFeatures::from_metrics(metrics_by_rank)?
+                let factor = IterationFeatures::from_validated_metrics(metrics_by_rank)
                     .map(|feature| {
                         corrections
                             .store(feature.workload_kind)
@@ -764,18 +860,49 @@ impl ForwardPassPerfModel {
                 }
                 ForwardPassPerfMode::Learned {
                     learned,
+                    online,
                     corrections,
+                    ..
                 } => {
-                    let Some(observation) = IterationObservation::from_metrics(metrics_by_rank)?
-                    else {
+                    if online.is_none() && !*is_correction_enabled {
+                        classify_regression_workload(metrics_by_rank, learned.worker_type())?;
+                        continue;
+                    }
+                    let prepared = prepare_learned_iteration(learned, metrics_by_rank);
+                    let (kind, vector) = match prepared {
+                        Ok(Some((kind, Some(vector)))) => (kind, vector),
+                        Ok(None | Some((_, None))) => continue,
+                        Err(error) => {
+                            if let Some(online) = online {
+                                online.record_rejected_observation();
+                            }
+                            return Err(error);
+                        }
+                    };
+                    if !learned.has_store(kind) {
+                        continue;
+                    }
+                    let Some(wall_ms) = max_positive_wall_time_ms(metrics_by_rank) else {
+                        if let Some(online) = online {
+                            online.record_rejected_observation();
+                        }
                         continue;
                     };
-                    let Some(base) = learned_base_ms(learned, metrics_by_rank)? else {
-                        continue;
-                    };
-                    corrections
-                        .store_mut(observation.feature.workload_kind)
-                        .add_observation(observation.feature.x, observation.wall_time_ms, base);
+                    if let Some(online) = online {
+                        let x = learned.selected_features(&vector);
+                        online.observe(kind, x, wall_ms, learned)?;
+                    } else if *is_correction_enabled {
+                        let Some(base) = learned.predict_ms(kind, &vector)? else {
+                            continue;
+                        };
+                        if let Some(feature) =
+                            IterationFeatures::from_validated_metrics(metrics_by_rank)
+                        {
+                            corrections
+                                .store_mut(feature.workload_kind)
+                                .add_observation(feature.x, wall_ms, base);
+                        }
+                    }
                 }
             }
         }
@@ -821,16 +948,25 @@ impl ForwardPassPerfModel {
                     provenance: self.provenance.clone(),
                 }
             }
-            ForwardPassPerfMode::Learned { corrections, .. } => {
+            ForwardPassPerfMode::Learned {
+                corrections,
+                online,
+                ..
+            } => {
                 let ready_buckets = corrections.ready_bucket_count();
                 ForwardPassPerfDiagnostics {
-                    source: if corrections.any_ready() {
+                    source: if online.is_some() {
+                        ForwardPassPerfSource::LearnedOnline
+                    } else if self.is_correction_enabled && corrections.any_ready() {
                         ForwardPassPerfSource::LearnedWithCorrection
                     } else {
                         ForwardPassPerfSource::Learned
                     },
                     readiness: ForwardPassPerfReadiness::Ready,
-                    retained_observations: corrections.observation_count(),
+                    retained_observations: online.as_ref().map_or_else(
+                        || corrections.observation_count(),
+                        OnlineLearner::retained_observations,
+                    ),
                     correction_ready_buckets: ready_buckets,
                     last_warning: self.last_warning.clone(),
                     provenance: self.provenance.clone(),
@@ -850,15 +986,17 @@ impl ForwardPassPerfModel {
         match &self.mode {
             ForwardPassPerfMode::Native { .. } => Vec::new(),
             ForwardPassPerfMode::Regression { regression, .. } => regression.diagnostics(),
-            // Learned stores are fixed at load time: every trained store is
-            // ready and holds no retained tuning observations of its own.
-            ForwardPassPerfMode::Learned { learned, .. } => learned
-                .store_kinds()
-                .into_iter()
+            ForwardPassPerfMode::Learned {
+                learned, online, ..
+            } => workload_kinds_for(learned.worker_type())
+                .iter()
+                .copied()
                 .map(|workload_kind| ForwardPassRegressionStoreDiagnostics {
                     workload_kind,
-                    ready: true,
-                    retained_observations: 0,
+                    ready: learned.has_store(workload_kind),
+                    retained_observations: online
+                        .as_ref()
+                        .map_or(0, |online| online.retained_observations_for(workload_kind)),
                     spline: None,
                 })
                 .collect(),
@@ -886,6 +1024,100 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Learned { learned, .. } => Some(learned.metadata()),
             _ => None,
         }
+    }
+
+    /// Fit pending observations in every online store, including partial batches.
+    /// Prediction and checkpoint saving never implicitly flush pending feedback.
+    pub fn flush_updates(&mut self) -> Result<(), AicError> {
+        let ForwardPassPerfMode::Learned {
+            learned,
+            online: Some(online),
+            ..
+        } = &mut self.mode
+        else {
+            return Err(AicError::UnsupportedModel(
+                "flush_updates requires online fpm_learned".into(),
+            ));
+        };
+        for kind in learned.store_kinds() {
+            online.flush(kind, learned)?;
+        }
+        Ok(())
+    }
+
+    /// Export the current forest as a frozen inference artifact, without fitting.
+    pub fn export_learned_artifact(&self) -> Result<String, AicError> {
+        match &self.mode {
+            ForwardPassPerfMode::Learned {
+                learned,
+                identity_verified,
+                ..
+            } => {
+                let Some(provenance) = self.provenance.as_ref().filter(|_| *identity_verified)
+                else {
+                    return learned.to_json();
+                };
+                let mut artifact = learned.artifact();
+                let metadata = artifact.metadata.as_object_mut().ok_or_else(|| {
+                    AicError::InvalidEngineConfig(
+                        "verified learned artifact export requires object metadata".into(),
+                    )
+                })?;
+                metadata.insert(
+                    "identity".into(),
+                    canonical_learned_identity(&provenance.config)?,
+                );
+                serde_json::to_string(&artifact).map_err(|error| {
+                    AicError::InvalidEngineConfig(format!(
+                        "cannot export learned artifact: {error}"
+                    ))
+                })
+            }
+            _ => Err(AicError::UnsupportedModel(
+                "artifact export requires fpm_learned".into(),
+            )),
+        }
+    }
+
+    /// Save complete online state to a new directory without fitting pending rows.
+    pub fn save_online_checkpoint(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<(), AicError> {
+        let ForwardPassPerfMode::Learned {
+            learned,
+            online: Some(online),
+            ..
+        } = &self.mode
+        else {
+            return Err(AicError::UnsupportedModel(
+                "checkpoint saving requires online fpm_learned".into(),
+            ));
+        };
+        online.save(path.as_ref(), learned, "{}")
+    }
+
+    /// Online update counters and deployment identity verification status.
+    pub fn learned_online_diagnostics(&self) -> Option<serde_json::Value> {
+        let ForwardPassPerfMode::Learned {
+            online,
+            identity_verified,
+            ..
+        } = &self.mode
+        else {
+            return None;
+        };
+        let mut value = online.as_ref().map_or_else(
+            || serde_json::json!({"adaptation": "frozen", "pending_observations": 0}),
+            OnlineLearner::diagnostics,
+        );
+        let object = value.as_object_mut().expect("learner diagnostics object");
+        object.insert(
+            "adaptation".into(),
+            if online.is_some() { "online" } else { "frozen" }.into(),
+        );
+        object.insert("identity_verified".into(), (*identity_verified).into());
+        Some(value)
     }
 
     /// API:
@@ -1172,15 +1404,34 @@ fn learned_base_ms(
     learned: &LearnedForwardPassModel,
     metrics_by_rank: &[ForwardPassMetrics],
 ) -> Result<Option<f64>, AicError> {
+    let Some((kind, vector)) = prepare_learned_iteration(learned, metrics_by_rank)? else {
+        return Ok(Some(0.0));
+    };
+    vector
+        .map(|vector| learned.predict_ms(kind, &vector))
+        .transpose()
+        .map(Option::flatten)
+}
+
+fn prepare_learned_iteration(
+    learned: &LearnedForwardPassModel,
+    metrics_by_rank: &[ForwardPassMetrics],
+) -> Result<
+    Option<(
+        ForwardPassRegressionWorkloadKind,
+        Option<IterationFeatureVector>,
+    )>,
+    AicError,
+> {
     // Routing only depends on the batch composition, never on the regression
     // tuning weights, so an invalid regression-only option cannot reject a
     // learned prediction.
     let Some(workload_kind) = classify_regression_workload(metrics_by_rank, learned.worker_type())?
     else {
-        return Ok(Some(0.0));
+        return Ok(None);
     };
     if !learned.has_store(workload_kind) {
-        return Ok(None);
+        return Ok(Some((workload_kind, None)));
     }
     let vector =
         IterationFeatureVector::from_metrics_with(metrics_by_rank, learned.needs_slot_features());
@@ -1194,7 +1445,7 @@ fn learned_base_ms(
                 .to_string(),
         ));
     }
-    learned.predict_ms(workload_kind, &vector)
+    Ok(Some((workload_kind, Some(vector))))
 }
 
 #[cfg(feature = "python")]
@@ -1259,14 +1510,18 @@ impl IterationFeatures {
             validate_forward_pass_metrics(metrics)?;
         }
 
-        Ok(metrics_by_rank
+        Ok(Self::from_validated_metrics(metrics_by_rank))
+    }
+
+    fn from_validated_metrics(metrics_by_rank: &[ForwardPassMetrics]) -> Option<Self> {
+        metrics_by_rank
             .iter()
             .filter_map(Self::from_single_rank)
             .max_by(|left, right| {
                 left.load_score()
                     .partial_cmp(&right.load_score())
                     .unwrap_or(std::cmp::Ordering::Equal)
-            }))
+            })
     }
 
     fn from_single_rank(metrics: &ForwardPassMetrics) -> Option<Self> {
@@ -1728,6 +1983,32 @@ mod rebuild_tests {
 #[cfg(test)]
 mod fallback_errors {
     use super::*;
+
+    #[test]
+    fn canonical_learned_rechecks_the_exact_artifact_bytes_after_normalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("artifact.json");
+        let mut artifact = serde_json::json!({
+            "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+            "worker_type": "decode", "target": "ms", "features": ["num_decode_requests"],
+            "stores": {"pure_decode": {"baseline": 10.0, "trees": []}}, "metadata": {}
+        });
+        std::fs::write(&path, artifact.to_string()).unwrap();
+        let mut config = ForwardPassPerfModelConfig::new(
+            "model",
+            "system",
+            crate::BackendKind::Vllm,
+            ForwardPassWorkerType::Decode,
+        );
+        config.estimation_mode = EstimationMode::FpmLearned;
+        config.estimator_config.fpm_learned.artifact_path = Some(path.clone());
+        let resolved = config.resolve().unwrap();
+        ForwardPassPerfModel::from_learned_config(&resolved).unwrap();
+        artifact["stores"]["pure_decode"]["baseline"] = 20.0.into();
+        std::fs::write(&path, artifact.to_string()).unwrap();
+        let error = ForwardPassPerfModel::from_learned_config(&resolved).unwrap_err();
+        assert!(error.to_string().contains("changed after normalization"));
+    }
 
     #[cfg(feature = "python")]
     #[test]

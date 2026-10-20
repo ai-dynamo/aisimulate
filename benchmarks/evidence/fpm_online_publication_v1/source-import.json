@@ -1,0 +1,51 @@
+{
+  "integration_base": "56f47543a15ae1f7842ecc5bcf653409c138d496",
+  "original_branch_base": "127f0eed39754adad20cbf890f2a9cc1f19c7d61",
+  "schema": "aisimulate_online_source_import_v1",
+  "snapshot_git_history": null,
+  "source_files": {
+    "crates/core/src/perfmodel/fpm/learned.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "e9da0dc92c9f071d6ba8abc805c6a0a15e5467570be3f791d6878e78efda43d9"
+    },
+    "crates/core/src/perfmodel/fpm/learned_online.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "331e74f78150b9592b58c62b558230cc1e8d578e86e2d7bc568a404865ca590d"
+    },
+    "crates/core/src/perfmodel/fpm/learned_online/checkpoint.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "68d42fe95f950f70560eb10f8fb04a02210f80ba7fc0a72815dd5b08610f612e"
+    },
+    "crates/core/src/perfmodel/fpm/learned_online/fitting.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "27e27ce66eb5c02edb29c92762f784dad62bea336113981ffec7dc11f1c538f9"
+    },
+    "crates/core/src/perfmodel/fpm/learned_online/grouped_history_tests.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "3c3ec9503c2be9fd99a03334a86d863bcc8aa8b05856f082c4d4fa36461962ee"
+    },
+    "crates/core/src/perfmodel/fpm/learned_online/tests.rs": {
+      "in_existing_source_seal": true,
+      "sha256": "4894eae44e643b4aa93af655045ad552b9b9e597aef96967fef10fddcb71907b"
+    },
+    "python/aisimulate/src/aisimulate_core/sdk/fpm_learned.py": {
+      "in_existing_source_seal": true,
+      "sha256": "4c04f1ebe968855639e596d45e5c25c266c6368f5f46e69c25c5f5fe1077758f"
+    },
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_export.py": {
+      "in_existing_source_seal": false,
+      "sha256": "7b0eb764312031892a46db893d5c4635d01d8585d77cb772b7277553a85c8326"
+    },
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_integration.py": {
+      "in_existing_source_seal": false,
+      "sha256": "1b79a7a1ef434e216b12dacf0a8290064d91f428e90464069aa1ead104ae40ce"
+    },
+    "python/aisimulate/tests/unit/sdk/test_fpm_online_structural_reference.py": {
+      "in_existing_source_seal": false,
+      "sha256": "2f177aa45dc99980c751564a693df0629129c822b68b897c91eeac91fb55a64b"
+    }
+  },
+  "source_seal_path": "benchmarks/evidence/fpm_cross_workload_hybrid_v1/seal.json",
+  "source_seal_sha256": "cb0599bc7077183a9cb4fe87f911ef233841918fa6d391e384235c758d132935",
+  "source_snapshot": "/home/yueqiz/work/aisimulate-grouped-history-v1"
+}

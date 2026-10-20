@@ -558,7 +558,7 @@ class SearchSpace(BaseModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
     role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)

@@ -17,7 +17,207 @@ pub struct EstimatorConfig {
     pub op_level: OpLevelConfig,
     pub fpm_interpolation: FpmInterpolationConfig,
     pub fpm_regression: FpmRegressionConfig,
+    pub fpm_learned: FpmLearnedConfig,
     pub correction: CorrectionConfig,
+}
+
+/// How a learned model adapts after construction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedAdaptation {
+    #[default]
+    Frozen,
+    Online,
+}
+
+/// Which parts of an online forest may change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedUpdateMode {
+    LeafOnly,
+    #[default]
+    Structural,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearnedDerivativeRefresh {
+    #[default]
+    Eager,
+    Lazy,
+}
+
+/// Explicit learned-model sources and Rust-owned online fitting controls.
+/// Offline anchors are retained in addition to the bounded recent window.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FpmLearnedConfig {
+    pub artifact_path: Option<PathBuf>,
+    pub checkpoint_path: Option<PathBuf>,
+    /// Digest of the artifact file or checkpoint manifest, pinned at construction.
+    pub source_sha256: Option<String>,
+    pub adaptation: LearnedAdaptation,
+    pub update_mode: LearnedUpdateMode,
+    pub recent_window: usize,
+    /// None keeps unit row weights; Some(beta) fixes total history mass.
+    pub history_weight: Option<f64>,
+    /// Retained recent support needed to reach the configured group mass.
+    pub history_weight_ramp_observations: usize,
+    /// Aggregate immutable history by complete fitted-bin vectors; preserve its mass.
+    pub history_bin_grouping: bool,
+    /// Only this many final seed trees may change; None updates all trees.
+    pub mutable_tree_tail: Option<usize>,
+    /// Convex displacement toward fitted leaf values; structural updates require 1.
+    pub update_step: f64,
+    /// Maximum global learned-observation age of recent rows, inclusive.
+    pub recent_max_age_observations: Option<usize>,
+    pub update_every: usize,
+    pub derivative_refresh: LearnedDerivativeRefresh,
+    pub split_sampling_rate: f64,
+    pub split_rank_tolerance: f64,
+    pub eager_refresh_interval: usize,
+    pub seed: u64,
+}
+
+impl Default for FpmLearnedConfig {
+    fn default() -> Self {
+        Self {
+            artifact_path: None,
+            checkpoint_path: None,
+            source_sha256: None,
+            adaptation: LearnedAdaptation::Frozen,
+            update_mode: LearnedUpdateMode::Structural,
+            recent_window: 2048,
+            history_weight: None,
+            history_weight_ramp_observations: 0,
+            history_bin_grouping: false,
+            mutable_tree_tail: None,
+            update_step: 1.0,
+            recent_max_age_observations: None,
+            update_every: 64,
+            derivative_refresh: LearnedDerivativeRefresh::Eager,
+            split_sampling_rate: 1.0,
+            split_rank_tolerance: 0.0,
+            eager_refresh_interval: 32,
+            seed: 0,
+        }
+    }
+}
+
+impl FpmLearnedConfig {
+    /// Bind content before caller caches use the resolved configuration.
+    pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        for path in [&mut self.artifact_path, &mut self.checkpoint_path]
+            .into_iter()
+            .flatten()
+        {
+            *path = std::path::absolute(&*path).map_err(|source| AicError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        let source = self
+            .artifact_path
+            .clone()
+            .or_else(|| {
+                self.checkpoint_path
+                    .as_ref()
+                    .map(|path| path.join("manifest.json"))
+            })
+            .ok_or_else(|| AicError::InvalidEngineConfig("fpm_learned source is missing".into()))?;
+        let mut file = std::fs::File::open(&source).map_err(|error| AicError::Io {
+            path: source.clone(),
+            source: error,
+        })?;
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 65536];
+        loop {
+            let count = file.read(&mut bytes).map_err(|error| AicError::Io {
+                path: source.clone(),
+                source: error,
+            })?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&bytes[..count]);
+        }
+        let actual = format!("{:x}", digest.finalize());
+        if self
+            .source_sha256
+            .as_ref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&actual))
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "estimator_config.fpm_learned.source_sha256 does not match source contents".into(),
+            ));
+        }
+        self.source_sha256 = Some(actual);
+        Ok(())
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let invalid = |reason: &str| {
+            AicError::InvalidEngineConfig(format!("estimator_config.fpm_learned: {reason}"))
+        };
+        if self
+            .history_weight
+            .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+        {
+            return Err(invalid("history_weight must be finite and in [0, 1]"));
+        }
+        if self.history_weight.is_none() && self.history_weight_ramp_observations > 0 {
+            return Err(invalid(
+                "history_weight_ramp_observations requires history_weight",
+            ));
+        }
+        if self.mutable_tree_tail == Some(0) || self.recent_max_age_observations == Some(0) {
+            return Err(invalid(
+                "mutable_tree_tail and recent_max_age_observations must be positive",
+            ));
+        }
+        if !self.update_step.is_finite() || self.update_step <= 0.0 || self.update_step > 1.0 {
+            return Err(invalid("update_step must be finite and in (0, 1]"));
+        }
+        if self.update_step != 1.0 && self.update_mode == LearnedUpdateMode::Structural {
+            return Err(invalid(
+                "update_step below 1 requires leaf_only to preserve exact interpolation",
+            ));
+        }
+        if self.recent_window == 0 || self.update_every == 0 || self.eager_refresh_interval == 0 {
+            return Err(invalid(
+                "recent_window, update_every, and eager_refresh_interval must be positive",
+            ));
+        }
+        if !self.split_sampling_rate.is_finite()
+            || self.split_sampling_rate <= 0.0
+            || self.split_sampling_rate > 1.0
+        {
+            return Err(invalid("split_sampling_rate must be finite and in (0, 1]"));
+        }
+        if !self.split_rank_tolerance.is_finite()
+            || !(0.0..=1.0).contains(&self.split_rank_tolerance)
+        {
+            return Err(invalid("split_rank_tolerance must be finite and in [0, 1]"));
+        }
+        if self.source_sha256.as_ref().is_some_and(|digest| {
+            digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit())
+        }) {
+            return Err(invalid(
+                "source_sha256 must contain 64 hexadecimal characters",
+            ));
+        }
+        for path in [&self.artifact_path, &self.checkpoint_path]
+            .into_iter()
+            .flatten()
+        {
+            if path.as_os_str().is_empty() {
+                return Err(invalid("artifact_path and checkpoint_path cannot be empty"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -755,6 +955,7 @@ impl EstimatorConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        self.fpm_learned.validate()?;
         self.fpm_regression.sampling.validate()?;
         validate_rebuild_interval(self.fpm_regression.fit.rebuild_interval)?;
         self.validate_linear()?;

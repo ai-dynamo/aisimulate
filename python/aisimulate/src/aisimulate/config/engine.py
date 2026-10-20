@@ -347,7 +347,7 @@ class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
@@ -507,7 +507,7 @@ class EstimatorPolicyConfig(StrictModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
 

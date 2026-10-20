@@ -26,6 +26,8 @@ pub enum EstimationMode {
     #[serde(alias = "fpm")]
     FpmInterpolation,
     FpmRegression,
+    /// Explicit artifact-backed forests; never part of automatic discovery.
+    FpmLearned,
 }
 
 impl EstimationMode {
@@ -33,7 +35,7 @@ impl EstimationMode {
         match self {
             Self::OpLevel => Some("op_level"),
             Self::FpmInterpolation => Some("fpm"),
-            Self::Auto | Self::FpmRegression => None,
+            Self::Auto | Self::FpmRegression | Self::FpmLearned => None,
         }
     }
 }
@@ -263,7 +265,15 @@ impl ForwardPassPerfModelConfig {
     /// adding transient registry facts to the serialized request.
     pub(crate) fn resolve_with_registration(mut self) -> Result<(Self, Option<bool>), AicError> {
         self.estimator_config.resolve_defaults();
+        if self.estimation_mode == EstimationMode::FpmLearned
+            && self.estimator_config.correction.mode == super::CorrectionMode::Auto
+        {
+            self.estimator_config.correction.mode = super::CorrectionMode::Hybrid;
+        }
         self.validate()?;
+        if self.estimation_mode == EstimationMode::FpmLearned {
+            self.estimator_config.fpm_learned.resolve_source()?;
+        }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
             {
@@ -341,6 +351,35 @@ impl ForwardPassPerfModelConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        let learned = &self.estimator_config.fpm_learned;
+        if self.estimation_mode == EstimationMode::FpmLearned {
+            if learned.artifact_path.is_some() == learned.checkpoint_path.is_some() {
+                return Err(invalid_config(
+                    "fpm_learned requires exactly one artifact_path or checkpoint_path",
+                ));
+            }
+            if learned.adaptation == super::LearnedAdaptation::Online {
+                if learned.checkpoint_path.is_none() {
+                    return Err(invalid_config(
+                        "online learned adaptation requires checkpoint_path",
+                    ));
+                }
+                if self.estimator_config.correction.enabled {
+                    return Err(invalid_config(
+                        "online learned adaptation requires estimator_config.correction.enabled=false",
+                    ));
+                }
+            }
+            if self.nextn != 0 || self.speculation.is_some() {
+                return Err(invalid_config(
+                    "fpm_learned does not support speculative decoding",
+                ));
+            }
+        } else if learned.artifact_path.is_some() || learned.checkpoint_path.is_some() {
+            return Err(invalid_config(
+                "learned sources require explicit estimation_mode='fpm_learned'",
+            ));
+        }
         if self.estimator_config.fpm_interpolation.collect_coverage
             && (self.estimation_mode != EstimationMode::FpmInterpolation
                 || self.fallback_policy != ForwardPassFallbackPolicy::Deny

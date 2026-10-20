@@ -543,6 +543,11 @@ impl AicTimingModel {
         let provenance = model
             .provenance()
             .context("canonical estimator omitted construction provenance")?;
+        ensure!(
+            provenance.selected_estimation_mode != EstimationMode::FpmLearned,
+            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing \
+             interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
+        );
         config.backend_version = provenance.config.backend_version.clone();
         config.speculation = provenance.config.speculation.clone();
         // Canonical construction validates and resolves cost identity first;

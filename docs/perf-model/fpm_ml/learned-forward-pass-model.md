@@ -6,19 +6,28 @@ SPDX-License-Identifier: Apache-2.0
 # Learned forward-pass model from real-traffic FPM telemetry
 
 The learned forward-pass model predicts one engine iteration's wall time from
-the scheduled batch composition, using a tree ensemble trained offline on
-`ForwardPassMetrics` (FPM) records that a real deployment emitted while
-serving real traffic. It is the third `ForwardPassPerfModel` mode next to the
-native AIC estimator and the online linear regression:
+the scheduled batch composition, starting from a tree ensemble trained on
+`ForwardPassMetrics` (FPM) records emitted by a real deployment. Construct it
+through `RustForwardPassPerfModel.best_available(config)` with explicit
+`estimation_mode="fpm_learned"`. It is outside the automatic estimator search.
 
-| Mode | Base estimate | Learns from | Needs |
+| Explicit estimator | Base estimate | Feedback behavior | Source |
 | --- | --- | --- | --- |
-| `from_native` | Compiled AIC engine | Online correction grid | Model supported by AIC, perf database |
-| `from_regression` | Two-feature linear fit | Online, per workload store | Nothing (cold start) |
-| `from_learned` | Offline tree ensemble | Offline FPM stream, plus dynamic local online calibration | An FPM stream of the deployment |
+| `op_level` | Compiled AIC engine | Optional correction | Supported model and performance database |
+| `fpm_regression` | Linear or spline fit | Online fitting per workload store | Admitted observations; can start untrained |
+| `fpm_learned`, `adaptation: frozen` | Fixed tree ensemble | Optional hybrid calibration | Inference artifact or checkpoint |
+| `fpm_learned`, `adaptation: online` | Adaptive binned tree ensemble | Tree updates; correction must be disabled | Training or saved online checkpoint |
 
 The learned mode does not use the anchor-library collector or a kvwarm
 self-benchmark. Its only input is the telemetry the engine already produces.
+
+Frozen calibration and online tree adaptation are standalone telemetry APIs:
+pass complete `ForwardPassMetrics` for one iteration to the model returned by
+`best_available`. Engine replay, engine CLI prediction and Sweeper's current
+timing interfaces supply phase aggregates and cannot reconstruct the full
+learned feature vector. They reject learned execution at construction, even
+when the configuration itself parses. This release does not populate missing
+rank or request features from mean phase values.
 
 Design rationale, model details, evaluation method and the full result tables are in
 [`design.md`](design.md).
@@ -122,7 +131,7 @@ only writes FPM `jsonl.gz` files. Training reads those files on any CPU
 machine with the `aisimulate[learned]` extra installed (scikit-learn is used
 only here; a login node or laptop is fine: 2.7M decode steps fit in ~25 s on
 16 threads, loading the gzip stream takes longer than the fit). The output is
-a plain JSON artifact that the simulator loads through the Rust model with no
+a plain JSON artifact that the standalone Rust FPM model loads with no
 Python ML dependency.
 
 Training environment, pick one:
@@ -221,20 +230,106 @@ set of files and score another with `evaluate --model ... --fpm ...` (for
 example a capture run with a different seed and different concurrency tiers,
 as in §4).
 
+### Export a seed for online fitting
+
+The usual inference JSON preserves the fitted predictor. To continue fitting its
+trees, export a seed checkpoint during training, when the exact fitted rows and
+bin mapper are available. An arbitrary inference JSON cannot reconstruct those
+inputs. Checkpoint export adds no observations and does not fit a different
+forest.
+
+The exporter requires a canonical identity JSON with the deployment's actual
+model, hardware, backend/version, topology and `worker_type`. For example, a
+minimal identity file for a decode deployment is:
+
+```json
+{
+  "model": "Qwen/Qwen3-32B",
+  "system": "h200_sxm",
+  "backend": "vllm",
+  "worker_type": "decode",
+  "tp": 1
+}
+```
+
+Use the measured deployment's complete identity, including explicit precision
+and topology controls where applicable. Rust normalizes the identity; the
+exporter does not invent a second set of defaults. The training `worker_type`
+must match it. Leave learned source paths out of this identity: the new seed
+does not exist yet. Estimator selection and fitting controls are excluded from
+the deployment identity, so the same identity can select the exported seed
+after training. Then train and export together:
+
+```bash
+python -m aisimulate_core.sdk.fpm_learned train \
+  --fpm decode_worker/*.jsonl.gz \
+  --worker-type decode \
+  --features fpm5 \
+  --out models/decode_learned.json \
+  --online-checkpoint-dir models/decode_online_seed \
+  --identity deployment_identity.json
+```
+
+`fpm5` is suitable for aggregate-only telemetry; retain the appropriate feature
+preset when per-request data is available. The Python API accepts the equivalent
+`train(..., online_checkpoint_dir="models/decode_online_seed", identity=identity)`
+arguments and still returns the ordinary inference artifact.
+
+Online seed export currently supports scikit-learn 1.9.1, scalar unweighted
+`squared_error` fitting, numeric features and `early_stopping=False`. It rejects
+unsupported versions, categorical features, monotonic/interaction constraints
+and feature subsampling. Normal inference-artifact training retains its existing
+behavior. The seed contains the exact fitted feature/target rows and row
+provenance, learned bin thresholds, predictor and fitting metadata, with file
+checksums. It uses `aisimulate_fpm_training_checkpoint` schema version 1. Export
+writes a new directory atomically and refuses to overwrite an existing path.
+
+The following settings are fitted or recorded when the seed is created; they
+are not independent online overrides:
+
+| Seed property | Training default | Role in online fitting |
+| --- | --- | --- |
+| `target` | `log_ms` | Squared loss on `log(latency_ms)`; `ms` uses the untransformed latency. The output transform must match. |
+| Ordered `features` | `atomic5` for decode, `atomic10` otherwise | Defines the feature ABI, fitted bins and grouping key. `fpm5` is an explicit aggregate-only option. |
+| `max_iter` | `600` | Maximum offline tree count; the actual fitted tree count is preserved online. |
+| `learning_rate` | `0.05` | Shrinkage applied once to each fitted leaf contribution. Distinct from online `update_step`. |
+| `max_leaf_nodes` | `31` | Offline tree budget. Online structural updates reuse each fitted tree's reserved capacity. |
+| `min_samples_leaf` | `5` | Minimum original observation count per child; grouped history preserves multiplicities. |
+| `min_store_rows` | `20` | Minimum rows for exporting a store. Online feedback does not synthesize missing seed stores. |
+| `random_state` | `0` | Offline fitting RNG; separate from the online split-sampling `seed`. |
+| `early_stopping` | `false` | Required for online checkpoint export so all declared fit rows belong to the fitted population. |
+| L2 penalty and maximum depth | Trainer's `0.0` and no depth limit | Recorded and validated; the online leaf objective and rebuilding respect them. |
+| Bin mapper and baseline | Learned during training | Preserved by online updates. Tree splits remain on the fitted bin thresholds. |
+
 ## 3. Use it
 
 ```python
-from aisimulate_core.sdk import RustForwardPassPerfModel
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-model = RustForwardPassPerfModel.from_learned("models/decode_learned.json")
-ms = model.estimate_forward_pass_time_ms([fpm_rank0, fpm_rank1])  # one iteration
-model.tune_with_fpms([[observed_rank0, observed_rank1]])           # optional online correction
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "artifact_path": "models/decode_learned.json",
+            "adaptation": "frozen",
+        },
+        "correction": {"enabled": True, "mode": "hybrid"},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+ms = model.estimate_forward_pass_time_ms([query_rank0])
+model.tune_with_fpms([[observed_rank0]])  # reveal the measured target afterward
 ```
 
 ### Online correction
 
-`estimate_forward_pass_time_ms` returns the learned prediction multiplied by
-a hybrid correction factor. Inside the configured fixed grid it uses the
+With frozen adaptation, `estimate_forward_pass_time_ms` returns the learned
+prediction multiplied by a hybrid correction factor. Inside the configured fixed grid it uses the
 existing fixed local median, including the neutral factor 1.0 for empty or
 unready cells. Outside that grid it uses dynamic local correction with a
 recent-global fallback. Default fixed upper limits are 8,192 prefill tokens,
@@ -295,9 +390,9 @@ cost at the intended capacity and feedback cadence before increasing it.
 reproduce the previous fixed-grid behavior everywhere:
 
 ```python
-model = RustForwardPassPerfModel.from_learned(
-    "models/decode_learned.json", options={"correction_mode": "fixed"}
-)
+fixed_config = config.to_dict()
+fixed_config["estimator_config"]["correction"]["mode"] = "fixed"
+model = RustForwardPassPerfModel.best_available(fixed_config)
 ```
 
 Canonical native configurations expose the same selection as
@@ -340,9 +435,117 @@ retained in both once per history. Ready-bucket counts include overlapping
 regions, and correction-factor summaries include both grids and the dynamic
 fallback. These summarize retained state rather than query-weighted behavior.
 
-Consumers that already hold a `RustForwardPassPerfModel` (the Dynamo planner
-engine-query layer, the mocker's AIC callback) need no code change beyond
-choosing the constructor.
+The returned canonical model accepts complete per-iteration FPM queries and
+feedback. Callers that only hold phase aggregates cannot use this interface
+without supplying the required iteration and request features.
+
+### Online tree adaptation
+
+Use the seed checkpoint and the same deployment identity to construct a
+standalone online forest. Exactly one of `artifact_path` and `checkpoint_path`
+may be supplied for explicit learned mode. Online adaptation requires the latter
+and disabled correction:
+
+```python
+online_config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-32B",
+    system="h200_sxm",
+    backend="vllm",
+    worker_type="decode",
+    estimation_mode="fpm_learned",
+    fallback_policy="deny",
+    estimator_config={
+        "fpm_learned": {
+            "checkpoint_path": "models/decode_online_seed",
+            "adaptation": "online",
+            "recent_window": 64,
+            "update_every": 1,
+            "history_weight": 0.1,
+            "history_weight_ramp_observations": 32,
+            "history_bin_grouping": True,
+        },
+        "correction": {"enabled": False},
+    },
+)
+online = RustForwardPassPerfModel.best_available(online_config)
+
+# One iteration contains the synchronized active-rank metrics for one worker.
+predicted_ms = online.estimate_forward_pass_time_ms([query_rank0])
+online.tune_with_fpms([[observed_rank0]])
+print(online.learned_online_diagnostics())
+```
+
+The explicit settings illustrate a small recent window and historical mass
+balance; they are not universal accuracy defaults. Consult the
+[complete field table](../configuration.md#learned-forest-and-online-fitting-controls)
+and [mathematical design](design.md#44-online-binned-tree-adaptation) before
+changing the fitting policy. Omitted controls use Rust's defaults, including
+structural updates and eager derivatives.
+
+Own one model instance per worker and fixed deployment identity. A `worker_id`
+inside telemetry does not select independent mutable state. Within an instance,
+the full rank list selects the learned workload store: pure prefill, pure
+decode, locally mixed, or cross-rank aggregated. Missing seed stores return
+`None`; they are not bootstrapped by passing more labels to this estimator.
+Idle iterations retain the existing zero-latency behavior.
+
+Always predict before admitting the same observation's target. Ordinary queries
+change neither the fitting population nor pending batches. Every valid feedback
+row enters its store's pending batch; `update_every` determines when a fitted
+forest is published. With values above 1, call `flush_updates()` to fit a final
+partial batch when that is intended. Immutable source history is retained in
+addition to the FIFO recent window. No caller-side Python fitting or second
+prediction formula participates in these updates.
+
+#### Save, export and resume
+
+Use a new destination for each online checkpoint:
+
+```python
+import json
+from pathlib import Path
+
+# This saves pending rows too; it does not flush them implicitly.
+online.save_online_checkpoint("models/decode_online_after_capture")
+
+# An inference export is a prediction snapshot, not a resumable fitting state.
+Path("models/decode_adapted.json").write_text(
+    json.dumps(online.export_learned_artifact(), indent=2) + "\n"
+)
+
+resume_config = online.diagnostics()["provenance"]["config"]
+learned = resume_config["estimator_config"]["fpm_learned"]
+learned["checkpoint_path"] = "models/decode_online_after_capture"
+# The previous digest pinned the old source; the constructor pins this new one.
+learned.pop("source_sha256", None)
+resumed = RustForwardPassPerfModel.best_available(resume_config)
+```
+
+Keep all deployment identity and online fitting controls unchanged when
+resuming. Canonical construction pins the source digest in the resolved
+configuration, and checkpoint loading verifies its manifest and referenced
+files. A digest mismatch, incompatible identity, changed continuation controls
+or unsupported checkpoint schema fails explicitly. Seed checkpoints use schema
+version 1; runtime checkpoints use version 5. Earlier research runtime versions
+1 through 4 are rejected rather than interpreted as the new state format.
+Saving to an existing path, including an empty directory, is rejected; a saved
+runtime state cannot be reconstructed from an inference artifact alone.
+
+Checkpoints and inference artifacts with `metadata.identity` validate the
+normalized deployment identity and report `identity_verified: true` in learned
+diagnostics. Legacy inference artifacts without identity metadata report
+`false`; the constructor still checks their worker role and content digest.
+The seed export's `identity` argument records identity in the checkpoint
+manifest. An inference snapshot preserves its artifact metadata; verify that
+metadata before relying on deployment checks when reloading the JSON alone.
+
+Diagnostics distinguish original historical observations from stored grouped
+representatives, retained recent rows, pending rows, publications and update
+work. Grouping can reduce history storage and traversal while preserving its
+logical support. It does not make memory bounded solely by `recent_window`:
+immutable history, the forest and fitting statistics remain resident. Evaluate
+host update cost separately from prediction accuracy and latency; lazy refresh
+still performs periodic full work and may fall back to eager fitting.
 
 ## 4. Accuracy reference
 
@@ -552,11 +755,11 @@ pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB 
 
 ## Limitations
 
-- Learned mode is SDK-only in this release: `best_available(config)` and
-  `EstimationMode` have no learned option yet, so the simulator's replay,
-  sweeper and planner entry points still build native or regression models.
-  Wiring a `learned_artifact` into `ForwardPassPerfModelConfig` is a
-  follow-up.
+- Learned mode uses explicit `estimation_mode: fpm_learned` through
+  `best_available(config)`. Its supported callers provide complete iteration
+  telemetry. Engine replay, engine CLI and Sweeper phase timing interfaces
+  reject learned execution because their aggregate inputs omit required
+  features. Speculative decoding is also unsupported by learned mode.
 
 - Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
   per-request `extend_lengths` / `past_kv_lengths` lists are an additive

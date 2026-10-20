@@ -28,6 +28,15 @@ It uses the same feature extraction, workload stores, and retained observations.
 The two-feature equations below describe the default linear model; the next
 section explains the spline's additional state.
 
+This page describes `estimation_mode: fpm_regression`. For the explicit
+`fpm_learned` estimator, a frozen forest can use hybrid calibration or an online
+forest can update binned trees from feedback. Its loss, historical evidence,
+retention and update rules are documented in the
+[learned-model design](../fpm_ml/design.md#44-online-binned-tree-adaptation) and
+[canonical field reference](../configuration.md#learned-forest-and-online-fitting-controls).
+The worker-ownership and predict-before-feedback requirements below apply to
+both estimators; their fitting algorithms and readiness are separate.
+
 ## Learned-knot spline regression
 
 The canonical configuration selects `fpm_regression.fit.kind: spline` and places

@@ -107,6 +107,41 @@ pub fn best_available_model_with_roots(
     ForwardPassPerfModel::best_available(config)
 }
 
+/// Learned forests use the same typed constructor as every other estimator.
+pub fn online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{
+        FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
+    };
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned = FpmLearnedConfig {
+        adaptation: LearnedAdaptation::Online,
+        checkpoint_path: Some(checkpoint.to_owned()),
+        update_mode: LearnedUpdateMode::Structural,
+        recent_window: 64,
+        update_every: 1,
+        history_weight: Some(0.1),
+        history_weight_ramp_observations: 32,
+        history_bin_grouping: true,
+        derivative_refresh: LearnedDerivativeRefresh::Lazy,
+        ..Default::default()
+    };
+    ForwardPassPerfModel::best_available(config)
+}
+
+pub fn online_forest_checkpoint(
+    model: &mut ForwardPassPerfModel,
+    path: &Path,
+) -> Result<String, AicError> {
+    model.flush_updates()?;
+    let _diagnostics = model.learned_online_diagnostics();
+    model.save_online_checkpoint(path)?;
+    model.export_learned_artifact()
+}
+
 /// Keep the KV request type in the external-consumer contract without
 /// constructing an environment-dependent estimate.
 pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequest {

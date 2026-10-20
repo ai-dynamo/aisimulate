@@ -31,6 +31,7 @@ mod estimator;
 mod evidence;
 mod execution;
 mod learned;
+mod learned_online;
 mod metrics;
 mod model;
 mod options;
