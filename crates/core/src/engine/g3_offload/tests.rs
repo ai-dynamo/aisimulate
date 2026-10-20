@@ -282,6 +282,9 @@ fn retiring_workers_drain_only_their_io_and_never_reuse_ids() {
             tier.submit(20, Direction::Read, &[key(1)], 2.0).unwrap();
             tier.take_completed(20, 3.0);
             assert_eq!(tier.snapshot().cross_worker_read_blocks, 2);
+        } else {
+            assert!(tier.submit(20, Direction::Read, &[key(1)], 2.0).is_none());
+            assert!(!tier.pools.contains_key(&20), "a missed read adds no pool");
         }
         tier.take_completed(8, 3.0);
         tier.unregister_worker(8).unwrap();

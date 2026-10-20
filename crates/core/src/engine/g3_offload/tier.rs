@@ -231,7 +231,10 @@ impl G3Tier {
         self.advance(now);
         let pool = self.pool(worker);
         let protected: FxHashSet<_> = keys.iter().copied().collect();
-        let Pool { entries, lru } = self.pools.entry(pool).or_default();
+        let Pool { entries, lru } = match direction {
+            Direction::Write => self.pools.entry(pool).or_default(),
+            Direction::Read => self.pools.get_mut(&pool)?,
+        };
         let mut keys = match direction {
             Direction::Write => keys
                 .iter()
@@ -244,7 +247,11 @@ impl G3Tier {
             return None;
         }
         if direction == Direction::Write {
-            let free = self.config.num_g3_blocks - entries.len();
+            let free = self
+                .config
+                .num_g3_blocks
+                .checked_sub(entries.len())
+                .expect("G3 pool exceeds its capacity");
             let victims = lru.victims(keys.len().saturating_sub(free), |key| {
                 entries[&key].pins == 0 && !protected.contains(&key)
             });
