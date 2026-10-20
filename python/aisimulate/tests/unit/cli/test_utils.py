@@ -574,3 +574,100 @@ class TestMergeExperimentResultsByMode:
         assert not merged_configs["agg"].empty
         assert len(merged_configs["agg"]) == 1
         assert merged_throughputs["agg"] == 120.0
+
+
+@pytest.mark.parametrize("load_target", [{"target_request_rate": 1.0}, {"target_concurrency": 1.0}])
+def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for name, mode, gpus, throughput, capacity in [
+        ("cheap", "agg", 2, 100.0, 1.0),
+        ("fast", "agg", 8, 120.0, 2.0),
+        ("disagg", "disagg", 4, 110.0, 1.0),
+    ]:
+        task = MagicMock(
+            primary_backend_name=name,
+            serving_mode=mode,
+            total_gpus=gpus,
+            tpot=30.0,
+            request_latency=None,
+        )
+        task.to_yaml.return_value = "test config"
+        task.run.return_value = pd.DataFrame(
+            {
+                "parallel": [f"tp{gpus}"],
+                "(d)parallel": [f"tp{gpus}"],
+                "tpot": [25.0],
+                "tokens/s/user": [40.0],
+                "tokens/s/gpu": [throughput],
+                "seq/s": [capacity],
+                "concurrency": [capacity],
+                "num_total_gpus": [gpus],
+            }
+        )
+        tasks[name] = task
+
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(tasks, mode="default", top_n=1, **load_target)
+
+    # Both agg options meet the same load/SLA. One replica needs 2 GPUs versus
+    # 8 GPUs, so a faster per-GPU rate cannot justify the more expensive one.
+    assert configs["agg"].iloc[0]["total_gpus_needed"] == 2
+    assert configs["agg"].iloc[0]["backend"] == "cheap"
+    assert scores["agg"] == 0.5
+    assert chosen == "agg"
+
+
+@pytest.mark.parametrize("mode", ["agg", "disagg", "afd"])
+@pytest.mark.parametrize(
+    "target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score",
+    [
+        (1.0, None, None, ["cheap", "fast"], [2, 4], 0.5),
+        (1.0, 3, None, ["cheap"], [2], 0.5),
+        (10.0, 4, None, ["fast", "cheap"], [4, 4], 120.0),
+        (1.0, None, 700.0, ["cheap"], [2], 0.5),
+    ],
+)
+def test_merge_load_match_preserves_constraints_and_backend_choices(
+    mode, target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score
+):
+    tasks = {}
+    best_configs = {}
+    for backend, gpus, throughput, capacity, latency in [
+        ("cheap", 2, 100.0, 1.0, 500.0),
+        ("fast", 4, 120.0, 2.0, 1000.0),
+    ]:
+        task = SimpleNamespace(
+            serving_mode=mode,
+            primary_backend_name=backend,
+            tpot=30.0,
+            request_latency=request_latency,
+        )
+        tasks[backend] = task
+        best_configs[backend] = pd.DataFrame(
+            {
+                # Identical parallel labels from different backends are distinct choices.
+                "parallel": ["shared"],
+                "(d)parallel": ["shared"],
+                "tpot": [25.0],
+                "request_latency": [latency],
+                "tokens/s/gpu": [throughput],
+                "seq/s": [capacity],
+                "num_total_gpus": [gpus],
+            }
+        )
+
+    configs, scores, _, _ = merge_experiment_results_by_mode(
+        tasks,
+        best_configs,
+        {},
+        {},
+        top_n=2,
+        target_request_rate=target,
+        max_total_gpus=gpu_cap,
+    )
+
+    assert configs[mode]["backend"].tolist() == expected_backends
+    assert configs[mode]["total_gpus_needed"].tolist() == expected_gpus
+    assert scores[mode] == expected_score

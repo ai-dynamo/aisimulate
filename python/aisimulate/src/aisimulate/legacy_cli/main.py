@@ -2374,7 +2374,14 @@ def _execute_tasks(
 
     if mode == "default" and len(tasks) > 2:
         best_configs, best_throughputs, pareto_fronts, pareto_x_axis = merge_experiment_results_by_mode(
-            tasks, best_configs, pareto_fronts, pareto_x_axis, top_n
+            tasks,
+            best_configs,
+            pareto_fronts,
+            pareto_x_axis,
+            top_n,
+            target_request_rate=target_request_rate,
+            target_concurrency=target_concurrency,
+            max_total_gpus=max_total_gpus,
         )
 
     chosen_exp = max(best_throughputs, key=best_throughputs.get) if best_throughputs else "none"
