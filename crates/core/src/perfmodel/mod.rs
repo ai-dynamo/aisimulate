@@ -69,6 +69,10 @@ pub use fpm::{
 // `crate::ForwardPassMetrics` / `crate::FPM_VERSION` references (in `py.rs`,
 // `engine/runtime.rs`) keep resolving after the types moved into `fpm`.
 pub(crate) use fpm::validate_forward_pass_metrics;
+pub use fpm::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
 pub use fpm::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 // KV-cache memory API. Top-level surface, not a method on
 // `AicEngine`: estimation runs once at startup, separate from the latency path.

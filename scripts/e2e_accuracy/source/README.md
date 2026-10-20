@@ -74,7 +74,7 @@ nesting would add import churn without simplifying those rules.
   flushes completed outcomes to `--evidence/results.jsonl`. Internal Actions
   artifacts retain checkpoints and complete shard results for seven days.
   Explicit PR previews additionally retain full resolved inputs for local review.
-- For policy `gym-resolved-config-v2`, each shard hashes selected point IDs, measurement
+- For policies `gym-resolved-config-v2` and `gym-resolved-config-v3`, each shard hashes selected point IDs, measurement
   rows, and resolved deployments, including pinned checkpoint bytes. Error text
   and diagnostic messages do not affect cohort identity. Full resolution evidence
   remains in the internal artifacts. The aggregate `cohort_sha256` hashes the
@@ -94,6 +94,48 @@ accuracy. Original graph/kernel controls and unmodeled client behavior remain
 in the resolved evidence even when gym's replay projection cannot model them.
 Unpinned historical checkpoint revisions are explicitly identified by the
 resolver; fetching current metadata cannot prove the measured revision.
+
+## MTP campaign inputs
+
+Public exclusions use the stable `source_unresolved` reason. Detailed resolver
+stages remain in resolved-point evidence; they are not public exclusion keys.
+
+The dataset manifest opts into `gym-resolved-config-v3`. The v2 policy and the
+selector's default retain their STP-only behavior. V3 adds MTP after the same
+deduplication, image-coherence, and 180-day freshness rules. STP keeps its own
+reference date; MTP ages against the newest eligible STP or MTP measurement so
+stopped MTP collection cannot remain current indefinitely. Log reuse is
+counted across the entire measurement table before sharding or deduplication.
+
+`mtp.py` reads benchmark-linked public InferenceX server logs, retains their URL
+and SHA-256 in resolved evidence, and combines runtime controls with the exact
+recipe. Cached API responses live under `--source-cache/mtp-logs/`. Ambiguous
+aggregate bundles, differing worker controls, external drafts, tree speculation,
+and missing native MTP checkpoint layers are unsupported. Linear depth is 1..5.
+
+Acceptance is resolved before prediction:
+
+- vLLM interval counters: depth × total accepted / total drafted.
+- SGLang interval emitted lengths: arithmetic mean minus one base token. These
+  rounded, unweighted samples may include warmup and require estimated mode.
+- Explicit synthetic emitted length: length minus one. Unconditional per-position
+  rates sum to accepted draft tokens. A scalar rate without established producer
+  semantics is not interpreted.
+- Thresholds and missing values never become acceptance. Logs shared by multiple
+  measurements cannot supply observed point acceptance without window attribution.
+
+Runtime scheduling values override ordinary-decoding default mutations. Missing
+MTP-effective scheduling defaults require estimated mode and receive explicit
+assumption records. Existing checkpoint, quantization and workload checks remain
+in force. Prefill/decode roles carry separate timing inputs; a speculative
+prefill role uses acceptance from its matching decode workload.
+
+Replay receives `aic_nextn`, `aic_nextn_accepted`, and explicit
+`aic_forward_model=op_level`. No public SDK interface changes. The legacy estimate
+adapter is unsupported for MTP until it can represent these inputs faithfully.
+The public summary exports only scalar MTP settings and provenance categories;
+raw logs and full configuration evidence stay in workflow artifacts. Existing
+v1/v2 published snapshots continue to validate.
 
 ## Validation
 
@@ -163,7 +205,7 @@ revisions; fresh replay outcomes and errors determine the report.
 
 - Same-day measurements and images are ordered by run start time, GitHub run ID,
   attempt, and benchmark ID, independent of dump order.
-- Non-`none` speculation and active speculative server controls are excluded.
+- Speculation other than resolved native MTP remains excluded. STP rows with active speculative controls still fail resolution.
 - Unpinned checkpoint revisions require estimated mode. Configuration MAPE is
   published separately for verified, estimated, and unrecorded evidence. The
   combined MAPE includes all configurations; AIC also reports status and coverage.

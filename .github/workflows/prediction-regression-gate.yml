@@ -39,7 +39,7 @@ concurrency:
 jobs:
   refs:
     name: Resolve comparison revisions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       old: ${{ steps.resolve.outputs.old }}
@@ -135,7 +135,7 @@ jobs:
     name: Prediction Regression Gate
     needs: collect
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Fail closed if snapshot collection failed

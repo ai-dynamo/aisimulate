@@ -1,0 +1,260 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
+  "profiles": {
+    "b200_sxm-vllm-fp8-block-tp1-dp4-ep4-kv-off": {
+      "admission": "development",
+      "admission_reason": "Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "8e54678c585bb53345c009054b3269856769170e8b1875b1ab678107e97e0019"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "99c6dd360781f0c616155caf4a0b55290a05f03b72f42faee28498ee3188e51a"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "9c1aaa14ffbf271477ef0b942e4a9a03a64442e9f742181c92f5d0104715ab56"
+        }
+      ],
+      "packaged_system": "b200_sxm"
+    },
+    "b200_sxm-vllm-fp8-block-tp1-dp4-ep4-kv-on": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "17337e45e48e27f03c668c3631de8c0fc127b6b44e78cd475d3547d4979899c6"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "8217881312a83411a6d6cbe8d25f77629bf5e42a9a99d52af6e6316968bd6c1d"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/dep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "9c1aaa14ffbf271477ef0b942e4a9a03a64442e9f742181c92f5d0104715ab56"
+        }
+      ],
+      "packaged_system": "b200_sxm"
+    },
+    "b200_sxm-vllm-fp8-block-tp4-ep4-kv-off": {
+      "admission": "development",
+      "admission_reason": "Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "4b631e87bc6f66cf3263213d4c5d9fe787251dedfb9969a7c2c9dcc7a075fd89"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "5e759c91597002d4b60c32f67ad7b3c05b4c9788fafb1aaad066f8f182cfb292"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "bedafa1cce7614c8f5e8f1815efd346400dddbe6e103e47839d8e05dc0268e9b"
+        }
+      ],
+      "packaged_system": "b200_sxm"
+    },
+    "b200_sxm-vllm-fp8-block-tp4-ep4-kv-on": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "6996c10f2deb2e863aaf71931788b702147f7ca8e49c2a66044aaff55493649f"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/b200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "199736a992ba11f6a6298c14969471ae3c5d50e71ef818a2f59d244b59505c4a"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/b200-sxm/vllm/0.25.1/tep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "bedafa1cce7614c8f5e8f1815efd346400dddbe6e103e47839d8e05dc0268e9b"
+        }
+      ],
+      "packaged_system": "b200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp1-dp2-ep2": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep2/fpm/fpm_forward_perf.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "519d2580eb0aaf06b4ffb671b9daf0a6c9f2922ac23fabaab416fbe2214514ef"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "080b8712f66cab2d18f4a63142cb9e5f3710a34848897c4363fa6c742ca33e3e"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep2/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "a8f360532f80ab04d341e490c6f26be545a43d49b3f34eba6bcccbceb70de9f1"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp1-dp4-ep4": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "093d52e07d1b2fff870f3728b4d325ba4b903c1dccf67d153f0510cbc75d95f3"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "6654fcbde5649f44393f3a34b7fb6df9d7fece16e1761f43d0ba38c69b63bd43"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/dep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "08909b3e10d3c1b5d0e262d1f0031f4dcc0691eede4e1d974e84d90b818d1fe8"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp2": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp2/fpm/fpm_forward_perf.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "bd9b68cd2ae3921fa7a3ac1016266ea34a7e9236ee70176b4afb9a1d26d8364c"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "1a79e1319239cdda13ff27b3f23de2bf9c524f3242ee28ecf1b092ee7696c99c"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp2/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "6c3a71ff4c996edc1d475b599ebf588f78dccde67963ab6d142bed68c7543c50"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp4": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "c5415e92b228026d4f62b916243999aa76dbf108205804fdd95a6dbc34e26892"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "aab7bb66f7005db897ec4086ea468da74f89a38935883ed9e5189b6a635096dc"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/pure-tp4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "933856cabfbb76c5a59bacff222560eeee9035ab5214516f313ffd4e4034efa4"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp2-ep2": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep2/fpm/fpm_forward_perf.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "7acb54fb9656399cd732ca1e564df330bca7d5c8e398489bebd53a0df9688144"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep2/fpm/fpm_forward_perf.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "8f2d84a74f2bcb2b2c839a753d404e38a1ceec53273d5c16e6e59a3a8c66d82f"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep2/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "78a953c6d5d30f9a6e8827b7cb1e5dbdbca6bd20b1b8e244c63e7c433ff25bc0"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp4-ep4-kv-off": {
+      "admission": "quarantined",
+      "admission_reason": "Artifact-only: unavailable to the native FPM consumer. The pinned sidecar lacks coordinate_system, measurement_policy, and top-level system/backend_version; allow_unqualified only retrieves the original artifacts and does not enable prediction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "b556c740920355cb11f45cbf443b407a78361e3d9fa3784422e9f042eb1a9819"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "6b0c45351d2fa3004b91f2baaec310d8ba4883dfbd2a5e3f7c9498efbb3d830d"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "35a3ad4b20f33b0c9ad9482653237ea444cad164a8482ecabc2214eb03a52d02"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    },
+    "h200_sxm-vllm-fp8-block-tp4-ep4-kv-on": {
+      "admission": "quarantined",
+      "admission_reason": "Artifact-only: unavailable to the native FPM consumer. The pinned sidecar lacks coordinate_system, measurement_policy, and top-level system/backend_version; allow_unqualified only retrieves the original artifacts and does not enable prediction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet",
+          "sha256": "e410cd6ec6e2a18c15b6d5d5d2122d90b7b2240396e9a083ca40fd1192f50d6b"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.metadata.json",
+          "sha256": "6b191471f0603831422dc4fa83aa8ea046b532a6ca94517c36be2379a640ddb7"
+        },
+        {
+          "path": "data/MiniMaxAI--MiniMax-M2.7/h200-sxm/vllm/0.25.1/tep4/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "35a3ad4b20f33b0c9ad9482653237ea444cad164a8482ecabc2214eb03a52d02"
+        }
+      ],
+      "packaged_system": "h200_sxm"
+    }
+  }
+}

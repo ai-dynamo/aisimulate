@@ -1,0 +1,17 @@
+{
+  "stp": 2281,
+  "by_method": {
+    "none": 2281,
+    "mtp": 1039
+  },
+  "selection": {
+    "measurement_date_through": "2026-09-27",
+    "selected": 3320,
+    "excluded": {
+      "source_filter": 32084,
+      "stale": 1293,
+      "superseded_image": 978,
+      "superseded_row": 47634
+    }
+  }
+}

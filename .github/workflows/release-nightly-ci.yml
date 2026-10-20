@@ -18,7 +18,7 @@ jobs:
   discover:
     name: Discover release branches and record their commit SHAs
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       releases: ${{ steps.releases.outputs.releases }}

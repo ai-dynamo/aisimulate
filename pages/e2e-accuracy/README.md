@@ -97,6 +97,29 @@ charts; rebuilding the UI around a normalized-only summary cannot restore them.
 Gym imports without matching branch-qualified producer evidence remain historical
 snapshots and must not be labeled as newly evaluated public branch results.
 
+## MTP decoding
+
+New campaigns use `gym-resolved-config-v3` to include NVIDIA single-turn MTP
+measurements alongside STP. **Decoding: All / STP / MTP** filters both views,
+recomputes point-level MAPE and coverage, and persists as `?spec=mtp` or
+`?spec=none`. Older snapshots remain readable; they need a new evaluation to
+populate MTP curves. Both publication and browser validation accept the v3 policy,
+including campaigns with `source_unresolved` exclusions. Publishing this UI alone
+does not generate predictions.
+
+MTP topology labels identify speculative decoding. The point configuration shows
+`mtp_depth`, `mtp_accepted_draft_tokens` (excluding the base token), and
+`mtp_acceptance_source`: observed counters, estimated logged interval means, or
+explicit synthetic acceptance. Rounded interval means require estimated mode.
+Synthetic acceptance is a configured workload assumption, not observed acceptance.
+The legacy AIC estimate adapter is marked unsupported for MTP; its unavailable
+values do not enter MAPE. AISim uses op-level target verification and draft timing.
+
+Missing acceptance, ambiguous/shared logs, unsupported models, and replay errors
+remain in campaign accounting. Unresolved inputs are excluded from charts and
+reported under **About this comparison**; evaluated replay failures remain gaps.
+Acceptance is never inferred from latency or replaced with a verification threshold.
+
 ## Local research results
 
 Use the same E2E page to inspect expanded coverage experiments. Export their
@@ -616,3 +639,6 @@ change predictions, cohort selection, or accuracy metrics.
   that series; ordinary activation toggles it. Charts expose their interactive points
   to assistive technology.
 - Pages CI runs the E2E Chromium smoke test alongside the FPE and FPM checks.
+
+The browser smoke check verifies that MTP summary values survive a page reload,
+as well as the selected filter.

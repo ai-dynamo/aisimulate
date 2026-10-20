@@ -78,17 +78,19 @@ impl VllmG3OffloadAdapter {
     /// their G3 write completes; blocks G3 declines are released now.
     pub(super) fn store(&mut self, tier: &mut HostTier, keys: &[HostBlockKey], now: f64) {
         let mut registry = self.registry.lock().unwrap();
-        let accepted = registry
-            .submit(self.worker, Direction::Write, keys, now)
-            .map(|job| registry.job_keys(job))
-            .unwrap_or_default();
+        let job = registry.submit(self.worker, Direction::Write, keys, now);
+        // G3 accepts an ordered subsequence of `keys`, so one pass finds the rest.
+        let mut accepted = job
+            .map_or(&[][..], |job| registry.job_keys(job))
+            .iter()
+            .peekable();
         let declined = keys
             .iter()
+            .filter(|key| accepted.next_if_eq(key).is_none())
             .copied()
-            .filter(|key| !accepted.contains(key))
             .collect::<Vec<_>>();
         tier.unpin_external(&declined);
-        self.epoch += u64::from(!accepted.is_empty());
+        self.epoch += u64::from(job.is_some());
     }
 
     /// Return true only when a concrete pending transfer can wake the lookup.

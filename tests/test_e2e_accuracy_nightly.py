@@ -1720,9 +1720,12 @@ def resolved_tables():
     }
 
 
-def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_path, monkeypatch):
+@pytest.mark.parametrize("resolution_stage", [None, "checkpoint_revision", "mtp_acceptance_missing"])
+def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_path, monkeypatch, resolution_stage):
     _, run = artifact
     data = resolved_tables()
+    if resolution_stage:
+        data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "conc": 128})
     tables_path = tmp_path / "resolved-tables.json"
     tables_path.write_text(json.dumps(data))
     manifest = tmp_path / "resolved-manifest.json"
@@ -1730,6 +1733,8 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     predictor = campaign.run_child
 
     def predict(point, timeout):
+        if point.get("resolution_error"):
+            return campaign.predict_resolved_point(point)
         result = predictor(point, timeout)
         result["row"].update(
             aic_status="failed",
@@ -1748,6 +1753,11 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
                 **point,
                 "deployment": resolved_point()["deployment"],
                 "evidence": {"recipe_sha256": "f" * 64},
+                **(
+                    {"resolution_error": [{"stage": resolution_stage, "message": "missing evidence"}]}
+                    if resolution_stage and point["benchmark"]["id"] == 2
+                    else {}
+                ),
             }
             for point in points
         ],
@@ -1780,7 +1790,12 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
         ]
     )
     results = json.loads((evidence / "results.json").read_text())
-    assert results[0]["row"]["aic_status"] == "failed"
+    evaluated = [result for result in results if result["outcome"] == "evaluated"]
+    assert evaluated[0]["row"]["aic_status"] == "failed"
+    if resolution_stage:
+        assert qualification["exclusion_reasons"] == {"source_unresolved": 1}
+        unresolved = next(point for point in resolved if point.get("resolution_error"))
+        assert unresolved["resolution_error"][0]["stage"] == resolution_stage
     assert summary["totals"]["rows"] == 1
     assert summary["totals"]["aic"]["status_counts"]["failed"] == 1
     assert summary["totals"]["aic"]["coverage_pct"] == 0
@@ -1865,12 +1880,17 @@ def test_resolved_adapter_rejects_unrepresentable_inputs(source_config_adapter, 
 @pytest.mark.parametrize("framework", ["vllm", "sglang", "trt"])
 @pytest.mark.parametrize("disagg", [False, True])
 @pytest.mark.parametrize("baseline_fails", [False, True])
+@pytest.mark.parametrize("mtp", [False, True])
 def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
-    monkeypatch, source_config_adapter, framework, disagg, baseline_fails
+    monkeypatch, source_config_adapter, framework, disagg, baseline_fails, mtp
 ):
     point = resolved_point(framework, disagg)
     point["source_row"]["github_run_id"] = "28196140241"
     point["benchmark"]["metrics"].update(mean_e2el=2.5, tput_per_gpu=600, output_tput_per_gpu=250)
+    if mtp:
+        point["config"]["spec_method"] = "mtp"
+        for role in point["deployment"]["roles"].values():
+            role["mtp"] = dict(depth=2, accepted_draft_tokens=1.25, kind="observed_counters")
     calls = []
 
     def estimate(**kwargs):
@@ -1888,6 +1908,14 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
             calls.append("replay")
             deployment = spec.backend_deployment
             args = deployment.decode_engine_args if disagg else deployment.agg_engine_args
+            if mtp:
+                assert args["aic_nextn"] == 2
+                assert args["aic_nextn_accepted"] == 1.25
+                assert args["aic_forward_model"] == "op_level"
+                if disagg:
+                    assert deployment.prefill_engine_args["aic_nextn"] == 2
+            else:
+                assert "aic_nextn" not in args
             assert args["max_num_seqs"] == 48
             assert args["max_num_batched_tokens"] == 16384
             assert args["enable_prefix_caching"] is True
@@ -1933,15 +1961,15 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     result = campaign.predict_point(point)
     assert result["outcome"] == "evaluated"
     assert result["row"]["silicon_github_run_id"] == "28196140241"
-    assert result["row"]["aic_status"] == ("failed" if baseline_fails else "success")
+    assert result["row"]["aic_status"] == ("unsupported" if mtp else "failed" if baseline_fails else "success")
     assert result["row"]["aisimulate_status"] == "success"
-    assert calls == ["estimate", "replay", "close"]
+    assert calls == (["replay", "close"] if mtp else ["estimate", "replay", "close"])
     gpus = 8 if disagg else 4
     assert result["row"]["aisimulate_total_gpus"] == gpus
     assert result["row"]["dynamo_output_per_gpu"] == 2400 / gpus
     assert result["row"]["dynamo_total_per_gpu"] == 21000 / gpus
     assert result["row"]["dynamo_e2e_ms"] == 3200
-    if not baseline_fails:
+    if not baseline_fails and not mtp:
         assert result["row"]["aic_output_per_gpu"] == 3200 / gpus
         assert result["row"]["aic_e2e_ms"] == 3040
         assert result["row"]["aic_total_per_gpu"] is None
@@ -1951,10 +1979,13 @@ def test_source_resolved_prediction_preserves_settings_and_independent_outcomes(
     assert row["silicon_e2e_ms"] == 2500
     assert row["silicon_total_per_gpu"] == 600
     assert row["silicon_output_per_gpu"] == 250
-    if baseline_fails:
+    if baseline_fails or mtp:
         assert row.get("aic_e2e_ms") is None
         assert row.get("aic_output_per_gpu") is None
-    assert row["configuration"] == {"backend_version": "database-2.0", "forward_model": "op_level"}
+    expected_config = {"backend_version": "database-2.0", "forward_model": "op_level"}
+    if mtp:
+        expected_config.update(mtp_depth=2, mtp_accepted_draft_tokens=1.25, mtp_acceptance_source="observed_counters")
+    assert row["configuration"] == expected_config
 
 
 def test_configuration_quality_is_public_and_counts_are_checked(artifact):
@@ -2419,3 +2450,96 @@ def test_checkpoint_revision_controls_configuration_quality(monkeypatch, pinned,
     )
     assert deployment is None
     assert any(issue["stage"] == "speculation" for issue in issues)
+
+
+def test_mtp_cohort_preserves_stp_freshness_and_counts_shared_logs_before_sharding():
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    stp, _ = select_points(data)
+    data["configs"].append({**data["configs"][0], "id": 2, "spec_method": "mtp"})
+    bench = data["benchmark_results"][0]
+    data["benchmark_results"].extend(
+        [
+            {**bench, "id": 10, "config_id": 2, "date": "2027-09-28", "server_log_id": 7},
+            {**bench, "id": 11, "config_id": 2, "date": "2027-09-27", "server_log_id": 7},
+        ]
+    )
+    points, stats = select_points(data, include_mtp=True)
+    assert [p for p in points if p["config"]["spec_method"] == "none"] == stp
+    assert [p["benchmark"]["id"] for p in points] == [1, 10]
+    assert points[1]["server_log_uses"] == 2  # Includes the superseded benchmark.
+    assert len(points) + sum(stats["excluded"].values()) == 3
+
+
+def test_publication_accepts_mtp_configuration_and_v3_policy(artifact):
+    summary, run = artifact
+    summary["snapshot"]["campaign"]["selection_policy"] = fetch.MTP_POLICY
+    for model in summary["models"]:
+        for workload in model["workloads"]:
+            for gpu in workload["gpus"]:
+                for topology in gpu["topologies"]:
+                    topology["spec_method"] = "mtp"
+                    for point in topology["points"]:
+                        point["configuration"].update(
+                            mtp_depth=2, mtp_accepted_draft_tokens=1.25, mtp_acceptance_source="observed_counters"
+                        )
+    assert publish.validate_artifact(archive(summary), run) == summary
+
+
+@pytest.mark.parametrize(
+    "shared,synthetic,missing", [(False, False, False), (True, False, False), (True, True, False), (False, False, True)]
+)
+def test_mtp_resolution_requires_point_acceptance_and_keeps_provenance(
+    monkeypatch, tmp_path, shared, synthetic, missing
+):
+    from scripts.e2e_accuracy.source import deployment, mtp
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    data["configs"][0]["spec_method"] = "mtp"
+    data["benchmark_results"][0]["server_log_id"] = 42
+    point = select_points(data, include_mtp=True)[0][0]
+    point["server_log_uses"] = 2 if shared else 1
+    spec = {"method": "mtp", "num_speculative_tokens": 2}
+    if synthetic:
+        spec.update(rejection_sample_method="synthetic", synthetic_acceptance_length=2.5)
+    log = "non-default args: " + repr({"model": "org/model", "speculative_config": spec})
+    if not missing:
+        log += "\nAccepted: 3 tokens, Drafted: 4 tokens"
+    proof = {"url": "https://example.com/log", "sha256": "a" * 64}
+    monkeypatch.setattr(mtp, "log_files", lambda *_: {"aggregated": [(log, proof)]})
+    monkeypatch.setattr(
+        deployment, "read_deployment_recipe", lambda *_: ("org/model", {"aggregated": {}}, "1.0", "vllm", {}, {})
+    )
+    calls = []
+
+    def inspect(row, source, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["mtp_by_role"]["aggregated"]["accepted_draft_tokens"] == 1.5
+        assert kwargs["parsed"][-1]["mtp_runtime_logs"]["aggregated"] == [proof]
+        return {"roles": {}}, kwargs["parsed"][-1], []
+
+    monkeypatch.setattr(deployment, "inspect_deployment", inspect)
+    result = campaign.resolve_points([point], tmp_path, 1)[0]
+    assert result["evidence"]["mtp_runtime_logs"]["aggregated"] == [proof]
+    if missing:
+        assert result["resolution_error"][0]["stage"] == "mtp_acceptance_missing"
+    elif shared and not synthetic:
+        assert "acceptance window unresolved" in result["resolution_error"][0]["message"]
+    else:
+        assert not result["resolution_error"]
+        assert calls
+
+
+def test_mtp_staleness_uses_current_cohort_without_changing_stp():
+    from scripts.e2e_accuracy.source.cohort import select_points
+
+    data = resolved_tables()
+    stp, _ = select_points(data)
+    data["configs"].append({**data["configs"][0], "id": 2, "spec_method": "mtp"})
+    data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "config_id": 2, "date": "2026-01-01"})
+    points, stats = select_points(data, include_mtp=True)
+    assert points == stp
+    assert stats["excluded"] == {"stale": 1}
+    assert len(points) + sum(stats["excluded"].values()) == 2

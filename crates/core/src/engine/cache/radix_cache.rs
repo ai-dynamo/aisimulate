@@ -13,7 +13,6 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::time::Instant;
 
 new_key_type! {
@@ -44,7 +43,6 @@ impl KvPageId {
 /// Manages free / allocated pages for the simulated SGLang KV cache.
 ///
 /// SGLang's paged allocator owns and frees whole pages in production.
-#[derive(Clone)]
 pub struct PagePool {
     next_fresh: usize,
     free: Vec<KvPageId>,
@@ -159,7 +157,6 @@ impl PagePool {
 }
 
 /// A single node in the radix tree.
-#[derive(Clone)]
 pub struct TreeNode {
     /// Children keyed by the first complete page on the child edge.
     pub children: FxHashMap<LocalBlockHash, NodeId>,
@@ -170,11 +167,9 @@ pub struct TreeNode {
     /// page identity so completed radix state does not retain token IDs.
     /// Consequently, as in router-side indexing, hash collisions are treated
     /// as identical pages rather than guarded by an exact-token comparison.
-    /// Admission snapshots share edge contents. Copy only an edge that changes
-    /// while a snapshot is live; normal decode extensions retain their capacity.
-    pub key: Arc<Vec<LocalBlockHash>>,
+    pub key: Vec<LocalBlockHash>,
     /// One physical page ID per key. Length = `key.len()`.
-    pub value: Arc<Vec<KvPageId>>,
+    pub value: Vec<KvPageId>,
     /// Walk-to-root reference count (protected when > 0).
     pub lock_ref: usize,
     /// Monotonic timestamp for LRU eviction.
@@ -200,7 +195,6 @@ pub struct RadixCache {
 }
 
 /// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
-#[derive(Clone)]
 struct BeladyLeaves {
     oracle: BeladyOracle,
     cursor: usize,
@@ -210,56 +204,24 @@ struct BeladyLeaves {
     indexed: FxHashMap<NodeId, (SequenceHash, usize)>,
 }
 
-/// Leave the suffix in `edge` and return a compact prefix. When a snapshot
-/// shares the edge, copy each half once instead of cloning before splitting.
-fn split_edge_prefix<T: Clone>(edge: &mut Arc<Vec<T>>, at: usize) -> Vec<T> {
-    if let Some(values) = Arc::get_mut(edge) {
-        let suffix = values.split_off(at);
-        let mut prefix = std::mem::replace(values, suffix);
-        // The short prefix must not retain the original edge's allocation.
-        prefix.shrink_to_fit();
-        prefix
-    } else {
-        let prefix = edge[..at].to_vec();
-        *edge = Arc::new(edge[at..].to_vec());
-        prefix
-    }
-}
-
-fn truncate_edge<T: Clone>(edge: &mut Arc<Vec<T>>, len: usize) {
-    if let Some(values) = Arc::get_mut(edge) {
-        values.truncate(len);
-    } else {
-        *edge = Arc::new(edge[..len].to_vec());
-    }
+/// Leave the suffix in `edge` and return a compact prefix.
+fn split_edge_prefix<T>(edge: &mut Vec<T>, at: usize) -> Vec<T> {
+    let suffix = edge.split_off(at);
+    let mut prefix = std::mem::replace(edge, suffix);
+    // The short prefix must not retain the original edge's allocation.
+    prefix.shrink_to_fit();
+    prefix
 }
 
 impl RadixCache {
-    /// Snapshot allocator and radix metadata for a fallible admission transaction.
-    /// This is not a second owner of live request leases; only one cache state may commit.
-    pub(crate) fn admission_checkpoint(&self) -> Self {
-        Self {
-            nodes: self.nodes.clone(),
-            root: self.root,
-            page_pool: self.page_pool.clone(),
-            page_size: self.page_size,
-            #[cfg(test)]
-            test_now: self.test_now,
-            evictable_leaves: self.evictable_leaves.clone(),
-            belady: self.belady.clone(),
-            evictable_size: self.evictable_size,
-            protected_size: self.protected_size,
-        }
-    }
-
     pub fn new(total_tokens: usize, page_size: usize) -> Self {
         assert!(page_size >= 1, "page_size must be >= 1");
         let mut nodes = SlotMap::with_key();
         let root = nodes.insert(TreeNode {
             children: FxHashMap::default(),
             parent: None,
-            key: Arc::default(),
-            value: Arc::default(),
+            key: Vec::new(),
+            value: Vec::new(),
             lock_ref: 0,
             last_access_time: Instant::now(),
         });
@@ -837,8 +799,8 @@ impl RadixCache {
         node.last_access_time = now;
         debug_assert!(node.children.is_empty());
         debug_assert!(node.lock_ref <= 1);
-        Arc::make_mut(&mut node.key).extend_from_slice(key);
-        Arc::make_mut(&mut node.value).extend_from_slice(value);
+        node.key.extend_from_slice(key);
+        node.value.extend_from_slice(value);
         if node.lock_ref == 0 {
             self.evictable_size += key.len() * self.page_size;
         } else {
@@ -877,8 +839,8 @@ impl RadixCache {
         let intermediate = TreeNode {
             children: inter_children,
             parent: child_parent,
-            key: Arc::new(prefix_key),
-            value: Arc::new(prefix_value),
+            key: prefix_key,
+            value: prefix_value,
             lock_ref,
             last_access_time: accessed,
         };
@@ -908,8 +870,8 @@ impl RadixCache {
         let new_node = TreeNode {
             children: FxHashMap::default(),
             parent: Some(parent_id),
-            key: Arc::new(key.to_vec()),
-            value: Arc::new(value.to_vec()),
+            key: key.to_vec(),
+            value: value.to_vec(),
             lock_ref: 0,
             last_access_time: now,
         };
@@ -1037,7 +999,7 @@ impl RadixCache {
                 let split_pos = victim_pages - eviction_pages;
                 let (nodes, page_pool) = (&mut self.nodes, &mut self.page_pool);
                 let victim_node = &mut nodes[victim_id];
-                truncate_edge(&mut victim_node.key, split_pos);
+                victim_node.key.truncate(split_pos);
                 let evicted_values = &victim_node.value[split_pos..];
                 if let Some(belady) = &mut self.belady {
                     for page in evicted_values {
@@ -1046,7 +1008,7 @@ impl RadixCache {
                 }
                 page_pool.free_pages(evicted_values);
                 evicted_indices.extend_from_slice(evicted_values);
-                truncate_edge(&mut victim_node.value, split_pos);
+                victim_node.value.truncate(split_pos);
 
                 self.evictable_size -= eviction_len;
                 evicted += eviction_len;
@@ -1119,29 +1081,20 @@ mod tests {
         .unwrap()
     }
 
-    #[rstest::rstest]
-    fn belady_reranks_compressed_tail_before_evicting_its_prefix(
-        #[values(false, true)] shared: bool,
-    ) {
+    #[test]
+    fn belady_reranks_compressed_tail_before_evicting_its_prefix() {
         let mut cache = RadixCache::new(3, 1);
         cache.set_belady_oracle(oracle_for_prompts(&[&[1], &[3], &[1, 2]]));
         let ab = cache.page_pool.allocate(2).unwrap();
         cache.insert(&[1, 2], &ab);
         let c = cache.page_pool.allocate(1).unwrap();
         cache.insert(&[3], &c);
-        let snapshot = shared.then(|| cache.admission_checkpoint());
 
         let (tokens, pages) = cache.evict(2);
         assert_eq!((tokens, pages), (2, vec![KvPageId(1), KvPageId(2)]));
         assert_eq!(cache.prefix_match_len(&[1, 2]), 1);
         assert_eq!(cache.prefix_match_len(&[3]), 0);
         assert_eq!(cache.available_tokens(), 2);
-        if let Some(mut saved) = snapshot {
-            assert_eq!(saved.prefix_match_len(&[1, 2]), 2);
-            assert_eq!(saved.prefix_match_len(&[3]), 1);
-            assert_eq!(saved.available_tokens(), 0);
-            assert_eq!(saved.evict(2).1, vec![KvPageId(1), KvPageId(2)]);
-        }
     }
 
     #[test]
@@ -1317,31 +1270,15 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
     }
 
-    #[rstest::rstest]
-    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages(
-        #[values(false, true)] shared: bool,
-    ) {
+    #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
         let mut cache = RadixCache::new(512, 1);
         let tokens: Vec<u32> = (0..512).collect();
         let indices: Vec<usize> = (0..512).collect();
         cache.insert(&tokens, &indices);
 
         for prefix_len in (1..512).step_by(4) {
-            let snapshot = shared.then(|| cache.admission_checkpoint());
-            let saved_edges = snapshot.as_ref().map(|saved| {
-                saved
-                    .nodes
-                    .iter()
-                    .map(|(id, node)| (id, (node.key.to_vec(), node.value.to_vec())))
-                    .collect::<FxHashMap<_, _>>()
-            });
             assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
-            if let Some(saved) = snapshot {
-                for (id, (key, pages)) in saved_edges.unwrap() {
-                    assert_eq!(*saved.node(id).key, key);
-                    assert_eq!(*saved.node(id).value, pages);
-                }
-            }
         }
         assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
 
@@ -1558,10 +1495,8 @@ mod tests {
         assert_eq!(cache.match_prefix(&[4, 5, 6]).0, 3);
     }
 
-    #[rstest::rstest]
-    fn partial_eviction_and_parent_promotion_keep_index_consistent(
-        #[values(false, true)] shared: bool,
-    ) {
+    #[test]
+    fn partial_eviction_and_parent_promotion_keep_index_consistent() {
         let mut cache = RadixCache::new(100, 1);
         let base = Instant::now();
         cache.set_test_now(base);
@@ -1569,7 +1504,6 @@ mod tests {
         let (_, leaf) = cache.match_prefix(&[1, 2, 3, 4]);
         cache.set_test_now(base + std::time::Duration::from_secs(1));
         cache.insert(&[5, 6, 7], &[4, 5, 6]);
-        let snapshot = shared.then(|| cache.admission_checkpoint());
 
         assert_eq!(cache.evict(2).0, 2);
         assert_eq!(cache.node(leaf).key.len(), 2);
@@ -1577,15 +1511,6 @@ mod tests {
         assert_eq!(cache.evict(2).0, 2);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 0);
         assert_eq!(cache.match_prefix(&[5, 6, 7]).0, 3);
-        if let Some(mut saved) = snapshot {
-            assert_eq!(*saved.node(leaf).key, saved.page_hashes(&[1, 2, 3, 4]));
-            assert_eq!(
-                *saved.node(leaf).value,
-                vec![KvPageId(0), KvPageId(1), KvPageId(2), KvPageId(3)]
-            );
-            assert!(saved.evictable_leaf_is_indexed(leaf));
-            assert_eq!(saved.evict(2).1, vec![KvPageId(2), KvPageId(3)]);
-        }
 
         let mut branched = RadixCache::new(100, 1);
         branched.set_test_now(base);
