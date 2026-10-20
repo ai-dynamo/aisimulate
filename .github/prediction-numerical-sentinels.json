@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "baseline_source_sha": "d066e918705b98e2d55eed55743ce8d225f129ea",
+  "baseline_source_sha": "d6722c4a9bec8101946f4a63cc1de94b72283067",
   "interpretation": "Native prediction stability sentinels; not measured-hardware accuracy. Two percent relative and 0.0001 ms absolute tolerance permit small numerical changes; baseline changes require explained review.",
   "cases": [
     {
@@ -65,7 +65,7 @@
         "isl": 1024,
         "osl": 2
       },
-      "expected_ms": 7.4632784074708995,
+      "expected_ms": 5.7736784074709,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -87,7 +87,7 @@
         "isl": 8192,
         "osl": 256
       },
-      "expected_ms": 1984.398792064317,
+      "expected_ms": 1553.926804864317,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -159,7 +159,7 @@
         "isl": 1024,
         "osl": 2
       },
-      "expected_ms": 6.956580007206089,
+      "expected_ms": 5.319780007206088,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -183,7 +183,7 @@
         "isl": 8192,
         "osl": 256
       },
-      "expected_ms": 2192.9660386705996,
+      "expected_ms": 1775.723696270599,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -249,7 +249,7 @@
         "isl": 1024,
         "osl": 2
       },
-      "expected_ms": 7.390312495740691,
+      "expected_ms": 5.700712495740691,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -271,7 +271,7 @@
         "isl": 8192,
         "osl": 256
       },
-      "expected_ms": 1972.7326953236038,
+      "expected_ms": 1542.2607081236038,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -337,7 +337,7 @@
         "isl": 1024,
         "osl": 2
       },
-      "expected_ms": 7.367158565634071,
+      "expected_ms": 5.6775585656340715,
       "rtol": 0.02,
       "atol_ms": 0.0001
     },
@@ -359,7 +359,7 @@
         "isl": 8192,
         "osl": 256
       },
-      "expected_ms": 1916.6777711920129,
+      "expected_ms": 1486.205783992013,
       "rtol": 0.02,
       "atol_ms": 0.0001
     }

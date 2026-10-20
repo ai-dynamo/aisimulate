@@ -152,13 +152,62 @@ All 12 pairs retain the same nearest-table references and source tags. The
 change in total decode prediction equals the generation-attention change.
 These are CPU-computed predictions from unchanged GPU profiles.
 
-The official refresh updates 119 engine-step records, 21 compile-engine
+The original refresh updates 119 engine-step records, 21 compile-engine
 references and five per-op cases. Of the 119 engine-step records, 118 change
 numerically; the rounded AFD control remains identical to the original
-baseline. The source revision for the final model and all refreshed records is
+baseline. That original model and refresh use source revision
 `88a4f8b40ee7370174e5c6ef13304d418a056432`.
 
-Final validation on that implementation (with the refreshed goldens):
+After incorporating upstream main at `4730b2c1006ec19b9513f09e4c9ad93e67c41265`,
+the four `qwen3-30b-a3b-b60-vllm-scan-coverage` records are an exception: they
+combine upstream's vLLM 0.28.0/XPU calibration with the unchanged Q/K formula
+and were selectively pinned from `173a390abbb25269e6bd74267ec415f54e2f1ea7`.
+Compared with upstream, B60 static context remains 133.227 ms and generation
+changes from 9.784 to 8.517 ms. The combined model at
+`d6722c4a9bec8101946f4a63cc1de94b72283067` passed both parity suites (390 tests).
+
+The existing 16-case B200 native stability manifest now records that combined
+model as its source. Only its eight decode expectations change; all eight
+prefill expectations, query inputs, and tolerances are unchanged. These are
+proposed prediction references, not measured hardware accuracy or maintainer
+acceptance. The source was rebuilt in release mode, and its imported native
+binary and numerical environment were verified before capturing all 16 values.
+`golden-review.json` records each old/new value and its independent derivation.
+
+B200's effective bandwidth is 6.16 TB/s. The old expression charges 8.8 generic
+3 us intercepts per layer, or 0.0264 ms. Let `t` be the hand-counted four-pass
+BF16 Q/K traffic per token at that bandwidth, including the retained 1.1 factor.
+For these non-speculative shapes, the predicted change is:
+
+```text
+delta_ms = layers * (osl - 1) * ((batch - 1) * t - 0.0264)
+```
+
+Qwen3-32B has 64 layers and local Q/K heads 16/2 at TP4; MiniMax-M2.5 has
+62 layers and local heads 6/1 at TP8. Both use head dimension 128. Their `t`
+values are 0.0000032914285714285715 and 0.00000128 ms, respectively.
+
+| Model and covered backends | Batch 1, OSL 2 delta (ms) | Batch 8, OSL 256 delta (ms) |
+| --- | ---: | ---: |
+| Qwen3-32B: vLLM, TRT-LLM, SGLang | -1.6896 | -430.4719872 |
+| MiniMax-M2.5: vLLM | -1.6368 | -417.2423424 |
+
+The long-output cases total 255 decode steps. All eight deltas agree with the
+native changes within 0.000000000001 ms. The original PR and combined model
+produce identical B200 values; the Rust performance-model and B200 profile
+trees are unchanged between the PR's base and incorporated upstream main.
+Thus these shifts come from the intended formula change, rather than the B60
+promotion. This algebraic check does not calibrate the fixed normalization
+costs omitted by the approximation described above.
+
+Reproduce the existing numerical check with the matching native build:
+
+```bash
+python/aisimulate/.venv/bin/python scripts/prediction_regression/check_prediction_numerics.py \
+  --output numerical-sentinels.json
+```
+
+Validation on the original implementation (with its refreshed goldens):
 
 ```bash
 cargo test -p aisimulate-core --lib perfmodel::operators

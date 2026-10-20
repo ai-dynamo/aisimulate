@@ -289,17 +289,26 @@ prediction-stability values, not measured whole-model accuracy.
 
 After the PR #244 squash merge, its original baseline commit was no longer
 reachable in fresh CI checkouts. All eight sentinels were revalidated at
-`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest now references that
-permanent main-branch merge commit, which survives subsequent squash merges.
+`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest was then updated to
+reference that permanent main-branch merge commit, which survives subsequent squash merges.
 Expected values, query inputs, and tolerances are unchanged.
 
-The 16-case manifest was reproduced from runtime and packaged data at
+The original 16-case manifest was reproduced from runtime and packaged data at
 `d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
 were reproduced exactly and retained unchanged. The eight added backend values
 use the same four dense-model query shapes and SILICON mode, without shared
 layer reuse. These operator-level queries complement the engine integration
 tests for context limits; they do not measure E2E gym MAPE or incorporate the
 separate TRT-LLM data collection in PR #264.
+
+The decode Q/K-normalization correction selectively updates the eight decode
+expectations from the combined model at
+`d6722c4a9bec8101946f4a63cc1de94b72283067`; all eight prefill values, query
+inputs, and tolerances remain unchanged. The
+[Q/K evidence audit](../../benchmarks/evidence/accuracy/qk-norm/README.md#regression-checks)
+derives each delta from the repeated-intercept removal and batch-scaled traffic
+term. These proposed simulator references do not calibrate normalization kernel
+costs or establish measured-hardware accuracy.
 
 The broader [prediction comparison](../../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
