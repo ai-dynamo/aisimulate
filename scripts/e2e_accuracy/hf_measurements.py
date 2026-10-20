@@ -13,7 +13,9 @@ import hashlib
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
+from email.utils import parsedate_to_datetime
 from pathlib import Path, PurePosixPath
 
 import pyarrow.parquet as pq
@@ -105,11 +107,31 @@ def producer_metadata(url):
     headers = {"Accept": "application/vnd.github+json"}
     if token := os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"):
         headers["Authorization"] = "Bearer " + token
-    response = requests.get(
-        f"https://api.github.com/repos/SemiAnalysisAI/InferenceX/actions/runs/{run_id}/attempts/{attempt}",
-        headers=headers,
-        timeout=60,
-    )
+    endpoint = f"https://api.github.com/repos/SemiAnalysisAI/InferenceX/actions/runs/{run_id}/attempts/{attempt}"
+    for retry in range(3):
+        delay = 2**retry
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=60)
+        except requests.RequestException:
+            if retry == 2:
+                raise
+        else:
+            if retry == 2:
+                break
+            if response.status_code == 403 and "Retry-After" in response.headers:
+                value = response.headers["Retry-After"]
+                try:
+                    seconds = int(value) if value.isdigit() else parsedate_to_datetime(value).timestamp() - time.time()
+                except (ValueError, TypeError, OverflowError):
+                    response.raise_for_status()
+                # Fail instead of retrying before a long server-requested delay.
+                if seconds > 60:
+                    response.raise_for_status()
+                delay = max(delay, seconds)
+            elif not 500 <= response.status_code < 600:
+                break
+            response.close()
+        time.sleep(delay)
     if response.status_code in {404, 410}:
         return {"github_run_id": run_id, "run_attempt": int(attempt), "html_url": url}
     response.raise_for_status()

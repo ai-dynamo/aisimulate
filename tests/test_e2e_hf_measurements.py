@@ -109,9 +109,74 @@ def test_exact_producer_attempt_only(monkeypatch, record):
         hf.producer_metadata(record["run_url"])
 
 
-def test_deleted_producer_has_no_invented_revision(monkeypatch, record):
-    monkeypatch.setattr(hf.requests, "get", lambda *a, **k: SimpleNamespace(status_code=404))
+@pytest.mark.parametrize("status", [404, 410])
+def test_deleted_producer_has_no_invented_revision(monkeypatch, record, status):
+    monkeypatch.setattr(hf.requests, "get", lambda *a, **k: SimpleNamespace(status_code=status))
     assert "head_sha" not in hf.producer_metadata(record["run_url"])
+
+
+@pytest.mark.parametrize("failure", [502, 503, "connection", "timeout", "rate_limit", "rate_limit_date"])
+def test_producer_recovers_from_transient_failure(monkeypatch, record, failure):
+    run = dict(id=987, run_attempt=2, head_sha="b" * 40)
+    success = hf.requests.Response()
+    success.status_code = 200
+    success._content = json.dumps(run).encode()
+    if failure in ("connection", "timeout"):
+        first = hf.requests.ConnectionError() if failure == "connection" else hf.requests.Timeout()
+    else:
+        first = hf.requests.Response()
+        first.status_code = 403 if str(failure).startswith("rate_limit") else failure
+        first._content = b""
+        first._content_consumed = True
+        if failure == "rate_limit":
+            first.headers["Retry-After"] = "5"
+        if failure == "rate_limit_date":
+            first.headers["Retry-After"] = "Thu, 01 Jan 1970 00:00:05 GMT"
+            monkeypatch.setattr(hf.time, "time", lambda: 0)
+    responses = iter([first, success])
+    calls, sleeps = [], []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(hf.requests, "get", get)
+    monkeypatch.setattr(hf.time, "sleep", sleeps.append)
+    assert hf.producer_metadata(record["run_url"])["head_sha"] == run["head_sha"]
+    assert len(calls) == 2 and calls[0] == calls[1]
+    assert sleeps == [5 if str(failure).startswith("rate_limit") else 1]
+
+
+@pytest.mark.parametrize("failure", [502, "connection", 403, 401, "rate_limit", "long_rate_limit", "bad_rate_limit"])
+def test_producer_retries_are_bounded(monkeypatch, record, failure):
+    calls, sleeps = [], []
+
+    def get(*args, **kwargs):
+        calls.append(1)
+        if failure == "connection":
+            raise hf.requests.ConnectionError("offline")
+        response = hf.requests.Response()
+        response.status_code = 403 if isinstance(failure, str) else failure
+        response._content = b""
+        response._content_consumed = True
+        if failure == "rate_limit":
+            response.headers["Retry-After"] = "0"
+        if failure == "long_rate_limit":
+            response.headers["Retry-After"] = "120"
+        if failure == "bad_rate_limit":
+            response.headers["Retry-After"] = "invalid"
+        return response
+
+    monkeypatch.setattr(hf.requests, "get", get)
+    monkeypatch.setattr(hf.time, "sleep", sleeps.append)
+    with pytest.raises(hf.requests.RequestException):
+        hf.producer_metadata(record["run_url"])
+    retried = failure in (502, "connection", "rate_limit")
+    assert len(calls) == (3 if retried else 1)
+    assert sleeps == ([1, 2] if retried else [])
 
 
 def test_local_configuration_identity_and_cohort(record):
