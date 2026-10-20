@@ -214,7 +214,7 @@ branch and full source SHA:
 
 ```bash
 gh workflow run e2e-accuracy.yml --repo ai-dynamo/aisimulate --ref main \
-  -f branch=release/0.12.0 \
+  -f branch=release/0.13.0 \
   -f expected_sha=FULL_40_CHARACTER_COMMIT_SHA
 ```
 
@@ -407,7 +407,7 @@ metadata, and a coverage report. For a branch-qualified snapshot, both
 
 ```json
 {
-  "branch": "release/0.12.0",
+  "branch": "release/0.13.0",
   "commit_sha": "<full 40-character evaluated commit SHA>",
   "clean": true
 }
@@ -432,7 +432,7 @@ python scripts/e2e_accuracy/build_e2e_accuracy_overview.py \
   --metadata /path/to/aisimulate_points.meta.json \
   --coverage /path/to/coverage.json \
   --source-url https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/db-dump/2026-08-24 \
-  --branch release/0.12.0 --include-multinode \
+  --branch release/0.13.0 --include-multinode \
   --output pages/e2e-accuracy/summary.json
 ```
 

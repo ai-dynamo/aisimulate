@@ -214,7 +214,7 @@ context runs the package/runtime verifier without the repository-only FPE flag.
 
 The published matrix's **Branch** selector defaults to `main` and lists the
 repository's `release/*` branches. Share a selection using
-`?branch=release%2F0.12.0`; the model search (`q`) is preserved when switching.
+`?branch=release%2F0.13.0`; the model search (`q`) is preserved when switching.
 Each selection loads a separate packaged dataset with its own tested source
 SHA, timestamp, and evidence link. Release results never fall back to main's data.
 
