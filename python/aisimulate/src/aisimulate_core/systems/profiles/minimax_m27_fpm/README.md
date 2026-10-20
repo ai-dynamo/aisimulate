@@ -13,9 +13,17 @@ original artifact paths and SHA256 digests; table contents are fetched explicitl
 and are not bundled in this directory. The dataset card declares Apache-2.0.
 The repository's canonical `THIRD_PARTY_NOTICES.md` records this adaptation.
 
-All 11 profiles are `development` and require `allow_unqualified=True`.
-Publication does not establish serving qualification. KV variants and comparator
-tables retain separate profiles and cache roots.
+Nine profiles are `development`; two are `quarantined` for artifact retrieval
+only. All require `allow_unqualified=True`. Publication does not establish serving
+qualification, and each deployment retains a separate cache root.
+
+The quarantined profiles are
+`h200_sxm-vllm-fp8-block-tp4-ep4-kv-off` and
+`h200_sxm-vllm-fp8-block-tp4-ep4-kv-on`. Their original sidecars lack
+`coordinate_system`, `measurement_policy`, and top-level `system` and
+`backend_version`, so the native FPM consumer cannot load them. Opting in
+retrieves the unchanged artifacts; it does not make predictions possible.
+Profile listings and opt-in warnings expose this limitation in `admission_reason`.
 
 `packaged_system` selects the canonical hardware YAML from the installed
 `aisimulate_core/systems` directory. The materializer copies it into the profile

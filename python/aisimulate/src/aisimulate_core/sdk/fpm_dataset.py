@@ -170,15 +170,16 @@ def list_fpm_profiles(manifest_path: str | Path | None = None) -> list[dict]:
         manifest = _read_manifest(path)
         for key, entry in sorted(manifest["profiles"].items()):
             _profile_files(entry)
-            result.append(
-                {
-                    "manifest": str(path.resolve()),
-                    "profile": key,
-                    "admission": entry["admission"],
-                    "repo_id": manifest["repo_id"],
-                    "revision": manifest["revision"],
-                }
-            )
+            record = {
+                "manifest": str(path.resolve()),
+                "profile": key,
+                "admission": entry["admission"],
+                "repo_id": manifest["repo_id"],
+                "revision": manifest["revision"],
+            }
+            if entry.get("admission_reason"):
+                record["admission_reason"] = entry["admission_reason"]
+            result.append(record)
     return result
 
 
@@ -216,10 +217,11 @@ def materialize_fpm_profile(
     files = _profile_files(entry)
     admission = entry["admission"]
     if admission != "serving":
+        reason = f"; {entry['admission_reason']}" if entry.get("admission_reason") else ""
         if not allow_unqualified:
-            raise ValueError(f"FPM profile {profile!r} is not admitted for serving")
+            raise ValueError(f"FPM profile {profile!r} is not admitted for serving{reason}")
         warnings.warn(
-            f"FPM profile {profile!r} is {admission}: historical reproduction only, not serving-admitted",
+            f"FPM profile {profile!r} is {admission}: historical reproduction only, not serving-admitted{reason}",
             UserWarning,
             stacklevel=2,
         )

@@ -7,9 +7,10 @@ import hashlib
 import io
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+import yaml
 
 from aisimulate_core.sdk import fpm_dataset
 
@@ -130,6 +131,20 @@ def test_historical_reproduction_requires_explicit_opt_in(dataset, admission):
     assert staged.is_dir()
     with pytest.raises(ValueError, match="not admitted"):
         fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+
+
+def test_admission_reason_is_listed_and_explains_rejection_and_opt_in(dataset):
+    path, manifest, _, calls, cache = dataset
+    entry = manifest["profiles"]["gb300-full"]
+    entry.update(admission="quarantined", admission_reason="Artifact-only: unavailable to the native FPM consumer")
+    path.write_text(json.dumps(manifest))
+    assert fpm_dataset.list_fpm_profiles(path)[0]["admission_reason"] == entry["admission_reason"]
+    with pytest.raises(ValueError, match=entry["admission_reason"]):
+        fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache)
+    assert not calls
+    with pytest.warns(UserWarning, match=entry["admission_reason"]):
+        staged = fpm_dataset.materialize_fpm_profile(path, "gb300-full", cache_dir=cache, allow_unqualified=True)
+    assert staged.is_dir()
 
 
 def test_hf_login_and_environment_credentials_do_not_follow_redirects(tmp_path, monkeypatch):
@@ -386,6 +401,24 @@ def test_discovery_cli(dataset, monkeypatch, capsys):
     assert not calls
 
 
+def test_discovery_cli_lists_shipped_artifact_only_profiles(monkeypatch, capsys, tmp_path):
+    def no_network(*args, **kwargs):
+        pytest.fail("listing or rejecting a quarantined profile must not download")
+
+    monkeypatch.setattr(fpm_dataset, "urlopen", no_network)
+    monkeypatch.setattr(sys, "argv", ["fpm_dataset", "--list", "minimax_m27_fpm"])
+    fpm_dataset.main()
+    listed = {entry["profile"]: entry for entry in json.loads(capsys.readouterr().out)}
+    for variant in ("on", "off"):
+        key = f"h200_sxm-vllm-fp8-block-tp4-ep4-kv-{variant}"
+        assert listed[key]["admission"] == "quarantined"
+        assert "Artifact-only: unavailable to the native FPM consumer" in listed[key]["admission_reason"]
+        with pytest.raises(ValueError, match="Artifact-only"):
+            fpm_dataset.materialize_fpm_profile("minimax_m27_fpm", key, cache_dir=tmp_path / "cache")
+    assert listed["h200_sxm-vllm-fp8-block-tp2-ep2"]["admission"] == "development"
+    assert not (tmp_path / "cache").exists()
+
+
 @pytest.mark.parametrize("args", [[], ["example_fpm"], ["example_fpm", "profile", "--list"]])
 def test_cli_requires_unambiguous_action(monkeypatch, args):
     monkeypatch.setattr(sys, "argv", ["fpm_dataset", *args])
@@ -399,4 +432,11 @@ def test_shipped_profiles_reference_installed_systems():
         manifest = json.loads(Path(row["manifest"]).read_text())
         entry = manifest["profiles"][row["profile"]]
         if entry.get("packaged_system") is not None:
-            assert fpm_dataset._packaged_system_bytes(entry["packaged_system"])
+            spec = yaml.safe_load(fpm_dataset._packaged_system_bytes(entry["packaged_system"]))
+            data_dir = PurePosixPath(spec["data_dir"])
+            tables = [PurePosixPath(item["target"]) for item in entry["files"] if item["target"].endswith(".parquet")]
+            assert tables
+            for table in tables:
+                assert table.is_relative_to(data_dir), (row, data_dir, table)
+                # The native loader expects <data_dir>/<backend>/<version>/<table>.
+                assert len(table.relative_to(data_dir).parts) == 3, (row, table)

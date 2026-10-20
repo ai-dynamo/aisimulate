@@ -211,8 +211,8 @@
       "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp4-ep4-kv-off": {
-      "admission": "development",
-      "admission_reason": "Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "admission": "quarantined",
+      "admission_reason": "Artifact-only: unavailable to the native FPM consumer. The pinned sidecar lacks coordinate_system, measurement_policy, and top-level system/backend_version; allow_unqualified only retrieves the original artifacts and does not enable prediction.",
       "system_config_source": "packaged_reference_not_collection",
       "files": [
         {
@@ -234,8 +234,8 @@
       "packaged_system": "h200_sxm"
     },
     "h200_sxm-vllm-fp8-block-tp4-ep4-kv-on": {
-      "admission": "development",
-      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "admission": "quarantined",
+      "admission_reason": "Artifact-only: unavailable to the native FPM consumer. The pinned sidecar lacks coordinate_system, measurement_policy, and top-level system/backend_version; allow_unqualified only retrieves the original artifacts and does not enable prediction.",
       "system_config_source": "packaged_reference_not_collection",
       "files": [
         {
