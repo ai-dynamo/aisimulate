@@ -185,6 +185,10 @@ unchanged when the policy is omitted.
 The policy follows the accelerated request-count warmup contract in
 [AIPerf `754356e9`](https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/src/aiperf/timing/strategies/agentic_replay.py):
 
+AISimulate additionally scales source-clock primer leads using its trace-arrival
+`speedup`; the reference has no such scaling knob. `speedup: 1` preserves the
+reference's primer timing.
+
 1. Prime each continuing conversation's last historical full input. Convert
    source-clock primer leads to runtime milliseconds by dividing by `speedup`,
    then apply the configured global idle cap and align them globally.
