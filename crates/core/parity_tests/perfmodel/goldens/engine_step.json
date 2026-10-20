@@ -1353,28 +1353,28 @@
     "qwen3-30b-a3b-b60-vllm-scan-coverage": {
       "agg": {
         "values": {
-          "agg_request": 401.85323857663764,
-          "agg_tpot": 168.77799462430008,
-          "agg_ttft": 233.0752439523376
+          "agg_request": 363.06971567185485,
+          "agg_tpot": 131.90508338922265,
+          "agg_ttft": 231.16463228263223
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 358.375,
-          "disagg_tpot": 31.754,
-          "disagg_ttft": 326.621
+          "disagg_request": 283.632,
+          "disagg_tpot": 19.844,
+          "disagg_ttft": 263.788
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 168.77799462430008
+          "mixed_step": 135.78121124198853
         }
       },
       "static": {
         "values": {
-          "static_ctx": 164.96,
-          "static_gen": 37.73,
-          "static_total": 202.69
+          "static_ctx": 133.227,
+          "static_gen": 9.784,
+          "static_total": 143.011
         }
       }
     },
@@ -2671,19 +2671,19 @@
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::agg": {
       "engine": "rust",
-      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
+      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::disagg": {
       "engine": "rust",
-      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
+      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::mixed": {
       "engine": "rust",
-      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
+      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::static": {
       "engine": "rust",
-      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
+      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
     },
     "qwen3-30b-a3b-h200-vllm-afd::afd": {
       "engine": "rust",

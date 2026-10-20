@@ -802,10 +802,6 @@ fn phase_evidence_from_entries(
 }
 
 impl TimingModel for AicTimingModel {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        self.decoder_replay
-    }
-
     fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
         if self.decoder_replay {
             ensure!(
@@ -4782,11 +4778,9 @@ mod tests {
             timing.validate_prefill_batch(&geometry).unwrap();
         }
         for geometry in [vec![(127, 128), (129, 128)], vec![(3, 128), (3, 1536)]] {
-            assert!(timing.prefill_batch_validation_can_fail());
             let error = timing.validate_prefill_batch(&geometry).unwrap_err();
             assert!(error.to_string().contains("heterogeneous prefill"));
             timing.decoder_replay = false;
-            assert!(!timing.prefill_batch_validation_can_fail());
             timing.validate_prefill_batch(&geometry).unwrap();
             timing.decoder_replay = true;
         }
