@@ -15,6 +15,8 @@ from aisimulate.runner import (
     InvalidRunnerError,
 )
 from aisimulate.sweeper import (
+    AFDForegroundEngine,
+    AFDPhase,
     AFDTopology,
     BackendDeploymentSpec,
     ReplayOutputRequirements,
@@ -141,6 +143,24 @@ def test_pure_both_phase_afd_runs_without_native_aggregate_fallback():
     assert report.metadata["native_report"]["summary"] == report.metrics
     assert report.metadata["native_report"]["per_request"] == report.metadata["per_request"]
     assert "afd_report" in report.metadata
+
+
+def test_afd_runner_plans_one_pass_per_phase_and_counts_every_pass(monkeypatch):
+    planned_phases = []
+    execute_pass = AFDForegroundEngine.execute_pass
+
+    def recording_execute_pass(self, **kwargs):
+        planned_phases.append(kwargs["phase"])
+        return execute_pass(self, **kwargs)
+
+    monkeypatch.setattr(AFDForegroundEngine, "execute_pass", recording_execute_pass)
+    report = EngineReplayRunnerFactory().create(0).run(_spec(_topology()))
+
+    assert planned_phases == [AFDPhase.PREFILL, AFDPhase.DECODE]
+    assert report.metrics["duration_ms"] == pytest.approx(18.0)
+    assert report.metadata["afd_replay"]["afd_passes"] == 6
+    # Four stages for each of one layer and two microbatches, in every pass.
+    assert report.metadata["afd_replay"]["afd_stage_intervals"] == 6 * 4 * 1 * 2
 
 
 @pytest.mark.parametrize(
