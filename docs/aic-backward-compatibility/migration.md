@@ -607,6 +607,30 @@ explains the retained workload routing and feature mathematics.
   the four legacy non-KV fields cannot coexist. See the
   [resource contract](../perf-model/memory.md).
 
+### Rust AgentX snapshot options
+
+The snapshot-import extension changes the public Rust
+`aisimulate_core::replay::loadgen::AgenticSnapshotOptions` source API. Replace
+seed-only literals such as `AgenticSnapshotOptions { seed }` with
+`AgenticSnapshotOptions::seeded(seed)`; the constructor leaves imported
+selections and the corpus cursor unset. Code importing exact selections must
+provide those two optional fields together.
+
+The options now own imported selections and are no longer `Copy`. Move the
+options into their consumer, borrow them where the API permits, or explicitly
+`.clone()` when the same selection must be consumed more than once. Floating-point
+cuts also mean the type retains `PartialEq` but no longer implements `Eq`; update
+generic bounds accordingly. These changes break Rust source compatibility, not
+legacy seed-only JSON:
+`{"seed": 42}` still deserializes and serializes without optional fields.
+
+Before the next stable `aisimulate-core` publication, the release owner must
+record this source API break in the release notes, select a compatible release
+version, and coordinate downstream caller migration and exact-artifact tests.
+This migration note neither changes package versions nor certifies downstream
+compatibility; nightly availability and the stable-release checklist remain
+separate steps under the [release contract](../ci/release.md#nightly-ci-and-fpe-qualification).
+
 ### Release and downstream contracts
 
 Wheel and crate versions must match. Namespace changes do not preserve removed
