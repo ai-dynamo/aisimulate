@@ -173,6 +173,13 @@ proposed prediction references, not measured hardware accuracy or maintainer
 acceptance. The source was rebuilt in release mode, and its imported native
 binary and numerical environment were verified before capturing all 16 values.
 `golden-review.json` records each old/new value and its independent derivation.
+This source is a PR-branch merge commit. Its exact-SHA fetch succeeds in a
+fresh shallow PR checkout, but that does not guarantee availability after a
+squash merge. The [canonical baseline handoff](../../../../docs/ci/README.md#numerical-and-installed-package-evidence)
+requires revalidation at the actual main-branch commit and a follow-up manifest
+repin. Keep this capture SHA as historical evidence; the durability follow-up
+must preserve the recorded expectations and tolerances unless a separate,
+explained modeling change is reviewed.
 
 B200's effective bandwidth is 6.16 TB/s. The old expression charges 8.8 generic
 3 us intercepts per layer, or 0.0264 ms. Let `t` be the hand-counted four-pass

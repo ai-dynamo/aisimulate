@@ -257,6 +257,8 @@ the numerical-check job explicitly fetch that SHA from `origin` if missing;
 full branch history alone can omit a baseline from a squashed PR. Fetch or
 commit-validation failures remain errors. Fetch-only mode does not load the
 AISimulate runtime; the subsequent checks validate the complete manifest.
+Fetching an exact SHA verifies availability now; it does not retain a PR-only
+commit after a squash merge.
 To prepare a checkout locally, run:
 
 ```sh
@@ -309,6 +311,24 @@ inputs, and tolerances remain unchanged. The
 derives each delta from the repeated-intercept removal and batch-scaled traffic
 term. These proposed simulator references do not calibrate normalization kernel
 costs or establish measured-hardware accuracy.
+
+That source is a PR-branch merge commit, not yet a permanent main-branch
+baseline. If the correction is squash-merged, complete a follow-up repin:
+
+1. Identify the actual main-branch commit containing the corrected model and
+   packaged data. Do not substitute an earlier main commit with different
+   predictions or guess the future squash SHA.
+2. In a checkout of that commit, build its native runtime and set only
+   `baseline_source_sha` in a candidate manifest to that full SHA. Run all 16
+   sentinels against that manifest; retain the existing cases and tolerances.
+   A mismatch needs investigation, not an automatic expectation refresh.
+3. After successful revalidation, commit the canonical SHA and provenance
+   update. In a fresh depth-1 checkout of the follow-up, run the fetch-only
+   command above against `origin`, then run the numerical check.
+
+The canonical SHA cannot be recorded until that commit exists. Until the
+follow-up is validated, post-squash baseline availability remains pending;
+successful pre-merge fetching does not close that dependency.
 
 The broader [prediction comparison](../../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
