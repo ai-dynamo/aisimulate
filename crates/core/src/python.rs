@@ -1411,6 +1411,19 @@ fn runtime_paths(traffic: &RuntimeTraffic) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+/// The largest trace block that divides both the cached prefix and the
+/// engine's scheduler block (the engine block when there is no prefix).
+/// Requests then share exactly the engine blocks inside the prefix, as with
+/// one-token trace blocks, without one hash ID per token. The driver still
+/// hashes prompts at `engine_block_size`.
+fn synthetic_trace_block_size(cached_prefix_tokens: usize, engine_block_size: usize) -> usize {
+    let (mut a, mut b) = (engine_block_size, cached_prefix_tokens);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
 fn synthetic_arrivals(traffic: &RuntimeTraffic) -> Result<ArrivalSpec> {
     match traffic.load_type.as_deref().unwrap_or("concurrency") {
         "concurrency" | "kv_capacity_fraction" => Ok(ArrivalSpec::Burst),
@@ -1766,14 +1779,7 @@ fn build_runtime_input(
     };
     let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
     let trace = Trace::synthetic(SyntheticTraceSpec {
-        // A one-token trace block preserves prefixes that are not aligned to
-        // the engine's scheduler block size. The driver still hashes them at
-        // `engine_block_size` when it constructs replay requests.
-        block_size: if cached_prefix_tokens == 0 {
-            engine_block_size
-        } else {
-            1
-        },
+        block_size: synthetic_trace_block_size(cached_prefix_tokens, engine_block_size),
         num_sessions: sessions,
         turns_per_session: turns,
         input_tokens: LengthSpec {
@@ -2898,6 +2904,64 @@ mod tests {
 
         fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
             Some(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn cached_prefix_trace_blocks_share_the_same_engine_blocks_as_one_token_blocks() {
+        let engine_block_size = 64;
+        // Number each request's engine-block sequence hashes in first-seen
+        // order, so traces with different token values compare by sharing.
+        let shared_blocks = |cached_prefix_tokens, block_size| {
+            let trace = Trace::synthetic(SyntheticTraceSpec {
+                block_size,
+                num_sessions: 3,
+                turns_per_session: 1,
+                input_tokens: LengthSpec {
+                    mean: 1000,
+                    stddev: 0.0,
+                },
+                output_tokens: LengthSpec {
+                    mean: 1,
+                    stddev: 0.0,
+                },
+                cached_prefix_tokens,
+                shared_prefix_ratio: 0.0,
+                num_prefix_groups: 0,
+                first_turn_arrivals: ArrivalSpec::Burst,
+                inter_turn_delays: DelaySpec::None,
+                seed: 0,
+                arrival_seed: 42,
+            })
+            .unwrap();
+            let mut ids = std::collections::HashMap::new();
+            trace
+                .sessions
+                .iter()
+                .map(|session| {
+                    let tokens = session.turns[0].synthesize_tokens(block_size).unwrap();
+                    crate::replay::loadgen::ReplayRequestHashes::from_tokens(
+                        &tokens,
+                        engine_block_size as u32,
+                    )
+                    .sequence_hashes
+                    .into_iter()
+                    .map(|hash| {
+                        let next = ids.len();
+                        *ids.entry(hash).or_insert(next)
+                    })
+                    .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        for (cached_prefix_tokens, expected_block_size) in [(512, 64), (500, 4), (0, 64)] {
+            let block_size = synthetic_trace_block_size(cached_prefix_tokens, engine_block_size);
+            assert_eq!(block_size, expected_block_size);
+            assert_eq!(
+                shared_blocks(cached_prefix_tokens, block_size),
+                shared_blocks(cached_prefix_tokens, 1),
+                "cached_prefix_tokens={cached_prefix_tokens}"
+            );
         }
     }
 
