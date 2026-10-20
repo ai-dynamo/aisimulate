@@ -398,6 +398,10 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        super::readiness::validate_glm53_kv(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
         super::readiness::validate_glm53_sources(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),

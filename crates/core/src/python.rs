@@ -18,9 +18,9 @@ use crate::replay::{
     ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics,
     ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        AgenticProfileOptions, AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace,
-        LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
-        WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        AgenticProfileOptions, AgenticSnapshotOptions, AgenticWarmupPolicy, ArrivalSpec, DelaySpec,
+        DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace, ValidatedAgenticGraph,
+        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_cached,
     },
 };
@@ -100,6 +100,8 @@ struct RuntimeTraffic {
     agentic_snapshot: Option<AgenticSnapshotOptions>,
     #[serde(default)]
     agentic_warmup: bool,
+    #[serde(default)]
+    agentic_warmup_policy: AgenticWarmupPolicy,
     #[serde(default)]
     agentic_profile: Option<AgenticProfileOptions>,
     #[serde(default)]
@@ -1555,7 +1557,17 @@ fn build_agentic_driver(
         // Sample recorded time before applying speedup to remaining timers.
         let prepared = graph.into_prepared_snapshots(lanes, options.clone())?;
         let mut driver = if traffic.agentic_warmup {
-            WorkloadDriver::new_agentic_warmup(prepared, engine_block_size, true, speedup)
+            WorkloadDriver::new_agentic_warmup_with_policy(
+                prepared,
+                engine_block_size,
+                true,
+                speedup,
+                traffic.agentic_warmup_policy,
+                traffic
+                    .agentic_profile
+                    .as_ref()
+                    .map_or(10_000.0, |profile| profile.global_idle_cap_seconds * 1000.0),
+            )
         } else {
             WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
         }?;
@@ -1578,6 +1590,11 @@ fn build_runtime_input(
     engine_block_size: usize,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    ensure!(
+        traffic.agentic_warmup_policy != AgenticWarmupPolicy::LiveTrajectoryV1
+            || (traffic.agentic_warmup && traffic.agentic_profile.is_some()),
+        "live_trajectory_v1 requires agentic_warmup and agentic_profile"
+    );
     if let Some(profile) = &traffic.agentic_profile {
         profile.validate()?;
         ensure!(
@@ -3169,6 +3186,117 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn public_live_agentic_warmup_keeps_only_formal_requests_in_the_report() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("live-weka.jsonl");
+        let rows = (0..3)
+            .map(|index| {
+                serde_json::json!({
+                    "t": index as f64 * 0.1, "type": "s", "model": "model",
+                    "in": 4, "out": 3, "hash_ids": [index + 1], "api_time": 0.001
+                })
+            })
+            .collect::<Vec<_>>();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "id": "play", "models": ["model"], "block_size": 4,
+                "hash_id_scope": "local", "requests": rows
+            })
+            .to_string(),
+        )
+        .unwrap();
+        for backend in ["vllm", "sglang"] {
+            let payload = serde_json::json!({
+                "spec": {
+                    "version": 1, "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                    "engine": {"rank": {"backend": backend, "block_size": 4, "num_gpu_blocks": 64,
+                        "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}}},
+                    "requests": []
+                },
+                "traffic": {"source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                    "trace_path": path, "trace_block_size": 4, "execution_model": "model",
+                    "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}, "agentic_warmup": true,
+                    "agentic_warmup_policy": "live_trajectory_v1", "agentic_profile": {"duration_seconds": 0.01}}
+            });
+            let report: serde_json::Value =
+                serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+            let phases = &report["agentic_phases"];
+            assert_eq!(phases["phase"], "profile", "{backend}: {report}");
+            assert_eq!(phases["warmup_policy"], "live_trajectory_v1");
+            assert_eq!(phases["lanes"][0]["warmup_completed"], 10);
+            assert_eq!(phases["lanes"][0]["primers_completed"], 1);
+            let formal = report["per_request"].as_array().unwrap();
+            assert!(!formal.is_empty());
+            assert_eq!(
+                formal.len() as u64,
+                report["agentic_profile"]["issued_requests"]
+                    .as_u64()
+                    .unwrap()
+            );
+            assert!(report["completed_requests"].as_u64().unwrap() > 0);
+            let outcomes = report["agentic_play_outcomes"].as_array().unwrap();
+            assert_eq!(
+                outcomes.len() as u64,
+                report["total_trajectories"].as_u64().unwrap()
+            );
+            assert_eq!(
+                outcomes.len() as u64,
+                report["agentic_profile"]["plays_started"].as_u64().unwrap()
+            );
+            for outcome in outcomes {
+                for field in ["causal_terminal_ms", "settled_at_ms"] {
+                    assert!(
+                        outcome[field].as_f64().is_none_or(|value| value >= 0.0),
+                        "{backend}: {outcome}"
+                    );
+                }
+            }
+            let mut invalid = payload.clone();
+            invalid["traffic"]
+                .as_object_mut()
+                .unwrap()
+                .remove("agentic_profile");
+            assert!(
+                format!(
+                    "{:#}",
+                    execute_json(&invalid.to_string(), false).unwrap_err()
+                )
+                .contains("live_trajectory_v1 requires agentic_warmup and agentic_profile")
+            );
+        }
+    }
+
+    #[test]
+    fn live_zero_time_warmup_does_not_poison_the_formal_progress_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed-duration.jsonl");
+        let rows = [("zero", 1), ("positive", 3)].into_iter().map(|(id, output)| serde_json::json!({
+            "id": id, "models": ["model"], "block_size": 4, "hash_id_scope": "local",
+            "requests": [{"t": 0.0, "type": "s", "model": "model", "in": 4, "out": output, "hash_ids": [1]}]
+        }).to_string()).collect::<Vec<_>>().join("\n");
+        std::fs::write(&path, rows).unwrap();
+        let payload = serde_json::json!({
+            "spec": {
+                "version": 1, "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+                "engine": {"rank": {"backend": "vllm", "block_size": 4, "num_gpu_blocks": 64,
+                    "timing_model": {"type": "fixed", "prefill_ms": 0.0, "decode_ms": 1.0}}},
+                "requests": []
+            },
+            "traffic": {"source_type": "trace", "load_type": "trace_timestamps", "trace_format": "weka",
+                "trace_path": path, "trace_block_size": 4, "execution_model": "model",
+                "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}, "agentic_warmup": true,
+                "agentic_warmup_policy": "live_trajectory_v1", "agentic_profile": {"duration_seconds": 0.01}}
+        });
+        let report: serde_json::Value =
+            serde_json::from_str(&execute_json(&payload.to_string(), false).unwrap()).unwrap();
+        assert_eq!(report["agentic_phases"]["profile_start_ms"], 0.0);
+        assert_eq!(report["agentic_phases"]["lanes"][0]["warmup_completed"], 10);
+        assert!(report["duration_ms"].as_f64().unwrap() >= 10.0);
+        assert!(report["completed_requests"].as_u64().unwrap() >= 2);
     }
 
     #[test]

@@ -428,6 +428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             core_raw, adapter_raw = split_config_sections(validation_raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
+            if (
+                config.traffic is not None
+                and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+                and (args.stack != "engine" or (args.command == "predict" and args.online))
+            ):
+                raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
             if config.engine.workers.encoder is not None:
                 if args.command == "predict" and (
                     args.stack != "engine" or args.online or args.capture_per_request or adapter_raw

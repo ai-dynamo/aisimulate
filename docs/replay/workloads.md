@@ -75,6 +75,7 @@ the current SA convention.
 | `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane, in the loaded graph's clock (Weka: per-play relative milliseconds). Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
 | `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
+| `traffic.load.agentic_warmup_policy` | `repeated_prefixes` | `x` | `-` | `repeated_prefixes` preserves the original frontier; `live_trajectory_v1` advances the live dependency graph during ten additional one-token requests per lane. The live policy requires `agentic_warmup: true` and `agentic_profile`; initially offline `--stack engine` only. |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
 | `traffic.load.agentic_profile.duration_seconds` | `3600` when enabled | `x` | `-` | Positive finite admission duration, starting at the preparation barrier or simulation start without warmup. No new workload requests or replacement plays are issued after the deadline. |
 | `traffic.load.agentic_profile.response_grace_seconds` | `30` when enabled | `x` | `-` | Nonnegative finite time for already submitted requests to respond after the admission deadline; remaining client requests are then canceled. |
@@ -418,7 +419,8 @@ runtime dependency.
 
 ### Warmup
 
-`agentic_warmup: true` fills the caches before measurement, in three stages:
+`agentic_warmup: true` fills the caches before measurement. The default
+`agentic_warmup_policy: repeated_prefixes` has three stages:
 
 | Stage | Requests | Output |
 | --- | --- | --- |
@@ -437,6 +439,36 @@ Warmup repeats the saved prefixes and does not advance the plays. Primed
 prefixes can still be evicted or placed on another worker, so warmup does not
 guarantee cache hits. See [agentic warmup](agentic/warmup.md) for the full
 preparation, barrier and reporting contract.
+
+For AgentX-style live advancement, select the versioned policy explicitly:
+
+```yaml
+agentic_lanes: 15
+agentic_snapshot: {seed: 42}  # import reference selections for matching cuts
+agentic_warmup: true
+agentic_warmup_policy: live_trajectory_v1
+agentic_profile: {duration_seconds: 3600}
+```
+
+This policy primes predecessor streams with globally aligned lead times, capped
+by `agentic_profile.global_idle_cap_seconds`. After all primers settle, it runs
+the actual dependency graph with zero authored idle delay and one output token
+per request. Primers do not consume the additional quota of ten admitted
+requests per lane. Spawns, joins, rootless children and sequential corpus
+recycling continue during warmup; an exhausted lane pauses without discarding
+its next request. At the all-settled barrier, the surviving frontier resumes
+with original output lengths and source-clock offsets. One global minimum is
+subtracted from eligible frontier offsets, preserving cross-lane spacing;
+waiting at the barrier does not consume those delays.
+
+Successful profiles exclude preparation-only requests and retired plays from
+counts and latency distributions. Active partially warmed plays retain their
+identities and get a formal measurement origin at the barrier. An aborted live
+warmup has an empty formal cohort; its request ledger remains in
+`agentic_phases`. See [live trajectory warmup](agentic/warmup.md#live-trajectory-policy)
+for qualification boundaries. Unsupported CLI stacks are rejected before
+`--overwrite` prepares the output directory; external SDK adapters must
+explicitly advertise `supports_agentic_live_warmup` and forward the policy.
 
 <a id="agentic-profile"></a>
 

@@ -32,6 +32,18 @@ Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
 to freeze expected cuts, and documented its sequential recycling behavior.
 No upstream implementation is vendored; AISimulate consumes explicit cuts.
 
+The live warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs` and
+`crates/core/src/replay/loadgen/driver.rs`, its regression tests in those files,
+and `docs/replay/agentic/warmup.md`, `docs/replay/agentic/continuous-profiles.md`
+and `docs/replay/workloads.md` are modified re-implementations of the same
+pinned `agentic_replay.py` behavior: globally aligned primers, per-lane
+admission quotas, compressed dependency waits, shared-cursor recycling, and
+source-clock frontier handoff. NVIDIA modified these algorithms to use the
+native deterministic dependency executor and its transactional server-settlement
+barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
+upstream serving implementation is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from

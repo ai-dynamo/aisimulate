@@ -14,6 +14,7 @@ from collector.case_generator import (
     get_common_kda_test_cases,
     get_common_moe_test_cases,
     get_gemm_case_specs,
+    get_sglang_moe_backend,
     moe_model_allows_quantization,
 )
 from collector.model_cases import build_collection_case_plan
@@ -27,7 +28,9 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FP8 = "zai-org/GLM-5.3-Flash"
 NVFP4 = "nvidia/GLM-5.3-Flash-NVFP4"
-GLM_OFFGRID_WIDTHS = {16, 32, 288, 6416, 12576, 24576, 24896, 38720, 77440, 154880}
+# Per-rank widths below/off the base grid at TP1/2/4/8 (TP8: vLLM KDA in_proj
+# 3*1024+8+256, SGLang KDA b_proj 8, lm_head 154880/8).
+GLM_OFFGRID_WIDTHS = {8, 16, 32, 288, 3336, 6416, 12576, 19360, 24576, 24896, 38720, 77440, 154880}
 
 
 def _compat(relative_path: str) -> str:
@@ -98,25 +101,32 @@ def test_sglang_moe_rows_carry_serving_routing_and_pure_tp(monkeypatch, model_pa
         backends = case.sglang_moe_backends
         mode = "fp8_block" if model_path == FP8 else "nvfp4"
         assert backends[mode][103] == "flashinfer_trtllm"
+        assert get_sglang_moe_backend(case, mode, 100) == "flashinfer_trtllm"
+        if model_path == FP8:
+            # Observed SGLang 0.5.20 SM90 serving dispatch (H200, TP4, auto MoE runner).
+            assert backends[mode][90] == "triton"
+            assert get_sglang_moe_backend(case, mode, 90) == "triton"
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_nvfp4_tp1_moe_shard_is_planned(monkeypatch, backend):
-    # TP1 is served with the NVFP4 checkpoint only; MoE TP1 EP1 must be planned.
-    monkeypatch.setenv("COLLECTOR_MODEL_PATH", NVFP4)
-    cases = [c for c in get_common_moe_test_cases(backend=backend) if c.model_name == NVFP4]
-    assert {1, 2, 4} <= {c.tp for c in cases if c.ep == 1}
+@pytest.mark.parametrize("model_path", [FP8, NVFP4])
+def test_pure_tp_moe_shards_are_planned(monkeypatch, backend, model_path):
+    # Which TP fits is per-system capacity (NVFP4 TP1 on B300/GB300, FP8 TP8 on
+    # Hopper); every pure-TP shard 1/2/4/8 with EP1 must be planned.
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
+    cases = [c for c in get_common_moe_test_cases(backend=backend) if c.model_name == model_path]
+    assert {1, 2, 4, 8} <= {c.tp for c in cases if c.ep == 1}
 
 
 @pytest.mark.parametrize("model_path", [FP8, NVFP4])
-def test_kda_plan_covers_the_tp1_tp2_tp4_head_shards(monkeypatch, model_path):
+def test_kda_plan_covers_the_tp1_to_tp8_head_shards(monkeypatch, model_path):
     monkeypatch.setenv("COLLECTOR_MODEL_PATH", model_path)
     cases = [c for c in get_common_kda_test_cases() if c.model_name == FP8]
-    # 64 KDA heads: 64 local heads at TP1, 32 at TP2, 16 at TP4. One physical
-    # case per shard; the NVFP4 artifact is a shape-only alias.
-    assert {c.num_v_heads for c in cases} == {64, 32, 16}
+    # 64 KDA heads: 64 local heads at TP1, 32 at TP2, 16 at TP4, 8 at TP8. One
+    # physical case per shard; the NVFP4 artifact is a shape-only alias.
+    assert {c.num_v_heads for c in cases} == {64, 32, 16, 8}
     assert all(c.num_k_heads == c.num_v_heads and c.head_k_dim == c.head_v_dim == 128 for c in cases)
-    for heads in (64, 32, 16):
+    for heads in (64, 32, 16, 8):
         assert {c.phase for c in cases if c.num_v_heads == heads} == {"context", "generation", "verify"}
 
 

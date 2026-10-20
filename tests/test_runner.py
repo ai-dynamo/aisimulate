@@ -2409,6 +2409,27 @@ def test_agentic_profile_capability_is_explicit() -> None:
         )
 
 
+def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native():
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_profile": {},
+        "agentic_warmup_policy": "live_trajectory_v1",
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_agentic_live_warmup
+    with pytest.raises(ValueError, match="does not support live agentic warmup"):
+        replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
+
+
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
 def test_runner_honors_length_sampler(sampler):
     # Fixed vectors from the benchmark's NumPy RandomState contract and the
