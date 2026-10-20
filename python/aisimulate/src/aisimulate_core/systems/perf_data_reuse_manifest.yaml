@@ -217,7 +217,7 @@ groups:
   - op_file: custom_allreduce_perf.parquet
     kernel_source: 'vLLM_custom_graph'
     tier: shared
-    systems: [a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
+    systems: [a100_sxm, b200_sxm, b300_sxm, b60, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [vllm]
   - op_file: dsa_context_module_perf.parquet
     kernel_source: 'FLASHINFER_MLA_SPARSE'
