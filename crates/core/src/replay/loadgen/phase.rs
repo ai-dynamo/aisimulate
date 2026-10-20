@@ -130,7 +130,6 @@ pub(super) struct AgenticPreparation {
     finished_at_ms: Option<f64>,
     last_event_at_ms: f64,
     engine_block_size: u32,
-    include_replay_hashes: bool,
     policy: AgenticWarmupPolicy,
     live_started: bool,
     live_counts: Vec<usize>,
@@ -138,15 +137,10 @@ pub(super) struct AgenticPreparation {
 }
 
 impl AgenticPreparation {
-    pub(super) fn new(
-        prepared: &PreparedAgenticSnapshots,
-        engine_block_size: u32,
-        include_replay_hashes: bool,
-    ) -> Result<Self> {
+    pub(super) fn new(prepared: &PreparedAgenticSnapshots, engine_block_size: u32) -> Result<Self> {
         Self::with_policy(
             prepared,
             engine_block_size,
-            include_replay_hashes,
             AgenticWarmupPolicy::RepeatedPrefixes,
             10_000.0,
             1.0,
@@ -156,7 +150,6 @@ impl AgenticPreparation {
     pub(super) fn with_policy(
         prepared: &PreparedAgenticSnapshots,
         engine_block_size: u32,
-        include_replay_hashes: bool,
         policy: AgenticWarmupPolicy,
         primer_idle_cap_ms: f64,
         speedup: f64,
@@ -179,7 +172,6 @@ impl AgenticPreparation {
             finished_at_ms: None,
             last_event_at_ms: 0.0,
             engine_block_size,
-            include_replay_hashes,
             policy,
             live_started: false,
             live_counts: vec![0; prepared.context().lane_count()],
@@ -375,10 +367,6 @@ impl AgenticPreparation {
         });
     }
 
-    pub(super) fn disable_replay_hashes(&mut self) {
-        self.include_replay_hashes = false;
-    }
-
     pub(super) fn contains(&self, uuid: Uuid) -> bool {
         self.index_by_uuid.contains_key(&uuid)
     }
@@ -417,6 +405,7 @@ impl AgenticPreparation {
         now_ms: f64,
         limit: usize,
         emit_session_metadata: bool,
+        hash_block_size: Option<u32>,
     ) -> Vec<CompactReadyTurn> {
         if self.live_started || self.failure_request_id.is_some() || self.transition.is_some() {
             return Vec::new();
@@ -446,8 +435,7 @@ impl AgenticPreparation {
                         &mut self.requests,
                         now_ms,
                         emit_session_metadata,
-                        self.include_replay_hashes,
-                        self.engine_block_size,
+                        hash_block_size,
                     ));
                     lane.in_flight = None;
                 }
@@ -469,8 +457,7 @@ impl AgenticPreparation {
                 &mut self.requests,
                 now_ms,
                 emit_session_metadata,
-                self.include_replay_hashes,
-                self.engine_block_size,
+                hash_block_size,
             ));
         }
         ready
@@ -481,8 +468,7 @@ impl AgenticPreparation {
         requests: &mut [AgenticPhaseRequest],
         now_ms: f64,
         emit_session_metadata: bool,
-        include_replay_hashes: bool,
-        engine_block_size: u32,
+        hash_block_size: Option<u32>,
     ) -> CompactReadyTurn {
         let ordinal = lane.next;
         let request_index = lane.request_indices[ordinal];
@@ -521,7 +507,7 @@ impl AgenticPreparation {
             source.input_length,
             lane.snapshot.token_ids(source_index),
             lane.snapshot.context.graph.block_size,
-            include_replay_hashes.then_some(engine_block_size),
+            hash_block_size,
         );
         evidence.dispatched_at_ms = Some(now_ms);
         lane.in_flight = Some(evidence.uuid);
@@ -1333,6 +1319,16 @@ mod tests {
         assert!(driver.agentic_play_outcomes().unwrap().is_empty());
         assert_eq!(driver.agentic_profile_report().unwrap().plays_started, 0);
         assert_eq!(driver.agentic_phase_evidence().unwrap().requests.len(), 3);
+    }
+
+    #[test]
+    fn disabled_replay_hashes_cover_warmup_requests() {
+        let mut driver =
+            WorkloadDriver::new_agentic_warmup(prepared(2, 50.0), 48, true, 2.0).unwrap();
+        driver.disable_replay_hashes();
+        let ready = driver.pop_ready_compact(0.0, 100);
+        assert_eq!(ready.len(), 2);
+        assert!(ready.iter().all(|ready| ready.replay_hashes.is_none()));
     }
 
     #[test]

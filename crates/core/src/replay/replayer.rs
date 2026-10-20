@@ -407,7 +407,6 @@ impl<C: ReplayComposition> Replayer<C> {
         let mut runtime_input = match self.runtime_input.take() {
             Some(mut input) => {
                 apply_runtime_determinism(&mut input, self.capture.determinism);
-                skip_unread_replay_hashes::<C::Metadata>(&mut input, artifact_sink.is_some());
                 input
             }
             None => {
@@ -492,7 +491,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     role_factory,
-                    admission_queue(runtime_input, mode)?,
+                    admission_queue(runtime_input, mode, artifact_sink.is_some())?,
                     workers.initial_workers,
                     startup_time_ms,
                     |dp_size, topology| {
@@ -559,7 +558,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     C::Metadata,
                 >::new_composed(
                     &config,
-                    admission_queue(runtime_input, mode)?,
+                    admission_queue(runtime_input, mode, false)?,
                     false,
                     |prefill_dp, prefill_topology, decode_dp, decode_topology| {
                         self.composition
@@ -715,6 +714,7 @@ fn validate_request_dp_ranks(
 fn admission_queue<Metadata: ReplayAdmissionMetadata>(
     input: ReplayRuntimeInput,
     mode: ReplayMode,
+    capture_artifacts: bool,
 ) -> ReplayResult<AdmissionQueue<Metadata>> {
     Ok(match input {
         ReplayRuntimeInput::Requests(requests) => AdmissionQueue::new_requests(requests, mode),
@@ -726,7 +726,13 @@ fn admission_queue<Metadata: ReplayAdmissionMetadata>(
             };
             AdmissionQueue::new_generated_requests(requests, max_in_flight)
         }
-        ReplayRuntimeInput::Workload(driver) => AdmissionQueue::new_workload(driver, mode),
+        ReplayRuntimeInput::Workload(mut driver) => {
+            // Arrival hashes are read only by placement metadata and artifacts.
+            if !Metadata::USES_REPLAY_HASHES && !capture_artifacts {
+                driver.disable_replay_hashes();
+            }
+            AdmissionQueue::new_workload(driver, mode)
+        }
     })
 }
 
@@ -823,20 +829,6 @@ fn apply_runtime_determinism(input: &mut ReplayRuntimeInput, determinism: Replay
         ReplayRuntimeInput::Workload(driver) => {
             driver.set_deterministic_request_ids(1);
         }
-    }
-}
-
-/// Skip per-arrival replay hashes when neither placement nor artifact capture
-/// reads them.
-fn skip_unread_replay_hashes<Metadata: ReplayAdmissionMetadata>(
-    input: &mut ReplayRuntimeInput,
-    capture_artifacts: bool,
-) {
-    if !Metadata::USES_REPLAY_HASHES
-        && !capture_artifacts
-        && let ReplayRuntimeInput::Workload(driver) = input
-    {
-        driver.disable_replay_hashes();
     }
 }
 
@@ -1014,11 +1006,11 @@ mod tests {
         assert_ne!(first.uuid, Some(Uuid::from_u128(1)));
     }
 
-    struct KeepsHashes;
+    struct KeepsHashes(Option<ReplayRequestHashes>);
 
     impl ReplayAdmissionMetadata for KeepsHashes {
-        fn from_hashes(_hashes: Option<ReplayRequestHashes>) -> Self {
-            Self
+        fn from_hashes(hashes: Option<ReplayRequestHashes>) -> Self {
+            Self(hashes)
         }
         fn for_prefill(self) -> Self {
             self
@@ -1027,11 +1019,15 @@ mod tests {
             None
         }
         fn into_hashes(self) -> Option<ReplayRequestHashes> {
-            None
+            self.0
         }
     }
 
-    fn first_arrival_has_hashes(skip: impl FnOnce(&mut ReplayRuntimeInput)) -> bool {
+    /// Admit one trace arrival through the runtime's admission queue. Retaining
+    /// artifact hashes exposes whatever the workload driver derived.
+    fn first_arrival_has_hashes<Metadata: ReplayAdmissionMetadata>(
+        capture_artifacts: bool,
+    ) -> bool {
         let trace = Trace {
             block_size: 2,
             sessions: vec![SessionTrace {
@@ -1045,25 +1041,19 @@ mod tests {
                 }],
             }],
         };
-        let mut input = ReplayRuntimeInput::Workload(WorkloadDriver::new_trace(trace, 2).unwrap());
-        skip(&mut input);
-        let ReplayRuntimeInput::Workload(driver) = &mut input else {
-            unreachable!()
-        };
-        driver.pop_ready_compact(0.0, 1)[0].replay_hashes.is_some()
+        let input = ReplayRuntimeInput::Workload(WorkloadDriver::new_trace(trace, 2).unwrap());
+        let mut queue =
+            admission_queue::<Metadata>(input, ReplayMode::Trace, capture_artifacts).unwrap();
+        queue.drain_ready_compact(0.0, 0, true).unwrap()[0]
+            .replay_hashes
+            .is_some()
     }
 
     #[test]
     fn workload_replay_hashes_are_derived_only_when_read() {
-        assert!(!first_arrival_has_hashes(|input| {
-            skip_unread_replay_hashes::<NoReplayMetadata>(input, false)
-        }));
-        assert!(first_arrival_has_hashes(|input| {
-            skip_unread_replay_hashes::<NoReplayMetadata>(input, true)
-        }));
-        assert!(first_arrival_has_hashes(|input| {
-            skip_unread_replay_hashes::<KeepsHashes>(input, false)
-        }));
+        assert!(!first_arrival_has_hashes::<NoReplayMetadata>(false));
+        assert!(first_arrival_has_hashes::<NoReplayMetadata>(true));
+        assert!(first_arrival_has_hashes::<KeepsHashes>(false));
     }
 }
 

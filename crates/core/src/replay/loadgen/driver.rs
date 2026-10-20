@@ -1452,13 +1452,11 @@ impl WorkloadDriver {
             AgenticPreparation::new(
                 &prepared,
                 u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
-                include_replay_hashes,
             )?
         } else {
             AgenticPreparation::with_policy(
                 &prepared,
                 u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
-                include_replay_hashes,
                 policy,
                 primer_idle_cap_ms,
                 speedup,
@@ -2041,9 +2039,6 @@ impl WorkloadDriver {
     /// placement policy or artifact sink reads them.
     pub(crate) fn disable_replay_hashes(&mut self) {
         self.include_replay_hashes = false;
-        if let Some(preparation) = &mut self.agentic_preparation {
-            preparation.disable_replay_hashes();
-        }
     }
 
     pub fn new_trace(trace: Trace, engine_block_size: usize) -> Result<Self> {
@@ -2654,7 +2649,12 @@ impl WorkloadDriver {
         if let Some(preparation) = &mut self.agentic_preparation {
             match preparation.transition() {
                 None if !live_warmup => {
-                    return preparation.pop_ready(now_ms, limit, self.emit_session_metadata);
+                    return preparation.pop_ready(
+                        now_ms,
+                        limit,
+                        self.emit_session_metadata,
+                        self.include_replay_hashes.then_some(self.engine_block_size),
+                    );
                 }
                 None => {}
                 Some(AgenticPreparationTransition::Aborted) => return Vec::new(),
@@ -3899,6 +3899,17 @@ mod tests {
             assert!(request.metadata().tokens.is_empty());
             assert!(request.materialized_tokens().is_none());
             assert_eq!(request.into_direct_request().tokens, vec![1, 2]);
+        }
+    }
+
+    #[test]
+    fn disabled_replay_hashes_cover_full_and_delta_prompts() {
+        for mut driver in [
+            WorkloadDriver::new_trace(two_session_trace(), 1).unwrap(),
+            WorkloadDriver::new_trace_accumulating_deltas(two_session_trace(), 1).unwrap(),
+        ] {
+            driver.disable_replay_hashes();
+            assert!(driver.pop_ready_compact(0.0, 1)[0].replay_hashes.is_none());
         }
     }
 

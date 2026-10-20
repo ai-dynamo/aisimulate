@@ -19,8 +19,9 @@ use crate::replay::protocol::DirectRequest;
 
 #[doc(hidden)]
 pub trait ReplayAdmissionMetadata: Sized {
-    /// Whether [`Self::from_hashes`] keeps the arrival replay hashes. When it
-    /// does not, replay skips deriving them unless artifact capture needs them.
+    /// Set to `false` only when [`Self::from_hashes`] ignores its argument:
+    /// replay then skips deriving arrival hashes and passes `None`, unless
+    /// artifact capture needs them.
     const USES_REPLAY_HASHES: bool = true;
 
     fn from_hashes(hashes: Option<ReplayRequestHashes>) -> Self;
