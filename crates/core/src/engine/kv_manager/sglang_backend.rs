@@ -5,7 +5,7 @@
 //! operations and KV event publishing.
 
 use crate::engine::belady::BeladyOracle;
-use crate::engine::cache::radix_cache::{KvPageId, NodeId, RadixCache};
+use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
     LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
 };
@@ -143,6 +143,9 @@ pub struct SglangKvManager {
     /// concurrent requests hold duplicate pages, are counted in `extra_hash_refs`.
     live_hashes: FxHashSet<SequenceHash>,
     extra_hash_refs: FxHashMap<SequenceHash, usize>,
+    /// Resume point of the last waiting request's admission match. A KV-blocked queue head
+    /// repeats the same whole-prompt match on every pass.
+    admission_match_hint: Option<(uuid::Uuid, PrefixMatchHint)>,
 }
 
 pub struct DecodeTokenReservation {
@@ -237,6 +240,7 @@ impl SglangKvManager {
             page_hash_present: FixedBitSet::with_capacity(event_pages),
             live_hashes: FxHashSet::default(),
             extra_hash_refs: FxHashMap::default(),
+            admission_match_hint: None,
         }
     }
 
@@ -296,6 +300,24 @@ impl SglangKvManager {
 
     pub fn cache(&self) -> &RadixCache {
         &self.cache
+    }
+
+    /// Read-only whole-prompt match for a waiting request (`Req.init_next_round_input`).
+    pub(crate) fn admission_prefix_match(
+        &mut self,
+        request: uuid::Uuid,
+        page_keys: &[LocalBlockHash],
+    ) -> usize {
+        let mut hint = self
+            .admission_match_hint
+            .take()
+            .and_then(|(id, hint)| (id == request).then_some(hint));
+        let matched = self
+            .cache
+            .prefix_match_hashes_len_hinted(page_keys, &mut hint);
+        debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
+        self.admission_match_hint = hint.map(|hint| (request, hint));
+        matched
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
