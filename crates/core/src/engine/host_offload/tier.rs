@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, VecDeque};
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{HostOffloadObservation, HostOffloadObservationData, HostOffloadObserver};
@@ -125,6 +126,8 @@ enum EntryState {
 struct Entry {
     state: EntryState,
     load_pins: usize,
+    /// This block's [`Lru`] node while it is resident and unpinned.
+    lru_slot: Option<NonZeroU32>,
 }
 
 /// Declaration order is the same-timestamp completion order.
@@ -177,46 +180,59 @@ impl Ord for Deadline {
 
 /// Recency for resident, currently unpinned blocks.
 ///
-/// A framework operation may make several blocks evictable at once. They share
-/// one epoch because vLLM exposes no stable policy order within its Python-set
-/// completion cohort; `HostBlockKey` is only a deterministic tie-break.
-#[derive(Default)]
+/// A framework operation may make several blocks evictable at once. They are
+/// one cohort because vLLM exposes no stable policy order within its Python-set
+/// completion cohort; `HostBlockKey` is only a deterministic tie-break, so a
+/// cohort becomes newest in key order.
+///
+/// Blocks form a circular doubly linked list over a slab, so a touch or removal
+/// relinks in O(1). Each block's [`Entry::lru_slot`] names its node; node 0 is
+/// the sentinel between the newest and oldest blocks.
 struct Lru {
-    clock: u64,
-    touched_at: FxHashMap<HostBlockKey, u64>,
-    oldest_first: BTreeSet<(u64, HostBlockKey)>,
+    nodes: Vec<LruNode>,
+    /// Unlinked nodes reused before the slab grows.
+    vacant: Vec<NonZeroU32>,
+}
+
+#[derive(Clone, Copy)]
+struct LruNode {
+    key: HostBlockKey,
+    older: u32,
+    newer: u32,
+}
+
+const SENTINEL: u32 = 0;
+
+impl Default for Lru {
+    fn default() -> Self {
+        Self {
+            nodes: vec![LruNode {
+                key: HostBlockKey::new(0),
+                older: SENTINEL,
+                newer: SENTINEL,
+            }],
+            vacant: Vec::new(),
+        }
+    }
 }
 
 impl Lru {
-    fn next_epoch(&mut self) -> u64 {
-        self.clock = self.clock.checked_add(1).expect("host LRU clock overflow");
-        self.clock
+    /// Make `key` the newest block, linking a node into `slot` on first touch.
+    fn touch(&mut self, slot: &mut Option<NonZeroU32>, key: HostBlockKey) {
+        let node = match *slot {
+            Some(node) => {
+                self.unlink(node);
+                node
+            }
+            None => *slot.insert(self.allocate(key)),
+        };
+        self.push_newest(node);
     }
 
-    fn touch_at(&mut self, key: HostBlockKey, epoch: u64) {
-        self.remove(key);
-        self.touched_at.insert(key, epoch);
-        assert!(self.oldest_first.insert((epoch, key)));
-    }
-
-    fn touch(&mut self, key: HostBlockKey) {
-        let epoch = self.next_epoch();
-        self.touch_at(key, epoch);
-    }
-
-    fn touch_cohort(&mut self, keys: &[HostBlockKey]) {
-        if keys.is_empty() {
-            return;
-        }
-        let epoch = self.next_epoch();
-        for key in keys {
-            self.touch_at(*key, epoch);
-        }
-    }
-
-    fn remove(&mut self, key: HostBlockKey) {
-        if let Some(timestamp) = self.touched_at.remove(&key) {
-            assert!(self.oldest_first.remove(&(timestamp, key)));
+    fn remove(&mut self, slot: &mut Option<NonZeroU32>) {
+        if let Some(node) = slot.take() {
+            self.unlink(node);
+            self.vacant.push(node);
         }
     }
 
@@ -225,12 +241,54 @@ impl Lru {
         count: usize,
         mut is_eligible: impl FnMut(HostBlockKey) -> bool,
     ) -> Vec<HostBlockKey> {
-        self.oldest_first
-            .iter()
-            .map(|(_, key)| *key)
+        self.oldest_first()
             .filter(|key| is_eligible(*key))
             .take(count)
             .collect()
+    }
+
+    fn oldest_first(&self) -> impl Iterator<Item = HostBlockKey> + '_ {
+        let mut node = self.nodes[SENTINEL as usize].newer;
+        std::iter::from_fn(move || {
+            (node != SENTINEL).then(|| {
+                let LruNode { key, newer, .. } = self.nodes[node as usize];
+                node = newer;
+                key
+            })
+        })
+    }
+
+    fn allocate(&mut self, key: HostBlockKey) -> NonZeroU32 {
+        if let Some(node) = self.vacant.pop() {
+            self.nodes[node.get() as usize].key = key;
+            return node;
+        }
+        let node = u32::try_from(self.nodes.len())
+            .ok()
+            .and_then(NonZeroU32::new)
+            .expect("host LRU node overflow");
+        self.nodes.push(LruNode {
+            key,
+            older: SENTINEL,
+            newer: SENTINEL,
+        });
+        node
+    }
+
+    fn unlink(&mut self, node: NonZeroU32) {
+        let LruNode { older, newer, .. } = self.nodes[node.get() as usize];
+        self.nodes[older as usize].newer = newer;
+        self.nodes[newer as usize].older = older;
+    }
+
+    fn push_newest(&mut self, node: NonZeroU32) {
+        let node = node.get();
+        let newest = self.nodes[SENTINEL as usize].older;
+        let linked = &mut self.nodes[node as usize];
+        linked.older = newest;
+        linked.newer = SENTINEL;
+        self.nodes[newest as usize].newer = node;
+        self.nodes[SENTINEL as usize].older = node;
     }
 }
 
@@ -531,13 +589,13 @@ impl HostTier {
         }
 
         for victim in &victims {
-            let entry = self
+            let mut entry = self
                 .entries
                 .remove(victim)
                 .expect("selected host victim disappeared");
             assert_eq!(entry.state, EntryState::Resident);
             assert_eq!(entry.load_pins, 0);
-            self.lru.remove(*victim);
+            self.lru.remove(&mut entry.lru_slot);
             self.observe(HostOffloadObservation {
                 request_id,
                 event: HostOffloadObservationData::Evicted {
@@ -571,6 +629,7 @@ impl HostTier {
                         Entry {
                             state: EntryState::PendingStore { transfer_id },
                             load_pins: 0,
+                            lru_slot: None,
                         },
                     )
                     .is_none()
@@ -647,7 +706,7 @@ impl HostTier {
             assert_eq!(entry.state, EntryState::PendingStore { transfer_id: id });
             entry.state = EntryState::Resident;
             if entry.load_pins == 0 {
-                self.lru.touch(*key);
+                self.lru.touch(&mut entry.lru_slot, *key);
             }
         }
         self.mark_resident(&transfer.blocks);
@@ -693,11 +752,12 @@ impl HostTier {
     #[cfg(test)]
     pub(crate) fn pin_external(&mut self, keys: &[HostBlockKey]) {
         for key in keys {
-            self.entries
+            let entry = self
+                .entries
                 .get_mut(key)
-                .expect("G3 pin requires G2 ownership")
-                .load_pins += 1;
-            self.lru.remove(*key);
+                .expect("G3 pin requires G2 ownership");
+            entry.load_pins += 1;
+            self.lru.remove(&mut entry.lru_slot);
         }
     }
 
@@ -820,12 +880,23 @@ impl HostTier {
     /// Apply framework-defined recency order. Not-ready or pinned blocks are
     /// outside vLLM's evictable LRU and ignore ordinary touches.
     pub(crate) fn touch(&mut self, key: HostBlockKey) {
-        if self
-            .entries
-            .get(&key)
-            .is_some_and(|entry| entry.state == EntryState::Resident && entry.load_pins == 0)
+        if let Some(entry) = self.entries.get_mut(&key)
+            && entry.state == EntryState::Resident
+            && entry.load_pins == 0
         {
-            self.lru.touch(key);
+            self.lru.touch(&mut entry.lru_slot, key);
+        }
+    }
+
+    /// Make blocks that became evictable together the newest, in key order.
+    fn touch_cohort(&mut self, keys: &mut [HostBlockKey]) {
+        keys.sort_unstable();
+        for key in keys {
+            let entry = self
+                .entries
+                .get_mut(key)
+                .expect("evictable host block disappeared");
+            self.lru.touch(&mut entry.lru_slot, *key);
         }
     }
 
@@ -860,7 +931,7 @@ impl HostTier {
                 .get_mut(key)
                 .expect("validated host load source disappeared");
             if entry.load_pins == 0 {
-                self.lru.remove(*key);
+                self.lru.remove(&mut entry.lru_slot);
             }
             entry.load_pins = entry
                 .load_pins
@@ -1026,7 +1097,7 @@ impl HostTier {
                 entry.load_pins += usize::from(hold);
             }
             if !hold {
-                self.lru.touch_cohort(&blocks);
+                self.touch_cohort(&mut blocks.clone());
             }
             self.mark_resident(&blocks);
             self.observe(HostOffloadObservation {
@@ -1214,7 +1285,7 @@ impl HostTier {
                 newly_unpinned.push(*key);
             }
         }
-        self.lru.touch_cohort(&newly_unpinned);
+        self.touch_cohort(&mut newly_unpinned);
     }
 
     /// Private lanes require due completions to be ticked first; a shared pool
@@ -1274,6 +1345,9 @@ fn assert_valid_time(label: &str, time_ms: f64) {
 pub(crate) mod tests {
     use std::sync::Mutex;
 
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
     use super::*;
 
     pub(crate) const C: u64 = 0;
@@ -1330,6 +1404,52 @@ pub(crate) mod tests {
                 Transport::Fair { .. } => unreachable!(),
             }
         }
+    }
+
+    impl Lru {
+        /// Bounded so that a corrupted, cyclic list fails the comparison.
+        fn order(&self) -> Vec<HostBlockKey> {
+            self.oldest_first().take(self.nodes.len()).collect()
+        }
+    }
+
+    #[test]
+    fn lru_matches_move_to_back_list() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut lru = Lru::default();
+        // `HostTier` keeps each block's node in its entry.
+        let mut slots = [None; 64];
+        let mut expected = Vec::new();
+        for _ in 0..20_000 {
+            let index = rng.random_range(0..slots.len());
+            let block = key(index as u64);
+            match rng.random_range(0..3) {
+                0 => {
+                    lru.touch(&mut slots[index], block);
+                    expected.retain(|key| *key != block);
+                    expected.push(block);
+                }
+                1 => {
+                    lru.remove(&mut slots[index]);
+                    expected.retain(|key| *key != block);
+                }
+                _ => {
+                    let count = rng.random_range(0..8);
+                    let skipped = rng.random_range(0..3);
+                    let is_eligible = |key: HostBlockKey| key.sequence_hash() % 3 != skipped;
+                    let victims: Vec<_> = expected
+                        .iter()
+                        .copied()
+                        .filter(|key| is_eligible(*key))
+                        .take(count)
+                        .collect();
+                    assert_eq!(lru.victims(count, is_eligible), victims);
+                }
+            }
+            assert_eq!(lru.order(), expected);
+        }
+        // Removed nodes are reused: the slab holds at most every key plus the sentinel.
+        assert!(lru.nodes.len() <= slots.len() + 1);
     }
 
     #[derive(Debug, PartialEq)]
@@ -1534,7 +1654,7 @@ pub(crate) mod tests {
                 assert_eq!(a.entries[&k].load_pins, b.entries[&k].load_pins);
                 assert_eq!(a.entries[&k].state, b.entries[&k].state);
             }
-            assert_eq!(a.lru.oldest_first, b.lru.oldest_first);
+            assert_eq!(a.lru.order(), b.lru.order());
             if cancel {
                 assert!(a.cancel_load(C, ia, 1.0, 1.0));
                 assert!(b.cancel_load(C, ib, 1.0, 1.0));
@@ -1542,7 +1662,7 @@ pub(crate) mod tests {
                 a.tick(C, 3.0);
                 b.tick(C, 3.0);
             }
-            assert_eq!(a.lru.oldest_first, b.lru.oldest_first);
+            assert_eq!(a.lru.order(), b.lru.order());
             for k in [key(1), key(2), key(3), key(4)] {
                 assert_eq!(a.entries[&k].load_pins, 0);
                 assert_eq!(b.entries[&k].load_pins, 0);
@@ -1561,7 +1681,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pending_touches_are_ignored_and_completion_shares_one_epoch() {
+    fn pending_touches_are_ignored_and_completion_is_one_cohort() {
         let mut tier = tier(2);
         let StoreOutcome::Prepared { transfer_id, .. } =
             tier.prepare_store(C, request_id(), &[key(2), key(1)], None, 0.0)
@@ -1572,10 +1692,10 @@ pub(crate) mod tests {
         // vLLM excludes ref_cnt=-1 entries from its evictable LRU.
         tier.touch(key(2));
         tier.touch(key(1));
-        assert!(tier.lru.touched_at.is_empty());
+        assert!(tier.lru.order().is_empty());
         tier.submit_prepared_stores(C, 0.0);
         tier.tick(C, tier.transfer_deadline(transfer_id).unwrap());
-        assert_eq!(tier.lru.touched_at[&key(1)], tier.lru.touched_at[&key(2)]);
+        assert_eq!(tier.lru.order(), [key(1), key(2)]);
 
         assert!(matches!(
             tier.prepare_store(C, request_id(), &[key(3)], None, 2.0),
@@ -1590,11 +1710,10 @@ pub(crate) mod tests {
     #[test]
     fn older_completion_cohort_is_exhausted_before_newer_cohort() {
         let mut tier = tier(3);
-        let mut now = make_resident(&mut tier, &[key(1), key(2)], 0.0);
-        let older_epoch = tier.lru.touched_at[&key(1)];
-        assert_eq!(older_epoch, tier.lru.touched_at[&key(2)]);
+        let mut now = make_resident(&mut tier, &[key(2), key(1)], 0.0);
+        assert_eq!(tier.lru.order(), [key(1), key(2)]);
         now = make_resident(&mut tier, &[key(3)], now);
-        assert!(older_epoch < tier.lru.touched_at[&key(3)]);
+        assert_eq!(tier.lru.order(), [key(1), key(2), key(3)]);
 
         let StoreOutcome::Prepared { transfer_id, .. } =
             tier.prepare_store(C, request_id(), &[key(4)], None, now)
@@ -1675,19 +1794,15 @@ pub(crate) mod tests {
         let mut tier = tier(3);
         let mut now = make_resident(&mut tier, &[key(1), key(2)], 0.0);
         now = make_resident(&mut tier, &[key(3)], now);
-        let third_epoch = tier.lru.touched_at[&key(3)];
         let LoadOutcome::Queued(load) =
-            tier.schedule_load(C, request_id(), &[key(1), key(2)], now, now)
+            tier.schedule_load(C, request_id(), &[key(2), key(1)], now, now)
         else {
             panic!("resident blocks should load")
         };
-        assert!(!tier.lru.touched_at.contains_key(&key(1)));
-        assert!(!tier.lru.touched_at.contains_key(&key(2)));
+        assert_eq!(tier.lru.order(), [key(3)]);
         tier.touch(key(1));
         assert!(tier.cancel_load(C, load, now, now));
-        let reentry_epoch = tier.lru.touched_at[&key(1)];
-        assert_eq!(reentry_epoch, tier.lru.touched_at[&key(2)]);
-        assert!(third_epoch < reentry_epoch);
+        assert_eq!(tier.lru.order(), [key(3), key(1), key(2)]);
 
         assert!(matches!(
             tier.prepare_store(C, request_id(), &[key(4)], None, now),

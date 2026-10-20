@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
-  "revision": "08771888388a1ce9cd8d421b2e42f353fd5e2abb",
+  "revision": "21c7ea4bf528db1426e3184846eda6cdf7208cff",
   "profiles": {
     "gb300-vllm-fp8-tp2": {
       "admission": "serving",
@@ -434,6 +434,54 @@
           "sha256": "e0a7041d7637068073aa0ec8c08f4fc09a24a45d24e477af4f3f08870fcdfa11"
         }
       ]
+    },
+    "b300-vllm-fp8-tp4": {
+      "admission": "development",
+      "files": [
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/b300-sxm/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.parquet",
+          "sha256": "a3e696a41246b36fe872a1de786fd0b98df71014e9c5fc11dd73c990b8e0a0b1",
+          "target": "data/b300_sxm/vllm/0.31.0/fpm_forward_perf.parquet"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/b300-sxm/vllm/0.31.0/pure-tp4/fpm/fpm_forward_perf.metadata.json",
+          "sha256": "c89585e1958baaecdb7a29a676e4a02c1a2d6bcd76315a4d510258d1db48827a",
+          "target": "data/b300_sxm/vllm/0.31.0/fpm_forward_perf.metadata.json"
+        },
+        {
+          "path": "data/zai-org--GLM-5.3-Flash/b300-sxm/vllm/0.31.0/pure-tp4/fpm/provenance/systems.b300_sxm.yaml",
+          "sha256": "1d1a193aeb61b21ced4504c4ad93f8cc00f3e61c6b2df3d2e33ca34590afb4c2",
+          "target": "b300_sxm.yaml"
+        }
+      ],
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "vllm",
+        "backend_version": "0.31.0",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "none",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "glm53flash_native_precision_partition",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "3629e61bd81c30ebb89878aed0270ba4092206ce0d7003a47eafdec0d4aee3d0",
+        "model_path": "zai-org/GLM-5.3-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "fp8_block",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b300_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      }
     }
   }
 }
