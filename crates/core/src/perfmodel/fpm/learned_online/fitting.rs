@@ -679,6 +679,9 @@ fn update_structure(
 
 struct EagerResult {
     store: LearnedStore,
+    first_mutable_tree: usize,
+    /// Replacements for the mutable suffix only; the frozen prefix stays owned
+    /// by the original learner throughout fitting and publication.
     states: Vec<TreeState>,
     recent_gradients: Vec<Vec<f64>>,
     rebuilt: u64,
@@ -692,7 +695,8 @@ fn eager_fit(
 ) -> Result<EagerResult, AicError> {
     let mut replacement = store.clone(); // Small prediction arrays, never the N×T learner.
     let mut prefix = vec![store.baseline; rows.len()];
-    let mut states = Vec::with_capacity(store.trees.len());
+    let start = mutable_start(config, store.trees.len());
+    let mut states = Vec::with_capacity(store.trees.len() - start);
     let mut recent_gradients = if lazy(config) {
         vec![vec![0.0; store.trees.len()]; rows.recent.len()]
     } else {
@@ -700,10 +704,8 @@ fn eager_fit(
     };
     let mut rebuilt = 0;
     let weights = GroupWeights::new(config, rows.anchors.original_rows(), rows.recent.len());
-    let start = mutable_start(config, store.trees.len());
     for (index, tree) in replacement.trees.iter_mut().enumerate() {
         if index < start {
-            states.push(state.trees[index].clone());
             for (i, p) in prefix.iter_mut().enumerate() {
                 *p += tree.value[leaf_index(tree, rows.x(i))];
             }
@@ -775,6 +777,7 @@ fn eager_fit(
     }
     Ok(EagerResult {
         store: replacement,
+        first_mutable_tree: start,
         states,
         recent_gradients,
         rebuilt,
@@ -1100,7 +1103,14 @@ pub(super) fn fit_batch(
     };
     let result = eager_fit(state, store, config, &rows)?;
     validate_prediction_range(&result.store, target)?;
-    state.trees = result.states;
+    // No original training state was touched while fitting. Once every
+    // fallible check passes, publish only the staged mutable-tree states.
+    for (current, replacement) in state.trees[result.first_mutable_tree..]
+        .iter_mut()
+        .zip(result.states)
+    {
+        *current = replacement;
+    }
     state.recent.retain(|row| retained_ids.contains(&row.id));
     state.recent.extend(
         std::mem::take(&mut state.pending)

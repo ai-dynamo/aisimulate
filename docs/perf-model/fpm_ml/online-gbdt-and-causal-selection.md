@@ -245,8 +245,13 @@ Ordinary prediction remains a feature build and tree traversal; it does not
 scan training history or recent feedback. Updates pay for retained rows,
 histograms and any rebuilt regions. Grouping reduces historical traversal from
 original rows to complete-bin representatives, while eager refresh still visits
-the whole retained fitting population. Lazy fitting trades some derivative
-freshness for cheaper insertions and evictions; it does not eliminate periodic
+the whole retained fitting population. With `mutable_tree_tail`, eager fitting
+stages and publishes replacement training state only for that tail; frozen
+histograms, split candidates and region arrays retain their existing allocations.
+The frozen trees still contribute to prefix predictions, and the candidate
+forest still copies the small prediction arrays for validation before publication.
+Lazy fitting trades some derivative freshness for cheaper insertions and
+evictions; it does not eliminate periodic
 full work. Track original history count, stored representative count, recent
 and pending counts, update/fallback counts and retained bytes separately in
 `learned_online_diagnostics()`. Host update cost and predicted serving latency

@@ -1264,6 +1264,193 @@ fn mutable_tail_and_update_step_preserve_frozen_seed_and_convex_leaf_displacemen
     checkpoint::validate_state(&learner, &model).unwrap();
 }
 
+fn structural_tail_fixture(
+    mut config: FpmLearnedConfig,
+    learning_rate: f64,
+) -> (OnlineLearner, LearnedForwardPassModel) {
+    config.mutable_tree_tail = Some(1);
+    let mut first = split(0, true);
+    first.value[1..].fill(1.0);
+    let mut second = split(1, true);
+    second.value[1..].fill(2.0);
+    fixture(
+        config,
+        &[&[0.0, 0.0], &[0.0, 1.0], &[1.0, 0.0], &[1.0, 1.0]],
+        &[14.0, 22.0, 14.0, 22.0],
+        10.0,
+        vec![first, second, split(0, true)],
+        settings(learning_rate, 0.0),
+    )
+}
+
+fn structural_tree_allocations(tree: &TreeState) -> Vec<usize> {
+    // Empty Vec pointers cannot establish allocation identity. This fixture
+    // must exercise the structural buffers that freezing a prefix should retain.
+    assert!(!tree.stats.is_empty());
+    assert!(tree.stats.iter().any(|node| !node.histogram.is_empty()));
+    assert!(
+        tree.candidates
+            .iter()
+            .any(|candidates| !candidates.is_empty())
+    );
+    assert!(tree.regions.iter().all(|region| !region.is_empty()));
+    let mut pointers = vec![
+        tree.stats.as_ptr() as usize,
+        tree.candidates.as_ptr() as usize,
+        tree.regions.as_ptr() as usize,
+    ];
+    pointers.extend(
+        tree.stats
+            .iter()
+            .filter(|node| !node.histogram.is_empty())
+            .map(|node| node.histogram.as_ptr() as usize),
+    );
+    pointers.extend(
+        tree.candidates
+            .iter()
+            .filter(|candidates| !candidates.is_empty())
+            .map(|candidates| candidates.as_ptr() as usize),
+    );
+    pointers.extend(tree.regions.iter().map(|region| region.as_ptr() as usize));
+    pointers
+}
+
+fn fixture_prediction(model: &LearnedForwardPassModel, x: &[f64]) -> f64 {
+    use super::super::learned::{IterationFeatureVector, feature_names};
+    let names = feature_names();
+    let mut features = IterationFeatureVector {
+        values: vec![f64::NAN; names.len()],
+        request_lists: false,
+    };
+    for (name, value) in model.feature_names().iter().zip(x) {
+        features.values[names.iter().position(|entry| entry == name).unwrap()] = *value;
+    }
+    model.predict_ms(KIND, &features).unwrap().unwrap()
+}
+
+#[test]
+fn mutable_tail_eager_publication_preserves_frozen_structural_allocations() {
+    for (refresh, interval, expected_eager, expected_lazy, expected_fallbacks) in [
+        (LearnedDerivativeRefresh::Eager, 32, 3, 0, 0),
+        (LearnedDerivativeRefresh::Lazy, 1, 3, 0, 0),
+        (LearnedDerivativeRefresh::Lazy, 2, 2, 1, 1),
+    ] {
+        let mut config = controls(LearnedUpdateMode::Structural, refresh);
+        config.eager_refresh_interval = interval;
+        let (mut learner, mut model) = structural_tail_fixture(config, 1.0);
+        let frozen_bytes = bincode::serialize(&learner.stores[&KIND].trees[..2]).unwrap();
+        let frozen_allocations: Vec<_> = learner.stores[&KIND].trees[..2]
+            .iter()
+            .map(structural_tree_allocations)
+            .collect();
+        let frozen_predictors = model.store(KIND).unwrap().trees[..2].to_vec();
+        let mut previous_tail = model.store(KIND).unwrap().trees[2].clone();
+        // Frozen prefix = 10 + 1 + 2 = 13. The optimal tail splits on feature 1.
+        // Left residuals are [1, 1, 1], then [1, 1, 1, 5], then [1, 1, 1, 5, 9],
+        // giving means 1, 2, 3.4; its two right residuals remain 9 throughout.
+        for (label, expected_left) in [(14.0, 14.0), (18.0, 15.0), (22.0, 16.4)] {
+            learner
+                .observe(KIND, vec![0.0, 0.0], label, &mut model)
+                .unwrap();
+            let state = &learner.stores[&KIND];
+            assert_eq!(bincode::serialize(&state.trees[..2]).unwrap(), frozen_bytes);
+            assert_eq!(
+                state.trees[..2]
+                    .iter()
+                    .map(structural_tree_allocations)
+                    .collect::<Vec<_>>(),
+                frozen_allocations,
+            );
+            let trees = &model.store(KIND).unwrap().trees;
+            assert_eq!(&trees[..2], frozen_predictors.as_slice());
+            assert_ne!(trees[2], previous_tail);
+            assert_eq!(trees[2].feature[0], 1);
+            close(fixture_prediction(&model, &[1.0, 0.0]), expected_left);
+            close(fixture_prediction(&model, &[1.0, 1.0]), 22.0);
+            previous_tail = trees[2].clone();
+            checkpoint::validate_state(&learner, &model).unwrap();
+        }
+        let counters = &learner.stores[&KIND].counters;
+        assert_eq!(counters.eager_updates, expected_eager);
+        assert_eq!(counters.lazy_updates, expected_lazy);
+        assert_eq!(counters.lazy_fallbacks, expected_fallbacks);
+        assert!(counters.rebuilt_nodes > 0);
+    }
+}
+
+#[test]
+fn mutable_tail_prediction_range_failure_preserves_allocations_and_retries() {
+    for (refresh, interval) in [
+        (LearnedDerivativeRefresh::Eager, 32),
+        (LearnedDerivativeRefresh::Lazy, 1),
+        (LearnedDerivativeRefresh::Lazy, 32),
+    ] {
+        let mut config = controls(LearnedUpdateMode::Structural, refresh);
+        config.update_every = 2;
+        config.eager_refresh_interval = interval;
+        let (mut learner, model) = structural_tail_fixture(config, 100.0);
+        let mut artifact = model.artifact();
+        artifact.target = LearnedTarget::LogMs;
+        let mut model = LearnedForwardPassModel::from_artifact(artifact).unwrap();
+        learner
+            .observe(KIND, vec![0.0, 0.0], 14.0_f64.exp(), &mut model)
+            .unwrap();
+        let before_state = state_bytes(&learner.stores[&KIND]);
+        let before_model = model.artifact();
+        let allocations: Vec<_> = learner.stores[&KIND]
+            .trees
+            .iter()
+            .map(structural_tree_allocations)
+            .collect();
+        // All fitting arithmetic is finite: right residual 9 produces leaf 900
+        // at eta 100. Final link-range validation rejects raw upper 13 + 900 = 913.
+        let error = learner.flush(KIND, &mut model).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("updated prediction range can overflow")
+        );
+        let state = &learner.stores[&KIND];
+        assert_eq!(state_bytes(state), before_state);
+        assert_eq!(model.artifact(), before_model);
+        assert_eq!(
+            state
+                .trees
+                .iter()
+                .map(structural_tree_allocations)
+                .collect::<Vec<_>>(),
+            allocations,
+        );
+        assert_eq!(learner.version, 0);
+        assert_eq!(state.pending.len(), 1);
+        assert!(state.recent.is_empty());
+        assert_eq!(state.counters.accepted, 1);
+        assert_eq!(state.counters.failures, 1);
+        assert_eq!(state.counters.publications, 0);
+
+        learner
+            .stores
+            .get_mut(&KIND)
+            .unwrap()
+            .settings
+            .learning_rate = 1.0;
+        assert!(learner.flush(KIND, &mut model).unwrap());
+        assert_eq!(learner.version, 1);
+        assert!(learner.stores[&KIND].pending.is_empty());
+        assert_eq!(learner.stores[&KIND].recent.len(), 1);
+        assert_eq!(
+            learner.stores[&KIND].trees[..2]
+                .iter()
+                .map(structural_tree_allocations)
+                .collect::<Vec<_>>(),
+            allocations[..2],
+        );
+        close(fixture_prediction(&model, &[1.0, 0.0]).ln(), 14.0);
+        close(fixture_prediction(&model, &[1.0, 1.0]).ln(), 22.0);
+        checkpoint::validate_state(&learner, &model).unwrap();
+    }
+}
+
 #[test]
 fn weighted_configuration_round_trip_and_invalid_values() {
     let mut config = controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Lazy);
