@@ -15,9 +15,11 @@ from aisimulate_core.sdk import fpm_learned
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
 from .fpm_reference import reference_predict_ms
+from .fpm_training_support import import_sklearn
+from .fpm_training_support import isolate_training_dependencies as isolate_training_dependencies
 
 pytestmark = pytest.mark.unit
-pytest.importorskip("sklearn")
+import_sklearn()
 pytest.importorskip("pyarrow")
 
 IDENTITY = {
