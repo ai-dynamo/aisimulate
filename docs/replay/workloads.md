@@ -72,7 +72,7 @@ the current SA convention.
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object with required unsigned 64-bit `seed` (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. See [snapshot](#agentic-snapshot). |
-| `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane. Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
+| `traffic.load.agentic_snapshot.initial_selections` | unset | `x` | `-` | Exact initial `{source_play_id, t_star_ms}` selections in lane order, one per lane, in the loaded graph's clock (Weka: per-play relative milliseconds). Requires `corpus_cursor`. Unset retains the original seed-based sampler. |
 | `traffic.load.agentic_snapshot.corpus_cursor` | unset | `x` | `-` | Unsigned 64-bit next sequential corpus draw, including any skipped initial draws. Requires `initial_selections` and must be at least the lane count. Recycled plays start at turn zero. |
 | `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Primes caches before measurement; see [warmup](#agentic-warmup). |
 | `traffic.load.agentic_profile` | `null` (unset) | `x` | `-` | Optional object; `{}` enables continuous lane replenishment with the defaults below. Requires `trace_timestamps`, positive `agentic_lanes`, and `agentic_snapshot`; cannot be combined with `traffic.stop.max_virtual_time_seconds`. Unset preserves finite replay. See [continuous profile](#agentic-profile). |
@@ -352,7 +352,11 @@ agentic_snapshot:
 one selection per lane and a cursor at least as large as the selection count.
 Selections are in lane order. Each source ID must exist in the exact input
 corpus and each cut must lie within that play's request-start bounds. Cuts
-are in source milliseconds, before `speedup`; they are never re-sampled or
+are in the **loaded graph's clock**, before `speedup`: Weka subtracts the
+earliest request timestamp in each complete play, including child streams,
+whereas Agentic Mooncake retains its recorded source clock. Branch/spawn marker
+times are not request starts and do not define the origin. The importer does
+not guess a clock basis or convert untagged cuts; they are never re-sampled or
 silently replaced. Repeated source plays still get distinct lane/cache
 identities. Preserve the source corpus bytes/order, reference revision and
 selection artifact alongside the replay configuration.
@@ -374,8 +378,8 @@ in the **pinned AIPerf environment** (its existing dependencies are required):
 python scripts/prediction_regression/export_agentx_snapshots.py \
   --aiperf-source /path/to/aiperf-at-754356e9 \
   --metadata reference-dataset-metadata.json \
-  --source-play-map source-play-map.json --lanes 15 --seed 42 \
-  > snapshot-options.json 2> snapshot-provenance.jsonl
+  --source-play-map source-play-map.json --trace-format weka \
+  --lanes 15 --seed 42 --output snapshot-options.json
 ```
 
 `reference-dataset-metadata.json` is the reference loader's
@@ -387,10 +391,26 @@ metadata must match the replay corpus order and each root mapping must identify
 the corresponding source play; do not sort either input. The importer validates
 IDs and cut bounds, but cannot infer or verify reference corpus order from a
 cursor alone. A wrong mapping/order is not a valid parity comparison.
-Paste the emitted JSON object under `traffic.load.agentic_snapshot`.
+The required `--trace-format` selects the target loader clock explicitly:
+`weka` subtracts the minimum request start across each selected reference tree;
+`agentic_mooncake` leaves source-clock cuts unchanged. It uses the pinned
+metadata's millisecond turn timestamps, not seconds or branch markers. The
+reference and replay loaders must represent the same complete request tree
+and nested timestamp interpretation. Missing children, ambiguous trees or
+missing/nonfinite request timestamps in a selected tree fail explicitly;
+do not invent an origin for an unmappable corpus. Existing exports made before
+this conversion fix must be regenerated for nonzero-origin Weka plays, even
+if their old cut happens to fall within the normalized bounds.
+
+Paste the emitted JSON object under `traffic.load.agentic_snapshot`. Keep the
+automatically written `snapshot-options.json.provenance.json` beside it: it
+records the pinned revision, metadata/map/output SHA-256 hashes, root order,
+clock basis and each lane's raw cut, origin and converted cut. Both output
+paths must be new. For importable JSON on stdout, omit `--output` and provide
+`--provenance-out snapshot-provenance.json`; the sidecar is persisted before
+anything is printed to stdout.
 The exporter verifies the source revision and clean source tree, invokes the
-reference `TrajectorySource` directly, and records input hashes and corpus
-order on stderr. It fails on unsupported samplers, timestamp-less trajectories,
+reference `TrajectorySource` directly. It fails on unsupported samplers, timestamp-less trajectories,
 or incomplete lane selection. Neither AIPerf nor NumPy becomes an AISimulate
 runtime dependency.
 
