@@ -188,6 +188,33 @@ fn glm53_tables(op: &Op, tables: &mut std::collections::BTreeSet<&'static str>) 
 }
 
 /// Engine-construction guard shared by every entry point (forward-pass model,
+/// `EngineHandle`, `InferenceSession`, CLI) in every database mode: applies
+/// the SM90 GLM-5.3-Flash sparse-KV rule to every attention op, including
+/// ops nested in token-scale, overlap and fallback wrappers. No table is read.
+pub(super) fn validate_glm53_kv<'a>(
+    db: &PerfDatabase,
+    ops: impl Iterator<Item = &'a Op>,
+) -> Result<(), AicError> {
+    fn visit(db: &PerfDatabase, op: &Op) -> Result<(), AicError> {
+        match op {
+            Op::Glm53Attention(attention) => validate_glm53_kv_capability(db, attention),
+            Op::TokenScale(o) => visit(db, &o.op),
+            Op::Overlap(o) => o
+                .group_a
+                .iter()
+                .chain(&o.group_b)
+                .try_for_each(|c| visit(db, c)),
+            Op::Fallback(o) => {
+                visit(db, &o.primary)?;
+                o.fallback.iter().try_for_each(|c| visit(db, c))
+            }
+            _ => Ok(()),
+        }
+    }
+    ops.into_iter().try_for_each(|op| visit(db, op))
+}
+
+/// Engine-construction guard shared by every entry point (forward-pass model,
 /// `InferenceSession`, CLI): a SILICON engine containing GLM-5.3-Flash ops
 /// must not load any of their tables from a borrowed source. Other models
 /// and other modes are untouched.
@@ -850,6 +877,58 @@ mod tests {
                         ));
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn glm53_fp8_sparse_kv_is_rejected_by_every_engine_build_on_sm90() {
+        // Engine::build is shared by EngineHandle, InferenceSession and the
+        // forward-pass model, so the rule holds without readiness validation.
+        let root = systems();
+        for (sm, rejected) in [(Some(90), true), (Some(100), false), (None, false)] {
+            let path = root.path().join("b200_sxm.yaml");
+            let mut spec: serde_yaml::Value =
+                serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            spec["gpu"]["sm_version"] = serde_yaml::to_value(sm).unwrap();
+            std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+            for mode in [DatabaseMode::Hybrid, DatabaseMode::Sol] {
+                let build = |kv| {
+                    let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                        .unwrap()
+                        .with_mode(mode, TransferPolicy::ALL);
+                    let config = serde_json::from_value(serde_json::json!({
+                        "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+                        "model_name": "glm-fixture",
+                        "system_name": "b200_sxm", "backend": "vllm", "backend_version": "0.24.0",
+                        "tp_size": 2, "pp_size": 1, "database_mode": mode,
+                    }))
+                    .unwrap();
+                    let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                    sparse.checkpoint_format = "fp8".into();
+                    sparse.kv_cache_dtype = kv;
+                    let mut decode = sparse.clone();
+                    decode.is_context = false;
+                    // Generation op nested in a token-scale wrapper.
+                    let generation = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                        op: Box::new(Op::Glm53Attention(decode)),
+                        numerator: 1,
+                        denominator: 1,
+                    });
+                    Engine::build(
+                        EngineSpec::new(config, vec![Op::Glm53Attention(sparse)], vec![generation]),
+                        Arc::new(db),
+                    )
+                };
+                match build(KvCacheQuantMode::Fp8) {
+                    Err(error) => {
+                        assert!(rejected, "{sm:?} {mode:?}: {error}");
+                        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+                        assert!(error.to_string().contains("bfloat16"), "{error}");
+                    }
+                    Ok(_) => assert!(!rejected, "{sm:?} {mode:?}"),
+                }
+                build(KvCacheQuantMode::Bfloat16).unwrap();
             }
         }
     }
