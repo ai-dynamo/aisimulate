@@ -413,22 +413,7 @@ impl Engine {
         })
     }
 
-    fn validate_fpm_spec(spec: &EngineSpec) -> Result<Option<FpmExecutionBinding>, AicError> {
-        let execution: Option<FpmExecutionBinding> = spec
-            .engine
-            .extra
-            .get("fpm_execution_profile")
-            .map(|value| {
-                serde_json::from_str(value).map_err(|error| {
-                    AicError::InvalidEngineConfig(format!(
-                        "invalid full SD-round FPM execution binding: {error}"
-                    ))
-                })
-            })
-            .transpose()?;
-        if let Some(binding) = &execution {
-            binding.validate()?;
-        }
+    fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
         fn contains_sd_round(ops: &[Op]) -> bool {
             ops.iter().any(|op| match op {
                 Op::FpmForward(op) => {
@@ -447,12 +432,32 @@ impl Engine {
                 _ => false,
             })
         }
-        if execution.is_none()
-            && (contains_sd_round(&spec.context_ops) || contains_sd_round(&spec.generation_ops))
-        {
+        if contains_sd_round(ops) {
             return Err(AicError::InvalidEngineConfig(
-                "full SD-round FPM selectors require an explicit execution binding".into(),
+                "full SD-round FPM requires an explicitly bound whole-round execution path".into(),
             ));
+        }
+        Ok(())
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<Option<FpmExecutionBinding>, AicError> {
+        let execution: Option<FpmExecutionBinding> = spec
+            .engine
+            .extra
+            .get("fpm_execution_profile")
+            .map(|value| {
+                serde_json::from_str(value).map_err(|error| {
+                    AicError::InvalidEngineConfig(format!(
+                        "invalid full SD-round FPM execution binding: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(binding) = &execution {
+            binding.validate()?;
+        } else {
+            Self::reject_sd_round_ops(&spec.context_ops)?;
+            Self::reject_sd_round_ops(&spec.generation_ops)?;
         }
         let nextn = spec
             .engine
@@ -2191,6 +2196,7 @@ impl Engine {
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -2296,6 +2302,7 @@ impl Engine {
                 "evaluate_ops_sol_json: invalid op list JSON: {e}"
             ))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let sol_db = self.db.sol_full_view();
         let mut out = PerOpSolFold::default();
         for op in &ops {
