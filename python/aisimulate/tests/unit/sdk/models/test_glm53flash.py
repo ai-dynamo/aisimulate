@@ -272,6 +272,29 @@ def test_fp8_sparse_kv_is_rejected_on_hopper(system, tp, backend):
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_fp8_sparse_kv_is_rejected_on_hopper_by_compiled_engine_handles(backend):
+    # EngineHandle (and InferenceSession, which wraps it) build the engine
+    # without forward-pass readiness; the SM90 rule holds there too.
+    from aisimulate_core.sdk.engine import EngineHandle
+
+    def compile_handle(kv):
+        return EngineHandle.compile(
+            "zai-org/GLM-5.3-Flash",
+            "h100_sxm",
+            backend,
+            tp_size=8,
+            moe_tp_size=8,
+            moe_ep_size=1,
+            kvcache_quant_mode=kv,
+            database_mode="SOL",
+        )
+
+    with pytest.raises(Exception, match=r"SM90.*bfloat16"):
+        compile_handle("fp8")
+    assert compile_handle("bfloat16").predict_decode_latency(32, 4096, 2) > 0
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("system", ["b300_sxm", "gb200"])
 def test_fp8_sparse_kv_stays_admitted_on_blackwell(system, backend):
     assert _hopper_sol(system, backend, 4, "fp8") > 0
