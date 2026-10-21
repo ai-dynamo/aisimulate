@@ -184,8 +184,11 @@ aisimulate predict --stack engine --config host-offload-prediction.yaml --captur
 For example, two replicas with `attention_data: 2` and `num_host_blocks: 4096`
 get four private 4096-block caches with `dp_rank_local`, or one 4096-block
 cache with `cluster_shared`. In a shared pool, transfers in the same direction
-share bandwidth equally: four ranks at 32 GB/s under an 80 GB/s pool each move
-at 20 GB/s while all four transfer.
+share bandwidth max-min fairly: four ranks at 32 GB/s under an 80 GB/s pool each
+move at 20 GB/s while all four transfer. Pool bandwidth a rank cannot use
+because its own limit binds goes to the other ranks: with one rank running nine
+transfers and another running one, both at 32 GB/s, each rank moves 32 GB/s in
+total.
 
 `cluster_shared` models a deployment-wide host cache such as Mooncake Store or
 LMCache. vLLM's native offload has no equivalent, so it has no native parity
@@ -237,7 +240,8 @@ These defaults are modeling assumptions, not measured values.
   `worker_local`, workers cannot read each other's blocks.
 - G3 evicts least recently used blocks that are not being transferred.
 - With `worker_local`, total bandwidth grows with the worker count (16 workers
-  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits.
+  at 10 GB/s reach 160 GB/s). `cluster_shared` caps it at the shared limits and
+  divides them max-min fairly, as in a [shared G2 pool](#g2-scope).
 
 To compare scopes at equal total capacity with `N` workers, use
 `num_g3_blocks: C` for `worker_local` and `N × C` for `cluster_shared`. Set the
