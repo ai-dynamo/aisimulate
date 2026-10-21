@@ -182,9 +182,14 @@ def check_dataset(root: Path) -> DatasetIndex:
 def prepare_execution_profile(root: Path, manifest_path: str, output_dir: Path) -> dict:
     """Materialize verified local inputs and return canonical best_available config.
 
-    output_dir must not exist. This preserves profile bytes and pins; no graph or
-    prediction is regenerated. Callers own the output directory's lifetime.
+    output_dir must not exist. Canonical construction validates the compiled
+    basis and retained runtime inputs without changing profile bytes or pins.
+    Model metadata must be bundled or in an existing local model directory.
+    Callers keep both the output and any local model directory for later reloads.
     """
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk.common import DefaultHFModels
+
     root, output_dir = Path(root), Path(output_dir).absolute()
     manifest = check_manifest(root, manifest_path)
     if manifest.purpose != "execution-profile":
@@ -199,6 +204,11 @@ def prepare_execution_profile(root: Path, manifest_path: str, output_dir: Path) 
     if hashlib.sha256(config_bytes).hexdigest() != config_artifact.sha256:
         raise ValueError("configuration changed during preparation")
     config = json.loads(config_bytes)
+    model = config.get("model")
+    if isinstance(model, str) and model not in DefaultHFModels and not Path(model).is_dir():
+        raise ValueError(
+            "offline profile preparation requires bundled model metadata or an existing local model directory"
+        )
     selection = config["estimator_config"]["op_level"]["execution_profile"]
     if selection["sha256"] != profile.sha256:
         raise ValueError("configuration profile pin mismatch")
@@ -220,6 +230,9 @@ def prepare_execution_profile(root: Path, manifest_path: str, output_dir: Path) 
         _verify(output_dir, profile.model_copy(update={"path": "profile.json"}))
         config["systems_paths"] = [str(output_dir / "systems")]
         selection["path"] = str(destination)
+        # Use the same Rust-owned admission/readiness checks as prediction;
+        # manifest/profile agreement alone cannot establish runtime completeness.
+        RustForwardPassPerfModel.best_available(config)
         (output_dir / "config.json").write_text(json.dumps(config, indent=2, allow_nan=False) + "\n")
     except BaseException:
         shutil.rmtree(output_dir)

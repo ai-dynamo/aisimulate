@@ -218,16 +218,21 @@ impl ExecutionProfileSelection {
             .as_str()
             .ok_or_else(|| invalid("hardware YAML requires data_dir"))?;
         for path in [
-            data_dir,
-            spec.engine.backend_version.as_deref().unwrap_or(""),
-        ] {
+            Some(data_dir),
+            Some(spec.engine.backend_version.as_deref().unwrap_or("")),
+            hardware["misc"]["nccl_version"].as_str(),
+            hardware["misc"]["oneccl_version"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        {
             if path.is_empty()
                 || Path::new(path)
                     .components()
                     .any(|part| !matches!(part, Component::Normal(_)))
             {
                 return Err(invalid(
-                    "hardware data_dir and backend version must stay inside the bundle",
+                    "hardware data_dir, backend version and communication versions must stay inside the bundle",
                 ));
             }
         }

@@ -88,12 +88,15 @@ Construction verifies the profile pin, compares the actual compiled basis,
 and copies verified retained-file bytes into engine-owned storage. Lazy table
 reads use that snapshot, including on their first query. Changed files fail a
 new construction; they cannot change an existing model. Bundle paths cannot
-escape the root or traverse symlinks. Missing retained inputs fail normally
+escape the root or traverse symlinks; hardware `data_dir`, backend versions and
+`misc.nccl_version`/`misc.oneccl_version` must remain bundle-relative. Missing retained inputs fail normally
 during database loading or readiness checks.
 
 Use `predict_prefill_latency(batch, total_input_length, prefix)` or
 `predict_decode_latency_total(batch, total_past_kv_tokens)` for the selected
-phase. Decode requires equal past-KV lengths across the batch. The other phase,
+phase. Decode requires equal past-KV lengths across the batch and supports one
+decode forward step per query. Multi-step decode trajectories are rejected even
+when every intermediate measured cell is present. The other phase,
 mixed steps and aggregate telemetry fail explicitly. These profiles do not
 qualify scheduler-inclusive Replay, Planner sizing, or end-to-end serving
 accuracy. Broader support requires separately qualified execution and data.
@@ -144,10 +147,19 @@ model = RustForwardPassPerfModel.best_available(config)
 
 The output directory must not exist. Preparation verifies the declared files,
 row counts, configuration identity and the profile's exact retained-input
-inventory. It copies unchanged inputs into the runtime layout and returns a
-canonical configuration with absolute local paths. It never regenerates the
-graph, changes measurement bytes, accesses the network or runs stored scripts.
-The caller keeps that directory for saved-config reloads. `check_dataset(root)`
+inventory. It copies unchanged inputs into the runtime layout, then calls the
+canonical constructor to compare the compiled baseline and validate the retained
+runtime inputs before returning the configuration with absolute local data paths.
+Malformed profiles and incomplete required inputs fail preparation and remove
+the partial output. Tables used only by replaced baseline operations are not
+required. Shape coverage remains a query-time check.
+
+Preparation requires a bundled model ID or an existing local model directory;
+unbundled remote IDs fail with an instruction to provide local model metadata.
+It never changes profile or measurement bytes, accesses the network, runs stored
+scripts or makes a prediction. The caller keeps the prepared directory and any
+referenced local model directory for saved-config reloads; preparation does not
+copy model metadata. `check_dataset(root)`
 also verifies shared catalog references; existing FPM protocol validation is
 still separate. This adapter does not change the default operation database or
 implement the broader E2E/Operation DB migration in issue #435.

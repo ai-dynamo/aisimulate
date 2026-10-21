@@ -8,11 +8,15 @@ import hashlib
 import json
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+import yaml
 
 from aisimulate_core import _native
 from aisimulate_core.sdk import RustForwardPassPerfModel
 from aisimulate_core.sdk import engine as engine_module
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
 pytestmark = pytest.mark.unit
 
@@ -260,3 +264,154 @@ def test_profile_rejects_aggregate_telemetry(profile):
         model.estimate_forward_pass_time_ms(
             [{"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 4}}]
         )
+
+
+def _communication_profile(profile, kind, version):
+    config, payload, publish, root, _ = profile
+    hardware = root / "h200_sxm.yaml"
+    data = yaml.safe_load(hardware.read_bytes())
+    data["misc"].pop("nccl_version", None)
+    data["misc"][f"{kind}_version"] = version
+    hardware.write_text(yaml.safe_dump(data))
+    payload["ops"].append(
+        {
+            "Nccl": {
+                "name": "context_collective",
+                "scale_factor": 1.0,
+                "hidden_size": 128.0,
+                "num_gpus": 2,
+                "dtype": "half",
+                "operation": "all_reduce",
+                "seq_split": 1,
+            }
+        }
+    )
+    payload["retained_files"] = [
+        {
+            "path": str(p.relative_to(root)),
+            "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+            "size_bytes": p.stat().st_size,
+        }
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    ]
+    publish()
+    return config
+
+
+def _communication_table(path, latency):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table(
+            {
+                "op_name": ["all_reduce"],
+                "nccl_dtype": ["half"],
+                "num_gpus": [2],
+                "message_size": [512],
+                "latency": [latency],
+            }
+        ),
+        path,
+    )
+
+
+@pytest.mark.parametrize("kind", ["nccl", "oneccl"])
+@pytest.mark.parametrize("escape", ["absolute", "parent"])
+def test_communication_versions_cannot_escape_snapshot(profile, kind, escape):
+    _, _, _, root, _ = profile
+    external = root.parent / "unretained"
+    _communication_table(external / f"{kind}_perf.parquet", 1.0)
+    if escape == "absolute":
+        version = str(external)
+    else:
+        # Keep each prefix directory in the snapshot so traversal reaches a
+        # real external table, rather than failing on an absent directory.
+        anchor = root / f"data/h200_sxm/comm/{kind}/anchor"
+        anchor.parent.mkdir(parents=True)
+        anchor.write_text("retained directory marker")
+        version = "../" * 32 + str(external).lstrip("/")
+    config = _communication_profile(profile, kind, version)
+    with pytest.raises(ValueError, match="stay inside the bundle"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("kind", ["nccl", "oneccl"])
+@pytest.mark.parametrize("layout", ["comm/", ""])
+def test_first_communication_query_uses_retained_snapshot(profile, kind, layout):
+    _, _, _, root, _ = profile
+    table = root / f"data/h200_sxm/{layout}{kind}/test/{kind}_perf.parquet"
+    _communication_table(table, 1.0)
+    config = _communication_profile(profile, kind, "test")
+    model = RustForwardPassPerfModel.best_available(config)
+    _communication_table(table, 99.0)
+    # Independent oracle: 3 * 2 ms measured scope + the retained 1 ms collective.
+    assert model.predict_prefill_latency(1, 4, 0) == 7.0
+    with pytest.raises(ValueError, match="retained input changed"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("kind", ["nccl", "oneccl"])
+def test_communication_table_must_be_retained(profile, kind):
+    _, payload, publish, root, _ = profile
+    table = root / f"data/h200_sxm/comm/{kind}/test/{kind}_perf.parquet"
+    _communication_table(table, 1.0)
+    config = _communication_profile(profile, kind, "test")
+    payload["retained_files"] = [f for f in payload["retained_files"] if f["path"] != str(table.relative_to(root))]
+    publish()
+    with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_decode_profile_rejects_trajectories_even_with_all_exact_cells(profile, complete):
+    config, payload, publish, _, _ = profile
+    payload["worker_type"] = config["worker_type"] = "decode"
+    op = payload["ops"][0]["MeasuredComposite"]
+    op.update(name="generation_measured_scope", is_context=False)
+    latencies = [2.0, 5.0, 7.0, 11.0] if complete else [2.0]
+    op["cells"] = [{"shape": [2, 5 + i, 0], "latency_ms": t} for i, t in enumerate(latencies)]
+    publish()
+    model = RustForwardPassPerfModel.best_available(config)
+    # Independent synthetic oracle: three repetitions of each measured cell.
+    expected = [6.0, 15.0, 21.0, 33.0] if complete else [6.0]
+    assert [model.predict_decode_latency_total(2, 8 + 2 * i) for i in range(len(latencies))] == expected
+    assert model.static_phase_latency(batch_size=2, input_tokens=4, output_tokens=2, prefill=False) == 6.0
+    with pytest.raises(ValueError, match="one decode step"):
+        model.static_phase_latency(batch_size=2, input_tokens=4, output_tokens=5, prefill=False)
+
+
+@pytest.mark.parametrize("metadata", [False, True])
+def test_native_per_op_queries_enforce_profile_phase(profile, metadata):
+    _, payload, _, root, _ = profile
+    spec = copy.deepcopy(payload["basis"])
+    spec["context_ops"] = payload["ops"]
+    spec["engine"]["extra"]["execution_profile_phase"] = "prefill"
+    handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
+    decode = handle._decode_step_per_op_with_metadata if metadata else handle.decode_step_per_op
+    for batch in [0, 1]:
+        with pytest.raises(ValueError, match="phase is not qualified"):
+            decode(batch, 4, 1)
+    spec["context_ops"] = []
+    spec["engine"]["extra"]["execution_profile_phase"] = "decode"
+    handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
+    run = handle._run_static_per_op_with_metadata if metadata else handle.run_static_per_op
+    for mode in ["static_ctx", "static"]:
+        with pytest.raises(ValueError, match="phase is not qualified"):
+            run(1, 1, 4, 2, 0, 1.0, 1.0, mode=mode)
+
+
+@pytest.mark.parametrize("metadata", [False, True])
+@pytest.mark.parametrize("stride", [1, 32])
+def test_native_per_op_decode_rejects_profile_trajectory(profile, metadata, stride):
+    _, payload, _, root, _ = profile
+    spec = copy.deepcopy(payload["basis"])
+    spec["engine"]["extra"]["execution_profile_phase"] = "decode"
+    op = copy.deepcopy(payload["ops"][0]["MeasuredComposite"])
+    op.update(name="generation_measured_scope", is_context=False, cells=[{"shape": [2, 5, 0], "latency_ms": 2.0}])
+    spec["generation_ops"] = [{"MeasuredComposite": op}]
+    handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
+    run = handle._run_static_per_op_with_metadata if metadata else handle.run_static_per_op
+    assert run(2, 1, 4, 2, 0, 1.0, 1.0, mode="static_gen", stride=stride)[1][0][1] == 6.0
+    assert run(2, 1, 4, 1, 0, 1.0, 1.0, mode="static_gen", stride=stride) == ([], [])
+    with pytest.raises(ValueError, match="one decode step"):
+        run(2, 1, 4, 5, 0, 1.0, 1.0, mode="static_gen", stride=stride)

@@ -791,6 +791,11 @@ impl Engine {
         mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
         self.check_profile_phase(false)?;
+        if self.profile_phase.is_some() && runtime.osl > 2 {
+            return Err(crate::operators::measured_composite::invalid(
+                "execution profiles support at most one decode step per query",
+            ));
+        }
         let bs = runtime
             .batch_size
             .saturating_mul(self.nextn.saturating_add(1));
@@ -1770,6 +1775,7 @@ impl Engine {
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
         let mut context = PerOpFold::for_plan("context", &self.context_plan);
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
+            self.check_profile_phase(true)?;
             if runtime.prefix >= runtime.isl {
                 return Err(AicError::InvalidEngineConfig(format!(
                     "isl must be greater than 0 after removing prefix, but got {}",
@@ -1964,6 +1970,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<Vec<PerOpValueWithMetadata>, AicError> {
+        self.check_profile_phase(false)?;
         let mut out = PerOpFold::new("generation");
         if gen_tokens == 0 {
             return Ok(out.into_values());
@@ -2676,6 +2683,132 @@ mod tests {
             osl,
             ..Default::default()
         }
+    }
+
+    fn measured_profile_engine(prefill: bool, complete: bool) -> Engine {
+        use crate::operators::measured_composite::{MeasuredCell, MeasuredCompositeOp};
+
+        let db = build_engine(None).db;
+        let mut config = fixture_engine_config(None);
+        config.extra.insert(
+            "execution_profile_phase".into(),
+            if prefill { "prefill" } else { "decode" }.into(),
+        );
+        let values: &[f64] = if complete {
+            &[2.0, 5.0, 7.0, 11.0]
+        } else {
+            &[2.0]
+        };
+        let op = Op::MeasuredComposite(MeasuredCompositeOp {
+            name: "measured_scope".into(),
+            system: "b200_sxm".into(),
+            backend: "vllm".into(),
+            version: "0.24.0".into(),
+            is_context: prefill,
+            weight_bytes: 0.0,
+            scale_factor: 3.0,
+            cells: values
+                .iter()
+                .enumerate()
+                .map(|(i, &latency_ms)| MeasuredCell {
+                    shape: [2, 5 + i as u32, 0],
+                    latency_ms,
+                })
+                .collect(),
+        });
+        let (context, generation) = if prefill {
+            (vec![op], vec![])
+        } else {
+            (vec![], vec![op])
+        };
+        Engine::build(EngineSpec::new(config, context, generation), db).unwrap()
+    }
+
+    #[test]
+    fn execution_profile_decode_rejects_trajectories_for_scalar_and_per_op_queries() {
+        for complete in [false, true] {
+            let engine = measured_profile_engine(false, complete);
+            // Independent oracle: three executions of each exact measured scope.
+            let expected: &[f64] = if complete {
+                &[6.0, 15.0, 21.0, 33.0]
+            } else {
+                &[6.0]
+            };
+            for (i, &latency) in expected.iter().enumerate() {
+                assert_eq!(
+                    engine
+                        .predict_decode_latency_total(2, 8 + 2 * i as u32)
+                        .unwrap(),
+                    latency
+                );
+            }
+            for stride in [1, 32] {
+                let rt = runtime(2, 4, 5);
+                let errors = [
+                    engine
+                        .run_static(&rt, StaticMode::Generation, stride)
+                        .unwrap_err(),
+                    engine
+                        .run_static_per_op(&rt, StaticMode::Generation, stride)
+                        .unwrap_err(),
+                    engine
+                        .run_static_per_op_with_metadata(&rt, StaticMode::Generation, stride)
+                        .unwrap_err(),
+                ];
+                for error in errors {
+                    assert!(error.to_string().contains("one decode step"), "{error}");
+                }
+                assert_eq!(
+                    engine
+                        .run_generation_phase(&runtime(2, 4, 2), stride)
+                        .unwrap(),
+                    6.0
+                );
+                assert_eq!(
+                    engine
+                        .run_generation_phase(&runtime(2, 4, 1), stride)
+                        .unwrap(),
+                    0.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn execution_profile_phase_guard_covers_per_op_consumers() {
+        let prefill = measured_profile_engine(true, false);
+        for batch in [0, 2] {
+            let errors = [
+                prefill.decode_step_per_op(batch, 4, 1, 1.0).unwrap_err(),
+                prefill
+                    .decode_step_per_op_with_metadata(batch, 4, 1, 1.0)
+                    .unwrap_err(),
+            ];
+            for error in errors {
+                assert!(
+                    error.to_string().contains("phase is not qualified"),
+                    "{error}"
+                );
+            }
+        }
+        let decode = measured_profile_engine(false, false);
+        for mode in [StaticMode::Context, StaticMode::Both] {
+            for error in [
+                decode
+                    .run_static_per_op(&runtime(2, 4, 2), mode, 32)
+                    .unwrap_err(),
+                decode
+                    .run_static_per_op_with_metadata(&runtime(2, 4, 2), mode, 32)
+                    .unwrap_err(),
+            ] {
+                assert!(
+                    error.to_string().contains("phase is not qualified"),
+                    "{error}"
+                );
+            }
+        }
+        // A valid decode profile keeps the existing empty-batch result.
+        assert!(decode.decode_step_per_op(0, 4, 1, 1.0).unwrap().is_empty());
     }
 
     /// GLM-5.3-Flash-shaped op list: per-layer names over repeated geometry,
