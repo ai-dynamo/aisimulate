@@ -220,8 +220,12 @@ class ProfileRequestError(ValueError):
         self.field = field
 
 
-class _UnderivableWindowSchedule(ValueError):
-    """A sliding window whose layers only a schedule field selects, which intake cannot derive."""
+class _UnderivableWindowLayout(ValueError):
+    """A sliding-window declaration that intake cannot derive cache groups from.
+
+    Examples are an implicit schedule, sliding layers without a window, and contradictory or malformed
+    sliding-layer indexes. The marker-layout branch of _validate_layout does not run these checks.
+    """
 
 
 def _integer(value: Any, field: str, *, minimum: int = 1, maximum: int | None = None) -> int:
@@ -426,10 +430,16 @@ def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str
 
 
 def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inkling: bool = False) -> tuple[int, ...]:
-    """Resolve explicit attention retention without assuming an operation graph."""
+    """Resolve explicit attention retention without assuming an operation graph.
+
+    _UnderivableWindowLayout marks the declarations that the marker-layout branch of _validate_layout does
+    not check; the structure checks of _cache_window, _aliased_int and _layer_types raise ValueError.
+    """
     window = _cache_window(raw)
     if raw.get("use_sliding_window") is True and not window:
-        raise ValueError("use_sliding_window=true requires a positive sliding_window or sliding_window_size")
+        raise _UnderivableWindowLayout(
+            "use_sliding_window=true requires a positive sliding_window or sliding_window_size"
+        )
     layers = _aliased_int(raw, "num_hidden_layers")
     # The pinned Inkling config defaults absent/null local_layer_ids to []; a
     # window size alone must not turn its full-attention layers into SWA.
@@ -438,9 +448,9 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
     if "local_layer_ids" in raw and not (inkling and raw["local_layer_ids"] is None):
         local = raw["local_layer_ids"]
         if not isinstance(local, list) or any(type(value) is not int or value < 0 for value in local):
-            raise ValueError("local_layer_ids must be a list of nonnegative layer indexes")
+            raise _UnderivableWindowLayout("local_layer_ids must be a list of nonnegative layer indexes")
         if len(local) != len(set(local)) or (layers is not None and any(value >= layers for value in local)):
-            raise ValueError("local_layer_ids must be unique indexes below num_hidden_layers")
+            raise _UnderivableWindowLayout("local_layer_ids must be unique indexes below num_hidden_layers")
         local = tuple(sorted(local))
     if "layer_types" in raw:
         types = _layer_types(raw, layers)
@@ -449,20 +459,20 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
             raise ValueError("unsupported mixed or recurrent attention layout in layer_types")
         indexed = tuple(index for index, value in enumerate(types) if value == "sliding_attention")
         if local is not None and indexed != local:
-            raise ValueError("conflicting layer_types and local_layer_ids attention layouts")
+            raise _UnderivableWindowLayout("conflicting layer_types and local_layer_ids attention layouts")
         local = indexed
     if raw.get("use_sliding_window") is False:
         if local:
-            raise ValueError("use_sliding_window=false conflicts with sliding attention layers")
+            raise _UnderivableWindowLayout("use_sliding_window=false conflicts with sliding attention layers")
         return ()
     if local is None and window:
         if any(raw.get(key) for key in ("max_window_layers", "sliding_window_pattern")):
-            raise _UnderivableWindowSchedule(
-                "unsupported implicit sliding-window schedule; provide explicit layer_types"
-            )
+            raise _UnderivableWindowLayout("unsupported implicit sliding-window schedule; provide explicit layer_types")
         local = tuple(range(layers or 0))
     if local and not window:
-        raise ValueError("sliding attention layers require a positive sliding_window or sliding_window_size")
+        raise _UnderivableWindowLayout(
+            "sliding attention layers require a positive sliding_window or sliding_window_size"
+        )
     return local or ()
 
 
@@ -483,12 +493,12 @@ def _grouped_cache_fields(raw: Mapping[str, Any], architecture: str | None) -> b
 def _derives_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
     """Whether intake derives a grouped cache from the config's own fields.
 
-    A window schedule that intake cannot derive is not one: for an unrecognized architecture, the runtime
-    probe resolves it, as for a marker layout. Every other error in the declarations still fails.
+    A window layout that intake cannot derive is not one: for an unrecognized architecture, the runtime
+    probe resolves it, as for a marker layout. The structure checks that a marker layout also runs still fail.
     """
     try:
         return _grouped_cache_fields(raw, architecture)
-    except _UnderivableWindowSchedule:
+    except _UnderivableWindowLayout:
         return False
 
 
@@ -1550,7 +1560,7 @@ def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> 
         measured = resources.get(key)
         return measured is not None and _cache_group_shapes(typed) == _cache_group_shapes(measured)
     if key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear"):
-        # The vLLM probe reports a grouped cache; full-attention groups without a window have a linear equivalent.
+        # The vLLM probe reports a grouped cache; full-attention groups without a window have a per-token size.
         measured = _measured_kv_bytes(resources)
         return measured is not None and (key == "cache_layout" or measured == typed)
     return typed == resources.get(key)
@@ -1569,19 +1579,25 @@ def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) ->
         "the measurement is authoritative. Correct or remove the override; if the runtime changed, "
         "run onboard probe-runtime again."
     )
-    linear_claim = key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear")
-    if linear_claim and resources.get("cache_layout") != "linear":
+    per_token_claim = key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear")
+    if per_token_claim and resources.get("cache_layout") != "linear":
         measured = _measured_kv_bytes(resources)
         if measured is not None:
+            fraction = (
+                ""
+                if measured.denominator == 1
+                else ". The measured bytes per token are not a whole number, so no integer claim can match"
+            )
             return (
-                f"{claim} differs from the runtime probe's measured linear equivalent kv_bytes_per_token={measured} "
-                f"(page_size_bytes / block_size_tokens summed over its cache groups); {remedy}"
+                f"{claim} differs from the runtime probe's measured kv_bytes_per_token={measured} "
+                f"(page_size_bytes / block_size_tokens summed over its cache groups){fraction}; {remedy}"
             )
         group = _windowed_group(_measured_groups(resources))
         if group is not None:
+            field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
             return (
-                f"{claim}, but the runtime probe measured no linear equivalent: its cache group {group.name} has "
-                f"kind={group.kind} and sliding_window={group.sliding_window}; {remedy}"
+                f"{claim}, but the runtime probe measured no per-token cache size: its cache group {group.name} "
+                f"has {field}; {remedy}"
             )
     if resources.get(key) is None:
         layout = f" for its {resources['cache_layout']} cache_layout" if resources.get("cache_layout") else ""
@@ -1602,7 +1618,8 @@ def profile_from_observations(
     geometry or non-KV byte declaration is substituted for the observation. Cache
     geometry, scheduler and precision overrides must agree with it, and the
     measurement is authoritative: cache groups compare without names or order,
-    and a linear claim compares with the measured groups' linear equivalent.
+    and a cache_layout: linear or kv_bytes_per_token claim compares with the
+    measured bytes per token.
     """
     supplied = validate_overrides(overrides)
     metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}

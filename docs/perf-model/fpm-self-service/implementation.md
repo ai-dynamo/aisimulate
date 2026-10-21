@@ -683,9 +683,12 @@ This rule has limits:
 - If the config's own fields declare sliding-window layers in use or
   convolution state, it does not apply. Intake derives the cache groups of
   these layouts, such as gpt-oss, Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse
-  Glimmer, DeepSeek V4 and Inkling. If only a schedule field, such as
-  `sliding_window_pattern`, selects the sliding-window layers, intake cannot
-  derive them. Then the rule still applies.
+  Glimmer, DeepSeek V4 and Inkling. If intake cannot derive the sliding-window
+  layers, the rule still applies. Examples:
+  - Only a schedule field, such as `sliding_window_pattern`, selects them.
+  - Sliding layers, or `use_sliding_window: true`, come without a window size.
+  - `local_layer_ids` is malformed or disagrees with `layer_types`.
+  - Sliding layers come with `use_sliding_window: false`.
 - A config that names no architecture still asks for its cache layout.
 - Cache geometry overrides never change the classification.
 
@@ -743,9 +746,11 @@ against the measured groups:
 
 The measurement is authoritative, and the profile keeps it unchanged. If a
 claim does not match, import names both values and stops that configuration.
-For a linear claim, import gives the measured linear equivalent. If there is
-none, it names the first measured group that has a window or convolution
-state. Correct or remove the override. If the runtime changed, run
+For a `cache_layout: linear` or `kv_bytes_per_token` claim, import gives the
+measured bytes per token. If these are not a whole number, import says that no
+integer claim can match. If the measurement has no per-token cache size, import
+names the first measured group that has a window or convolution state. Correct
+or remove the override. If the runtime changed, run
 `onboard probe-runtime` again. Import also compares the scheduler limits and
 the precision with the probe's values. Provenance records each override that
 matches as checked against the probe.
@@ -757,7 +762,7 @@ their block sizes. For other layouts, import accepts the override but does not
 use it, because the probe measured the block sizes. Provenance records it that
 way. Precision and the other overrides are still accepted.
 
-Malformed declarations still fail for every layout. An explicit `layer_types`
+Structural errors still fail for every layout. An explicit `layer_types`
 list must have one entry per declared model layer, and an `attn_type_list` must
 have one integer per layer. The declared `num_hidden_layers` must be a positive
 integer; fractional counts are rejected rather than rounded or truncated.

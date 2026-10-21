@@ -331,22 +331,58 @@ def test_unrecognized_architecture_reason(raw, architecture, named, expected):
     assert _runtime_layout(raw, architecture, named) == expected
 
 
-def test_unrecognized_architecture_with_an_underivable_window_schedule_is_pending(tmp_path):
-    # A window with sliding_window_pattern but no explicit layer list: intake cannot derive which layers slide.
-    schedule = {"sliding_window": 512, "sliding_window_pattern": 6}
-    config = _config(tmp_path, architectures=["Gemma3ForCausalLM"], model_type="gemma3_text", **schedule)
+_GEMMA3 = {"architectures": ["Gemma3ForCausalLM"], "model_type": "gemma3_text"}
+_SLIDING_FIRST = ["sliding_attention", "full_attention"]
+
+
+@pytest.mark.parametrize(
+    "fields,message",
+    [
+        # A window with sliding_window_pattern but no explicit layer list.
+        ({"sliding_window": 512, "sliding_window_pattern": 6}, "unsupported implicit sliding-window schedule"),
+        ({"use_sliding_window": True}, "use_sliding_window=true requires a positive sliding_window"),
+        ({"sliding_window": 128, "local_layer_ids": [-1]}, "local_layer_ids must be a list of nonnegative layer"),
+        ({"sliding_window": 128, "local_layer_ids": None}, "local_layer_ids must be a list of nonnegative layer"),
+        ({"sliding_window": 128, "local_layer_ids": [0, 0]}, "local_layer_ids must be unique indexes below"),
+        (
+            {"sliding_window": 128, "layer_types": _SLIDING_FIRST, "local_layer_ids": [1]},
+            "conflicting layer_types and local_layer_ids attention layouts",
+        ),
+        (
+            {"sliding_window": 128, "use_sliding_window": False, "layer_types": _SLIDING_FIRST},
+            "use_sliding_window=false conflicts with sliding attention layers",
+        ),
+        ({"layer_types": _SLIDING_FIRST}, "sliding attention layers require a positive sliding_window"),
+    ],
+)
+def test_unrecognized_architecture_with_an_underivable_window_layout_is_pending(tmp_path, fields, message):
+    # Intake cannot derive cache groups from these declarations, so the runtime probe resolves the layout,
+    # as it does for a marker layout with the same fields.
+    config = _config(tmp_path, **_GEMMA3, **fields)
     assert config.runtime_layout == ("unrecognized architecture Gemma3ForCausalLM",)
     draft = derive_profile(config, _request(), _runtime())
     assert draft.profile is None
     assert "unrecognized architecture Gemma3ForCausalLM" in draft.pending_runtime["cache_geometry"]
-    # Contradictory window fields still fail, as they do for a marker layout.
-    with pytest.raises(ValueError, match="conflicting sliding-window fields"):
-        _config(
-            tmp_path, architectures=["Gemma3ForCausalLM"], model_type="gemma3_text", sliding_window_size=256, **schedule
-        )
-    # A recognized architecture keeps rejecting the schedule intake cannot derive.
-    with pytest.raises(ValueError, match="unsupported implicit sliding-window schedule"):
-        _config(tmp_path, **schedule)
+    marker = _config(tmp_path, **_GEMMA3, mamba_d_state=16, **fields)
+    assert marker.runtime_layout == ("recurrent-state field mamba_d_state",)
+    # A recognized architecture keeps today's message.
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _config(tmp_path, **fields)
+
+
+@pytest.mark.parametrize(
+    "fields,message",
+    [
+        ({"sliding_window": 128, "sliding_window_size": 256}, "conflicting sliding-window fields"),
+        ({"layer_types": ["full_attention"]}, "layer_types must have one entry per num_hidden_layers"),
+        ({"num_hidden_layers": 2.0}, "num_hidden_layers must be an integer"),
+    ],
+)
+@pytest.mark.parametrize("marker", [{}, {"mamba_d_state": 16}])
+def test_unrecognized_architecture_keeps_the_marker_layout_structure_checks(tmp_path, fields, message, marker):
+    # These checks also run for a marker layout, so they still fail for an unrecognized architecture.
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _config(tmp_path, **_GEMMA3, **marker, **fields)
 
 
 def test_attention_dimensions_are_listed_explicitly():
@@ -628,21 +664,43 @@ def test_linear_kv_claim_one_byte_off_shows_both_values():
         _import(_GROUPED_OBSERVATION, {"cache_layout": "linear", "kv_bytes_per_token": 65})
     message = str(error.value)
     assert (
-        "resource_overrides.kv_bytes_per_token=65 differs from the runtime probe's measured linear equivalent "
-        "kv_bytes_per_token=64"
+        "resource_overrides.kv_bytes_per_token=65 differs from the runtime probe's measured kv_bytes_per_token=64 "
+        "(page_size_bytes / block_size_tokens summed over its cache groups)"
     ) in message
     assert "the measurement is authoritative" in message
 
 
+def test_kv_claim_against_a_fractional_measurement_says_no_whole_number_matches():
+    # 25 bytes per 4-token block is 25/4 bytes per token, which no integer claim can equal.
+    group = {**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}
+    with pytest.raises(ValueError) as error:
+        _import({**_GROUPED_OBSERVATION, "cache_groups": [group]}, {"kv_bytes_per_token": 6})
+    message = str(error.value)
+    assert (
+        "resource_overrides.kv_bytes_per_token=6 differs from the runtime probe's measured kv_bytes_per_token=25/4"
+        in (message)
+    )
+    assert "The measured bytes per token are not a whole number, so no integer claim can match" in message
+
+
 @pytest.mark.parametrize("claim", [{"cache_layout": "linear"}, {"kv_bytes_per_token": 64}])
-def test_linear_claim_against_a_windowed_group_names_that_group(claim):
-    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]}
+@pytest.mark.parametrize(
+    "group,field",
+    [
+        (_WINDOWED_GROUP, "sliding_window=128"),
+        ({**_WINDOWED_GROUP, "kind": "convolution", "sliding_window": 4}, "kind=convolution"),
+    ],
+)
+def test_linear_claim_against_a_windowed_group_names_that_group(claim, group, field):
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, group]}
     with pytest.raises(ValueError) as error:
         _import(observed, claim)
     message = str(error.value)
     ((key, value),) = claim.items()
-    assert f"resource_overrides.{key}={value}, but the runtime probe measured no linear equivalent" in message
-    assert "its cache group runtime_group_1 has kind=attention and sliding_window=128" in message
+    assert (
+        f"resource_overrides.{key}={value}, but the runtime probe measured no per-token cache size: "
+        f"its cache group runtime_group_1 has {field}"
+    ) in message
 
 
 def test_import_labels_every_compared_override_that_matches():
