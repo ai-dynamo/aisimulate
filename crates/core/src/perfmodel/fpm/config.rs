@@ -182,7 +182,7 @@ pub struct ForwardPassPerfModelConfig {
     pub strict_provenance: bool,
     /// Compile the model's vision tower with this layout so the estimator can
     /// price encoder calls; `None` prices the language model only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder_parallel: Option<EncoderParallel>,
 }
 

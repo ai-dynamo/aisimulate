@@ -397,6 +397,20 @@ def test_profile_backed_recommendation_pins_the_resolved_stages(tmp_path, capsys
         prediction_to_replay_spec(CorePredictionConfig.model_validate(edited))
 
 
+def test_explicit_frontend_stages_must_match_every_searched_transport():
+    raw = _recommendation()
+    worker = raw["engine"]["workers"]["aggregated"]
+    row = _host_row("rust", "inline", 2.0)
+    worker["frontend"] = {"stages": row["stages"], "measured_for": row["measured_for"]}
+    worker["parallelism"]["tensor"] = {"choices": [1, 2]}
+    # Measured on one rank: a two-rank candidate would need the shared-memory row.
+    with pytest.raises(ValueError, match="this search needs .* rust shm"):
+        recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
+    worker["parallelism"]["tensor"] = 1
+    space = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)).search_space
+    assert space.agg_frontend["measured_for"]["feature_transport"] == "inline"
+
+
 def test_rust_profiles_resolve_only_the_transports_the_tp_domain_uses(tmp_path):
     path = tmp_path / "table.json"
     rows = [_host_row("rust", "inline", 2.0), _host_row("rust", "shm", 5.0)]
@@ -670,6 +684,7 @@ def test_native_encoder_pool_gates_the_language_worker(tmp_path, capsys):
         ("host_profile", "one of host_profile or frontend"),
         ("transfer", "transfer.bandwidth_gb_per_second"),
         ("frontend_with_host_profile", "host_profile replaces the explicit frontend stages"),
+        ("frontend_without_measured_for", "require measured_for"),
         ("latency_correction", "latency_correction applies to analytical"),
         ("fixed_timing", "default language timing"),
         ("identity", "identity pools"),
@@ -681,6 +696,9 @@ def test_native_encoder_pool_rejects_unsupported(kind, fragment):
     if kind in ("host_profile", "transfer"):
         del encoder[kind]
     elif kind == "frontend_with_host_profile":
+        encoder["frontend"] = {"stages": [{"workers": 1, "service_ms": 3.0}]}
+    elif kind == "frontend_without_measured_for":
+        del encoder["host_profile"]
         encoder["frontend"] = {"stages": [{"workers": 1, "service_ms": 3.0}]}
     elif kind == "latency_correction":
         encoder["latency_correction"] = 2.0

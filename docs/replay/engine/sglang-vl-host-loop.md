@@ -129,9 +129,10 @@ callers set `SglangConfig::host_loop`, `EngineConfig::frontend`, and
 Without `host_loop`, an SGLang pass is one GPU forward whose outputs are
 visible when it ends. With `host_loop` (implied by `frontend` or
 `host_profile`), one pass is one iteration of SGLang's overlap scheduler loop,
-and the per-request report carries the stage timestamps `frontend_ready_ms`,
+and the per-request report carries the stage timestamps
 `scheduler_received_ms`, `selected_ms`, and `prefill_complete_ms` next to
-`first_token_ms`:
+`first_token_ms`, plus `frontend_ready_ms` when the worker prices frontend
+stages:
 
 | Step | Modeled time |
 | --- | --- |

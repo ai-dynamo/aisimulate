@@ -1437,10 +1437,19 @@ def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
     monkeypatch.setattr(memory, "get_model", lambda *a, **k: _StubModel())
     monkeypatch.setattr(memory, "get_backend", lambda backend: _StubBackend())
     monkeypatch.setattr(memory.perf_database, "get_database", lambda *a, **k: _StubDB())
+    built = {}
+    real_build = memory.build_model_config
+
+    def _build(**kwargs):
+        built.update(kwargs)
+        return real_build(**kwargs)
+
+    monkeypatch.setattr(memory, "build_model_config", _build)
 
     plain = memory.KVCacheEstimator.from_request(
         "Qwen/Qwen3-VL-8B-Instruct", "h200_sxm", "sglang", max_num_tokens=8192, max_batch_size=8
     ).breakdown
+    assert "enable_encoder_dp" not in built
     hosted = memory.KVCacheEstimator.from_request(
         "Qwen/Qwen3-VL-8B-Instruct",
         "h200_sxm",
@@ -1452,3 +1461,5 @@ def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
     ).breakdown
     assert hosted["weights_bytes"] - plain["weights_bytes"] == 2 * _GIB
     assert hosted["non_kv_bytes"] - plain["non_kv_bytes"] == 2 * _GIB + (100 << 20)
+    # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
+    assert built["enable_encoder_dp"] is False

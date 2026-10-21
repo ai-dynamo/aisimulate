@@ -518,6 +518,12 @@ def _role_search_space(
     return result
 
 
+def _tensor_domain(raw_worker: dict[str, Any]) -> list[int]:
+    """Tensor widths a worker's search covers; a log range contributes its bounds."""
+    tensors, log_range = _integer_domain((raw_worker.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
+    return sorted(set(tensors) | set(log_range or ()))
+
+
 def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
     """Pinned host, frontend and vision settings shared by every host-aware candidate.
 
@@ -546,6 +552,25 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
         if worker.host_loop:
             result[f"{role}_host_loop"] = True
         if worker.frontend is not None:
+            measured = worker.frontend.measured_for
+            if measured is not None:
+                # Explicit stages carry their measurement like a table row; every searched
+                # width must still be the one they were measured for.
+                if images is None:
+                    raise ValueError(
+                        f"frontend stages were measured for {measured.describe()}; this workload has no images"
+                    )
+                from .config.engine import FrontendMeasurementConfig
+
+                for tensor in _tensor_domain(raw):
+                    needed = FrontendMeasurementConfig.for_workload(
+                        config.engine.model, measured.frontend, images.model_dump(mode="json"), tensor
+                    )
+                    if needed != measured:
+                        raise ValueError(
+                            f"frontend stages were measured for {measured.describe()}; this search needs "
+                            f"{needed.describe()}"
+                        )
             result[f"{role}_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
         if worker.host_profile is None:
             continue
@@ -555,10 +580,8 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
         from .vl.table import resolve_frontend
 
         # The transport only depends on whether a candidate runs on one rank, so the
-        # domain's members (a log range contributes its bounds) decide which rows exist.
-        tensors, log_range = _integer_domain((raw.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
-        tensors = set(tensors) | set(log_range or ())
-        by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in sorted(tensors)}
+        # domain's members decide which rows exist.
+        by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in _tensor_domain(raw)}
         by_transport: dict[str, Any] = {}
         for transport, tensor in sorted(by_tensor.items()):
             frontend, digest = resolve_frontend(

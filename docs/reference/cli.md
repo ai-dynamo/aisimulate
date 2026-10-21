@@ -189,8 +189,9 @@ unavailable; their summary fields are explicit nulls where unsupported.
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
 - `requests.jsonl` contains one record per request when explicitly enabled. SGLang workers with
-  `host_loop` add `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms` and
-  `prefill_complete_ms` to each record; a native encoder pool adds `encoder_ready_ms`.
+  `host_loop` add `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms` to each
+  record; a worker with `frontend` or `host_profile` also adds `frontend_ready_ms`, and a native
+  encoder pool adds `encoder_ready_ms`.
 - `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see

@@ -462,6 +462,15 @@ impl ForwardPassPerfModel {
                     continue;
                 }
             }
+            // Only the native engine compiles a vision tower; the whole-forward
+            // paths would record the layout in provenance and never price it.
+            if config.encoder_parallel.is_some() && mode != EstimationMode::OpLevel {
+                let error =
+                    AicError::UnsupportedModel("encoder_parallel requires op_level timing".into());
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
                 let mut model = Self::from_regression_config(

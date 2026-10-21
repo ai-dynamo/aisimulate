@@ -313,9 +313,10 @@ class KVCacheEstimator:
 
         ``colocated_encoder`` keeps the model's vision-encoder weights resident on
         this rank, laid out per ``encoder_parallel`` (``"tp"`` shards the tower
-        over the tensor-parallel group, ``"dp"`` replicates it; the model
-        layer's default otherwise); ``reserved_bytes`` is a fixed rank-local
-        reservation outside the KV pool (SGLang's multimodal embedding cache).
+        over the tensor-parallel group, ``"dp"`` replicates it; sharded when
+        unset, as SGLang lays the tower out by default); ``reserved_bytes`` is a
+        fixed rank-local reservation outside the KV pool (SGLang's multimodal
+        embedding cache).
 
         Reuses the exact AIC machinery the latency path uses: ``build_model_config``
         + ``apply_nextn`` (so the built model is spec-decode aware) + ``get_model``
@@ -345,6 +346,10 @@ class KVCacheEstimator:
             moe_backend=moe_backend,
             moe_kernel_source=moe_kernel_source,
         )
+        # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
+        encoder_layout = (
+            {"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None or colocated_encoder else {}
+        )
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
@@ -363,7 +368,7 @@ class KVCacheEstimator:
             wideep_num_slots=wideep_num_slots,
             cp_size=cp_size,
             dcp_size=dcp_size,
-            **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
+            **encoder_layout,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale

@@ -7,10 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 
 Attention/FFN disaggregation (AFD) and encoder/prefill/decode disaggregation
 (EPD) are estimated analytically. Neither runs request-by-request token replay
-for the disaggregated part. Their inputs and reports are therefore narrower
-than ordinary aggregated or P/D replay. AFD and EPD cannot be combined. An
-encoder pool with `mode: native` is the exception: it replays SGLang's encoder
-servers event by event; see [Native encoder pools](#native-encoder-pools).
+for the disaggregated part, except an encoder pool with `mode: native`, which
+replays SGLang's encoder servers event by event; see
+[Native encoder pools](#native-encoder-pools). Their inputs and reports are
+therefore narrower than ordinary aggregated or P/D replay. AFD and EPD cannot
+be combined in either encoder mode.
 
 <a id="afd"></a>
 <a id="analytical-afd"></a>

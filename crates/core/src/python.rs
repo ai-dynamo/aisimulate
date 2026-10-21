@@ -170,6 +170,12 @@ fn validate_public_agentic_engine(
     if !driver.is_agentic() {
         return Ok(());
     }
+    // A request parked in the pool is not yet a scheduler request, which the
+    // agentic driver's in-flight accounting assumes.
+    ensure!(
+        spec.encoder.is_none(),
+        "agentic replay does not combine with an encoder pool"
+    );
     let roles = match &spec.topology {
         ReplayTopology::Aggregated { .. } => vec![aggregated_role(engine)],
         ReplayTopology::Disaggregated { .. } => vec![
@@ -4286,7 +4292,6 @@ mod tests {
         assert_eq!(role.rank.num_gpu_blocks, 17);
     }
 
-    #[test]
     #[test]
     fn cuda_graph_reservation_reaches_capacity_rematerialization() {
         let mut config = aic_config();

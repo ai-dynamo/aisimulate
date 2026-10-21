@@ -68,8 +68,9 @@ delivery, where the stage spans then start), `encoder_gpus` and `total_gpus`;
 `gpu_hours` includes the pool and integrates every provisioned GPU over the
 simulated clock, which under the host loop runs one overlap iteration past the
 last observed token. With `--capture-per-request`, each record carries
-the milestones `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`,
-`prefill_complete_ms` and, with a native pool, `encoder_ready_ms`.
+the milestones `scheduler_received_ms`, `selected_ms` and `prefill_complete_ms`,
+plus `frontend_ready_ms` when the worker prices frontend stages and, with a
+native pool, `encoder_ready_ms`.
 
 ## Latency populations: ITL is not TPOT
 

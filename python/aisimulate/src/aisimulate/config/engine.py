@@ -602,6 +602,11 @@ def _validate_encoder_mode(encoder: EncoderPredictionConfig | EncoderRecommendat
         if encoder.host_profile is not None and encoder.host_profile.frontend != "python":
             raise ValueError("the encoder servers run the Python image processor; host_profile.frontend must be python")
         measured = encoder.frontend.measured_for if encoder.frontend is not None else None
+        if encoder.frontend is not None and measured is None:
+            raise ValueError(
+                "native encoder frontend stages require measured_for; set host_profile to resolve them from a host "
+                "cost table"
+            )
         if measured is not None and measured.frontend != "python":
             raise ValueError(
                 "the encoder servers run the Python image processor; frontend.measured_for.frontend must be python"
@@ -1226,11 +1231,13 @@ def require_native_vl_parallelism(
 
 
 def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
-    """The aggregated or the prefill worker hosts the loop; `_validate_worker_roles` ties each to its mode."""
-    for role in ("aggregated", "prefill"):
+    """The aggregated worker hosts the loop in aggregated mode, the prefill worker in disaggregated mode."""
+    for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
         worker = getattr(engine.workers, role)
         if worker is None or (not worker.host_loop and worker.vision is None):
             continue
+        if engine.mode != mode:
+            raise ValueError(f"workers.{role}.host_loop and workers.{role}.vision require engine.mode={mode}")
         if engine.backend != "sglang":
             raise ValueError(
                 f"workers.{role}.host_loop and workers.{role}.vision are supported only for backend=sglang"
@@ -1240,7 +1247,7 @@ def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
     if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support analytical EPD encoder pools")
+        raise ValueError("AFD does not support encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")
@@ -1262,7 +1269,7 @@ def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
 
 def _validate_recommendation_afd(engine: EngineRecommendationConfig) -> None:
     if engine.workers.encoder is not None:
-        raise ValueError("AFD does not support analytical EPD encoder pools")
+        raise ValueError("AFD does not support encoder pools")
     afd = engine.afd
     if afd is None:
         raise ValueError("engine.mode='afd' requires engine.afd")

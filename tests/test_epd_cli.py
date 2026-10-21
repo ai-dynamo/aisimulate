@@ -586,7 +586,7 @@ def test_public_cli_rejects_afd_encoder_composition(tmp_path, capsys, command, c
         main([command, "-c", str(path), "--output-dir", str(tmp_path / "out")])
     assert exc.value.code == 2
     captured = capsys.readouterr()
-    assert "AFD does not support analytical EPD encoder pools" in captured.err
+    assert "AFD does not support encoder pools" in captured.err
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
