@@ -79,8 +79,10 @@ VLLM_SHA = "db9527a46873454610df6dbedf79a36d6bf1a7f6"
 FP8_SHA = "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
 NVFP4_SHA = "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"
 MODEL_SHAS = {FP8_SHA, NVFP4_SHA}
-# TP1 is collected for NVFP4 only (campaign decision; FP8 weights are 306 GB).
-TP_SIZES = {FP8_SHA: (2, 4), NVFP4_SHA: (1, 2, 4)}
+# Pure-TP sizes accepted for both checkpoints. Whether a size fits a system is
+# decided by the native runtime (weight load and KV allocation fail observably),
+# not by this producer.
+TP_SIZES = (1, 2, 4, 8)
 # IndexPool width: stock v0.31.0 requires pool-aligned prefill chunk starts.
 CHUNK_ALIGN = 4
 STATE_PROTOCOL = "glm53flash_prefix_cache_real_seed_v1"
@@ -95,6 +97,20 @@ MAX_NEW = 8192
 STAGE_TIMEOUT_SECONDS = 1800.0
 PREFILL_REAL_SEED_REASON = "prefill_real_seed"
 DECODE_REAL_KV_REASON = "kvwarm_real_kv"
+
+
+def pure_tensor_parallel(parallel, speculative_config) -> bool:
+    """Whether a vLLM parallel configuration is the collected pure-TP layout."""
+    return (
+        parallel.tensor_parallel_size in TP_SIZES
+        and parallel.pipeline_parallel_size == 1
+        and parallel.data_parallel_size == 1
+        and not parallel.use_ubatching
+        and parallel.prefill_context_parallel_size == 1
+        and parallel.decode_context_parallel_size == 1
+        and not parallel.enable_expert_parallel
+        and speculative_config is None
+    )
 
 
 def token_slice(pool: list[int], length: int, offset: int) -> list[int]:
@@ -225,6 +241,7 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
             "hash_block_size": int(self._bench_hash_block_size),
             "block_size": int(self.block_size),
             "need_mamba_block_aligned_split": bool(getattr(self, "need_mamba_block_aligned_split", False)),
+            "cache_dtype": getattr(cache, "cache_dtype", None),
             "async_scheduling": bool(getattr(config.scheduler_config, "async_scheduling", False)),
         }
         expected_unit = os.environ.get("DYN_FPM_GLM53FLASH_PREFIX_MATCH_UNIT")
@@ -237,19 +254,8 @@ class Glm53FlashPrefixSeedScheduler(native.InstrumentedScheduler):
         revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
         if revision not in MODEL_SHAS:
             raise ValueError("tokenizer revision must equal the pinned GLM-5.3-Flash checkpoint revision")
-        if (
-            parallel.tensor_parallel_size not in TP_SIZES[revision]
-            or parallel.pipeline_parallel_size != 1
-            or parallel.data_parallel_size != 1
-            or parallel.use_ubatching
-            or parallel.prefill_context_parallel_size != 1
-            or parallel.decode_context_parallel_size != 1
-            or parallel.enable_expert_parallel
-            or config.speculative_config is not None
-        ):
-            raise ValueError(
-                "GLM-5.3-Flash requires pure TP2/TP4 (TP1 NVFP4 only), DP/PP/CP 1, no EP/ubatching/speculation"
-            )
+        if not pure_tensor_parallel(parallel, config.speculative_config):
+            raise ValueError("GLM-5.3-Flash requires pure TP1/2/4/8, DP/PP/CP 1, no EP/ubatching/speculation")
         if self.connector is not None or self.ec_connector is not None:
             raise ValueError("GLM-5.3-Flash FPM forbids KV/encoder connectors")
         if self._bench_explicit_points is None:

@@ -1686,7 +1686,7 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(
     monkeypatch.setattr(
         cli.CoreRecommendationConfig,
         "model_validate",
-        staticmethod(lambda raw: object()),
+        staticmethod(lambda raw: SimpleNamespace(traffic=None)),
     )
     monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
     result = _RecommendationResult([], failed=1)

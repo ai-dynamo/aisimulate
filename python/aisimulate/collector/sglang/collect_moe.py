@@ -94,6 +94,7 @@ import gc
 import importlib
 import itertools
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 
@@ -248,6 +249,8 @@ except ImportError:
         get_default_config,
         get_moe_configs,
     )
+from collector.sglang.moe_config_observation import append_record as append_triton_config_record
+from collector.sglang.moe_config_observation import observe_triton_config_selection
 from collector.version_resolver import _check_compat
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
@@ -1304,6 +1307,11 @@ def _raise_if_unverified_moe_lane(moe_type: str) -> str:
     return installed_version
 
 
+def _triton_config_namespaces() -> list:
+    """SGLang's config module (framework runner) and this module (direct path)."""
+    return [sys.modules[get_config_dtype_str.__module__], globals()]
+
+
 def run_moe_torch(
     moe_type,
     num_tokens,
@@ -1478,79 +1486,83 @@ def run_moe_torch(
         or apply_router_weight_on_input
         or (moe_backend != "triton" and not use_int4_w4a16)
     )
-    if use_framework_layer:
-        latency, power_stats, kernel_source = _benchmark_framework_quantized_moe(
-            moe_type=moe_type,
-            moe_backend=moe_backend,
-            num_tokens=num_tokens,
-            hidden_size=hidden_size,
-            inter_size=inter_size,
-            topk=topk,
-            num_experts=num_experts,
-            moe_tp_size=moe_tp_size,
-            moe_ep_size=moe_ep_size,
-            model_name=model_name,
-            distributed=distributed,
-            power_law_alpha=power_law_alpha,
-            activation=activation,
-            is_gated=is_gated,
-            has_bias=has_bias,
-            gemm1_alpha=gemm1_alpha,
-            gemm1_clamp_limit=gemm1_clamp_limit,
-            swiglu_limit=swiglu_limit,
-            scoring_func=scoring_func,
-            routing_method_type=routing_method_type,
-            routed_scaling_factor=routed_scaling_factor,
-            renormalize=renormalize,
-            has_correction_bias=has_correction_bias,
-            num_expert_group=num_expert_group,
-            topk_group=topk_group,
-            apply_router_weight_on_input=apply_router_weight_on_input,
-            is_fp4_experts=is_fp4_experts,
-            int4_group_size=int4_group_size,
-            device=device,
-        )
-    else:
-        rank0_workloads: list[Rank0Workload] | None = None
-        if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
-            rank0_workloads = build_rank0_workloads(
-                num_workloads=5,
+    # Record (never choose) whether the timed Triton call used a tuned JSON or
+    # SGLang's default config; both the framework runner and the direct path
+    # resolve it through the same two config functions.
+    with observe_triton_config_selection(_triton_config_namespaces()) as triton_config_observed:
+        if use_framework_layer:
+            latency, power_stats, kernel_source = _benchmark_framework_quantized_moe(
+                moe_type=moe_type,
+                moe_backend=moe_backend,
                 num_tokens=num_tokens,
                 hidden_size=hidden_size,
+                inter_size=inter_size,
                 topk=topk,
                 num_experts=num_experts,
+                moe_tp_size=moe_tp_size,
                 moe_ep_size=moe_ep_size,
-                distributed=distributed,
-                power_law_alpha=power_law_alpha if distributed == "power_law" else None,
-                dtype=torch.bfloat16,
-                device=torch.device(device),
-            )
-        try:
-            latency, power_stats = benchmark(
-                num_tokens,
-                num_local_experts,
-                (2 if is_gated else 1) * local_inter_size,
-                hidden_size,
-                topk,
-                torch.bfloat16,
-                moe_type == "fp8_block",
-                False,
-                False,
-                block_shape=block_shape,
+                model_name=model_name,
                 distributed=distributed,
                 power_law_alpha=power_law_alpha,
-                workloads=rank0_workloads,
-                swiglu_limit=swiglu_limit,
                 activation=activation,
                 is_gated=is_gated,
+                has_bias=has_bias,
                 gemm1_alpha=gemm1_alpha,
                 gemm1_clamp_limit=gemm1_clamp_limit,
+                swiglu_limit=swiglu_limit,
+                scoring_func=scoring_func,
+                routing_method_type=routing_method_type,
+                routed_scaling_factor=routed_scaling_factor,
+                renormalize=renormalize,
+                has_correction_bias=has_correction_bias,
+                num_expert_group=num_expert_group,
+                topk_group=topk_group,
+                apply_router_weight_on_input=apply_router_weight_on_input,
+                is_fp4_experts=is_fp4_experts,
+                int4_group_size=int4_group_size,
+                device=device,
             )
-        except Exception:
-            _fmoe_kernels_mod._B_DESC_CACHE.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
-            raise
+        else:
+            rank0_workloads: list[Rank0Workload] | None = None
+            if moe_ep_size > 1 and distributed in ("power_law", "balanced"):
+                rank0_workloads = build_rank0_workloads(
+                    num_workloads=5,
+                    num_tokens=num_tokens,
+                    hidden_size=hidden_size,
+                    topk=topk,
+                    num_experts=num_experts,
+                    moe_ep_size=moe_ep_size,
+                    distributed=distributed,
+                    power_law_alpha=power_law_alpha if distributed == "power_law" else None,
+                    dtype=torch.bfloat16,
+                    device=torch.device(device),
+                )
+            try:
+                latency, power_stats = benchmark(
+                    num_tokens,
+                    num_local_experts,
+                    (2 if is_gated else 1) * local_inter_size,
+                    hidden_size,
+                    topk,
+                    torch.bfloat16,
+                    moe_type == "fp8_block",
+                    False,
+                    False,
+                    block_shape=block_shape,
+                    distributed=distributed,
+                    power_law_alpha=power_law_alpha,
+                    workloads=rank0_workloads,
+                    swiglu_limit=swiglu_limit,
+                    activation=activation,
+                    is_gated=is_gated,
+                    gemm1_alpha=gemm1_alpha,
+                    gemm1_clamp_limit=gemm1_clamp_limit,
+                )
+            except Exception:
+                _fmoe_kernels_mod._B_DESC_CACHE.clear()
+                gc.collect()
+                torch.cuda.empty_cache()
+                raise
 
     if not use_framework_layer:
         _fmoe_kernels_mod._B_DESC_CACHE.clear()
@@ -1591,6 +1603,23 @@ def run_moe_torch(
     )
     if not persisted:
         raise RuntimeError("Failed to persist SGLang MoE performance row")
+    if moe_backend == "triton":
+        append_triton_config_record(
+            perf_filename,
+            {
+                "moe_dtype": moe_type,
+                "num_tokens": num_tokens,
+                "hidden_size": hidden_size,
+                "inter_size": inter_size,
+                "topk": topk,
+                "num_experts": num_experts,
+                "moe_tp_size": moe_tp_size,
+                "moe_ep_size": moe_ep_size,
+                "device_name": torch.cuda.get_device_name(device),
+            },
+            kernel_source,
+            triton_config_observed,
+        )
     if restart_worker:
         return WORKER_RESTART
 

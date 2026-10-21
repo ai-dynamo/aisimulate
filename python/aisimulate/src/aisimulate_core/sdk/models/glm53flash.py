@@ -107,19 +107,20 @@ class Glm53FlashModel(BaseModel):
         tp = model_config.tp_size
         mtp, ep = model_config.resolve_moe_parallelism()
         if (
-            tp not in {1, 2, 4}
+            tp not in {1, 2, 4, 8}
             or mtp != tp
             or ep != 1
             or model_config.pp_size != 1
             or model_config.cp_size != 1
             or model_config.attention_dp_size != 1
         ):
-            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1")
-        # TP1 is accepted for both checkpoints, but only NVFP4 TP1 fits one
-        # GB300 (native runtime admitted it with Mamba block size 8576).
-        # FP8 TP1 runs out of memory while creating weights; the payload
-        # inventory below (about 298-299 GiB) already exceeds GB300's
-        # 277.5 GiB, so memory checks report OOM rather than this
+            raise NotImplementedError("GLM-5.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1")
+        # Every TP size that divides the 64 attention/KDA heads is accepted
+        # for both checkpoints; whether a deployment fits is a per-system
+        # capacity question, not a constructor rule. The payload inventory
+        # below (FP8 about 298-299 GiB, NVFP4 about 176 GiB) is compared
+        # against the system's memory by the memory checks, which report OOM
+        # (for example FP8 TP1 on any current GPU) rather than this
         # constructor rejecting it.
         if self._nextn or model_config.decoder_replay or self._num_layers != len(d.layer_types):
             raise NotImplementedError(
@@ -136,8 +137,16 @@ class Glm53FlashModel(BaseModel):
         expected = self.checkpoint_format if self.checkpoint_format == "nvfp4" else "fp8_block"
         if model_config.gemm_quant_mode.name != expected or model_config.moe_quant_mode.name != expected:
             raise NotImplementedError("GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition")
-        if model_config.kvcache_quant_mode.name != "fp8":
-            raise NotImplementedError("GLM-5.3-Flash formal baseline requires FP8 sparse KV and FP32 KDA state")
+        # Sparse-MLA latent KV: FP8 or BF16 on both backends. On SM90 both
+        # stock runtimes serve BF16 only: SGLang's IndexPool DSA backends cannot
+        # read FP8 KV, and vLLM 0.31.0 FLASHINFER_MLA_SPARSE_SM90 hands FP8 to
+        # FlashInfer plan() as uint8 storage, which it rejects. KDA state is FP32.
+        kv_cache_dtype = model_config.kvcache_quant_mode.name
+        if kv_cache_dtype not in {"fp8", "bfloat16"}:
+            raise NotImplementedError(
+                "GLM-5.3-Flash requires FP8 or BF16 sparse KV and FP32 KDA state; "
+                f"got {kv_cache_dtype!r} on {backend_name}"
+            )
         h = d.hidden_size
         self._cache_specs = []
         identity = dict(backend=backend_name, checkpoint_format=self.checkpoint_format)
@@ -209,7 +218,7 @@ class Glm53FlashModel(BaseModel):
                 projection_quant_mode="bfloat16"
                 if kda or backend_name == "vllm" or self.checkpoint_format == "nvfp4"
                 else "fp8_block",
-                kv_cache_dtype="fp8",
+                kv_cache_dtype=kv_cache_dtype,
                 **identity,
             )
             if context:

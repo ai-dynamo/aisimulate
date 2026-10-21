@@ -15,6 +15,7 @@ from aisimulate_core.fpm_profile import FpmDeploymentProfile as FpmDeploymentPro
 from aisimulate_core.fpm_profile import FpmModelProfile as FpmModelProfile
 from aisimulate_core.fpm_profile import FpmResourceProfile as FpmResourceProfile
 from aisimulate_core.fpm_profile import FpmRuntimeMemoryProfile as FpmRuntimeMemoryProfile
+from aisimulate_core.fpm_profile import FpmSpeculativeExecutionProfile as FpmSpeculativeExecutionProfile
 from aisimulate_core.fpm_profile import load_fpm_profile as load_fpm_profile
 
 

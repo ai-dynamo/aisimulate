@@ -98,6 +98,7 @@ impl HostLoop {
     }
 
     /// Requests delivered but not yet received.
+    #[cfg(test)]
     pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.inbox.iter().map(|request| request.uuid)
     }

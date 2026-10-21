@@ -20,7 +20,8 @@ pub(super) use super::components::ReplayMode;
 use super::components::TrafficStats;
 use super::components::{
     AdmissionEvent, AdmissionQueue, EngineComponent, EngineEffects, EnginePassMode,
-    ReplayAdmissionMetadata, ReplayEngineObservation, TrafficAccumulators,
+    ReplayAdmissionMetadata, ReplayEngineObservation, TokenizationLatency, TokenizationStage,
+    TrafficAccumulators,
 };
 #[cfg(test)]
 use super::core::NoEngineEvents;
@@ -956,6 +957,8 @@ where
     /// gracefully once the next scheduled timestamp exceeds this cap, leaving
     /// any in-flight requests as incomplete in the report.
     max_sim_time_ms: Option<f64>,
+    /// Optional per-worker tokenization between prefill placement and the prefill engine.
+    tokenization: Option<TokenizationStage<(Uuid, usize, IssuedHandoffAction)>>,
     /// Optional scaling component. When set, `run()` seeds recurring `ScalingTick` events.
     scaling_policy: Option<Box<dyn ReplayScalingPolicy>>,
     /// Optional policy-neutral virtual-time telemetry sampler.
@@ -1105,6 +1108,7 @@ where
             decode_fpm_buffer: LatestFpmBuffer::default(),
             traffic: TrafficAccumulators::new(),
             max_sim_time_ms: None,
+            tokenization: None,
             scaling_policy: None,
             telemetry: None,
             collect_fpm: false,
@@ -1164,6 +1168,12 @@ where
     /// it for the calibration use case this exists to serve.
     pub(crate) fn with_max_sim_time_ms(mut self, ms: Option<f64>) -> Self {
         self.max_sim_time_ms = ms;
+        self
+    }
+
+    /// Tokenize each request on its prefill worker before the prefill engine sees it.
+    pub(crate) fn with_tokenization(mut self, latency: Option<TokenizationLatency>) -> Self {
+        self.tokenization = latency.map(TokenizationStage::new);
         self
     }
 
@@ -1315,8 +1325,53 @@ where
         Ok(())
     }
 
-    /// Submit a coordinator-owned prefill onto a selected worker.
+    /// Submit a coordinator-owned prefill onto a selected worker, after
+    /// tokenization on that worker when it is configured.
     fn dispatch_prefill(
+        &mut self,
+        uuid: Uuid,
+        worker_idx: usize,
+        action: IssuedHandoffAction,
+    ) -> Result<()> {
+        if self.tokenization.is_none() {
+            return self.submit_prefill(uuid, worker_idx, action);
+        }
+        let (logical_worker_id, _) =
+            self.prefill_engine
+                .rank_identity(worker_idx)
+                .ok_or_else(|| {
+                    anyhow!("offline prefill placement references unknown scheduler {worker_idx}")
+                })?;
+        let input_tokens = self.state(uuid)?.input_length()?;
+        let tokenization = self
+            .tokenization
+            .as_mut()
+            .expect("tokenization is configured");
+        tokenization.enter(
+            self.now_ms,
+            logical_worker_id,
+            input_tokens,
+            uuid,
+            (uuid, worker_idx, action),
+        )?;
+        Ok(())
+    }
+
+    /// Hand every request whose tokenization has finished to its prefill engine.
+    fn release_tokenized(&mut self) -> Result<bool> {
+        let Some(tokenization) = &mut self.tokenization else {
+            return Ok(false);
+        };
+        let released = tokenization.release_due(self.now_ms);
+        let changed = !released.is_empty();
+        for (tokenized_ms, (uuid, worker_idx, action)) in released {
+            self.collector.on_tokenized(uuid, tokenized_ms);
+            self.submit_prefill(uuid, worker_idx, action)?;
+        }
+        Ok(changed)
+    }
+
+    fn submit_prefill(
         &mut self,
         uuid: Uuid,
         worker_idx: usize,
@@ -1814,6 +1869,11 @@ where
         if !self.state(uuid)?.prefill_routed {
             return Ok(());
         }
+        // Like a router-queued prefill, a request still being tokenized drops
+        // its unsubmitted prefill action.
+        if let Some(tokenization) = &mut self.tokenization {
+            tokenization.cancel(uuid);
+        }
         self.state_mut(uuid)?.pending_prefill_action = None;
         let placements = if self.prefill_placement.cancel_pending(uuid) {
             Vec::new()
@@ -2007,8 +2067,13 @@ where
                     (deadline > self.now_ms).then_some(deadline)
                 });
         let next_arrival_ms = choose_next_timestamp(
-            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
-            profile_deadline,
+            choose_next_timestamp(
+                CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+                profile_deadline,
+            ),
+            self.tokenization
+                .as_ref()
+                .and_then(TokenizationStage::next_release_ms),
         );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
@@ -2694,6 +2759,7 @@ where
             }
             changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
+            changed |= self.release_tokenized()?;
             changed |= self.drive_prefill_workers()?;
             changed |= self.drive_decode_workers()?;
             let removed_prefill = self

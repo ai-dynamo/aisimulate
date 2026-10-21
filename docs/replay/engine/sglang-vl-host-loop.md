@@ -82,7 +82,8 @@ padding), one worker. The Rust frontend, the embedded Rust server's multimodal
 workers, is `process`, the worker pool timed from the HTTP send to the
 scheduler-side drain, followed by `receive`. The single-worker
 stages serialize requests but do not stall the dispatch of arrivals as the real
-loop thread does. A worker with images but neither `frontend` nor `host_profile`
+loop thread does. The stages include the tokenizer manager's own work, so
+`engine.tokenization` does not combine with them. A worker with images but neither `frontend` nor `host_profile`
 encodes the images on the GPU and prices no frontend stage, so its TTFT starts
 at the scheduler; no table is read or measured unless `host_profile` is set.
 

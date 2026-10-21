@@ -81,6 +81,7 @@ impl FrontendRuntime {
     }
 
     /// Requests in a stage or parked in the exit buffer.
+    #[cfg(test)]
     pub(super) fn request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.requests
             .iter()

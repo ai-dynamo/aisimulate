@@ -1,0 +1,119 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "dbfcdd9eb62ea733efbc3f0cbd78277f2960061a",
+  "profiles": {
+    "gb300-vllm-fp8-block-tp8-ep8-kv-off-v0.1.dev19262": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-off.parquet",
+          "target": "data/gb300/vllm/0.1.dev19262/fpm_forward_perf.parquet",
+          "sha256": "57f4f10a113d47e31df37e53dc31aea31f5c7bad0c6c715899408a85b75cd56c"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-off.metadata.json",
+          "target": "data/gb300/vllm/0.1.dev19262/fpm_forward_perf.metadata.json",
+          "sha256": "dad2fae8faa3f8abb274b20560ad5e57d158256e90c92cd27a2e9fec7430d2ef"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "0b3c4bf1002d2cd111a7bf42aeb74436312b684f9c10323599b5898120689915"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-fp8-block-tp8-ep8-kv-on-v0.1.dev19262": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-on.parquet",
+          "target": "data/gb300/vllm/0.1.dev19262/fpm_forward_perf.parquet",
+          "sha256": "f3382f4010bb015ac7eee47b78d6f3f07ae05d4149ade4640ea47e3de7dffee8"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/fpm/fpm_forward_perf.kv-on.metadata.json",
+          "target": "data/gb300/vllm/0.1.dev19262/fpm_forward_perf.metadata.json",
+          "sha256": "b646a48b03634f6f34196193180cdae7ba0fce2696b5611dab84c60f952af5b6"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.1.dev19262/tep8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "0b3c4bf1002d2cd111a7bf42aeb74436312b684f9c10323599b5898120689915"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0": {
+      "admission": "development",
+      "admission_reason": "No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/fpm_forward_perf.primary.parquet",
+          "target": "data/gb300/vllm/0.29.0/fpm_forward_perf.parquet",
+          "sha256": "8f271d9e7e3f713e72d3494b512be3c4978d0b8f50422d9e5fa126e2e1170ef1"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/fpm_forward_perf.primary.metadata.json",
+          "target": "data/gb300/vllm/0.29.0/fpm_forward_perf.metadata.json",
+          "sha256": "4a64e816f2311bf4e67fef0843c703cdfc83cfdf7b048ed359058b34d5eb4bf8"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "8855ae57edd9ca1b4a84029f858d23f8ef282c9b96d1e3845aed1c81a71ea1d4"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/import.json",
+          "target": "provenance/import.json",
+          "sha256": "68510843e56b19d87d0e4ff891c6c3ed2eb3026f7d5bdf43a9cf2151c6ebcd9c"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/engine-config.json",
+          "target": "provenance/engine-config.json",
+          "sha256": "da1a76aca943787c2f460ebf9beb15d7af0eeff8906990636a322237c07dbb8a"
+        }
+      ],
+      "packaged_system": "gb300"
+    },
+    "gb300-vllm-mxfp4-tp8-dcp8-synthetic-attention-boundary-v0.29.0": {
+      "admission": "quarantined",
+      "admission_reason": "Synthetic attention-boundary comparator, excluded from the primary Kimi library. Published diagnostic comparator. No serving qualification or archived collection system YAML is published for this table; the bundled system configuration is a reference for reproduction.",
+      "system_config_source": "packaged_reference_not_collection",
+      "files": [
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/fpm_forward_perf.synthetic_attention_boundary.parquet",
+          "target": "data/gb300/vllm/0.29.0/fpm_forward_perf.parquet",
+          "sha256": "62444cd8eb255cfc13a1ed0977e865da83d554ed3feb2e422558a58ee0872872"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/fpm_forward_perf.synthetic_attention_boundary.metadata.json",
+          "target": "data/gb300/vllm/0.29.0/fpm_forward_perf.metadata.json",
+          "sha256": "4caa2eff1534a525bf3fbef650addf1b0e0718b5004695b7b97de5cd71eb2a33"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/manifest.json",
+          "target": "provenance/manifest.json",
+          "sha256": "8855ae57edd9ca1b4a84029f858d23f8ef282c9b96d1e3845aed1c81a71ea1d4"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/import.json",
+          "target": "provenance/import.json",
+          "sha256": "68510843e56b19d87d0e4ff891c6c3ed2eb3026f7d5bdf43a9cf2151c6ebcd9c"
+        },
+        {
+          "path": "data/moonshotai--Kimi-K3/gb300/vllm/0.29.0/tp8-dcp8/fpm/provenance/engine-config.json",
+          "target": "provenance/engine-config.json",
+          "sha256": "da1a76aca943787c2f460ebf9beb15d7af0eeff8906990636a322237c07dbb8a"
+        }
+      ],
+      "packaged_system": "gb300"
+    }
+  }
+}

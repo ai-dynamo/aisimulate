@@ -152,12 +152,22 @@ def test_images_encode_on_the_language_worker_without_a_host_loop():
 
 @pytest.mark.parametrize(
     "kind",
-    ["encoder_and_host", "frontend_without_host", "vllm", "fixed_timing", "pipeline_without_vision_key"],
+    [
+        "encoder_and_host",
+        "frontend_without_host",
+        "vllm",
+        "fixed_timing",
+        "pipeline_without_vision_key",
+        "tokenization",
+    ],
 )
 def test_native_vl_schema_rejects_unsupported(kind):
     raw = _prediction()
     worker = raw["engine"]["workers"]["aggregated"]
-    if kind == "pipeline_without_vision_key":
+    if kind == "tokenization":
+        # The frontend stages already price the tokenizer manager's work.
+        raw["engine"]["tokenization"] = {"base_ms": 1.0}
+    elif kind == "pipeline_without_vision_key":
         # Images enable the encoder implicitly; the layout gate must not depend on spelling `vision` out.
         del worker["frontend"]
         worker["parallelism"] = {"replicas": 1, "tensor": 1, "pipeline": 2}

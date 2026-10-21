@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassWorkerType};
+use super::{
+    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassWorkerType, FpmExecutionBinding,
+};
 use crate::{AicError, BackendKind, MemoryBreakdown};
 
 const MAX_EXACT_BYTES: u64 = 1 << 53;
@@ -338,14 +340,85 @@ impl ForwardPassPerfModelConfig {
         if profile.get("model").and_then(serde_json::Value::as_str) != Some(self.model.as_str()) {
             return Err(invalid("FPM profile model identity mismatch"));
         }
+        let execution = self.validate_fpm_execution()?;
         if self.backend != BackendKind::Vllm
             || self.pp != 1
-            || self.nextn != 0
+            || (self.nextn != 0 && execution.is_none())
             || self.speculation.is_some()
         {
             return Err(invalid(
                 "FPM resources require vLLM PP1 plain autoregressive execution",
             ));
+        }
+        let deployment = self
+            .fpm_deployment()?
+            .ok_or_else(|| invalid("FPM deployment requires a profile"))?;
+        let resources: FpmResourceConfig = serde_json::from_value(
+            deployment
+                .get("resources")
+                .cloned()
+                .ok_or_else(|| invalid("FPM deployment requires resources"))?,
+        )
+        .map_err(|error| invalid(format!("FPM resource profile: {error}")))?;
+        resources.validate()?;
+        if execution.is_some()
+            && (resources.cache_layout != FpmCacheLayout::Linear
+                || resources.runtime_memory.is_none())
+        {
+            return Err(invalid(
+                "speculative-round FPM resources require observed runtime memory and a linear cache",
+            ));
+        }
+        Ok(Some(resources))
+    }
+
+    pub(crate) fn fpm_execution_binding(&self) -> Result<Option<FpmExecutionBinding>, AicError> {
+        let Some(profile) = &self.fpm_profile else {
+            return Ok(None);
+        };
+        // Do not change validation order for historical profiles without the
+        // optional execution identity.
+        let has_execution = profile
+            .get("deployments")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|deployments| {
+                deployments.iter().any(|deployment| {
+                    deployment
+                        .get("execution_profile")
+                        .is_some_and(|value| !value.is_null())
+                })
+            });
+        if !has_execution {
+            return Ok(None);
+        }
+        let deployment = self
+            .fpm_deployment()?
+            .ok_or_else(|| invalid("FPM execution identity requires a deployment"))?;
+        let Some(execution) = deployment
+            .get("execution_profile")
+            .filter(|value| !value.is_null())
+        else {
+            return Ok(None);
+        };
+        let binding = FpmExecutionBinding {
+            model_revision: profile
+                .get("model_revision")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| invalid("FPM execution identity requires model_revision"))?
+                .to_owned(),
+            execution_profile: serde_json::from_value(execution.clone())
+                .map_err(|error| invalid(format!("FPM execution identity: {error}")))?,
+        };
+        binding.validate()?;
+        Ok(Some(binding))
+    }
+
+    fn fpm_deployment(&self) -> Result<Option<&serde_json::Value>, AicError> {
+        let Some(profile) = &self.fpm_profile else {
+            return Ok(None);
+        };
+        if profile.get("model").and_then(serde_json::Value::as_str) != Some(self.model.as_str()) {
+            return Err(invalid("FPM profile model identity mismatch"));
         }
         let deployments = profile
             .get("deployments")
@@ -406,15 +479,7 @@ impl ForwardPassPerfModelConfig {
         if matching.next().is_some() {
             return Err(invalid("duplicate FPM deployment resources"));
         }
-        let resources: FpmResourceConfig = serde_json::from_value(
-            deployment
-                .get("resources")
-                .cloned()
-                .ok_or_else(|| invalid("FPM deployment requires resources"))?,
-        )
-        .map_err(|error| invalid(format!("FPM resource profile: {error}")))?;
-        resources.validate()?;
-        Ok(Some(resources))
+        Ok(Some(deployment))
     }
 }
 
@@ -663,6 +728,87 @@ mod tests {
             .clone(),
         );
         config
+    }
+
+    fn round_config() -> ForwardPassPerfModelConfig {
+        let mut config = role_config();
+        config.nextn = 3;
+        config.estimation_mode = super::super::EstimationMode::FpmInterpolation;
+        config.estimator_config.fpm_interpolation.method =
+            super::super::FpmInterpolationMethod::Direct;
+        let profile = config.fpm_profile.as_mut().unwrap();
+        profile.insert("model_revision".into(), "1".repeat(40).into());
+        for deployment in profile["deployments"].as_array_mut().unwrap() {
+            deployment["execution_profile"] = serde_json::json!({
+                "kind": "speculative_round", "method": "eagle3", "num_draft_tokens": 3,
+                "draft_model": "test/draft", "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            });
+            let resources = deployment["resources"].as_object_mut().unwrap();
+            resources.insert("cache_layout".into(), "linear".into());
+            resources.insert("kv_bytes_per_token".into(), 10.into());
+            resources.remove("cache_groups");
+        }
+        config
+    }
+
+    #[test]
+    fn speculative_round_keeps_observed_capacity_and_identity_after_reload() {
+        let config = round_config();
+        config.validate().unwrap();
+        let reloaded: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reloaded.nextn, 3);
+        assert_eq!(
+            config.fpm_execution_binding().unwrap(),
+            reloaded.fpm_execution_binding().unwrap()
+        );
+        let resources = reloaded.fpm_resources().unwrap().unwrap();
+        let mut query = request();
+        query.cuda_graph_reserved_bytes = 0;
+        query.tolerance_fraction = None;
+        let budget = resources.estimate_budget(&query, 4096).unwrap();
+        // The recorded usable pool is 600 bytes at 10 bytes/token. SD has
+        // already affected that observation; neither draft depth nor TP is a
+        // second capacity multiplier or memory deduction.
+        assert_eq!(budget.total_kv_size_bytes, 600);
+        assert_eq!(budget.total_kv_size_tokens, Some(60));
+        assert_eq!(budget.memory_breakdown, None);
+        query.cuda_graph_reserved_bytes = 20;
+        assert!(resources.estimate_budget(&query, 4096).is_err());
+    }
+
+    #[test]
+    fn speculative_round_requires_matching_depth_direct_selection_and_observed_memory() {
+        let config = round_config();
+        for depth in [0, 2, 4] {
+            let mut invalid = config.clone();
+            invalid.nextn = depth;
+            assert!(invalid.validate().is_err());
+            assert!(invalid.fpm_resources().is_err());
+        }
+        let mut invalid = config.clone();
+        invalid.estimation_mode = super::super::EstimationMode::Auto;
+        assert!(invalid.validate().is_err());
+        invalid = config.clone();
+        invalid.estimator_config.fpm_interpolation.method =
+            super::super::FpmInterpolationMethod::Sol;
+        assert!(invalid.validate().is_err());
+        invalid = config.clone();
+        invalid.fallback_policy = super::super::ForwardPassFallbackPolicy::Allow;
+        assert!(invalid.validate().is_err());
+        for replacement in [resources(), runtime_resources()] {
+            let mut invalid = config.clone();
+            invalid.fpm_profile.as_mut().unwrap()["deployments"][0]["resources"] =
+                serde_json::to_value(replacement).unwrap();
+            assert!(invalid.fpm_resources().is_err());
+        }
+        let mut invalid = config;
+        let resources = invalid.fpm_profile.as_mut().unwrap()["deployments"][0]["resources"]
+            .as_object_mut()
+            .unwrap();
+        resources.remove("runtime_memory");
+        assert!(invalid.fpm_resources().is_err());
     }
 
     #[test]
