@@ -1,0 +1,4 @@
+results/
+.local-results/
+__pycache__/
+*.pyc

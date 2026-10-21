@@ -1,0 +1,90 @@
+# Four-GPU static baseline: two prefill and two decode H200 workers.
+# Model metadata has a native context limit of 40960 tokens.
+# The runner replaces the trace path with its prepared, context-qualified slice.
+traffic:
+  source:
+    type: trace
+    format: mooncake
+    paths:
+      - "__TRACE_PATH_SET_BY_RUNNER__"
+    block_size: 512
+  load:
+    type: trace_timestamps
+    speedup: 1.0
+
+engine:
+  mode: disaggregated
+  model: Qwen/Qwen3-32B-FP8
+  hardware: h200_sxm
+  backend: vllm
+  # Pin the maintained H200/vLLM current slot, not a raw collection directory.
+  backend_version: "0.24.0"
+  context_length: 40960
+  estimation_mode: op_level
+  fallback_policy: deny
+  database_mode: SILICON
+  enable_chunked_prefill: true
+  # Dynamo 1.6 rejects explicit precision controls; use model/backend defaults.
+  kv_transfer:
+    # Qwen3-32B automatic FP8 KV, TP1/PP1: 2 * 64 layers * 8 KV heads * 128 * 1 byte.
+    # The current naive "auto" transfer estimator reads BF16 torch_dtype instead.
+    bytes_per_token: 131072
+    # Decimal GB/s: 50 GB/s = 400 Gb/s. No shared-link contention is modeled.
+    bandwidth_gb_per_second: 50.0
+    timing_mode: destination_missing
+  workers:
+    prefill:
+      parallelism:
+        replicas: 2
+        tensor: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler:
+        max_batched_tokens: 8192
+        # Community role default; not yet tuned for this workload.
+        max_sequences: 1
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        bytes_per_token: auto
+        capacity:
+          type: default
+          memory_fraction: 0.9
+      timing:
+        type: default
+      startup_seconds: 0.0
+    decode:
+      parallelism:
+        replicas: 2
+        tensor: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler:
+        max_batched_tokens: 8192
+        max_sequences: 256
+      kv_cache:
+        block_size: 64
+        prefix_caching: true
+        bytes_per_token: auto
+        capacity:
+          type: default
+          memory_fraction: 0.9
+      timing:
+        type: default
+      startup_seconds: 0.0
+
+router:
+  policy: round_robin
+  prefill_load_model:
+    type: none
+
+# Provisional reporting thresholds, not confirmed business requirements.
+# itl_ms tests each request's mean generation interval, not its worst token gap.
+evaluation:
+  sla:
+    ttft_ms: 5000.0
+    itl_ms: 50.0
