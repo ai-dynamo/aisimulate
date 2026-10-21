@@ -97,6 +97,40 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### GLM-5.3-Flash Ops data and the fleet `next` slot
+
+Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0
+the derived fleet `next` versions. The two Kimi-K3 B300 cases follow `next`,
+so they now read the B300 SGLang 0.5.20 `gemm_perf` and
+`custom_allreduce_perf` tables collected for GLM; other families still fill
+backward from older versions. With only the GEMM table present, static
+context and generation change by +1.819 and -0.607 ms; with only the
+all-reduce table, by -0.913 and -0.213 ms. Only the failing static and
+disaggregated records were refreshed, from
+`9a08d1557462c02a6cc8552360afee89538a0540` with a matching native build:
+
+| Metric (ms), both cases | Before | After |
+| --- | ---: | ---: |
+| Static context | 87.881 | 88.761 |
+| Static generation | 13.912 | 13.091 |
+| Static total | 101.793 | 101.852 |
+| Disaggregated TTFT | 174.004 | 175.747 |
+| Disaggregated TPOT | 16.936 | 16.319 |
+| Disaggregated request | 190.940 | 192.066 |
+
+The aggregate references pass unchanged and the mixed records keep their
+`PerfDataNotAvailableError`. The four Qwen3.8-Max GB300 cases pin SGLang
+0.5.17 and vLLM 0.27.1, which are no longer queryable versions. They set
+`allow_unlisted_version=True` and keep their references unchanged.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh kimi-k3-b300-sglang-next-nospec::static \
+  kimi-k3-b300-sglang-next-nospec::disagg \
+  kimi-k3-b300-sglang-next-dspark-nextn7::static \
+  kimi-k3-b300-sglang-next-dspark-nextn7::disagg
+```
+
 ### B60 graph-timing data promotion in PR #329
 
 The `qwen3-30b-a3b-b60-vllm-scan-coverage` case follows the `current`
