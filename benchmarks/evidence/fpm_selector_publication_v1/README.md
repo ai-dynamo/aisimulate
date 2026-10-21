@@ -6,9 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 # Learned-model publication cost evidence
 
 This directory records CPU cost and numerical compatibility for standalone online
-GBDT and the combined calibrated/online causal selector. It does not measure
-prediction accuracy on a serving workload. The paired workstation campaign and
-its 30 cost-process measurements are complete.
+GBDT and the combined calibrated/online causal selector. The paired workstation
+campaign and its 30 cost-process measurements are complete; those probes do not
+measure serving-workload prediction accuracy. The separate
+[historical accuracy summary](#historical-accuracy-comparison) below extracts
+exploratory MAPE results from the earlier selector sweep.
 
 The accompanying [validation receipt](validation.json) records the Rust,
 Python, and earlier numerical parity checks, with their exact scope. Timing
@@ -149,3 +151,71 @@ prediction cost; it does not qualify the learned model for phase-only engine
 replay. The checkpoint check saves standalone online state with three pending
 labels, reloads it in the combined-capable binary as ordinary `online`, admits
 four more labels, and flushes. Combined selector persistence remains unsupported.
+
+## Historical accuracy comparison
+
+The completed PR493 selector sweep provides controlled comparisons against
+standalone hybrid calibration. These are historical exploratory results, not a
+rerun of the current combined native binary. [accuracy-comparison.json](accuracy-comparison.json)
+contains exact selected source records, three replica scores, source SHA256s,
+all protocol-level metrics, settings, guards and extraction limits. The source
+hash chain from findings to comparisons/ranking and from comparisons to the
+sealed campaign/manifest was checked before extracting these values.
+
+All values below are MAPE percentages; lower is better. `64/16` and `32/4` mean
+calibration observation capacity / bucket count, corresponding to 4×4 and 2×2
+grids. The 64/16 calibration uses PR493 defaults; 32/4 is the tuned calibration.
+Both use factor bounds [0.5, 2] and readiness 5. Each combined column uses the
+same calibration as the adjacent standalone column, with selector alpha 0.025,
+warmup 10, relative margin 0.025 and persistence 1.
+
+| Protocol | Hybrid 64/16 | Combined 64/16 | Hybrid 32/4 | Combined 32/4 |
+| --- | ---: | ---: | ---: | ---: |
+| B+C: mean of nine seed ratios | 3.3144% | 3.2002% | 3.3214% | 3.2422% |
+| Paged C | 11.6698% | 7.2415% | 11.5264% | 7.3816% |
+| Strict C | 8.2151% | 5.8821% | 8.2475% | 5.8835% |
+| A+C: one supported capture | 5.5466% | 4.1561% | 5.6950% | 3.9033% |
+| Cross-workload: six directions | 3.9665% | 3.2197% | 4.0170% | 3.3917% |
+
+Both online experts use the explicit W64 research profile: structural fitting,
+updates after each admitted label, history mass 0.1 with ramp 32, grouped history,
+lazy derivatives with eager interval 32, split sampling 0.5 and rank tolerance
+0.01, with all trees mutable. These are not whole-model API defaults. Each matched
+pair starts from the same verified PR460-recipe seed (150 trees, at most 15 leaves,
+learning rate 0.2, 17 `fpm5` features). The five-second admission schedule is
+unchanged, and predictions precede feedback.
+
+The 223 evaluation cells comprise 126 B+C cells (14 captures × nine seed ratios),
+14 paged-C, 14 strict-C, one supported A+C capture, and 68 transfer cells across
+six directions. B+C trains chronological 10–90% prefixes and scores the remaining
+suffix. Paged C bootstraps each worker/store with 20 consecutive labels; strict C
+uses only scheduled labels even during bootstrap. A+C starts from a separate
+measured self-benchmark seed; only Kimi GB300 supports it. Transfers train on a
+source workload family without target-family labels. Cold-start protocols have
+different readiness masks; each comparison within a protocol uses identical
+ready rows for all methods.
+
+Per cell/query, MAPE is `100/n * sum(abs(prediction/observed - 1))`. Three native
+process replicas are averaged at the score level before hierarchical aggregation;
+predictions are not averaged. The Gym hierarchy equally weights captures, query
+types, backends and datasets in that order. Transfers equally weight captures
+within direction/backend/role, then those groups, then six directions. B+C gives
+each of its nine ratios equal weight. There is no single pooled score across
+these protocols, and repeated captures do not count as independent data.
+
+Combined 32/4 is the sweep's declared minimax winner, candidate 783, and passes
+all three replicas' campaign guards. Combined 64/16, candidate 5283, improves
+hybrid calibration in all five displayed means but fails the A+C guard against
+the original FIFO reference: 4.1561% exceeds 3.9953%. Mean gains are not uniform:
+combined 32/4 regresses in 14 of 24 transfer direction/backend/role groups versus
+PR493-default hybrid, and AgentX → LongBench worsens from 1.6822% to 1.7629%
+against its own matched 32/4 hybrid.
+
+All captures were already examined, and the sweep selected among 9,000 settings
+on these same evaluation populations. The stable expert was replayed with pinned
+PR493 code; online experts retain cached predictions from the earlier runtime.
+The causal selector was scored over those trajectories. These results establish
+neither current combined-native replay parity nor accuracy on untouched data.
+The three process replicas measure implementation variation, not independent
+dataset uncertainty. The compact receipt does not bundle raw captures or the
+full research replay archive.
