@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  kda_perf:
+    # GLM-5.3-Flash KDA (64/tp heads per shard of the case YAML); every context row carries a cached prefix; chunk_kda cells whose tokens*heads*128 >= 2**31 overflow int32 offsets and are classified in the job's errors file.
+    # b300_sxm (SM103, computelab), 8 GPUs/node, stock image amd64 child sha256:b27fce60bc5494c118c4910702812bcfa8cee67abcdd1ff8b0902f21647552f4 (no overlay) run via pyxis; launcher audits/glm53flash-multigpu/tools/ops/launcher; collector source 00d2e3196a20f44d1514f23419acdd59409139e5; Slurm job(s) 4956283.
+    # data_sha256: 28aed76a1c8574f75bb609a92cfe7404b9cce36101b73d97857c4aadf46bbe87
+    collector_ref: 00d2e3196a20f44d1514f23419acdd59409139e5
+    collector_hash: sha256:7cf0c114a01cc013547be69f5f4f6cc027d35d4a05137279792f08d53cbefe4a
+    case_plan_hash: sha256:07812148601e818811ae78913fa5dc650567f0c2b021e758cc7cf0f36e613a55
+    collected_at: '2026-10-13'
+    rows: 964
+    status: complete

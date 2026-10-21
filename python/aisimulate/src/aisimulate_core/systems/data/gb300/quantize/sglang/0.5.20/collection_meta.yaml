@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+provenance: collected
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+  source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+tables:
+  computescale_perf:
+    # collect.py --keep-csv, finalized offline: collect.py's provenance transaction rejects the
+    # scale_matrix_perf.txt side output (not a registry PerfFile) and aborts finalization.
+    # GB300 (SM103, ocijhb), 4 GPUs/node, image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 run via pyxis; launcher audits/ops-standalone-w1/launcher; Slurm job(s) 724659.
+    # data_sha256: 84a138c2971b2e0f2e6454c5752fc724e38800e8f3f5971619abbeb17ddbaab3
+    collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+    collector_hash: sha256:c468f3bc13c13e34bf42c41b5c195cb9ac0bce5426887fc99d509e3c1acc1293
+    case_plan_hash: sha256:1f1746d6138ca3d026c3ac8b6436fcf87d91ab307d7d076ef43677a3bf925a4e
+    collected_at: '2026-09-30'
+    rows: 1628
+    status: complete
+  scale_matrix_perf:
+    # collect.py --keep-csv, finalized offline: collect.py's provenance transaction rejects the
+    # scale_matrix_perf.txt side output (not a registry PerfFile) and aborts finalization.
+    # GB300 (SM103, ocijhb), 4 GPUs/node, image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 run via pyxis; launcher audits/ops-standalone-w1/launcher; Slurm job(s) 724659.
+    # data_sha256: f0472b8290ab083602fbd0915e5af58bff07304127d6d93d0ab21948c2c119bc
+    collector_ref: 6e9bcdf2d171b1a9cf98471dda4a461cc971b939
+    collector_hash: sha256:c468f3bc13c13e34bf42c41b5c195cb9ac0bce5426887fc99d509e3c1acc1293
+    case_plan_hash: sha256:1f1746d6138ca3d026c3ac8b6436fcf87d91ab307d7d076ef43677a3bf925a4e
+    collected_at: '2026-09-30'
+    rows: 1628
+    status: complete

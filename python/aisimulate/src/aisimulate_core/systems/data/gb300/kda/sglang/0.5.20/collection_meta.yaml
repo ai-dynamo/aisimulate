@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862
+tables:
+  # GLM-5.3-Flash KDA (Glm5NextForConditionalGeneration, TP2 32-head and TP4
+  # 16-head shards) on GB300, Slurm job 723367, collector commit 8a8da1f1
+  # (collector_ref below; the staged tree had no .git so collect.py recorded
+  # 'unknown'). Every context row carries a cached prefix (non-zero initial
+  # state). 9 context cells have no chunk_kda row: tokens*heads*128 >= 2**31
+  # overflows chunk_kda's int32 offsets (fla/kda.py:265-268 @v0.5.20) and the
+  # collector raises before launch; their causal_conv1d_fn rows are present.
+  # No verify rows (GLM baseline is nextn=0; verify raises by design).
+  kda_perf:
+    collector_ref: 8a8da1f15e4228235c1fa255a67f428f2736abac
+    collector_hash: sha256:4612d5a99f52359b949d6edef7d79ab8d7bb683d3862f2cf463691f78f4171f4
+    case_plan_hash: sha256:79aff7ee3bb4f286b4d51f38e1e1a5b5f52f0f297e41bbd0581f594ec7430812
+    collected_at: '2026-09-30'
+    rows: 499
+    status: complete

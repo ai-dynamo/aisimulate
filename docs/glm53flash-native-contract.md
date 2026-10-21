@@ -136,11 +136,12 @@ Existing Kimi-K3 KDA rows (12/24/48/96 heads) never cover GLM's 16/32/64-head
 shards.
 
 The pinned runtimes are data coordinates `vllm/0.31.0` (stock v0.31.0, no overlay)
-and `sglang/0.5.20`. GLM Ops data is not shipped in this package; it is
-supplied through the separate data-integration path as a systems root with
-its own `gb300.yaml` and `data/gb300/<family>/<backend>/<version>/`. Select
-it with `systems_paths=[<root>]`, the explicit `backend_version` and
-`enable_shared_layer=False`:
+and `sglang/0.5.20`. The GLM Ops tables for GB300, GB200, B300 (`b300_sxm`),
+H200 (`h200_sxm`) and H100 (`h100_sxm`) are packaged under
+`systems/data/<system>/<family>/<backend>/<version>/`. Because they are the
+newest data-backed vLLM and SGLang versions in the tree, they are the fleet
+`next` slot (`systems/query_versions.yaml`). Select them with the explicit
+`backend_version` (or `next`) and `enable_shared_layer=False`:
 
 ```python
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
@@ -151,7 +152,6 @@ model = RustForwardPassPerfModel.best_available(
         system="gb300",
         backend="vllm",  # or "sglang"
         backend_version="0.31.0",  # "0.5.20" for SGLang
-        systems_paths=["/path/to/glm53flash-ops"],  # root holding gb300.yaml and data/
         enable_shared_layer=False,
         worker_type="aggregated",
         tp=2,
@@ -164,14 +164,19 @@ model = RustForwardPassPerfModel.best_available(
 )
 ```
 
-Without that root, strict SILICON construction fails: with the default
-version it raises `PerfDataNotAvailableError` naming the missing exact-runtime
-table, a root without GLM tables raises `PerfDataNotAvailableError`, and the
-pinned version against the packaged root is rejected as not queryable. It
-never falls back to SOL or to other runtimes' rows. Keeping the data out of
-the general `systems/data` tree leaves the fleet `current`/`previous`/`next`
-version slots, backward fill, support matrices and every other model's
-defaults unchanged. The GLM attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
+Hopper deployments pass `kvcache_quant_mode="bfloat16"`. The packaged systems
+keep their own `nccl_version`, so the NCCL vocab gather is priced from the
+packaged NCCL table, not from the campaign's NCCL 2.30.7 collection.
+
+An external systems root remains optional: a root with its own `<system>.yaml`
+and `data/<system>/<family>/<backend>/<version>/`, selected with
+`systems_paths=[<root>]`, replaces the packaged tree, for example to evaluate
+a recollection. Strict SILICON never falls back to SOL or to other runtimes'
+rows: with the default version it raises `PerfDataNotAvailableError` naming
+the missing exact-runtime table, and a root without GLM tables raises
+`PerfDataNotAvailableError`.
+
+The GLM attention table uses the DeepSeek-V4.1 module schema (`component=attention`,
 canonical sorted `geometry` JSON of the `Glm53Attention` body without
 `name`/`measured`, `batch_size`, `prefix`, `x` = new tokens for prefill or
 absolute KV length for decode, local-compute `latency` in ms, and complete
