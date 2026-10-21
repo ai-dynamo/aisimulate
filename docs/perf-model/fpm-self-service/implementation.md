@@ -578,7 +578,7 @@ With no parallelism flags, guided setup asks for missing shared precision/layout
 
 When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. Otherwise, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
 
-Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Text-decoder cache layouts that `config.json` cannot establish, such as linear-attention or recurrent state, are not rejected: their [cache geometry stays pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Other known incompatible layouts remain rejected, and unknown layouts require explicit resource accounting.
+Scripted intake and interactive final review state that FPM models the text decoder only. Config-derived estimates exclude multimodal encoders, projectors, preprocessing and other non-text components. Observed runtime cache capacity accounts for all components actually loaded by the worker, while timing describes the text decoder only. The saved profile preserves that notice in provenance through planning and generated prediction/recommendation configurations. Text-decoder cache layouts that `config.json` cannot establish, such as linear-attention, recurrent state or an architecture that intake does not recognize, are not rejected: their [cache geometry stays pending the runtime probe](#cache-geometry-pending-the-runtime-probe). Other known incompatible layouts remain rejected. MLA/DSA layouts and configs that name no architecture require explicit resource accounting.
 
 Memory remains pending for the selected TP, DEP or TEP worker until collection. Prompts request only unresolved identity, precision and supported cache geometry. Optional legacy byte overrides describe a conservative per-rank estimate. Enter integer bytes or an explicit unit such as `70 GiB`, `512 MiB`, or `1.5 GB`; the conversion must produce a whole number of bytes. Invalid individual values are prompted again. Model revision, backend identity, and deployment conflicts return to the corresponding option while retaining accepted resource answers. During initial input collection, incompatible config facts or combined resource bounds fail with the reason and leave no request; correct the source or overrides and rerun setup. Ctrl-C or end-of-input exits 130 and leaves no partial request or replacement of an existing request.
 
@@ -629,7 +629,7 @@ aisimulate onboard init \
 
 Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Flat per-rank byte overrides require an explicit topology because the same byte bound cannot be transferred or rescaled across candidate tuples. For multiple configurations, place them in each `--parallel-configs` entry's `resource_overrides` instead. Shared precision/layout overrides can be used for automatic suggestions. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved or no fully assessed automatic default exists. Validation first lists all missing or invalid target identity and collection options. Once that stage is valid, it lists unresolved profile fields, or candidate-specific gaps and exact topology flags, and asks for the necessary inputs or guided setup.
 
-The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. For a layout [pending the runtime probe](#cache-geometry-pending-the-runtime-probe), `cache_layout`, `kv_bytes_per_token`, `cache_groups` and `cache_block_sizes` are also refused. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
+The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `cache_block_sizes`, `cache_groups`, `moe_backend`, `attention_backend`, and optional `provenance`. For grouped resources, replace `cache_layout: linear` and `kv_bytes_per_token` with the declarations described below. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. For a layout [pending the runtime probe](#cache-geometry-pending-the-runtime-probe), `cache_layout`, `kv_bytes_per_token` and `cache_groups` are claims that observation import checks, and `cache_block_sizes` is rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
 
 Reusing an observed profile with `onboard init --fpm-profile` defaults to its recorded memory utilization and limits context to its observed `max_model_len`. An explicit smaller context is allowed; changing utilization or exceeding the observed context requires new runtime memory evidence.
 
@@ -644,7 +644,7 @@ Derivation is deliberately limited. Unambiguous architecture, context, expert co
 | Runtime overhead | The selected packaged hardware specification's per-rank `misc.other_mem` estimate when present. It excludes the separate CUDA graph reservation. |
 | Communication overhead | The exact `misc.nccl_mem` TP entry for a pure-TP worker when present. DEP and TEP estimates remain unavailable; total GPU count does not establish their communication storage. These estimates are optional. |
 
-Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. Unknown layouts must supply the remaining supported semantics explicitly. A layout whose cache geometry `config.json` cannot establish, such as linear-attention or recurrent state, instead leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe) and refuses geometry overrides. Other known incompatible layouts are rejected.
+Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. MLA/DSA layouts and configs that name no architecture must supply the remaining supported semantics explicitly. `config.json` cannot establish the cache geometry of some layouts, such as linear-attention, recurrent state or an architecture that intake does not recognize. Such a layout leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). For that layout, a typed geometry override is a claim that observation import checks against the probe's measurement. Other known incompatible layouts are rejected.
 
 The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
@@ -666,11 +666,34 @@ makes a layout pending:
   declares no architecture;
 - an integer `attn_type_list` entry other than 1.
 
-Unknown architectures can still use generic MLA/GQA planning when their
-declared layer layout is supported. Packaged configs that are pending include
-GLM-5.3-Flash (KDA and sparse-attention layers), Kimi K3 (KDA), the Qwen3.5
-Gated DeltaNet hybrids and NemotronH hybrids such as Nemotron-3 Nano. For these
-layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not rejected.
+Without any of these markers, an architecture that intake does not recognize
+also makes a config pending. The reason reads
+`unrecognized architecture <name>`. The name is the decoder's own architecture.
+If the text config names none, the multimodal wrapper's architecture is used.
+If the config names no architecture, an `architecture` resource override counts.
+This rule has limits:
+
+- It does not apply to the known full-attention architectures:
+  `LlamaForCausalLM`, `MistralForCausalLM`, `Qwen2ForCausalLM`,
+  `Qwen3ForCausalLM`, `MixtralForCausalLM`, `Qwen3MoeForCausalLM` and
+  `MiniMaxM2ForCausalLM`.
+- It does not apply to the MLA/DSA families `DeepseekV3ForCausalLM`,
+  `DeepseekV32ForCausalLM` and `GlmMoeDsaForCausalLM`. Intake asks for their
+  `cache_layout` and `kv_bytes_per_token`.
+- If the config's own fields declare sliding windows or convolution state, it
+  does not apply. Intake derives the cache groups of these layouts, such as
+  gpt-oss, Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse Glimmer, DeepSeek V4
+  and Inkling.
+- A config that names no architecture, such as a ModelOpt
+  `hf_quant_config.json` sidecar, still asks for its cache layout.
+- Typed geometry overrides never change the classification.
+
+Packaged configs that are pending include GLM-5.3-Flash (KDA and
+sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
+NemotronH hybrids such as Nemotron-3 Nano. The architecture rule adds the
+Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and Llama-3.3-Nemotron-Super configs.
+For these layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not
+rejected.
 
 For such a config, `onboard init` cannot write a request yet, so it stops with
 guidance. It prints the facts it resolved with their sources and lists any
@@ -685,15 +708,27 @@ To continue, record the deployment, the model config path and the precision in
 the [onboarding checkpoint](#save-the-launch-inputs-in-the-existing-checkpoint),
 then run `onboard probe-runtime` and `onboard import-observations` as described
 in [Resolve cache geometry with a runtime probe](#resolve-cache-geometry-with-a-runtime-probe).
+
 `--suggest-parallel` still prints its shortlist, with each candidate's cache
 geometry reported under `pending_runtime` and no default selected. Automatic
 topology selection stops with the same guidance, because the probe takes an
 explicit topology: record one of the shortlisted starting points or your own.
+If the shortlist rejects every candidate, the guidance says that no usable
+starting point exists. Record your own topology.
 
-`--resource-overrides` cannot supply cache geometry for these layouts. An
-override of `cache_layout`, `kv_bytes_per_token`, `cache_groups` or
-`cache_block_sizes` is refused with an error saying the probe measures the
-geometry; remove it. Precision and the other overrides are still accepted.
+For these layouts, `--resource-overrides` can state `cache_layout`,
+`kv_bytes_per_token` or `cache_groups` only as a claim. Intake checks the value
+like any other override and records it with its source. The claim never
+completes a profile, and declaring every non-KV memory field does not change
+that. The guidance then says that `onboard import-observations` checks the
+claim against the probe's measurement. For that check, keep the claim in the
+configuration's `resource_overrides` in the checkpoint. The measurement is
+authoritative. If they differ, import names both values and stops that
+configuration. Correct or remove the override. If the runtime changed, run a
+fresh probe. A `cache_block_sizes` override is an error: it names cache groups
+that intake derives from `config.json`, and these layouts have none.
+`onboard probe-runtime` reports the runtime cache groups with their block sizes.
+Precision and the other overrides are still accepted.
 
 Malformed declarations still fail for every layout. An explicit `layer_types`
 list must have one entry per declared model layer, and an `attn_type_list` must
@@ -772,7 +807,7 @@ aisimulate onboard init \
   --suggest-parallel
 ```
 
-The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, [`pending_runtime`](#cache-geometry-pending-the-runtime-probe) cache geometry, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A pending-input candidate can be selected in guided setup, which asks for its missing bounds before final review.
+The report includes hardware/config provenance, exact `cli_flags`, required GPUs, resolved fields and sources, `missing` inputs, [`pending_runtime`](#cache-geometry-pending-the-runtime-probe) cache geometry, rejected candidates and a nullable `default`. Without explicit runtime precision, the example can report `needs_inputs` candidates and no default; use those diagnostics to collect shared facts in a flat `--resource-overrides` file and rerun. The preview does not validate or write `--output`, even if that request path already exists. It cannot be combined with `--interactive`, profile options, explicit topology flags, `--output-dir` or `--parallel-configs`. To save a request, remove `--suggest-parallel`; use a fully assessed automatic default or select a candidate by adding its exact flags. To save several configurations, use directory output below. Rank-local byte overrides require an explicit choice. A candidate whose missing inputs are memory bounds can be selected in guided setup, which asks for them before final review. Guided setup cannot select a candidate whose cache geometry is [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). `init` stops with the probe guidance instead.
 
 Dense decoders consider TP; MoE decoders consider pure TP, DEP and TEP. The shortlist contains at most two choices per family and six distinct tuples overall, preferring the smallest estimated fit and the next one. Widths are powers of two within the packaged node domain. A declared NVLink/NVSwitch fabric can use a packaged fast rack domain when its inter-node bandwidth matches or exceeds its intra-node bandwidth; a declared `none` interconnect permits only one GPU automatically. This is hardware architecture, not an available GPU allocation. Explicit topology choices may exceed the shortlist.
 
