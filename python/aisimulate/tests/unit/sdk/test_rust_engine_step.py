@@ -991,6 +991,22 @@ def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normali
     assert (normalized["cp_size"], normalized["dcp"]) == (2, 4)
 
 
+@pytest.mark.parametrize(
+    "encoder_options", [{}, {"encoder_parallel": None}, {"encoder_parallel": "tp"}, {"encoder_parallel": "dp"}]
+)
+def test_forward_pass_config_preserves_encoder_identity_on_saved_round_trip(encoder_options) -> None:
+    import aisimulate_core
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    config = ForwardPassPerfModelConfig(
+        model="m", system="s", backend="sglang", worker_type="prefill", cp_size=1, **encoder_options
+    )
+    resolved = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict())))
+    assert resolved.get("encoder_parallel") == encoder_options.get("encoder_parallel")
+    saved = json.loads(json.dumps(ForwardPassPerfModelConfig(**resolved).to_dict()))
+    assert saved == resolved
+
+
 def test_encoder_parallel_requires_op_level_timing() -> None:
     import aisimulate_core
 
