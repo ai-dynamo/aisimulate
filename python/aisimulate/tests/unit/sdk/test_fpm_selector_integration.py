@@ -48,6 +48,9 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
         )
 
     stable, online, combined = [load(mode) for mode in ("frozen", "online", "causal_selector")]
+    assert stable.diagnostics()["source"] == "learned"
+    assert online.diagnostics()["source"] == "learned_online"
+    assert combined.diagnostics()["source"] == "learned_causal_selector"
     assert stable.learned_selector_diagnostics() is None
     assert online.learned_selector_diagnostics() is None
     active, streak, switches = 0, 0, 0
@@ -83,6 +86,9 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
             active, streak, switches = 1 - active, 0, switches + 1
         for model in (stable, online, combined):
             model.tune_with_fpms([row])
+        # The model source identifies its mode even when the selected expert changes.
+        assert online.diagnostics()["source"] == "learned_online"
+        assert combined.diagnostics()["source"] == "learned_causal_selector"
         diagnostics = combined.learned_selector_diagnostics()
         state = next(s for s in diagnostics["states"] if s["store"] == "pure_decode" and s["query_type"] == "decode")
         assert state["observations"] == n
@@ -93,6 +99,9 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
         assert state["switches"] == switches
         assert all(s["observations"] == 0 for s in diagnostics["states"] if s is not state)
     assert switches > 0, "The reference trajectory must exercise a real branch switch."
+    combined.flush_updates()
+    assert combined.diagnostics()["source"] == "learned_causal_selector"
+    assert combined.learned_selector_diagnostics() == diagnostics
     assert stable.export_learned_artifact() == artifact
     assert combined.learned_online_diagnostics()["stores"]["pure_decode"]["accepted_observations"] == 96
     with pytest.raises(ValueError, match="selector"):
@@ -147,5 +156,6 @@ def test_selector_saved_config_preserves_controls_and_parent_identity(tmp_path, 
     assert RustForwardPassPerfModel.learned_identity(saved) == RustForwardPassPerfModel.learned_identity(IDENTITY)
     original = RustForwardPassPerfModel.best_available(config)
     restored = RustForwardPassPerfModel.best_available(saved)
+    assert original.diagnostics()["source"] == restored.diagnostics()["source"] == "learned_causal_selector"
     assert restored.learned_selector_diagnostics() == original.learned_selector_diagnostics()
     assert restored.estimate_forward_pass_time_ms(iteration(2)) == original.estimate_forward_pass_time_ms(iteration(2))

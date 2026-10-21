@@ -433,7 +433,12 @@ constructed fixed stores can differ across runs.
 
 Iterations whose workload kind has no trained
 store return `None`; empty iterations return `0.0`. `diagnostics()["source"]`
-reports `learned` or `learned_with_correction`.
+reports `learned` for a frozen forest until enabled calibration has a ready
+correction store, then `learned_with_correction`. With correction disabled it
+remains `learned`. Standalone online adaptation reports `learned_online`, and
+the combined selector reports `learned_causal_selector` even when its selected
+expert changes. See the [complete diagnostic source contract](../configuration.md#diagnostic-source-values)
+for native and regression values and the distinction from query coverage.
 Hybrid diagnostics sum the two histories and grids, counting observations
 retained in both once per history. Ready-bucket counts include overlapping
 regions, and correction-factor summaries include both grids and the dynamic
@@ -512,7 +517,7 @@ from pathlib import Path
 # This saves pending rows too; it does not flush them implicitly.
 online.save_online_checkpoint("models/decode_online_after_capture")
 
-# An inference export is a prediction snapshot, not a resumable fitting state.
+# Export the published forest; fitting state and pending rows are excluded.
 Path("models/decode_adapted.json").write_text(
     json.dumps(online.export_learned_artifact(), indent=2) + "\n"
 )
@@ -524,6 +529,11 @@ learned["checkpoint_path"] = "models/decode_online_after_capture"
 learned.pop("source_sha256", None)
 resumed = RustForwardPassPerfModel.best_available(resume_config)
 ```
+
+For a frozen model, `export_learned_artifact()` also exports only the forest and
+artifact metadata. It omits admitted calibration feedback and correction stores.
+Reloading that artifact starts with empty correction state and can produce
+different predictions from the calibrated model that exported it.
 
 Keep all deployment identity and online fitting controls unchanged when
 resuming. Canonical construction pins the source digest in the resolved

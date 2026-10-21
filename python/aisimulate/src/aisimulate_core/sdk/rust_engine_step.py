@@ -521,6 +521,12 @@ class RustForwardPassPerfModel:
     def export_learned_artifact(self) -> dict[str, Any]:
         """Return the current forest as an inference artifact, without fitting state.
 
+        Calibration feedback and correction stores are excluded. Reloading a
+        frozen model's export starts with empty correction state and may change
+        calibrated predictions. Online exports contain the published forest,
+        excluding pending observations; use ``save_online_checkpoint`` to resume
+        fitting with retained state.
+
         Combined selectors reject this operation: one forest cannot represent
         both experts, calibration, and selection evidence.
         """
@@ -617,6 +623,13 @@ class RustForwardPassPerfModel:
         Readiness does not guarantee query coverage: another store may be cold,
         and spline predictions require an available linear prediction for the
         same query.
+
+        ``source`` is one of ``aic``, ``aic_with_correction``,
+        ``fallback_regression``, ``learned``, ``learned_with_correction``,
+        ``learned_online``, or ``learned_causal_selector``. It describes the
+        model, not an individual query's coverage. A combined selector keeps
+        ``learned_causal_selector`` across expert switches; inspect
+        ``learned_selector_diagnostics()`` for per-key selection.
         """
         return json.loads(self._inner.diagnostics())
 

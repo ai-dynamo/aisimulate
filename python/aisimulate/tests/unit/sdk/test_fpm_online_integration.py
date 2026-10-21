@@ -196,8 +196,10 @@ def test_leaf_only_matches_slow_recomputation_after_real_export_and_fifo(tmp_pat
 def test_real_checkpoint_continuation_and_frozen_snapshot(tmp_path, mode, refresh):
     anchors, path, original = train(tmp_path)
     model = load(path, mode, refresh)
+    assert model.diagnostics()["source"] == "learned_online"
     assert model.export_learned_artifact() == original
     model.tune_with_fpms([iteration(index, shifted=True) for index in range(7)])
+    assert model.diagnostics()["source"] == "learned_online"
     before = model.export_learned_artifact()
     diagnostics = model.learned_online_diagnostics()
     assert diagnostics["stores"]["pure_decode"]["pending_rows"] == 1
@@ -206,6 +208,7 @@ def test_real_checkpoint_continuation_and_frozen_snapshot(tmp_path, mode, refres
     assert model.export_learned_artifact() == before
     assert model.learned_online_diagnostics() == diagnostics
     resumed = load(checkpoint, mode, refresh)
+    assert resumed.diagnostics()["source"] == "learned_online"
     assert resumed.export_learned_artifact() == before
     # Allocator capacity can differ after deserialization, but behavior cannot.
     for index in range(7, 22):
@@ -216,10 +219,12 @@ def test_real_checkpoint_continuation_and_frozen_snapshot(tmp_path, mode, refres
         assert resumed.export_learned_artifact() == model.export_learned_artifact()
     model.flush_updates()
     resumed.flush_updates()
+    assert model.diagnostics()["source"] == resumed.diagnostics()["source"] == "learned_online"
     assert resumed.export_learned_artifact() == model.export_learned_artifact()
     # Frozen checkpoints are usable even when their training-state bytes are unavailable.
     (checkpoint / "state.bin").unlink()
     frozen = load(checkpoint, "frozen")
+    assert frozen.diagnostics()["source"] == "learned"
     assert frozen.export_learned_artifact() == before
     for row in anchors[:16]:
         assert frozen.estimate_forward_pass_time_ms(row) == pytest.approx(reference_predict_ms(before, row), rel=1e-14)

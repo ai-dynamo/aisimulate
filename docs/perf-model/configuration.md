@@ -89,6 +89,27 @@ selection attempts, effective backend version, data policy, selected root,
 and complete estimator configuration. Its resolved config pins the selected
 mode with deny so saved replay input repeats that selection.
 
+### Diagnostic source values
+
+`model.diagnostics()["source"]` identifies the selected model and its current
+calibration state. The Rust API serializes the same values that the Python SDK
+returns:
+
+| Value | Meaning |
+| --- | --- |
+| `aic` | Native op-level or FPM interpolation model with no ready correction store. |
+| `aic_with_correction` | Native model with at least one ready correction store. |
+| `fallback_regression` | Regression model, including an explicitly selected `fpm_regression`; the name does not imply that fallback occurred or that the model is ready. |
+| `learned` | Frozen learned forest with correction disabled or no ready correction store. |
+| `learned_with_correction` | Frozen learned forest with correction enabled and at least one ready correction store. |
+| `learned_online` | Standalone online learned forest, including before its first update. |
+| `learned_causal_selector` | Combined causal selector, regardless of which expert serves a query. |
+
+These values describe the model, not coverage or correction availability for
+every query. Consult `readiness` and the store diagnostics for those details.
+Use `learned_selector_diagnostics()` to inspect per-key expert selection;
+switching experts does not change the combined model's `source`.
+
 ### Speculative decoding configuration
 
 Use the same `best_available(config)` constructor and returned model for

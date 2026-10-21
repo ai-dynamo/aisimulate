@@ -131,9 +131,14 @@ estimator is not a query-time fallback.
 
 `learned_online_diagnostics()` reports online fitting state and resource counts.
 For standalone frozen or online adaptation, `export_learned_artifact()` produces
-an inference snapshot. For online adaptation, `save_online_checkpoint(path)`
-writes a new checkpoint directory without implicitly flushing pending
-observations. Resume through the same canonical constructor with matching
+an inference artifact containing only the current forest and artifact metadata.
+It excludes calibration feedback and correction stores: reloading an export
+from a calibrated frozen model starts with empty correction state, so its
+predictions can differ from the exporting model's calibrated predictions.
+For online adaptation, the export contains the published forest but excludes
+fitting state and pending observations. `save_online_checkpoint(path)` preserves
+that online continuation state in a new checkpoint directory without implicitly
+flushing pending observations. Resume through the same canonical constructor with matching
 identity and fitting controls. The combined selector rejects both export
 methods because neither format preserves all its state. See
 [the training and resume workflow](learned-forward-pass-model.md#online-tree-adaptation)
