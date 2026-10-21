@@ -1452,31 +1452,37 @@ fn scaling_composition_changes_round_robin_capacity_before_arrival() {
 }
 
 struct CaptureAttentionDpFpm {
-    identities: Rc<RefCell<Vec<(usize, String, u32)>>>,
+    snapshots: Rc<RefCell<Vec<(usize, String, u32, f64)>>>,
 }
 
 impl ReplayScalingPolicy for CaptureAttentionDpFpm {
     fn initial_tick_ms(&mut self) -> Result<f64> {
-        Ok(250.0)
+        Ok(125.0)
     }
 
     fn on_tick(&mut self, snapshot: ReplayScalingSnapshot) -> Result<ReplayScalingDecision> {
-        self.identities.borrow_mut().extend(
-            snapshot
-                .decode_fpm
-                .into_iter()
-                .map(|(worker_id, fpm)| (worker_id, fpm.worker_id, fpm.dp_rank)),
+        self.snapshots.borrow_mut().extend(
+            snapshot.decode_fpm.into_iter().map(|(worker_id, fpm)| {
+                (worker_id, fpm.worker_id, fpm.dp_rank, fpm.wall_time_secs)
+            }),
         );
         Ok(ReplayScalingDecision::default())
     }
 }
 
-#[test]
-fn attention_dp_offline_fpm_preserves_logical_worker_and_rank_identity() {
+#[rstest::rstest]
+#[case(Backend::Vllm, 0.100)]
+#[case(Backend::Sglang, 0.040)]
+fn attention_dp_offline_fpm_preserves_worker_identity_and_backend_duration(
+    #[case] backend: Backend,
+    #[case] expected_secs: f64,
+) {
     let mut config = engine_config(TimingModelConfig::Fixed {
         prefill_ms: 100.0,
-        decode_ms: 100.0,
+        decode_ms: 40.0,
     });
+    config.rank.backend = backend;
+    config.rank.sglang.host_loop = backend == Backend::Sglang;
     config.dp_size = 2;
     let mut replay = spec(config);
     replay.adapters.scaling = ProviderSpec {
@@ -1493,10 +1499,10 @@ fn attention_dp_offline_fpm_preserves_logical_worker_and_rank_identity() {
             ..request("rank-1", 0.0, 8, 20)
         },
     ];
-    let identities = Rc::new(RefCell::new(Vec::new()));
+    let snapshots = Rc::new(RefCell::new(Vec::new()));
     let composition = ScalingRoundRobin {
         policy: Some(Box::new(CaptureAttentionDpFpm {
-            identities: Rc::clone(&identities),
+            snapshots: Rc::clone(&snapshots),
         })),
     };
 
@@ -1506,9 +1512,16 @@ fn attention_dp_offline_fpm_preserves_logical_worker_and_rank_identity() {
         .unwrap();
 
     assert_eq!(report.request_counts.completed_requests, 2);
+    // At 125 ms vLLM has reported its 100 ms prefill. SGLang's first
+    // host-loop iteration returned at 0 ms; its next returned at 100 ms
+    // with a 40 ms decode forward. The scaler must receive device time,
+    // not that iteration's 100 ms elapsed time or the initial zero.
     assert_eq!(
-        *identities.borrow(),
-        vec![(0, "0".to_string(), 0), (0, "0".to_string(), 1)]
+        *snapshots.borrow(),
+        vec![
+            (0, "0".to_string(), 0, expected_secs),
+            (0, "0".to_string(), 1, expected_secs)
+        ]
     );
 }
 
@@ -2056,8 +2069,12 @@ fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
     assert_eq!(record.terminal_time_ms, 20.0);
 }
 
-#[test]
-fn sglang_frontend_pools_delay_scheduler_receipt() {
+#[rstest::rstest]
+#[case(&[0.0])]
+#[case(&[4.0])]
+#[case(&[0.0, 4.0, 0.0])]
+fn sglang_frontend_pools_delay_scheduler_receipt(#[case] stage_ms: &[f64]) {
+    let service_ms: f64 = stage_ms.iter().sum();
     let mut config = engine_config(TimingModelConfig::Fixed {
         prefill_ms: 20.0,
         decode_ms: 4.0,
@@ -2068,11 +2085,14 @@ fn sglang_frontend_pools_delay_scheduler_receipt() {
         ..SglangConfig::default()
     };
     config.rank.frontend = Some(FrontendConfig {
-        stages: vec![FrontendStage {
-            workers: 1,
-            service_ms: 4.0,
-            concurrency_scale: Vec::new(),
-        }],
+        stages: stage_ms
+            .iter()
+            .map(|&service_ms| FrontendStage {
+                workers: 1,
+                service_ms,
+                concurrency_scale: Vec::new(),
+            })
+            .collect(),
     });
     let mut replay = spec(config);
     replay.requests = vec![request("first", 0.0, 4, 1), request("second", 0.0, 4, 1)];
@@ -2090,17 +2110,31 @@ fn sglang_frontend_pools_delay_scheduler_receipt() {
     assert_eq!(
         ready,
         vec![
-            ("first".to_string(), Some(4.0)),
-            ("second".to_string(), Some(8.0))
+            ("first".to_string(), Some(service_ms)),
+            ("second".to_string(), Some(2.0 * service_ms))
         ]
     );
     for record in &report.per_request {
         assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
+        assert!(record.selected_ms >= record.scheduler_received_ms);
+        assert!(record.first_token_ms >= record.prefill_complete_ms);
+        if service_ms == 0.0 {
+            // Both simultaneous arrivals remain in the same scheduler batch.
+            assert_eq!(record.selected_ms, Some(0.0));
+            assert_eq!(record.prefill_complete_ms, Some(20.0));
+            assert_eq!(record.first_token_ms, Some(20.0));
+        }
     }
 }
 
-#[test]
-fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
+#[rstest::rstest]
+#[case(&[0.0])]
+#[case(&[4.0])]
+#[case(&[0.0, 4.0, 0.0])]
+fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff(
+    #[case] stage_ms: &[f64],
+) {
+    let service_ms: f64 = stage_ms.iter().sum();
     let timing = TimingModelConfig::Fixed {
         prefill_ms: 20.0,
         decode_ms: 4.0,
@@ -2111,11 +2145,14 @@ fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
         ..SglangConfig::default()
     };
     prefill.rank.frontend = Some(FrontendConfig {
-        stages: vec![FrontendStage {
-            workers: 1,
-            service_ms: 4.0,
-            concurrency_scale: Vec::new(),
-        }],
+        stages: stage_ms
+            .iter()
+            .map(|&service_ms| FrontendStage {
+                workers: 1,
+                service_ms,
+                concurrency_scale: Vec::new(),
+            })
+            .collect(),
     });
     let mut replay = spec(ReplayEngineConfig {
         prefill: Some(prefill),
@@ -2145,8 +2182,8 @@ fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
     records.sort_by(|a, b| a.0.cmp(&b.0));
     // The prefill rank's single processor worker serializes the two arrivals
     // and its frontend deadlines wake the disaggregated replay.
-    assert_eq!(records[0].1, Some(4.0));
-    assert_eq!(records[1].1, Some(8.0));
+    assert_eq!(records[0].1, Some(service_ms));
+    assert_eq!(records[1].1, Some(2.0 * service_ms));
     // Frontend, extend, handoff transfer, then one decode step on the decode rank.
     for (_, frontend_ready_ms, first_token_ms) in &records {
         assert!(first_token_ms.unwrap() >= frontend_ready_ms.unwrap() + 20.0 + 1.0 + 4.0);
@@ -2164,6 +2201,14 @@ fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
     assert!((total - report.latency.ttft.mean_ms).abs() < 1e-9);
     for record in &report.per_request {
         assert!(record.source_held_ms >= record.prefill_complete_ms);
+        assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
+        assert!(record.selected_ms >= record.scheduler_received_ms);
+        if service_ms == 0.0 {
+            assert_eq!(record.selected_ms, Some(0.0));
+            assert_eq!(record.prefill_complete_ms, Some(20.0));
+            assert_eq!(record.source_held_ms, Some(20.0));
+            assert_eq!(record.first_token_ms, Some(25.0));
+        }
     }
 }
 

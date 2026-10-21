@@ -2009,7 +2009,8 @@ def get_model_config_from_model_path(model_path: str) -> dict:
                 data = _download_hf_json(model_path, filename, raise_on_404=False)
             if data is not None:
                 if not isinstance(data, dict):
-                    raise ValueError(f"Kimi {filename} must be an object")
+                    family = "Kimi" if kimi else "Qwen3-VL"
+                    raise ValueError(f"{family} {filename} must be an object")
                 if key is None:
                     processor.update(data)
                 else:

@@ -153,9 +153,10 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 25 (FPM decoupling): merge the SOL/direct selector into the typed DCP layout.
 # - 26 (decode context parallelism): Generation/Context attention, MLA, DSA
 #   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
-# - 28 (native VL): optional `vision` section (encoder layout plus the patch,
+# - 28 (GLM-5.3-Flash): measured GLM-5.3-Flash op layouts.
+# - 29 (native VL): optional `vision` section (encoder layout plus the patch,
 #   transformer and output op groups) appended after the op lists. Claimed 21
-#   concurrently with AIC-1781; renumbered at the merge.
+#   concurrently with AIC-1781; renumbered after GLM-5.3-Flash at the merge.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()

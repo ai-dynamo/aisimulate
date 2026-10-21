@@ -1344,10 +1344,14 @@ The exact-source rewrites in `scripts/performance/build_simulation_dynamo.py`
 and their regression fixtures in `tests/test_ci_workflow_contracts.py`
 are adapted and modified from NVIDIA Dynamo's
 `lib/mocker/src/grouped_scheduler/compatibility.rs` and
-`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs` at commit
+`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs`,
+`lib/mocker/src/replay/offline/entrypoints.rs`, and
+`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs` at commit
 `def3b79b15c266805540a678dd400aeb6ccada1d`:
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
 
 Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
@@ -1356,8 +1360,10 @@ The adaptation adds `None` for new optional AISimulate fields to the native
 request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It also sets an empty image list for the pinned text-only
 request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
-instead of adding multimodal support to Dynamo's adapter. It preserves the
-upstream copyright headers and marks each modified literal in the output.
+instead of adding multimodal support to Dynamo's adapter. Both offline replay
+specifications disable the encoder pool. The lifecycle conversion explicitly
+rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
+It preserves the upstream copyright headers and marks each modification in the output.
 
 The replay compatibility rewrite in the same script adapts
 `lib/mocker/src/engine_adapter.rs` at that same immutable revision:
@@ -1365,8 +1371,10 @@ https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1
 Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
 context parallelism to 1 in four replay descriptors, preserving the pinned
-adapter's topology. Its upstream copyright header is retained and each modified
-literal is marked in the generated output.
+adapter's topology. It also disables the SGLang host loop and takes the vision
+cache capacity from the canonical SGLang default, preserving text-only behavior.
+Its upstream copyright header is retained and each modified literal is marked
+in the generated output.
 
 ## NVIDIA Dynamo CI speculation compatibility
 

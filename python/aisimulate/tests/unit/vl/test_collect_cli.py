@@ -3,8 +3,14 @@
 
 """The collect command without sglang: a kept recording lowers into a table that `--show` prints with its provenance."""
 
+import asyncio
+import importlib.util
 import json
+import sys
+from contextlib import nullcontext
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -63,3 +69,50 @@ def test_a_tilde_table_path_lands_under_home(tmp_path, monkeypatch, capsys):
     assert main(["--recording", str(kept), *arguments]) == 0
     assert (tmp_path / "table.json").exists()
     assert Path(capsys.readouterr().out.split(":", 1)[0]).is_absolute()
+
+
+@pytest.mark.parametrize("failure", ["missing_mm_spec", "transport_mismatch", "drainer_start"])
+def test_rust_collector_shuts_down_after_startup_failure(monkeypatch, failure):
+    import aisimulate.vl.collect
+
+    collect_dir = Path(aisimulate.vl.collect.__file__).parent
+    # The standalone worker imports sibling scripts under the serving interpreter.
+    monkeypatch.syspath_prepend(str(collect_dir))
+    spec = importlib.util.spec_from_file_location("frontend_worker", collect_dir / "_sglang/frontend_worker.py")
+    worker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker)
+    shutdown = Mock()
+    server = SimpleNamespace(
+        mm_spec=None if failure == "missing_mm_spec" else SimpleNamespace(feature_shm=False),
+        server=SimpleNamespace(shutdown=shutdown),
+    )
+    bindings = {
+        "aiohttp": {},
+        "sglang.srt.managers.io_struct": {"TokenizedGenerateReqInput": type("TokenizedGenerateReqInput", (), {})},
+        "sglang.srt.runtime_context": {"get_parallel": lambda: SimpleNamespace(override=lambda **kw: nullcontext())},
+        "sglang.srt.rust_server.multimodal": {"RustMmProcessor": SimpleNamespace(AUTO_MM_WORKERS=8)},
+        "sglang.srt.rust_server.server": {"RustServer": SimpleNamespace(launch=lambda descriptor: server)},
+    }
+    for name, attributes in bindings.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(
+        worker,
+        "_serving_components",
+        lambda *args, **kw: (SimpleNamespace(mm_processor_worker_num=1), SimpleNamespace(context_len=2048), object()),
+    )
+    monkeypatch.setattr(worker, "_prompt", lambda *args: "prompt")
+    drainer = Mock()
+    drainer.start.side_effect = RuntimeError("cannot start drainer")
+    monkeypatch.setattr(worker.threading, "Thread", Mock(return_value=drainer))
+    args = SimpleNamespace(model="m", text_tokens=128, encoding="png", tp=2 if failure == "transport_mismatch" else 1)
+    error, message = {
+        "missing_mm_spec": (SystemExit, "did not enable its multimodal pipeline"),
+        "transport_mismatch": (SystemExit, "transport model expects otherwise"),
+        "drainer_start": (RuntimeError, "cannot start drainer"),
+    }[failure]
+    with pytest.raises(error, match=message):
+        asyncio.run(worker.measure_rust(args, [], None))
+    shutdown.assert_called_once_with()
+    drainer.join.assert_not_called()

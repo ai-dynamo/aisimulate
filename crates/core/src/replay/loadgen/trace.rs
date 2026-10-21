@@ -873,9 +873,15 @@ impl Trace {
                 images.visual_tokens <= 1 << 20,
                 "image visual_tokens must not exceed 2^20"
             );
-            let identities = images
-                .identity_pool
-                .unwrap_or((spec.num_sessions * spec.turns_per_session * images.count) as u64);
+            let identities = match images.identity_pool {
+                Some(pool) => pool,
+                None => spec
+                    .num_sessions
+                    .checked_mul(spec.turns_per_session)
+                    .and_then(|turns| turns.checked_mul(images.count))
+                    .ok_or_else(|| anyhow!("image identity count overflow; set identity_pool"))?
+                    as u64,
+            };
             ensure!(
                 identities <= 1 << 28,
                 "image identities must not exceed 2^28; set identity_pool"

@@ -544,6 +544,9 @@ impl SglangCore {
             (Some(frontend), _) => {
                 let now_ms = now_ms.unwrap_or_else(|| frontend.now_ms());
                 frontend.submit(request, now_ms);
+                // Zero-duration stages can finish at admission. Deliver their
+                // milestones and inbox entries before another same-time command.
+                self.deliver_frontend(now_ms);
             }
             // The scheduler thread receives it at the top of its next iteration.
             (None, Some(host)) => host.submit(request),

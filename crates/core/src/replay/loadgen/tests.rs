@@ -1097,6 +1097,24 @@ fn synthetic_image_spec(identity_pool: Option<u64>, block_size: usize) -> Synthe
 }
 
 #[test]
+fn synthetic_image_identity_validation_does_not_overflow() {
+    for (identity_pool, expected) in [
+        (None, "image identity count overflow"),
+        (Some(1), "cannot combine cached or shared text prefixes"),
+        (Some((1 << 28) + 1), "image identities must not exceed 2^28"),
+    ] {
+        let mut spec = synthetic_image_spec(identity_pool, 1);
+        spec.num_sessions = 2;
+        spec.images.as_mut().unwrap().count = usize::MAX / 2 + 1;
+        // Validate past the identity check without ever allocating this workload.
+        // An explicit pool must not evaluate the overflowing default count.
+        spec.cached_prefix_tokens = 1;
+        let error = Trace::synthetic(spec).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn test_synthetic_images_precede_text_and_share_tokens_only_inside_pool() {
     let pooled = Trace::synthetic(synthetic_image_spec(Some(2), 1)).unwrap();
     let prompts = pooled

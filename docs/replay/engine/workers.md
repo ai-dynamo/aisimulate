@@ -135,8 +135,9 @@ you raise it.
 > **SGLang note.** The SGLang scheduler currently takes its per-pass prefill
 > budget from SGLang's default `chunked_prefill_size` (8192 tokens, divided by
 > `attention_data`), not from `max_batched_tokens`. Changing
-> `max_batched_tokens` does not change SGLang replay results, except with
-> `host_loop`, where it is the worker's `chunked_prefill_size`.
+> `max_batched_tokens` does not change SGLang replay results, except when
+> `host_loop` is enabled or images are encoded on the worker (without a
+> separate encoder pool). In those cases it is the worker's `chunked_prefill_size`.
 
 With chunked prefill (the default), a long prompt is split across passes that
 each respect the token budget. With `enable_chunked_prefill: false` on vLLM, a

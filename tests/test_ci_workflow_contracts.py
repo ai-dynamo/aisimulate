@@ -3318,6 +3318,7 @@ _REQUEST_API = (
     "    pub output_token_ids: Option<Vec<u32>>,\n"
     "{extra}}\n\n"
     "pub enum Command {\n    Submit(Request),\n}\n"
+    "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {} }\n"
 )
 _PLACEMENT_API = (
     "pub struct PlacementCacheSample {\n    pub isl_blocks: u32,\n}\n\n"
@@ -3331,6 +3332,15 @@ _PLACEMENT_API = (
     "{extra}}\n\n"
     "pub trait PlacementPolicy<Request> {}\n"
 )
+_LIFECYCLE_LITERAL = (
+    "    pub(super) fn lifecycle_event(&self, event: LifecycleEvent) -> Result<SchedulerLifecycleEvent> {\n"
+    "        Ok(match event {\n"
+    "            LifecycleEvent::SourceHeld { handoff_id, request_id, transfer_timing } => todo!(),\n"
+    "            LifecycleEvent::DestinationReserved { handoff_id, request_id, transferable_prompt_tokens }"
+    " => todo!(),\n"
+    "        })\n"
+    "    }\n"
+)
 _REQUEST_LITERAL = (
     "    pub(super) fn native_request(&self, request: DirectRequest) -> Request {\n"
     "        let request_id = request.uuid.unwrap_or_else(Uuid::new_v4);\n"
@@ -3341,7 +3351,7 @@ _REQUEST_LITERAL = (
     "            output_token_ids: request.output_token_ids,\n"
     "        }\n"
     "    }\n"
-)
+) + _LIFECYCLE_LITERAL
 _PLACEMENT_LITERAL = (
     "fn other() -> Placement {\n    todo!()\n}\n\n"
     "    fn placement(&self, admission: WorkerAdmission) -> Placement {\n"
@@ -3367,7 +3377,7 @@ def _literal_fixture(tmp_path, monkeypatch, request_extra="", placement_extra=""
     sources = {}
     sites = []
     for site, api, extra, literal in zip(
-        builder.OPTIONAL_FIELD_LITERALS,
+        builder.OPTIONAL_FIELD_LITERALS[:2],
         (_REQUEST_API, _PLACEMENT_API),
         (request_extra, placement_extra),
         (request_literal, _PLACEMENT_LITERAL),
@@ -3471,12 +3481,24 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "            },\n"
         "        }\n",
     )
+    expected = expected.replace(
+        "        Ok(match event {\n",
+        "        Ok(match event {\n"
+        "            // Modified by AISimulate CI: host-loop/frontend events are unsupported.\n"
+        "            LifecycleEvent::TtftMilestone { request_id, stage, at_ms } => {\n"
+        "                return Err(anyhow!(\n"
+        '                    "pinned Dynamo CI adapter does not support TTFT milestone {stage:?}'
+        ' for {request_id} at {at_ms}ms"\n'
+        "                ));\n"
+        "            }\n",
+    )
     assert (dynamo / request.path).read_text() == expected
     assert records[0] == {
         "path": request.path,
         "struct": "Request",
         "before_sha256": request.sha256,
         "inserted_fields": ["session_id", "images"],
+        "rejected_lifecycle_events": ["TtftMilestone"],
         "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
     }
     assert (dynamo / placement.path).read_text() == sources[placement.path]
@@ -3604,25 +3626,130 @@ def test_simulation_dynamo_replay_cp_compatibility(tmp_path, monkeypatch, field_
         f"pub struct ReplayEngineConfig {{{field}}}\n"
         f"pub struct ReplayRoleConfig {{{field if drift != 'role' else 'pub prefill_context_parallel_size: bool,'}}}\n"
     )
+    config = core / "src/engine/config.rs"
+    config.parent.mkdir(parents=True)
+    config.write_text("pub struct SglangConfig {pub schedule_policy: SglangSchedulePolicy,}")
     adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
     adapter.parent.mkdir(parents=True)
-    source = "// synthetic adapter fixture\n" + "        num_gpu_blocks_is_explicit: Some(true),\n" * (
-        3 if drift == "anchors" else 4
-    )
+    source = (
+        "// synthetic adapter fixture\n    let sglang = SglangConfig {\n        schedule_policy,\n    };\n"
+    ) + "        num_gpu_blocks_is_explicit: Some(true),\n" * (3 if drift == "anchors" else 4)
     adapter.write_text(source + ("// changed\n" if drift == "source" else ""))
     monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
     original = adapter.read_bytes()
     if field_type == "usize" or drift in {"source", "role"} or (field_type and drift == "anchors"):
         with pytest.raises(ValueError):
-            builder.patch_replay_context_parallelism(core, dynamo)
+            builder.patch_replay_engine_config(core, dynamo)
         assert adapter.read_bytes() == original
     else:
-        record = builder.patch_replay_context_parallelism(core, dynamo)
+        record = builder.patch_replay_engine_config(core, dynamo)
         assert record["api_has_prefill_context_parallel_size"] == bool(field_type)
         assert adapter.read_text().count("prefill_context_parallel_size: 1,") == (4 if field_type else 0)
         assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
         if field_type is None:
             assert adapter.read_bytes() == original
+
+
+@pytest.mark.parametrize("encoder_type", [None, "Option<EncoderSpec>", "Option<OtherEncoder>", "EncoderSpec"])
+@pytest.mark.parametrize("drift", [None, "source", "new_field"])
+def test_simulation_dynamo_replay_specs_remain_text_only(tmp_path, monkeypatch, encoder_type, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / "src/replay/spec.rs"
+    api.parent.mkdir(parents=True)
+    extra = f"pub encoder: {encoder_type}," if encoder_type else ""
+    if drift == "new_field":
+        extra += "pub future_control: Option<bool>,"
+    api.write_text(f"pub struct ReplaySpec {{pub version: u32, {extra}}}")
+    sites, originals = [], {}
+    for site in builder.OPTIONAL_FIELD_LITERALS[2:]:
+        source = site.anchor + ") -> Result<ReplaySpec> {\n    ReplaySpec {\n        version: 1,\n    }\n}\n"
+        path = dynamo / site.path
+        path.parent.mkdir(parents=True)
+        path.write_text(source)
+        originals[path] = source
+        sites.append(site._replace(sha256=hashlib.sha256(source.encode()).hexdigest()))
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", tuple(sites))
+    if drift == "source":
+        path.write_text(source + "// changed\n")
+        originals[path] = path.read_text()
+    if encoder_type not in (None, "Option<EncoderSpec>") or drift:
+        with pytest.raises(ValueError):
+            builder.patch_optional_literal_fields(core, dynamo)
+        assert all(path.read_text() == original for path, original in originals.items())
+    else:
+        records = builder.patch_optional_literal_fields(core, dynamo)
+        assert len(records) == 2
+        for record in records:
+            assert record["inserted_fields"] == (["encoder"] if encoder_type else [])
+            patched = (dynamo / record["path"]).read_text()
+            assert ("encoder: None," in patched) == bool(encoder_type)
+            assert record["after_sha256"] == hashlib.sha256(patched.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("fields", ["", "pub host_loop: bool, pub vlm_cache_bytes: u64,"])
+@pytest.mark.parametrize("drift", [None, "type", "new_field"])
+def test_simulation_dynamo_sglang_config_preserves_text_defaults(tmp_path, monkeypatch, fields, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    replay_api = core / "src/replay/engine.rs"
+    replay_api.parent.mkdir(parents=True)
+    replay_api.write_text("pub struct ReplayEngineConfig {} pub struct ReplayRoleConfig {}")
+    config = core / "src/engine/config.rs"
+    config.parent.mkdir(parents=True)
+    if drift == "type":
+        fields += "pub vlm_cache_bytes: usize,"
+    elif drift == "new_field":
+        fields += "pub future_control: Option<bool>,"
+    config.write_text(f"pub struct SglangConfig {{pub schedule_policy: SglangSchedulePolicy, {fields}}}")
+    adapter = dynamo / "lib/mocker/src/engine_adapter.rs"
+    adapter.parent.mkdir(parents=True)
+    source = "    let sglang = SglangConfig {\n        schedule_policy,\n    };\n"
+    adapter.write_text(source)
+    monkeypatch.setattr(builder, "REPLAY_ADAPTER_SHA256", hashlib.sha256(source.encode()).hexdigest())
+    if drift:
+        with pytest.raises(ValueError, match="unreviewed AISimulate SglangConfig"):
+            builder.patch_replay_engine_config(core, dynamo)
+        assert adapter.read_text() == source
+    else:
+        record = builder.patch_replay_engine_config(core, dynamo)
+        assert record["inserted_sglang_fields"] == (["host_loop", "vlm_cache_bytes"] if fields else [])
+        if fields:
+            assert "host_loop: false," in adapter.read_text()
+            assert "vlm_cache_bytes: SglangConfig::default().vlm_cache_bytes," in adapter.read_text()
+        else:
+            assert adapter.read_text() == source
+        assert record["after_sha256"] == hashlib.sha256(adapter.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "",
+        "TtftMilestone { request_id: Uuid, stage: TtftMilestone, at_ms: f64, },",
+        "TtftMilestone { request_id: Uuid, stage: TtftMilestone, at_ms: u64, },",
+        "OtherEvent { request_id: Uuid },",
+    ],
+)
+def test_simulation_dynamo_lifecycle_rejects_unsupported_host_events(extra):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    api = "pub enum LifecycleEvent { SourceHeld {}, DestinationReserved {}, " + extra + "}"
+    if "u64" in extra or "OtherEvent" in extra:
+        with pytest.raises(ValueError, match="unreviewed AISimulate lifecycle API"):
+            builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
+    else:
+        patched, rejected = builder._patch_ttft_lifecycle(_LIFECYCLE_LITERAL, api)
+        assert rejected == (["TtftMilestone"] if extra else [])
+        if extra:
+            assert "LifecycleEvent::TtftMilestone { request_id, stage, at_ms } =>" in patched
+            assert "return Err(anyhow!(" in patched
+            assert "does not support TTFT milestone" in patched
+            assert "_ =>" not in patched
+        else:
+            assert patched == _LIFECYCLE_LITERAL
 
 
 @pytest.mark.parametrize("wrong_core", [False, True])
@@ -3667,7 +3794,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
         patched.append(("speculation", actual_dynamo))
         return speculation_compatibility
 
-    def patch_replay_context_parallelism(actual_core, actual_dynamo):
+    def patch_replay_engine_config(actual_core, actual_dynamo):
         assert actual_core == core.parent and actual_dynamo == dynamo
         patched.append(("replay", actual_core, actual_dynamo))
         return {"prefill_context_parallel_size": 1}
@@ -3718,7 +3845,7 @@ def test_simulation_dynamo_resolves_then_builds_locked(tmp_path, monkeypatch, wr
     monkeypatch.setattr(builder, "patch_handoff_timing", patch_handoff_timing)
     monkeypatch.setattr(builder, "patch_optional_literal_fields", patch_optional_literal_fields)
     monkeypatch.setattr(builder, "patch_speculation_depth", patch_speculation_depth)
-    monkeypatch.setattr(builder, "patch_replay_context_parallelism", patch_replay_context_parallelism)
+    monkeypatch.setattr(builder, "patch_replay_engine_config", patch_replay_engine_config)
     if wrong_core:
         with pytest.raises(ValueError, match="different AISimulate core"):
             builder.build(source, dynamo, output)

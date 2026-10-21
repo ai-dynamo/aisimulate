@@ -132,10 +132,10 @@ def update_table(path: str | Path, environment: TableEnvironment, row: FrontendR
 
 
 def collect_command(path: str | Path, measurement: FrontendMeasurementConfig) -> str:
-    """The exact command that adds the missing row, ready to paste on the serving host.
+    """The command that adds the missing row on the serving host.
 
     `python` stands for an interpreter with aisimulate installed there; the
-    measuring interpreter is the `--sglang-python` placeholder.
+    measuring interpreter replaces the quoted `--sglang-python` placeholder.
     """
     parts = [
         "python",
@@ -155,7 +155,7 @@ def collect_command(path: str | Path, measurement: FrontendMeasurementConfig) ->
     for name, value in (("--min-pixels", measurement.min_pixels), ("--max-pixels", measurement.max_pixels)):
         if value is not None:
             parts += [name, str(value)]
-    parts += ["--sglang-python", f"<python with sglang {SGLANG_VERSION} installed>"]
+    parts += ["--sglang-python", shlex.quote(f"<python with sglang {SGLANG_VERSION} installed>")]
     return " ".join(parts)
 
 
@@ -171,7 +171,8 @@ def lookup(table: HostCostTable, path: str | Path, measurement: FrontendMeasurem
             return row
     raise MissingRow(
         f"host cost table {path} has no row for {measurement.describe()}. "
-        "Measure it on the serving host, from an interpreter with aisimulate installed, then rerun:\n  "
+        "Measure it on the serving host, from an interpreter with aisimulate installed. "
+        "Replace the --sglang-python placeholder with the serving interpreter's path, then rerun:\n  "
         + collect_command(path, measurement)
     )
 
@@ -185,7 +186,8 @@ def resolve_frontend(
         # The first prediction on a new serving host: the table is created by its first collection.
         raise MissingRow(
             f"host cost table {config.path} does not exist yet. Measure the workload on the serving host, "
-            "from an interpreter with aisimulate installed, then rerun:\n  " + collect_command(config.path, measurement)
+            "from an interpreter with aisimulate installed. Replace the --sglang-python placeholder "
+            "with the serving interpreter's path, then rerun:\n  " + collect_command(config.path, measurement)
         )
     table = load_table(config.path)
     row = lookup(table, config.path, measurement)

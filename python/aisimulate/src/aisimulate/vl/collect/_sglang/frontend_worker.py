@@ -407,16 +407,18 @@ async def measure_rust(args, images, mm_process_config):
     # `override` publishes it without a distributed init.
     with get_parallel().override(tp_size=args.tp):
         server = RustServer.launch(descriptor)
-    if server.mm_spec is None:
-        raise SystemExit("the Rust server did not enable its multimodal pipeline for this model")
-    feature_shm = bool(server.mm_spec.feature_shm)
-    if feature_shm != (args.tp > 1):
-        raise SystemExit(
-            f"sglang chose feature_shm={feature_shm} for tp={args.tp}; the transport model expects otherwise"
-        )
-    drainer = threading.Thread(target=drain, args=(server,), daemon=True)
-    drainer.start()
+    drainer = None
     try:
+        if server.mm_spec is None:
+            raise SystemExit("the Rust server did not enable its multimodal pipeline for this model")
+        feature_shm = bool(server.mm_spec.feature_shm)
+        if feature_shm != (args.tp > 1):
+            raise SystemExit(
+                f"sglang chose feature_shm={feature_shm} for tp={args.tp}; the transport model expects otherwise"
+            )
+        thread = threading.Thread(target=drain, args=(server,), daemon=True)
+        thread.start()
+        drainer = thread
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_DEADLINE_S)) as session:
 
             async def one(index):
@@ -447,7 +449,8 @@ async def measure_rust(args, images, mm_process_config):
             recorded = await measure_levels(one, levels)
     finally:
         stop.set()
-        drainer.join(timeout=5)
+        if drainer is not None:
+            drainer.join(timeout=5)
         server.server.shutdown()
     try:
         pending = iter(kept)

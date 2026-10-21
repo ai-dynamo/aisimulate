@@ -2181,6 +2181,13 @@ def test_qwen3_vl_pixel_budget_follows_the_checkpoint_processor(tmp_path, caplog
     enc_cfg = get_model_config_from_model_path(str(checkpoint))["extra_params"]
     assert (enc_cfg.min_pixels, enc_cfg.max_pixels) == (3136, 1003520)
 
+    invalid = tmp_path / "invalid-processor"
+    invalid.mkdir()
+    (invalid / "config.json").write_text(json.dumps(_QWEN3VL_HF_CONFIG))
+    (invalid / "preprocessor_config.json").write_text("[]")
+    with pytest.raises(ValueError, match="Qwen3-VL preprocessor_config.json must be an object"):
+        get_model_config_from_model_path(str(invalid))
+
     # A checkpoint without the file keeps the pinned Qwen3-VL budget instead of failing.
     bare = tmp_path / "without-processor"
     bare.mkdir()

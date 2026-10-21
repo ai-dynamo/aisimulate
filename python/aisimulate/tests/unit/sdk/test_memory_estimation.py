@@ -1425,6 +1425,9 @@ def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
         def get_kvcache_max_tokens(self, budget):
             return int(budget // 100)
 
+        def get_kvcache_batch_capacity(self, budget, batch_size):
+            return int(budget // 100)
+
     class _StubBackend:
         def _get_memory_usage(self, *a, **k):
             return {"weights": 1.0, "activations": 1.0, "others": 1.0, "nccl": 1.0, "kvcache": 0.0}
@@ -1463,3 +1466,19 @@ def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
     assert hosted["non_kv_bytes"] - plain["non_kv_bytes"] == 2 * _GIB + (100 << 20)
     # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
     assert built["enable_encoder_dp"] is False
+
+    common = dict(
+        model_path="Qwen/Qwen3-VL-8B-Instruct",
+        system="h200_sxm",
+        backend="sglang",
+        max_num_tokens=8192,
+        max_batch_size=8,
+        memory_fraction_kind="of_total",
+        memory_fraction_value=0.9,
+        colocated_encoder=True,
+    )
+    plain_estimate = memory.estimate_kv_cache(**common)
+    reserved_estimate = memory.estimate_kv_cache(**common, reserved_bytes=100 << 20)
+    assert plain_estimate["total_kv_size_bytes"] - reserved_estimate["total_kv_size_bytes"] == 100 << 20
+    assert plain_estimate["memory_breakdown"]["reserved_bytes"] == 0
+    assert reserved_estimate["memory_breakdown"]["reserved_bytes"] == 100 << 20

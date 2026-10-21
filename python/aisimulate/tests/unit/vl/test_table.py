@@ -4,6 +4,8 @@
 """Host cost table: exact lookup, one serving environment per table, and the collect command on a miss."""
 
 import json
+import shlex
+import subprocess
 
 import pytest
 
@@ -91,6 +93,11 @@ def test_a_miss_names_the_command_that_measures_the_row(tmp_path):
     with pytest.raises(MissingRow) as error:
         lookup(table, tmp_path / "t.json", measurement)
     message = str(error.value)
+    command = message.split("\n  ", 1)[1]
+    subprocess.run(["sh", "-n"], input=command, text=True, check=True, capture_output=True)
+    arguments = shlex.split(command)
+    assert arguments[arguments.index("--sglang-python") + 1] == "<python with sglang 0.5.19 installed>"
+    assert arguments[arguments.index("--table") + 1] == str(tmp_path / "t.json")
     assert f"no row for {measurement.describe()}" in message
     for flag in (
         "--model m",

@@ -571,6 +571,7 @@ class KVCacheEstimator:
                 "activations_bytes": int(max(float(breakdown["activations_bytes"]), 0.0)),
                 "runtime_overhead_bytes": int(max(float(breakdown["runtime_overhead_bytes"]), 0.0)),
                 "comm_overhead_bytes": int(max(float(breakdown["comm_overhead_bytes"]), 0.0)),
+                "reserved_bytes": int(max(float(breakdown.get("reserved_bytes", 0.0)), 0.0)),
                 "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
             },
             "tolerance_adjusted": None,
