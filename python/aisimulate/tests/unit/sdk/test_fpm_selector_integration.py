@@ -9,7 +9,7 @@ import copy
 
 import pytest
 
-from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 from .fpm_training_support import isolate_training_dependencies as isolate_training_dependencies
 from .test_fpm_online_integration import IDENTITY, iteration, train
@@ -34,7 +34,7 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
                 "estimation_mode": "fpm_learned",
                 "estimator_config": {
                     "correction": {"enabled": False} if adaptation == "online" else correction,
-                    "selector": selector,
+                    "selector": selector if adaptation == "causal_selector" else {},
                     "fpm_learned": {
                         "checkpoint_path": str(seed),
                         "adaptation": adaptation,
@@ -101,3 +101,51 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
     with pytest.raises(ValueError, match="selector"):
         combined.save_online_checkpoint(destination)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "mode,adaptation",
+    [
+        ("auto", "frozen"),
+        ("op_level", "frozen"),
+        ("fpm_interpolation", "frozen"),
+        ("fpm_regression", "frozen"),
+        ("fpm_learned", "frozen"),
+        ("fpm_learned", "online"),
+    ],
+)
+def test_inactive_selector_controls_reject_before_source_loading(tmp_path, mode, adaptation):
+    settings = {"selector": {"alpha": 0.2}, "correction": {"enabled": False}}
+    if mode == "fpm_learned":
+        settings["fpm_learned"] = {
+            "adaptation": adaptation,
+            "checkpoint_path": str(tmp_path / "missing-checkpoint"),
+        }
+    config = {**IDENTITY, "estimation_mode": mode, "estimator_config": settings}
+    with pytest.raises(ValueError, match="selector requires.*causal_selector"):
+        RustForwardPassPerfModel.best_available(config)
+
+
+@pytest.mark.parametrize("selector", [{}, {"alpha": 0.2, "warmup": 3, "margin": 0.05, "persistence": 2}])
+def test_selector_saved_config_preserves_controls_and_parent_identity(tmp_path, selector):
+    _, seed, _ = train(tmp_path)
+    config = {
+        **IDENTITY,
+        "estimation_mode": "fpm_learned",
+        "speculation": {"kind": "none"},
+        "estimator_config": {
+            "fpm_learned": {"adaptation": "causal_selector", "checkpoint_path": str(seed)},
+            "correction": {"enabled": True, "mode": "hybrid"},
+            "selector": selector,
+        },
+    }
+    saved = RustForwardPassPerfModel.normalize_config(config)
+    assert ("selector" in saved["estimator_config"]) == bool(selector)
+    if selector:
+        assert saved["estimator_config"]["selector"] == selector
+    assert RustForwardPassPerfModel.normalize_config(ForwardPassPerfModelConfig(**saved)) == saved
+    assert RustForwardPassPerfModel.learned_identity(saved) == RustForwardPassPerfModel.learned_identity(IDENTITY)
+    original = RustForwardPassPerfModel.best_available(config)
+    restored = RustForwardPassPerfModel.best_available(saved)
+    assert restored.learned_selector_diagnostics() == original.learned_selector_diagnostics()
+    assert restored.estimate_forward_pass_time_ms(iteration(2)) == original.estimate_forward_pass_time_ms(iteration(2))

@@ -26,7 +26,7 @@ sklearn = import_sklearn()
 
 @pytest.fixture
 def identity(monkeypatch):
-    """Stub only Rust configuration resolution; fitting/export use real sklearn."""
+    """Stub only Rust identity resolution; fitting/export use real sklearn."""
     import aisimulate_core
 
     resolved = {
@@ -44,13 +44,6 @@ def identity(monkeypatch):
         "gemm_quant_mode": "fp8",
         "kvcache_quant_mode": "fp8",
         "fpm_profile": {"model": {"num_layers": 4}, "resources": {"gpu_memory_gb": 80}},
-        "estimator_config": {"fpm_regression": {"fit": {"kind": "gbdt"}}},
-        "estimation_mode": "fpm_regression",
-        "fallback_policy": "deny",
-        "database_mode": "SILICON",
-        "systems_paths": ["/irrelevant/data/root"],
-        "transfer_policy": ["p2p"],
-        "strict_provenance": True,
     }
 
     def normalize(payload):
@@ -58,7 +51,7 @@ def identity(monkeypatch):
         return json.dumps(resolved)
 
     monkeypatch.setitem(
-        aisimulate_core.__dict__, "RustForwardPassPerfModel", SimpleNamespace(normalize_config=normalize)
+        aisimulate_core.__dict__, "RustForwardPassPerfModel", SimpleNamespace(learned_identity=normalize)
     )
     return resolved
 
@@ -130,9 +123,7 @@ def test_checkpoint_preserves_fitted_rows_mapper_and_prediction_artifact(tmp_pat
     assert manifest["sklearn_version"] == sklearn.__version__
     assert manifest["features"] == artifact["features"]
     assert manifest["target"] == target
-    assert manifest["identity"] == {
-        key: value for key, value in identity.items() if key not in fpm_learned._CHECKPOINT_NON_IDENTITY_FIELDS
-    }
+    assert manifest["identity"] == identity
     assert manifest["identity"]["fpm_profile"] == identity["fpm_profile"]
     assert manifest["artifact_sha256"] == hashlib.sha256((destination / "model.json").read_bytes()).hexdigest()
     store = manifest["stores"]["pure_decode"]
@@ -236,7 +227,7 @@ def test_checkpoint_rejects_worker_identity_mismatch(monkeypatch):
     monkeypatch.setitem(
         aisimulate_core.__dict__,
         "RustForwardPassPerfModel",
-        SimpleNamespace(normalize_config=lambda _: json.dumps({"worker_type": "prefill"})),
+        SimpleNamespace(learned_identity=lambda _: json.dumps({"worker_type": "prefill"})),
     )
     with pytest.raises(ValueError, match="worker_type must match"):
         fpm_learned._checkpoint_identity({"worker_type": "prefill"}, "decode")
@@ -379,8 +370,7 @@ def test_cli_writes_checkpoint_and_the_same_prediction_artifact(tmp_path, monkey
 
 def test_training_identity_is_bound_in_frozen_artifact_and_conflicts_fail(identity):
     artifact = fpm_learned.train(_iterations(), "decode", identity=identity, **_train_kwargs())
-    expected = {key: value for key, value in identity.items() if key not in fpm_learned._CHECKPOINT_NON_IDENTITY_FIELDS}
-    assert artifact["metadata"]["identity"] == expected
+    assert artifact["metadata"]["identity"] == identity
     with pytest.raises(ValueError, match="metadata.identity conflicts"):
         fpm_learned.train(
             _iterations(), "decode", identity=identity, metadata={"identity": {"model": "different"}}, **_train_kwargs()

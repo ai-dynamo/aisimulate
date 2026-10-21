@@ -12,7 +12,7 @@ import math
 import pytest
 
 from aisimulate_core.sdk import fpm_learned
-from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 from .fpm_reference import reference_predict_ms
 from .fpm_training_support import import_sklearn
@@ -45,7 +45,7 @@ def iteration(index, *, shifted=False):
     ]
 
 
-def train(tmp_path, target="log_ms"):
+def train(tmp_path, target="log_ms", *, identity=IDENTITY):
     rows = [iteration(index) for index in range(64)]
     path = tmp_path / "seed"
     artifact = fpm_learned.train(
@@ -59,15 +59,15 @@ def train(tmp_path, target="log_ms"):
         min_store_rows=5,
         learning_rate=0.2,
         online_checkpoint_dir=path,
-        identity=IDENTITY,
+        identity=identity,
     )
     return rows, path, artifact
 
 
-def load(path, mode, refresh="eager"):
+def load(path, mode, refresh="eager", *, identity=IDENTITY):
     return RustForwardPassPerfModel.best_available(
         {
-            **IDENTITY,
+            **identity,
             "estimation_mode": "fpm_learned",
             "estimator_config": {
                 "correction": {"enabled": False},
@@ -83,6 +83,61 @@ def load(path, mode, refresh="eager"):
             },
         }
     )
+
+
+def test_native_identity_projection_preserves_export_and_load_compatibility(tmp_path):
+    deployment = {
+        **IDENTITY,
+        "backend_version": "0.10.0",
+        "tp": 2,
+        "dcp": 1,
+        "gemm_quant_mode": "fp8",
+        "kv_block_size": 16,
+    }
+    # These training-time choices do not bind the deployment. Loading below
+    # changes estimator, correction, source roots, and selection policies.
+    training_data = tmp_path / "training-data"
+    training_data.mkdir()
+    training = {
+        **deployment,
+        "fallback_policy": "allow",
+        "database_mode": "HYBRID",
+        "transfer_policy": ["xshape"],
+        "systems_paths": [str(training_data)],
+        "strict_provenance": True,
+        "estimator_config": {"correction": {"enabled": True}},
+    }
+    expected = RustForwardPassPerfModel.learned_identity(ForwardPassPerfModelConfig(**deployment))
+    assert RustForwardPassPerfModel.learned_identity(training) == expected
+    assert expected["pp"] == expected["attention_dp"] == 1
+    assert {key: expected[key] for key in deployment if key != "estimation_mode"} == {
+        key: value for key, value in deployment.items() if key != "estimation_mode"
+    }
+
+    rows, checkpoint, artifact = train(tmp_path, identity=training)
+    assert artifact["metadata"]["identity"] == expected
+    assert json.loads((checkpoint / "manifest.json").read_text())["identity"] == expected
+    for mode in ("frozen", "leaf_only"):
+        model = load(checkpoint, mode, identity=deployment)
+        assert model.export_learned_artifact() == artifact
+        assert model.learned_online_diagnostics()["identity_verified"]
+        assert model.estimate_forward_pass_time_ms(rows[0]) == pytest.approx(reference_predict_ms(artifact, rows[0]))
+
+    # Both frozen and adaptive checkpoint loaders reject an actual deployment
+    # change even when the exported forest could still make a prediction.
+    for change in (
+        {"model": "different/model"},
+        {"system": "different_system"},
+        {"backend_version": "0.11.0"},
+        {"worker_type": "prefill"},
+        {"tp": 4},
+        {"dcp": 2},
+        {"gemm_quant_mode": "bfloat16"},
+        {"kv_block_size": 32},
+    ):
+        for mode in ("frozen", "leaf_only"):
+            with pytest.raises(ValueError, match="identity does not match"):
+                load(checkpoint, mode, identity={**deployment, **change})
 
 
 def leaf_refit(artifact, rows):

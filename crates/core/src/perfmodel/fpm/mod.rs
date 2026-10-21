@@ -56,6 +56,8 @@ pub use execution::{
     FpmSpeculativeMethod, FpmTimingScope,
 };
 pub use learned::LEARNED_SCHEMA_VERSION;
+#[cfg(feature = "python")]
+pub(crate) use learned_online::canonical_learned_identity;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{

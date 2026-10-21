@@ -93,9 +93,12 @@ observations. `recent_window` limits the latter, not the former. An optional
 `recent_max_age_observations` also removes recent rows whose global accepted
 observation IDs have expired. Its inclusive age limit counts observations
 across the model's stores; it is not a wall-clock timeout. Observation cadence
-is controlled by the caller. Expiry is evaluated when the store fits a batch,
-relative to that batch's newest observation ID; a prediction query does not
-expire rows or publish another forest.
+is controlled by the caller. Expiry is evaluated when the store fits a batch
+or the caller invokes `flush_updates`, relative to the latest accepted
+observation across all stores. An explicit flush also removes expired fitted
+rows from stores without pending feedback. If only never-fitted pending rows
+expire, they are discarded without publishing a new forest. Prediction queries
+and checkpoint saves do not expire rows or publish another forest.
 
 With $H_0$ original historical observations and $R$ retained recent observations,
 unit row weights are the default. An explicit `history_weight` $\beta$ instead
@@ -252,8 +255,13 @@ original rows to complete-bin representatives, while eager refresh still visits
 the whole retained fitting population. With `mutable_tree_tail`, eager fitting
 stages and publishes replacement training state only for that tail; frozen
 histograms, split candidates and region arrays retain their existing allocations.
-The frozen trees still contribute to prefix predictions, and the candidate
-forest still copies the small prediction arrays for validation before publication.
+The baseline-plus-frozen-tree prefix for each immutable historical row is cached
+in the original accumulation order. Eager updates copy these cached values and
+traverse the frozen trees only for recent rows. The cache uses eight bytes per
+stored historical row when a frozen prefix exists; unrestricted updates allocate
+no cache. Grouping and checkpoint loading rebuild this derived state without
+changing the checkpoint format. The candidate forest still copies the small
+prediction arrays for validation before publication.
 Lazy fitting trades some derivative freshness for cheaper insertions and
 evictions; it does not eliminate periodic
 full work. Track original history count, stored representative count, recent

@@ -3,10 +3,11 @@
 
 use super::*;
 
-fn compact(learner: &mut OnlineLearner) {
+fn compact(learner: &mut OnlineLearner, model: &LearnedForwardPassModel) {
     learner.config.history_bin_grouping = true;
-    for state in learner.stores.values_mut() {
+    for (kind, state) in &mut learner.stores {
         state.anchors = Arc::new(state.anchors.group_by_bins().unwrap());
+        fitting::cache_frozen_anchor_prefix(state, model.store(*kind).unwrap(), &learner.config);
     }
 }
 
@@ -117,7 +118,7 @@ fn grouped_eager_and_lazy_updates_preserve_structures_predictions_and_logical_co
                 artifact.target = LearnedTarget::LogMs;
                 let mut model = LearnedForwardPassModel::from_artifact(artifact).unwrap();
                 let mut grouped = baseline.clone();
-                compact(&mut grouped);
+                compact(&mut grouped, &model);
                 let mut grouped_model = model.clone();
                 assert_eq!(model.artifact(), grouped_model.artifact());
                 assert_eq!(grouped.stores[&KIND].anchors.y.len(), 5);
@@ -167,7 +168,7 @@ fn grouped_runtime_resume_preserves_pending_rows_ramp_tail_and_next_id() {
         vec![leaf(0.5), split(0, true)],
         settings(0.2, 0.3),
     );
-    compact(&mut learner);
+    compact(&mut learner, &model);
     for i in 0..9 {
         learner
             .observe(KIND, vec![(i % 2) as f64], 2.0 + i as f64, &mut model)
@@ -224,7 +225,7 @@ fn grouped_runtime_validation_rejects_corrupt_multiplicity_and_duplicate_bins() 
         vec![leaf(0.0)],
         settings(0.2, 0.0),
     );
-    compact(&mut learner);
+    compact(&mut learner, &model);
     checkpoint::validate_state(&learner, &model).unwrap();
     // Arc serialization gives independent editable copies without adding Clone
     // to production anchor storage solely for test corruption.

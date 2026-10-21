@@ -7,6 +7,10 @@ use super::super::learned::{
 };
 use super::*;
 
+#[path = "frozen_prefix_tests.rs"]
+mod frozen_prefix_tests;
+#[path = "global_expiry_tests.rs"]
+mod global_expiry_tests;
 #[path = "grouped_history_tests.rs"]
 mod grouped_history_tests;
 
@@ -82,6 +86,7 @@ fn fixture(
         trees: Vec::new(),
         recent: VecDeque::new(),
         pending: Vec::new(),
+        frozen_anchor_prefix: Vec::new(),
         counters: Counters::default(),
     };
     let store = LearnedStore { baseline, trees };

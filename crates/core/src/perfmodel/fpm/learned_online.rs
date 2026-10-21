@@ -249,6 +249,10 @@ struct Counters {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoreState {
     anchors: Arc<Anchors>,
+    /// Derived from immutable anchors and trees before the mutable tail.
+    /// Rebuilt on checkpoint load; never part of resumable training state.
+    #[serde(skip)]
+    frozen_anchor_prefix: Vec<f64>,
     /// Load-time measurement, not part of resumable fitting state.
     #[serde(skip)]
     history_grouping_ms: Option<f64>,
@@ -365,14 +369,26 @@ impl OnlineLearner {
         let Some(state) = self.stores.get_mut(&kind) else {
             return Ok(false);
         };
-        if state.pending.is_empty() {
+        let oldest_retained_id = self
+            .config
+            .recent_max_age_observations
+            .map(|age| self.next_row_id.saturating_sub(age as u64));
+        let has_expired_rows = oldest_retained_id
+            .is_some_and(|oldest| state.recent.front().is_some_and(|row| row.id < oldest));
+        if state.pending.is_empty() && !has_expired_rows {
             return Ok(false);
         }
         let store = learned
             .store(kind)
             .ok_or_else(|| invalid("missing predictor store"))?;
-        match fitting::fit_batch(state, store, &self.config, &learned.target()) {
-            Ok((replacement, eager, fallback, rebuilt)) => {
+        match fitting::fit_batch(
+            state,
+            store,
+            &self.config,
+            &learned.target(),
+            self.next_row_id,
+        ) {
+            Ok(Some((replacement, eager, fallback, rebuilt))) => {
                 learned.replace_store(kind, replacement);
                 state.counters.publications += 1;
                 state.counters.rebuilt_nodes += rebuilt;
@@ -387,6 +403,7 @@ impl OnlineLearner {
                 self.version += 1;
                 Ok(true)
             }
+            Ok(None) => Ok(false),
             Err(error) => {
                 state.counters.failures += 1;
                 Err(error)
@@ -516,6 +533,7 @@ impl StoreState {
         anchors
             + rows
             + trees
+            + self.frozen_anchor_prefix.capacity() * std::mem::size_of::<f64>()
             + self
                 .thresholds
                 .iter()

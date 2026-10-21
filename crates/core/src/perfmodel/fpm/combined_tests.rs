@@ -19,6 +19,14 @@ fn hash(path: &Path) -> String {
 // This is a real training checkpoint, so tests exercise canonical validation,
 // payload hashes, feature projection, fitting and publication together.
 fn checkpoint(role: ForwardPassWorkerType) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
+    checkpoint_with_forest(role, 10.0, &[0.0])
+}
+
+fn checkpoint_with_forest(
+    role: ForwardPassWorkerType,
+    baseline: f64,
+    tree_values: &[f64],
+) -> (tempfile::TempDir, ForwardPassPerfModelConfig) {
     let dir = tempfile::tempdir().unwrap();
     let mut config =
         ForwardPassPerfModelConfig::new("selector-test", "test-gpu", BackendKind::Vllm, role);
@@ -61,10 +69,16 @@ fn checkpoint(role: ForwardPassWorkerType) -> (tempfile::TempDir, ForwardPassPer
     }
     group.close().unwrap();
     writer.close().unwrap();
-    let store = serde_json::json!({"baseline": 10.0, "trees": [{
-        "left": [-1], "right": [-1], "feature": [-1], "threshold": [0.0],
-        "value": [0.0], "missing_left": [true]
-    }]});
+    let trees: Vec<_> = tree_values
+        .iter()
+        .map(|value| {
+            serde_json::json!({
+                "left": [-1], "right": [-1], "feature": [-1], "threshold": [0.0],
+                "value": [value], "missing_left": [true]
+            })
+        })
+        .collect();
+    let store = serde_json::json!({"baseline": baseline, "trees": trees});
     let seed_store = serde_json::json!({
         "rows_file": "rows.parquet", "rows_sha256": hash(&rows), "row_count": 2,
         "bin_thresholds": [[0.5]], "n_bins_non_missing": [2], "missing_values_bin_idx": 255,
@@ -121,6 +135,17 @@ fn estimate(model: &ForwardPassPerfModel, metrics: &[ForwardPassMetrics]) -> f64
         .unwrap()
 }
 
+fn online_estimate(model: &ForwardPassPerfModel, metrics: &[ForwardPassMetrics]) -> f64 {
+    let ForwardPassPerfMode::CausalSelector(model) = &model.mode else {
+        panic!("expected combined model")
+    };
+    let Some((kind, Some(features))) = prepare_learned_iteration(&model.learned, metrics).unwrap()
+    else {
+        panic!("expected supported nonempty query")
+    };
+    model.learned.predict_ms(kind, &features).unwrap().unwrap()
+}
+
 fn state(model: &ForwardPassPerfModel, store: &str, query: &str) -> Json {
     model.learned_selector_diagnostics().unwrap()["states"]
         .as_array()
@@ -144,10 +169,12 @@ fn combined_trajectory_matches_independent_experts_and_scalar_gate() {
     let mut stable_config = config.clone();
     stable_config.estimator_config.fpm_learned.adaptation =
         super::super::super::LearnedAdaptation::Frozen;
+    stable_config.estimator_config.selector = Default::default();
     let mut online_config = config.clone();
     online_config.estimator_config.fpm_learned.adaptation =
         super::super::super::LearnedAdaptation::Online;
     online_config.estimator_config.correction.enabled = false;
+    online_config.estimator_config.selector = Default::default();
     let mut stable = ForwardPassPerfModel::best_available(stable_config).unwrap();
     let mut online = ForwardPassPerfModel::best_available(online_config).unwrap();
     let mut combined = ForwardPassPerfModel::best_available(config.clone()).unwrap();
@@ -308,6 +335,182 @@ fn combined_fit_failure_admits_once_and_rejected_retry_or_flush_never_recounts()
 }
 
 #[test]
+fn combined_global_age_flush_expires_online_rows_without_recounting_selector_evidence() {
+    for refresh in [
+        super::super::super::LearnedDerivativeRefresh::Eager,
+        super::super::super::LearnedDerivativeRefresh::Lazy,
+    ] {
+        // One row is pending only; two are fitted only; three leave both.
+        for prefill_count in 1..=3 {
+            let (_directory, mut config) = checkpoint(ForwardPassWorkerType::Aggregated);
+            let controls = &mut config.estimator_config.fpm_learned;
+            controls.derivative_refresh = refresh;
+            controls.update_every = 2;
+            controls.recent_max_age_observations = Some(3);
+            controls.history_weight = Some(0.0);
+            let mut combined = ForwardPassPerfModel::best_available(config).unwrap();
+            let prefill = vec![metric(16, 0, 0, 30.0)];
+            for _ in 0..prefill_count {
+                combined
+                    .tune_with_fpms(std::slice::from_ref(&prefill))
+                    .unwrap();
+            }
+            for _ in 0..6 {
+                combined
+                    .tune_with_fpms(&[vec![metric(0, 2, 1000, 50.0)]])
+                    .unwrap();
+            }
+            close(
+                online_estimate(&combined, &prefill),
+                if prefill_count == 1 { 10.0 } else { 30.0 },
+            );
+            let before = combined.learned_selector_diagnostics();
+            assert_eq!(
+                state(&combined, "pure_prefill", "prefill")["observations"],
+                prefill_count
+            );
+            combined.flush_updates().unwrap();
+            // Only online retained rows expire. Calibration and the causal
+            // record of earlier admissions are independent state.
+            assert_eq!(combined.learned_selector_diagnostics(), before);
+            close(online_estimate(&combined, &prefill), 10.0);
+            let diagnostics = combined.learned_online_diagnostics().unwrap();
+            let store = &diagnostics["stores"]["pure_prefill"];
+            assert_eq!(store["retained_row_ids"], serde_json::json!([]));
+            assert_eq!(store["recent_rows"], 0);
+            assert_eq!(store["pending_rows"], 0);
+            assert_eq!(store["accepted_observations"], prefill_count);
+            assert_eq!(store["evicted_observations"], prefill_count);
+            assert_eq!(
+                store["publications"],
+                if prefill_count == 1 { 0 } else { 2 }
+            );
+            assert_eq!(store["history_row_weight"], 1.0);
+            combined.flush_updates().unwrap();
+            assert_eq!(combined.learned_online_diagnostics().unwrap(), diagnostics);
+            assert_eq!(combined.learned_selector_diagnostics(), before);
+        }
+    }
+}
+
+#[test]
+fn combined_rejected_and_idle_feedback_preserves_global_age_boundary() {
+    for refresh in [
+        super::super::super::LearnedDerivativeRefresh::Eager,
+        super::super::super::LearnedDerivativeRefresh::Lazy,
+    ] {
+        let (_directory, mut config) = checkpoint(ForwardPassWorkerType::Aggregated);
+        let controls = &mut config.estimator_config.fpm_learned;
+        controls.derivative_refresh = refresh;
+        controls.update_every = 2;
+        controls.recent_max_age_observations = Some(3);
+        controls.history_weight = Some(0.0);
+        let mut combined = ForwardPassPerfModel::best_available(config).unwrap();
+        combined
+            .tune_with_fpms(&[vec![metric(16, 0, 0, 20.0)]])
+            .unwrap(); // ID 2.
+        combined
+            .tune_with_fpms(&[vec![metric(16, 0, 0, 40.0)]])
+            .unwrap(); // ID 3.
+        combined
+            .tune_with_fpms(&[vec![metric(0, 2, 1000, 50.0)]])
+            .unwrap(); // ID 4.
+        let evidence = combined.learned_selector_diagnostics();
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            combined
+                .tune_with_fpms(&[vec![metric(0, 2, 1000, invalid)]])
+                .unwrap();
+        }
+        combined
+            .tune_with_fpms(&[vec![ForwardPassMetrics::default()]])
+            .unwrap();
+        assert!(combined.tune_with_fpms(&[vec![]]).is_err());
+        assert_eq!(combined.learned_selector_diagnostics(), evidence);
+        combined.flush_updates().unwrap();
+        assert_eq!(combined.learned_selector_diagnostics(), evidence);
+        let diagnostics = combined.learned_online_diagnostics().unwrap();
+        assert_eq!(diagnostics["rejected_observations"], 5);
+        assert_eq!(
+            diagnostics["stores"]["pure_prefill"]["retained_row_ids"],
+            serde_json::json!([2, 3])
+        );
+        close(online_estimate(&combined, &[metric(16, 0, 0, 0.0)]), 30.0);
+        combined
+            .tune_with_fpms(&[vec![metric(0, 2, 1000, 60.0)]])
+            .unwrap(); // ID 5.
+        let evidence = combined.learned_selector_diagnostics();
+        combined.flush_updates().unwrap();
+        assert_eq!(combined.learned_selector_diagnostics(), evidence);
+        assert_eq!(
+            combined.learned_online_diagnostics().unwrap()["stores"]["pure_prefill"]["retained_row_ids"],
+            serde_json::json!([3])
+        );
+        close(online_estimate(&combined, &[metric(16, 0, 0, 0.0)]), 40.0);
+    }
+}
+
+#[test]
+fn combined_restricted_tail_uses_frozen_prefix_with_independent_online_predictions() {
+    for refresh in [
+        super::super::super::LearnedDerivativeRefresh::Eager,
+        super::super::super::LearnedDerivativeRefresh::Lazy,
+    ] {
+        for grouping in [false, true] {
+            // A nonzero immutable tree supplies the whole 10 ms seed; only the
+            // final zero-valued tree can change under online feedback.
+            let (_directory, mut config) =
+                checkpoint_with_forest(ForwardPassWorkerType::Decode, 0.0, &[10.0, 0.0]);
+            let controls = &mut config.estimator_config.fpm_learned;
+            controls.derivative_refresh = refresh;
+            controls.history_bin_grouping = grouping;
+            controls.mutable_tree_tail = Some(1);
+            let mut online_config = config.clone();
+            online_config.estimator_config.fpm_learned.adaptation =
+                super::super::super::LearnedAdaptation::Online;
+            online_config.estimator_config.correction.enabled = false;
+            online_config.estimator_config.selector = Default::default();
+            let mut online = ForwardPassPerfModel::best_available(online_config).unwrap();
+            let mut combined = ForwardPassPerfModel::best_available(config).unwrap();
+            for label in [30.0, 40.0, 5.0, 50.0] {
+                let observation = vec![metric(0, 2, 1000, label)];
+                close(
+                    online_estimate(&combined, &observation),
+                    estimate(&online, &observation),
+                );
+                online
+                    .tune_with_fpms(std::slice::from_ref(&observation))
+                    .unwrap();
+                combined
+                    .tune_with_fpms(std::slice::from_ref(&observation))
+                    .unwrap();
+                close(
+                    online_estimate(&combined, &observation),
+                    estimate(&online, &observation),
+                );
+            }
+            let ForwardPassPerfMode::CausalSelector(model) = &combined.mode else {
+                panic!("expected combined model")
+            };
+            let store = model
+                .learned
+                .store(ForwardPassRegressionWorkloadKind::PureDecode)
+                .unwrap();
+            assert_eq!(store.trees[0].value, [10.0]);
+            assert_ne!(store.trees[1].value, [0.0]);
+            assert_eq!(
+                model
+                    .stable
+                    .store(ForwardPassRegressionWorkloadKind::PureDecode)
+                    .unwrap()
+                    .trees[1]
+                    .value,
+                [0.0]
+            );
+        }
+    }
+}
+
+#[test]
 fn combined_persistence_apis_reject_partial_state_and_standalone_online_resume_stays_valid() {
     let (dir, config) = checkpoint(ForwardPassWorkerType::Decode);
     let combined = ForwardPassPerfModel::best_available(config.clone()).unwrap();
@@ -329,6 +532,7 @@ fn combined_persistence_apis_reject_partial_state_and_standalone_online_resume_s
     online_config.estimator_config.fpm_learned.adaptation =
         super::super::super::LearnedAdaptation::Online;
     online_config.estimator_config.correction.enabled = false;
+    online_config.estimator_config.selector = Default::default();
     online_config.estimator_config.fpm_learned.update_every = 2;
     let mut online = ForwardPassPerfModel::best_available(online_config.clone()).unwrap();
     online

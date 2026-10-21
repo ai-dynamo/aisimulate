@@ -22,18 +22,20 @@ standalone canonical model with complete per-iteration `ForwardPassMetrics`
 for estimation and feedback. Current engine replay, engine CLI prediction and
 Sweeper timing callers provide phase aggregates through a `native_engine`
 interface. They cannot supply the learned model's full iteration/request
-features and reject learned execution at construction. Parsing or retaining a
-learned configuration in those callers does not make that execution supported.
-No missing features are fabricated. Supply exactly one of
+features. Python prediction and Sweeper configurations reject learned mode during
+validation; native replay rejects it before loading the learned source.
+Supply exactly one of
 `estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
 adaptation accepts either source; online adaptation requires a training or runtime
 checkpoint and `estimator_config.correction.enabled: false`. The combined
 `causal_selector` adaptation requires a training seed checkpoint and enabled
-hybrid correction. Learned source
-open, checksum, parsing and identity errors fail construction even with
-`fallback_policy: allow`; they do not select a different estimator. Learned
-mode also rejects speculative decoding (`nextn != 0` or a supplied
-`speculation` block).
+hybrid correction. Learned mode
+requires `fallback_policy: deny`; `allow` and the legacy `regression` policy
+are invalid configurations. Learned source open, checksum, parsing and identity
+errors fail construction. Learned mode also rejects active speculative decoding
+(`nextn != 0` or `speculation.kind` other than `none`). An explicit
+`speculation: {kind: none}` is accepted and normalized to no speculation;
+it must not contain parameters or a draft checkpoint.
 
 ## Estimator namespaces
 
@@ -52,6 +54,9 @@ mode also rejects speculative decoding (`nextn != 0` or a supplied
 All fields below belong to `estimator_config.fpm_learned`. The defaults describe
 API behavior, not an accuracy recommendation. Configuration normalization and
 validation happen in Rust; Python passes the complete configuration through.
+When every learned control has its default value, serialization omits the
+`fpm_learned` block to preserve existing non-learned configurations. Any
+nondefault control preserves the complete block, even without a source path.
 
 | Field | Default | Meaning and constraints |
 | --- | --- | --- |
@@ -72,7 +77,7 @@ validation happen in Rust; Python passes the complete configuration through.
 | `history_bin_grouping` | `false` | Compress immutable history by complete fitted-feature-bin vectors, preserving target sums and original multiplicities. Changes storage and fitting work, not the intended weighted objective. |
 | `mutable_tree_tail` | `null` | Optional positive number of final seed trees allowed to change. `null` permits all trees. A value above the forest size also permits all trees; the prefix remains frozen. |
 | `update_step` | `1.0` | Finite leaf-value displacement fraction in `(0, 1]`. Values below 1 interpolate from the existing leaf toward its fitted value and require `update_mode: leaf_only`. This differs from the seed learning rate. |
-| `recent_max_age_observations` | `null` | Optional positive maximum age of a recent row in the model's global accepted-observation sequence, inclusive. `null` disables age expiry. This is an observation count, not time; history is never expired. |
+| `recent_max_age_observations` | `null` | Optional positive maximum age of a recent row in the model's global accepted-observation sequence, inclusive. Batch fitting and explicit `flush_updates()` use the latest admission across every store, including when a store has no pending rows. `null` disables age expiry. This is an observation count, not time; history is never expired. |
 
 The seed checkpoint owns the feature order, numeric bin thresholds, target
 transform, baseline, tree count, per-tree capacity, learning rate, L2 penalty,
@@ -149,6 +154,12 @@ in each learned forest store. It additionally separates correction histories by
 learned forest store; the coordinates and PR 493 hybrid policy are unchanged.
 
 All fields below belong to `estimator_config.selector`:
+
+Nondefault selector settings require both `estimation_mode: fpm_learned` and
+`adaptation: causal_selector`; other combinations fail validation. Default
+settings are accepted in every mode and omitted from serialized configurations
+so ordinary configurations remain readable by versions without the selector.
+Changing any selector field preserves the complete selector block on round trip.
 
 | Field | Default | Meaning and constraints |
 | --- | --- | --- |

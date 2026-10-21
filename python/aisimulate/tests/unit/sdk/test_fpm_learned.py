@@ -264,6 +264,30 @@ def test_canonical_learned_config_pins_source_content(tmp_path):
     assert fresh.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_learned"]["source_sha256"] != digest
 
 
+def test_canonical_learned_config_normalizes_explicit_disabled_speculation(tmp_path):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    path = tmp_path / "seed.json"
+    path.write_text(json.dumps(_stump_artifact()))
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "private-model",
+            "system": "private-system",
+            "backend": "vllm",
+            "worker_type": "decode",
+            "estimation_mode": "fpm_learned",
+            "speculation": {"kind": "none"},
+            "estimator_config": {"fpm_learned": {"artifact_path": str(path)}},
+        }
+    )
+    resolved = model.diagnostics()["provenance"]["config"]
+    assert resolved["speculation"] is None
+    query = _decode_fpm(2, 100, 0.0)
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+    restored = RustForwardPassPerfModel.best_available(resolved)
+    assert restored.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+
+
 def test_reference_predict_and_evaluate() -> None:
     artifact = _stump_artifact()
     ref = fpm_reference.reference_predict_ms

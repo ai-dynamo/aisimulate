@@ -144,6 +144,22 @@ class ForwardPassPerfModelConfig:
     ``estimator_config.correction.enabled=False``. Rust owns all online
     defaults, validation, fitting, and checkpoint continuation. Learned models
     are never added to the automatic estimator search.
+
+    ``fpm_learned.adaptation="causal_selector"`` selects between a frozen
+    hybrid-calibrated expert and an independent online forest. It requires
+    ``estimation_mode="fpm_learned"``, ``fallback_policy="deny"``, a training
+    ``checkpoint_path``, and correction enabled with mode ``"hybrid"`` or
+    ``"auto"``. ``estimator_config["selector"]`` controls the error EWMA:
+    ``alpha=0.025`` must be finite in ``(0, 1]``; ``margin=0.025`` must be
+    finite in ``[0, 1)``; ``warmup=10`` and ``persistence=1`` must be positive
+    integers. Nondefault selector settings are invalid in other modes.
+    Default selector settings are omitted from saved configurations; custom
+    settings survive reload. Rust owns these defaults and validation.
+    Use chronological estimate/tune pairs with complete iteration metrics;
+    phase-only replay, prediction and Sweeper callers reject learned modes.
+    ``learned_selector_diagnostics()`` exposes the per-key evidence. Combined
+    artifact export and full-state checkpoint saving are unsupported; standalone
+    online checkpoint continuation remains available.
     """
 
     model: str
@@ -404,6 +420,16 @@ class RustForwardPassPerfModel:
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
     @staticmethod
+    def learned_identity(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve the Rust-owned deployment identity for learned artifacts and checkpoints."""
+        import aisimulate_core
+
+        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.learned_identity(json.dumps(payload, allow_nan=False))
+        )
+
+    @staticmethod
     def estimate_cache_budget(
         config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -489,7 +515,7 @@ class RustForwardPassPerfModel:
         return None if raw is None else json.loads(raw)
 
     def flush_updates(self) -> None:
-        """Publish pending online observations, including a partial update batch."""
+        """Fit partial pending batches and expire globally aged feedback in every store."""
         self._inner.flush_updates()
 
     def export_learned_artifact(self) -> dict[str, Any]:
