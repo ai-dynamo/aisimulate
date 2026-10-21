@@ -236,8 +236,9 @@ fn validate_public_agentic_engine(
         );
         for role in &roles {
             ensure!(
-                role.rank.aic_nextn.is_none(),
-                "agentic host offload requires speculative decoding disabled"
+                role.rank.aic_nextn.is_none()
+                    || matches!(&spec.topology, ReplayTopology::Aggregated { .. }),
+                "agentic host offload requires speculative decoding disabled outside aggregated replay"
             );
             ensure!(
                 role.rank.backend == Backend::Vllm,

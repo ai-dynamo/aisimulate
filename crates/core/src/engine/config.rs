@@ -1078,10 +1078,26 @@ impl EngineConfig {
                 self.enable_prefix_caching,
                 "native_host_offload requires enable_prefix_caching=true"
             );
-            ensure!(
-                self.aic_nextn.is_none(),
-                "native_host_offload does not support aic_nextn in the initial implementation"
-            );
+            if self.aic_nextn.is_some() {
+                ensure!(
+                    self.worker_type == WorkerType::Aggregated,
+                    "native_host_offload with aic_nextn requires worker_type=aggregated"
+                );
+                ensure!(
+                    host_offload.scope == G2Scope::DpRankLocal,
+                    "native_host_offload with aic_nextn requires dp_rank_local scope"
+                );
+                ensure!(
+                    self.g3_offload.is_none(),
+                    "native_host_offload with aic_nextn does not support g3_offload"
+                );
+                ensure!(
+                    self.state_cache.is_none()
+                        && self.kv_cache_groups.is_empty()
+                        && self.prefix_match_unit.is_none(),
+                    "native_host_offload with aic_nextn requires a scalar uniform FullAttention KV pool"
+                );
+            }
             let kv_bytes_per_token = self.kv_cache_bytes_per_token.ok_or_else(|| {
                 anyhow::anyhow!(
                     "native_host_offload requires kv_cache_bytes_per_token to derive the physical host block size"
@@ -1693,6 +1709,20 @@ mod tests {
     }
 
     #[test]
+    fn native_host_offload_accepts_supported_mtp_depths() {
+        for depth in [1, 2, 5] {
+            let mut config = native_host_offload_config();
+            config.aic_nextn = Some(depth);
+            config.validate().unwrap();
+            let decoded: EngineConfig =
+                serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+            decoded.validate().unwrap();
+            assert_eq!(decoded.aic_nextn, Some(depth));
+            assert_eq!(decoded.native_host_offload, config.native_host_offload);
+        }
+    }
+
+    #[test]
     fn native_host_offload_rejects_unsupported_scheduler_modes() {
         let cases: &[InvalidHostConfigCase] = &[
             (|config| config.backend = Backend::Sglang, "backend=vllm"),
@@ -1721,8 +1751,30 @@ mod tests {
                 "enable_prefix_caching=true",
             ),
             (
-                |config| config.aic_nextn = Some(1),
-                "does not support aic_nextn",
+                |config| {
+                    config.aic_nextn = Some(1);
+                    config.worker_type = WorkerType::Decode;
+                },
+                "requires worker_type=aggregated",
+            ),
+            (
+                |config| {
+                    config.aic_nextn = Some(2);
+                    let host = config.native_host_offload.as_mut().unwrap();
+                    host.scope = G2Scope::ClusterShared;
+                    host.kv_layout_id = Some("test-layout".into());
+                },
+                "requires dp_rank_local scope",
+            ),
+            (
+                |config| {
+                    config.aic_nextn = Some(2);
+                    config.g3_offload = serde_json::from_value(serde_json::json!(
+                        {"scope": "worker_local", "num_g3_blocks": 1}
+                    ))
+                    .unwrap();
+                },
+                "with aic_nextn does not support g3_offload",
             ),
         ];
         for &(mutate, expected) in cases {

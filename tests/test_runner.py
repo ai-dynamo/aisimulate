@@ -246,6 +246,46 @@ def test_native_canonical_speculation_requires_authored_acceptance(accept_rates,
             runner.run(spec)
 
 
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("scope", ["dp_rank_local", "cluster_shared"])
+def test_runner_canonical_mtp_g2_retains_local_scope_limit(location, scope):
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
+    args = dict(deployment.agg_engine_args)
+    args.update(kv_cache_bytes_per_token=250_000, native_host_offload={"num_host_blocks": 16, "scope": scope})
+    if location == "rank":
+        args["speculation"] = {**args["timing_model"]["config"].pop("speculation"), "expected_accepted_tokens": 1.5}
+    else:
+        args.update(aic_nextn_accept_rates="1,0.5", aic_mtp_seed=42)
+    runtime = RecordingRuntime()
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    spec = _spec(deployment=replace(deployment, agg_engine_args=args))
+    if scope == "cluster_shared":
+        with pytest.raises(ValueError, match="scope=dp_rank_local"):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        rank = runtime.execution_spec["engine"]["rank"]
+        assert rank["native_host_offload"] == args["native_host_offload"]
+        assert rank["timing_model"]["config"]["speculation"] == {"kind": "mtp", "params": {"depth": 2}}
+
+
+@pytest.mark.parametrize("field,value", [("g3_offload", {"num_g3_blocks": 16}), ("enable_prefix_caching", False)])
+def test_runner_canonical_mtp_g2_rejects_unsupported_cache_compositions(field, value):
+    deployment = _canonical_speculation_deployment({"kind": "mtp", "params": {"depth": 2}})
+    args = {
+        **deployment.agg_engine_args,
+        "kv_cache_bytes_per_token": 250_000,
+        "native_host_offload": {"num_host_blocks": 16},
+        "aic_nextn_accept_rates": "1,0.5",
+        field: value,
+    }
+    with pytest.raises(ValueError, match="uniform G1/G2 without G3"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(deployment=replace(deployment, agg_engine_args=args))
+        )
+
+
 @pytest.mark.parametrize(
     "backend,speculation",
     [
@@ -473,6 +513,32 @@ def _agentic_g2_spec(*, scopes=("dp_rank_local",), nested_rank=False, trace_form
 def test_agentic_g2_capability_accepts_static_vllm_dp1_roles(trace_format, nested_rank, scopes):
     spec = _agentic_g2_spec(scopes=scopes, nested_rank=nested_rank, trace_format=trace_format)
     EngineReplayRunnerFactory().capabilities().require_compatible(spec)
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("location", ["rank", "canonical"])
+@pytest.mark.parametrize("scope", ["dp_rank_local", "cluster_shared"])
+def test_agentic_g2_canonical_mtp_capability_is_local_aggregated_only(nested_rank, location, scope):
+    spec = _agentic_g2_spec(scopes=(scope,), nested_rank=nested_rank)
+    args = spec.backend_deployment.agg_engine_args
+    rank = args.get("rank", args)
+    if location == "rank":
+        rank["speculation"] = {"kind": "mtp", "params": {"depth": 2}, "expected_accepted_tokens": 1.5}
+    else:
+        rank["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": {"speculation": {"kind": "mtp", "params": {"depth": 2}}},
+        }
+        rank["aic_nextn_accept_rates"] = "1,0.5"
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    if scope == "cluster_shared":
+        with pytest.raises(ValueError, match="scope=dp_rank_local"):
+            capabilities.require_compatible(spec)
+    else:
+        capabilities.require_compatible(spec)
+        with pytest.raises(ValueError, match="speculative decoding disabled"):
+            replace(capabilities, supports_agentic_speculative_decoding=False).require_compatible(spec)
 
 
 @pytest.mark.parametrize("nested_rank", [False, True])

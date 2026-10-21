@@ -1,9 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
 
 //! vLLM `OffloadingConnector` behavior over the framework-neutral host tier.
 //!
-//! Pinned vLLM 0.24 applies ordinary resident touches in exact reverse logical
+//! Modified MTP activation and headroom behavior derived from vLLM v0.32.0,
+//! commit `5df63a7203cdb9328d824a27b682e77c7b9928be`, Apache-2.0:
+//! <https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/distributed/kv_transfer/kv_connector/v1/offloading/scheduler.py>
+//! and `vllm/v1/core/sched/scheduler.py` at the same revision.
+//! The MTP combination uses the synchronous shared full-attention profile;
+//! the existing shared G2 and G3 transfer lifecycle is retained.
+//!
+//! The reference applies ordinary resident touches in exact reverse logical
 //! order. Store and load completion keys, however, travel through Python sets;
 //! their within-completion order is process/version dependent and is not a
 //! stable framework contract. The host tier therefore gives each completion
@@ -139,6 +147,20 @@ pub(super) struct HostLookupHit {
     base_g1_blocks: usize,
     original_g1_tokens: usize,
     request_footprint_blocks: usize,
+}
+
+impl HostLookupHit {
+    pub(super) fn destination_blocks(&self) -> usize {
+        self.base_g1_blocks + self.keys.len()
+    }
+
+    /// Only the matched prefix is physically reserved for H2D. The remaining
+    /// footprint is admission headroom for this request's subsequent compute.
+    pub(super) fn with_request_footprint_blocks(mut self, blocks: usize) -> Self {
+        assert!(blocks >= self.destination_blocks());
+        self.request_footprint_blocks = blocks;
+        self
+    }
 }
 
 pub(super) enum HostLookup {
@@ -518,6 +540,27 @@ impl VllmHostOffloadAdapter {
         cost.new_tokens += newly_visible;
         cost.new_blocks += newly_visible / block_size;
         cost
+    }
+
+    /// Resume the prefix acquired by H2D, recomputing its last token only when
+    /// the complete known context was loaded and logits are needed. The full
+    /// resident block and transfer bytes remain accounted for; neither G1
+    /// block rounding nor the MTP prefix-block drop applies a second time.
+    pub(super) fn activated_prefill_cost(
+        request: &VllmHostRequestState,
+        sequence: &RequestSequence,
+        cost: PrefillCost,
+        block_size: usize,
+        requires_logits: bool,
+    ) -> Option<PrefillCost> {
+        request.activated()?;
+        let mut cost = Self::freeze_activated_cost(request, cost, block_size);
+        if requires_logits && cost.cached_tokens == sequence.len() && cost.cached_tokens > 0 {
+            cost.cached_tokens -= 1;
+            cost.active_cached_tokens = cost.active_cached_tokens.min(cost.cached_tokens);
+            cost.new_tokens += 1;
+        }
+        Some(cost)
     }
 
     /// Advance the persistent store cursor and return first-admission tier attribution.
@@ -1062,6 +1105,224 @@ mod tests {
         assert_eq!(raw_cost(&manager, &sequence, &lease).cached_tokens, 4);
         assert_eq!(lease.resident_block_count(), 1);
         assert_eq!(adapter.host.lock().resident_snapshot().len(), 1);
+    }
+
+    #[test]
+    fn completed_full_h2d_recomputes_one_token_and_preserves_physical_attribution() {
+        let mut adapter = adapter(3);
+        let owner = Uuid::from_u128(30);
+        let (sequence, mut lease, mut host) = request(owner, (0..12).collect());
+        let mut manager = G1Manager::new_with_caching(5, 4, KvEventPublishers::default(), 0, true);
+
+        let seed_owner = Uuid::from_u128(31);
+        let (mut seed_sequence, mut seed_lease, _) = request(seed_owner, (0..4).collect());
+        assert!(matches!(
+            manager.allocate_native(seed_owner, &mut seed_lease, 4, 0),
+            NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
+        ));
+        manager.finalize_native_computed_prefix(
+            seed_owner,
+            0,
+            4,
+            &mut seed_sequence,
+            &mut seed_lease,
+        );
+        manager.finish_native(seed_owner, seed_lease);
+
+        let StoreOutcome::Prepared { transfer_id, .. } =
+            adapter
+                .host
+                .lock()
+                .prepare_store(C, Uuid::nil(), &host.prompt_keys[1..], None, 0.0)
+        else {
+            panic!("host suffix must be absent")
+        };
+        adapter.host.lock().submit_prepared_stores(C, 0.0);
+        let now_ms = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
+        adapter.host.lock().tick(C, now_ms);
+
+        let cost = raw_cost(&manager, &sequence, &lease);
+        assert_eq!(cost.cached_tokens, 4);
+        assert!(
+            VllmHostOffloadAdapter::activated_prefill_cost(&host, &sequence, cost.clone(), 4, true)
+                .is_none()
+        );
+        let HostLookup::Hit(hit) = adapter.lookup(&mut host, &sequence, &cost, 4, now_ms) else {
+            panic!("two host suffix blocks must hit")
+        };
+        assert_eq!(hit.keys.len(), 2, "H2D transfers all eight suffix tokens");
+        assert!(matches!(
+            adapter.start_load(
+                owner,
+                &mut host,
+                &lease,
+                hit.with_request_footprint_blocks(5),
+                &mut manager,
+                now_ms,
+            ),
+            StartLoad::Queued
+        ));
+        assert_eq!(host.reserved_blocks(), 3);
+        assert_eq!(host.unreserved_tail_blocks(), 2);
+        assert_eq!(
+            manager.num_active_blocks(),
+            3,
+            "headroom is not H2D storage"
+        );
+
+        let transfer_id = match &host.load {
+            Some(LoadState::Loading(load)) => load.transfer_id,
+            _ => panic!("request must be loading"),
+        };
+        let deadline = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
+        assert_eq!(deadline - now_ms, 2.0, "eight tokens transfer two MB");
+        assert_eq!(
+            adapter
+                .advance(&mut manager, deadline)
+                .completed_loads
+                .len(),
+            1
+        );
+        adapter.activate_completed_load(
+            owner,
+            transfer_id,
+            &mut host,
+            &sequence,
+            &mut lease,
+            &mut manager,
+        );
+        assert_eq!(lease.resident_block_count(), 3);
+        assert_eq!(host.unreserved_tail_blocks(), 2);
+        let cost = VllmHostOffloadAdapter::activated_prefill_cost(
+            &host,
+            &sequence,
+            raw_cost(&manager, &sequence, &lease),
+            4,
+            true,
+        )
+        .unwrap();
+        assert_eq!(cost.cached_tokens, 11);
+        assert_eq!(cost.active_cached_tokens, 11);
+        assert_eq!(cost.new_tokens, 1);
+        assert_eq!(cost.new_blocks, 0, "the final token already owns its block");
+        let terminal_cost = VllmHostOffloadAdapter::activated_prefill_cost(
+            &host,
+            &sequence,
+            raw_cost(&manager, &sequence, &lease),
+            4,
+            false,
+        )
+        .unwrap();
+        assert_eq!(terminal_cost.cached_tokens, 12);
+        assert_eq!(terminal_cost.new_tokens, 0);
+        assert_eq!(
+            VllmHostOffloadAdapter::on_admitted(&mut host, cost.cached_tokens, 4),
+            Some((4, 7)),
+            "logical cache attribution excludes only the recomputed host token"
+        );
+        assert_eq!(host.unreserved_tail_blocks(), 0);
+    }
+
+    #[test]
+    fn completed_partial_h2d_keeps_the_whole_loaded_prefix() {
+        let mut adapter = adapter(1);
+        let owner = Uuid::from_u128(32);
+        let (sequence, mut lease, mut host) = request(owner, (0..12).collect());
+        let now_ms = seed_host(&mut adapter, host.prompt_keys[0]);
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+        let HostLookup::Hit(hit) = adapter.lookup(
+            &mut host,
+            &sequence,
+            &raw_cost(&manager, &sequence, &lease),
+            4,
+            now_ms,
+        ) else {
+            panic!("first host prompt block must hit")
+        };
+        assert!(matches!(
+            adapter.start_load(owner, &mut host, &lease, hit, &mut manager, now_ms),
+            StartLoad::Queued
+        ));
+        let transfer_id = match &host.load {
+            Some(LoadState::Loading(load)) => load.transfer_id,
+            _ => panic!("request must be loading"),
+        };
+        let deadline = adapter.host.lock().transfer_deadline(transfer_id).unwrap();
+        adapter.advance(&mut manager, deadline);
+        adapter.activate_completed_load(
+            owner,
+            transfer_id,
+            &mut host,
+            &sequence,
+            &mut lease,
+            &mut manager,
+        );
+        let cost = VllmHostOffloadAdapter::activated_prefill_cost(
+            &host,
+            &sequence,
+            raw_cost(&manager, &sequence, &lease),
+            4,
+            true,
+        )
+        .unwrap();
+        assert_eq!(cost.cached_tokens, 4);
+        assert_eq!(cost.new_tokens, 8);
+        assert_eq!(cost.new_blocks, 2);
+    }
+
+    #[test]
+    fn prompt_chunks_store_every_completed_block_without_a_speculative_tail_hole() {
+        let mut adapter = adapter(3);
+        let owner = Uuid::from_u128(33);
+        let (mut sequence, mut lease, mut host) = request(owner, (0..12).collect());
+        let mut manager = G1Manager::new_with_caching(4, 4, KvEventPublishers::default(), 0, true);
+
+        for chunk in 0..3 {
+            let now_ms = chunk as f64;
+            adapter.advance(&mut manager, now_ms);
+            let computed_before = chunk * 4;
+            let computed_after = computed_before + 4;
+            assert!(matches!(
+                manager.allocate_native(owner, &mut lease, computed_after, 0),
+                NativeAllocation::Ready { dependencies, .. } if dependencies.is_empty()
+            ));
+            manager.finalize_native_computed_prefix(
+                owner,
+                computed_before,
+                computed_after,
+                &mut sequence,
+                &mut lease,
+            );
+            adapter.observe_completed_blocks(
+                owner,
+                &mut host,
+                &lease,
+                computed_after,
+                12,
+                4,
+                &mut manager,
+                now_ms,
+            );
+            assert_eq!(host.next_store_block, chunk + 1);
+            assert!(matches!(
+                adapter.host.lock().lookup(host.prompt_keys[chunk]),
+                Lookup::Pending { .. }
+            ));
+            adapter.complete_engine_boundary(&mut manager, now_ms);
+        }
+        adapter.advance(&mut manager, 3.0);
+        assert_eq!(adapter.host.lock().resident_snapshot().len(), 3);
+        assert!(
+            host.prompt_keys
+                .iter()
+                .all(|key| matches!(adapter.host.lock().lookup(*key), Lookup::Hit))
+        );
+        adapter.observe_completed_blocks(owner, &mut host, &lease, 20, 12, 4, &mut manager, 3.0);
+        assert_eq!(
+            host.next_store_block, 3,
+            "generated/lookahead tokens are never stored"
+        );
+        assert!(!adapter.has_work());
     }
 
     #[test]

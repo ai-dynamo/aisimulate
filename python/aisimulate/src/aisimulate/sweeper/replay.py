@@ -349,7 +349,28 @@ def _require_agentic_g2_scope(spec: ReplaySpec, roles: list[tuple[str, Mapping[s
             or any(identity.get(name) is not None for name in ("aic_nextn", "speculation"))
             or identity.get("nextn") not in (None, 0)
         ):
-            raise ValueError("agentic replay requires speculative decoding disabled")
+            selections = [
+                selection
+                for selection in (rank.get("speculation"), identity.get("speculation"))
+                if selection is not None
+            ]
+            if not (
+                deployment.deployment_mode == "agg"
+                and role == "aggregated"
+                and selections
+                and all(isinstance(selection, Mapping) and selection.get("kind") == "mtp" for selection in selections)
+                and isinstance(offload, Mapping)
+                and offload.get("scope", "dp_rank_local") == "dp_rank_local"
+                and rank.get("enable_prefix_caching", True) is True
+                and rank.get("g3_offload") is None
+                and rank.get("state_cache") is None
+                and rank.get("prefix_match_unit") is None
+                and not rank.get("kv_cache_groups")
+            ):
+                raise ValueError(
+                    "agentic G2 replay requires speculative decoding disabled except canonical MTP "
+                    "on an aggregated worker with prefix caching and scope=dp_rank_local"
+                )
         prefix = "" if role == "aggregated" else f"{role}_"
         dp_values = [
             source[name]

@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 // SPDX-License-Identifier: Apache-2.0
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
@@ -474,9 +475,9 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
 }
 
 #[rstest]
-#[case::prefill_survives_retraction(3, true)]
-#[case::decode_retraction_is_not_committed(4, false)]
-fn speculative_retraction_preserves_only_executed_work(
+#[case::waiting_reservation_defers_before_prefill(3, true)]
+#[case::decode_growth_preemption_is_not_committed(4, false)]
+fn speculative_capacity_commits_only_scheduled_work(
     #[case] blocks: usize,
     #[case] prefill_pass: bool,
 ) {
@@ -513,7 +514,18 @@ fn speculative_retraction_preserves_only_executed_work(
         let second = core.execute_pass(&mut collector, first.end_ms);
         core.execute_pass(&mut collector, second.end_ms)
     };
-    assert_eq!(core.state.requests[&retracted].num_preemptions, 1);
+    assert_eq!(
+        core.state.requests[&retracted].num_preemptions,
+        usize::from(!prefill_pass)
+    );
+    if prefill_pass {
+        let waiting = &core.state.requests[&retracted];
+        assert_eq!(waiting.status, RequestStatus::Waiting);
+        assert_eq!(waiting.num_computed_tokens, 0);
+        assert_eq!(waiting.sequence.lease.physical_owned_block_count(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), 2);
+        assert_eq!(pass.fpm.as_ref().unwrap().num_prefill_requests, 1);
+    }
     assert!(
         pass.output_signals
             .iter()
@@ -525,7 +537,7 @@ fn speculative_retraction_preserves_only_executed_work(
             .all(|signal| signal.uuid != retracted)
     );
     assert!(pass.committed_requests.contains(&survivor));
-    assert_eq!(pass.committed_requests.contains(&retracted), prefill_pass);
+    assert!(!pass.committed_requests.contains(&retracted));
 }
 
 mod speculative_scheduling {
@@ -2234,7 +2246,7 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_mtp_releases_unused_block_reservations() {
+    fn test_mtp_retains_rejected_draft_capacity_until_completion() {
         let args = MockEngineArgs::builder()
             .block_size(2)
             .num_gpu_blocks(8)
@@ -2258,18 +2270,27 @@ mod core_behavior {
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, 0.0);
         assert_eq!(pass.output_signals.len(), 1);
-        // Exercise an actual verification round, not just the draft-free
-        // prefill output. Rejected drafts must not retain their reservation.
+        assert_eq!(core.kv_manager.num_active_blocks(), 3);
+        // Rejection rolls back computed tokens while retaining physical slots
+        // for the next forward. Completion must release the complete lease.
         let pass = core.execute_pass(&mut collector, pass.end_ms);
         assert_eq!(pass.output_signals.len(), 1);
         assert_eq!(
             core.kv_manager.num_active_blocks(),
-            3,
-            "the block reserved only for rejected drafts must be released"
+            4,
+            "rejected draft capacity remains owned by the running request"
         );
         let request = core.state.requests.get(&uuid).unwrap();
         assert_eq!(request.sequence.generated_tokens(), 2);
         assert_eq!(request.sequence.len() - request.num_computed_tokens, 1);
+        let mut now = pass.end_ms;
+        for _ in 0..3 {
+            let pass = core.execute_pass(&mut collector, now);
+            assert_eq!(pass.output_signals.len(), 1);
+            now = pass.end_ms;
+        }
+        assert!(core.is_empty());
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
     }
 
     #[test]

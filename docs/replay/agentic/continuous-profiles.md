@@ -39,7 +39,9 @@ prefill/decode workers and HBM-only KV cache, including speculative decoding
 with explicit acceptance assumptions and a compatible timing model.
 vLLM also supports local or shared [G2 host offload](../engine/kv-cache.md#agentic-g2) on a static
 single aggregated worker or 1P1D, with attention DP=1 on every role and
-speculative decoding disabled.
+speculative decoding disabled. The supported exception is canonical MTP on the
+single aggregated worker with local G2 and prefix caching; see the
+[combined scope](../engine/speculation.md#registered-schemes).
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.
 

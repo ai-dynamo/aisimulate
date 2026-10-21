@@ -3,6 +3,9 @@
 // Copyright contributors to the vLLM project.
 // Modified Rust simulation of vLLM b3563fc65ae0f5359802593d78e7ea097e1fed31
 // scheduling contracts; immutable sources and license: THIRD_PARTY_NOTICES.md.
+// MTP slot/admission rules additionally adapted from vLLM v0.32.0, commit
+// 5df63a7203cdb9328d824a27b682e77c7b9928be, vllm/v1/core/sched/scheduler.py
+// and vllm/v1/core/kv_cache_manager.py; see THIRD_PARTY_NOTICES.md.
 
 //! Engine-specific policy for the shared vLLM/TRT-LLM scheduler core.
 //!
@@ -16,6 +19,79 @@ use crate::engine::kv_manager::{AllocationRequirement, DestinationReservationMod
 #[cfg(test)]
 use crate::engine::kv_manager::{apply_mtp_prefix_recompute, apply_prefix_recompute};
 use crate::engine::scheduler::vllm::request::RequestKvState;
+
+/// The native speculative lifecycle is vLLM-specific. TRT keeps its existing
+/// no-evict/burst policy even though it shares the scheduling core.
+pub(super) fn native_mtp_depth(policy: SchedulingPolicy, nextn: Option<usize>) -> Option<usize> {
+    match policy {
+        SchedulingPolicy::Vllm => nextn,
+        SchedulingPolicy::TrtllmGuaranteedNoEvict => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct MtpWork {
+    pub(super) query_tokens: usize,
+    pub(super) known_end: usize,
+    pub(super) slot_end: usize,
+    pub(super) valid_drafts: usize,
+}
+
+/// Synchronous, single-module MTP query and allocation boundaries. Padding is
+/// physical work, but its invalid (-1 in upstream) drafts cannot be accepted.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn plan_mtp_work(
+    known: usize,
+    computed: usize,
+    pending_drafts: usize,
+    nextn: usize,
+    budget: usize,
+    max_model_len: Option<usize>,
+    pad_waiting_decode: bool,
+) -> Option<MtpWork> {
+    let limit = max_model_len.unwrap_or(usize::MAX);
+    let pad = pad_waiting_decode
+        && known.saturating_sub(computed) == 1
+        && computed.saturating_add(nextn + 2) <= limit;
+    if pad && budget < nextn + 1 {
+        return None;
+    }
+    let wanted = if pad {
+        nextn + 1
+    } else {
+        known
+            .saturating_add(pending_drafts)
+            .saturating_sub(computed)
+    };
+    let query_tokens = wanted
+        .min(budget)
+        .min(limit.saturating_sub(computed).saturating_sub(1));
+    let end = computed.saturating_add(query_tokens);
+    Some(MtpWork {
+        query_tokens,
+        known_end: end.min(known),
+        slot_end: end.saturating_add(nextn).min(limit),
+        valid_drafts: if pad { 0 } else { end.saturating_sub(known) },
+    })
+}
+
+pub(super) fn mtp_step_blocks(nextn: Option<usize>, block_size: usize) -> usize {
+    nextn.map_or(0, |k| (1 + 2 * k).div_ceil(block_size))
+}
+
+/// Upstream's inflight admission guard deliberately does not re-clamp the
+/// speculative allowance after limiting the known context to max_model_len.
+pub(super) fn inflight_footprint_blocks(
+    known: usize,
+    max_model_len: Option<usize>,
+    nextn: Option<usize>,
+    block_size: usize,
+) -> usize {
+    known
+        .min(max_model_len.unwrap_or(usize::MAX))
+        .saturating_add(nextn.map_or(0, |k| 1 + 2 * k))
+        .div_ceil(block_size)
+}
 
 pub(super) trait PolicySequence {
     fn len(&self) -> usize;
@@ -259,11 +335,45 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
     activated_waiting_completion_blocks: usize,
     raw_prefill_cost: PrefillCost,
 ) -> AdmissionDecision {
+    let adjusted = kv_manager.resolve_prefill_cost(
+        config.policy,
+        sequence.len(),
+        config.mtp_enabled,
+        !generation_complete(sequence, None),
+        raw_prefill_cost,
+    );
+    decide_waiting_admission_with_adjusted_cost(
+        config,
+        sequence,
+        is_fresh,
+        running,
+        kv_manager,
+        reserved_request_blocks,
+        inflight_prefill_reserved_blocks,
+        held_completion_blocks,
+        activated_waiting_completion_blocks,
+        adjusted,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn decide_waiting_admission_with_adjusted_cost<'a, S: PolicySequence + 'a>(
+    config: WaitingAdmissionConfig,
+    sequence: &S,
+    is_fresh: bool,
+    running: impl Iterator<Item = &'a S>,
+    kv_manager: &G1Manager,
+    reserved_request_blocks: usize,
+    inflight_prefill_reserved_blocks: usize,
+    held_completion_blocks: usize,
+    activated_waiting_completion_blocks: usize,
+    raw_prefill_cost: PrefillCost,
+) -> AdmissionDecision {
     let WaitingAdmissionConfig {
         policy,
         num_gpu_blocks,
         block_size,
-        mtp_enabled,
+        mtp_enabled: _,
     } = config;
 
     if is_fresh {
@@ -283,13 +393,7 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
         }
     }
 
-    let prefill_cost = kv_manager.resolve_prefill_cost(
-        policy,
-        sequence.len(),
-        mtp_enabled,
-        !generation_complete(sequence, None),
-        raw_prefill_cost,
-    );
+    let prefill_cost = raw_prefill_cost;
     let handoff_reserved_blocks = handoff_completion_headroom(
         policy,
         held_completion_blocks,

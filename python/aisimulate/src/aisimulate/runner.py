@@ -1872,8 +1872,26 @@ def _materialize_engine_role(
     kind = speculation.kind if speculation is not None else canonical_kind
     if kind not in (None, "none"):
         supported = {"vllm"} if kind == "ngram" else {"vllm", "sglang"}
-        if backend not in supported or rank.get("native_host_offload") is not None:
-            raise ValueError(f"{kind} speculation requires a supported backend without host_offload")
+        if backend not in supported:
+            raise ValueError(f"{kind} speculation requires a supported backend")
+        host_offload = rank.get("native_host_offload")
+        if host_offload is not None and not (
+            kind == "mtp"
+            and backend == "vllm"
+            and role == "aggregated"
+            and dp_size == 1
+            and rank.get("enable_prefix_caching", True) is True
+            and isinstance(host_offload, Mapping)
+            and host_offload.get("scope", "dp_rank_local") == "dp_rank_local"
+            and rank.get("g3_offload") is None
+            and rank.get("state_cache") is None
+            and rank.get("prefix_match_unit") is None
+            and not rank.get("kv_cache_groups")
+        ):
+            raise ValueError(
+                f"{kind} speculation with host_offload supports only aggregated vllm MTP, attention DP=1, "
+                "prefix caching, scope=dp_rank_local, and uniform G1/G2 without G3 or state cache"
+            )
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:

@@ -187,6 +187,7 @@ impl ReplayEngineConfig {
         }
         match topology {
             ReplayTopology::Aggregated { .. } => {
+                validate_host_mtp_dp(&self.rank, self.dp_size)?;
                 if self.rank.g3_offload.is_some() && self.dp_size != 1 {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only dp_size=1".to_string(),
@@ -194,8 +195,12 @@ impl ReplayEngineConfig {
                 }
             }
             ReplayTopology::Disaggregated { .. } => {
-                let [prefill, decode] =
-                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage).rank);
+                let roles =
+                    [WorkerStage::Prefill, WorkerStage::Decode].map(|stage| self.role(stage));
+                for role in &roles {
+                    validate_host_mtp_dp(&role.rank, role.dp_size)?;
+                }
+                let [prefill, decode] = roles.map(|role| role.rank);
                 if prefill.g3_offload.is_some() || decode.g3_offload.is_some() {
                     return Err(ReplayError::InvalidSpec(
                         "g3_offload supports only aggregated replay".to_string(),
@@ -400,6 +405,7 @@ impl ReplayEngineFactory {
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
         })?;
+        validate_host_mtp_dp(&role.rank, dp_size.get())?;
         if role.tensor_parallel_size == 0 {
             return Err(ReplayError::InvalidSpec(
                 "native tensor_parallel_size must be positive".into(),
@@ -581,6 +587,109 @@ pub fn run_engine_handoff_conformance(
 
 fn engine_error(error: impl std::fmt::Display) -> ReplayError {
     ReplayError::Engine(error.to_string())
+}
+
+fn validate_host_mtp_dp(rank: &EngineConfig, dp_size: u32) -> ReplayResult<()> {
+    if rank.native_host_offload.is_some() && rank.aic_nextn.is_some() && dp_size != 1 {
+        return Err(ReplayError::InvalidSpec(
+            "native_host_offload with MTP supports only dp_size=1".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod host_mtp_dp_tests {
+    use super::*;
+    use crate::engine::NativeHostOffloadConfig;
+
+    fn rank(host: bool, nextn: Option<usize>, shared: bool) -> EngineConfig {
+        let offload = NativeHostOffloadConfig::new(8).with_bandwidths(0.0, 0.0);
+        EngineConfig {
+            num_gpu_blocks: 8,
+            block_size: 4,
+            kv_cache_bytes_per_token: Some(16),
+            native_host_offload: host.then(|| {
+                if shared {
+                    offload.cluster_shared("mtp-dp-test")
+                } else {
+                    offload
+                }
+            }),
+            aic_nextn: nextn,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn g2_mtp_dp_limit_is_enforced_at_topology_and_direct_factory_entrypoints() {
+        for (host, nextn, dp_size, shared, supported) in [
+            (true, Some(2), 1, false, true),
+            (true, Some(2), 2, false, false),
+            (true, Some(2), 2, true, false),
+            (true, None, 2, false, true),
+            (true, None, 2, true, true),
+            (false, Some(2), 2, false, true),
+        ] {
+            let config = ReplayEngineConfig {
+                dp_size,
+                rank: rank(host, nextn, shared),
+                ..Default::default()
+            };
+            let validation = config.validate_topology(&ReplayTopology::aggregated(1));
+            let construction =
+                ReplayEngineFactory::new().role_factory(&config, WorkerStage::Aggregated, false);
+            if supported {
+                validation.unwrap();
+                assert_eq!(construction.unwrap().dp_size(), dp_size);
+            } else {
+                assert!(
+                    validation
+                        .unwrap_err()
+                        .to_string()
+                        .contains("MTP supports only dp_size=1")
+                );
+                let error = match construction {
+                    Ok(_) => {
+                        panic!("direct role construction must enforce the MTP/G2 DP limit")
+                    }
+                    Err(error) => error,
+                };
+                assert!(error.to_string().contains("MTP supports only dp_size=1"));
+            }
+        }
+    }
+
+    #[test]
+    fn role_override_cannot_bypass_the_g2_mtp_dp_limit() {
+        let config = ReplayEngineConfig {
+            prefill: Some(ReplayRoleConfig {
+                dp_size: 2,
+                rank: rank(true, Some(2), false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let topology: ReplayTopology = serde_json::from_value(serde_json::json!({
+            "kind": "disaggregated",
+            "prefill": {"initial_workers": 1},
+            "decode": {"initial_workers": 1}
+        }))
+        .unwrap();
+        assert!(
+            config
+                .validate_topology(&topology)
+                .unwrap_err()
+                .to_string()
+                .contains("MTP supports only dp_size=1")
+        );
+        let error =
+            match ReplayEngineFactory::new().role_factory(&config, WorkerStage::Prefill, false) {
+                Ok(_) => panic!("role overrides must validate their resolved DP size"),
+                Err(error) => error,
+            };
+        assert!(error.to_string().contains("MTP supports only dp_size=1"));
+    }
 }
 
 #[cfg(test)]
