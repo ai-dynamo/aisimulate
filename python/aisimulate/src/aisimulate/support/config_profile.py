@@ -205,6 +205,8 @@ class ProfileDraft:
     notes: dict[str, str] = field(default_factory=dict)
     # The pending reasons that cache_layout_markers found; empty when an unrecognized architecture is the only one.
     layout_markers: tuple[str, ...] = ()
+    # Whether a layout without markers declares windowed or chunked attention, which the probe can report as windows.
+    declares_window: bool = False
 
 
 class ProfileRequestError(ValueError):
@@ -472,6 +474,21 @@ def _derives_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> 
         return _grouped_cache_fields(raw, architecture)
     except _UnderivableWindowLayout:
         return False
+
+
+def _declares_window(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether the config declares windowed or chunked attention, as intake reads its fields.
+
+    For a layout pending the runtime probe, intake derives no grouped cache, so a window here is one that intake
+    cannot derive. use_sliding_window=false turns a window size off, as in the MiMo-7B config. Intake reads no
+    chunked-attention field, so attention_chunk_size is checked here.
+    """
+    if raw.get("attention_chunk_size") is not None:
+        return True
+    try:
+        return _grouped_cache_fields(raw, architecture)
+    except _UnderivableWindowLayout:
+        return True
 
 
 def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
@@ -1438,6 +1455,7 @@ def derive_profile(
             "onboard probe-runtime measures it for this runtime and topology, and onboard import-observations "
             "imports the measurement"
         )
+        markers = cache_layout_markers(config.raw, architecture)
         return ProfileDraft(
             None,
             values,
@@ -1445,7 +1463,8 @@ def derive_profile(
             sources,
             {"cache_geometry": pending},
             notes=notes,
-            layout_markers=cache_layout_markers(config.raw, architecture),
+            layout_markers=markers,
+            declares_window=not markers and _declares_window(config.raw, architecture),
         )
     if missing or request is None:
         return ProfileDraft(None, values, missing, sources, notes=notes)

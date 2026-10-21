@@ -1958,12 +1958,54 @@ def test_recurrent_state_import_warning_needs_a_layout_marker(tmp_path, capsys, 
     _, stderr = _stops_with_guidance(
         _args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit
     )
-    # Without a marker, the probe reports attention groups, so a matching per-token size gives a linear profile.
+    # Without a marker or a declared window, the probe reports attention groups, so a matching per-token size
+    # gives a linear profile.
     linear = (
         "If you supply kv_bytes_per_token, onboard import-observations checks it, and when it matches, "
         "import writes a linear profile."
     )
     assert (linear in stderr) is not import_limit
+
+
+def _mimo(**fields):
+    return {**_CONFIG, "architectures": ["MiMoForCausalLM"], "model_type": "mimo", **fields}
+
+
+# A text config that names no decoder, so the wrapper's unrecognized architecture classifies it.
+_UNNAMED_TEXT = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+
+
+@pytest.mark.parametrize(
+    "config,sentence",
+    [
+        # Chunked attention, which intake does not read, in the text config of a wrapper, as in Llama 4.
+        (_multimodal_config({**_UNNAMED_TEXT, "attention_chunk_size": 8192}), False),
+        # Sliding-window declarations that intake cannot derive cache groups from.
+        (_mimo(sliding_window=4096, sliding_window_pattern=6), False),
+        (_mimo(use_sliding_window=True), False),
+        (_mimo(local_layer_ids=[0]), False),
+        (_mimo(layer_types=["sliding_attention", "full_attention"]), False),
+        # use_sliding_window=false turns the window off, as in the packaged MiMo-7B config.
+        (_mimo(sliding_window=32768, use_sliding_window=False, max_window_layers=2), True),
+        (_mimo(), True),
+    ],
+    ids=[
+        "chunked-attention",
+        "window-schedule",
+        "window-flag-without-size",
+        "local-layers-without-size",
+        "sliding-layer-types-without-size",
+        "window-turned-off",
+        "no-window",
+    ],
+)
+def test_linear_claim_sentence_needs_a_config_without_a_window(tmp_path, capsys, config, sentence):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    overrides["num_experts"] = 0  # Neither architecture is a known dense architecture.
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    _, stderr = _stops_with_guidance(_args(tmp_path / "request.yaml", source, resources), capsys, import_limit=False)
+    # A declared window can make the probe report a windowed group, which no per-token size matches.
+    assert ("If you supply kv_bytes_per_token, onboard import-observations checks it" in stderr) is sentence
 
 
 def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):
