@@ -1002,9 +1002,11 @@ mod agentic_feedback_tests {
             !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
             "full-prompt output progress has no consumer and must not be batched"
         );
+        assert!(!admission.is_drained());
         admission
             .defer_terminal(uuid, 1.0, ReplayTerminalStatus::Completed)
             .unwrap();
         assert!(admission.flush_agentic_runtime_feedback(1.0).unwrap());
+        assert!(admission.is_drained());
     }
 }

@@ -2942,15 +2942,15 @@ impl WorkloadDriver {
     }
 
     pub fn on_output_token(&mut self, request_uuid: Uuid, token_id: u32) -> Result<()> {
+        if !self.observes_output_token(request_uuid) {
+            return Ok(());
+        }
         if self.knows_preparation_request(request_uuid) {
             return self
                 .agentic_preparation
                 .as_mut()
                 .unwrap()
                 .on_output(request_uuid);
-        }
-        if self.prompt_mode == PromptMode::Full {
-            return Ok(());
         }
         let in_flight = self
             .in_flight
