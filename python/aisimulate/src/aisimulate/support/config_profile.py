@@ -35,6 +35,7 @@ from typing import Any
 import yaml
 
 from aisimulate import quantization
+from aisimulate.fpm_cache_layout import cache_layout_markers, recognized_layer_types
 from aisimulate.fpm_profile import FpmCacheGroup, FpmModelProfile
 
 from .schema import SupportRequest
@@ -107,15 +108,6 @@ _UNTYPED_READ_FIELDS = (
     "moe_router_dtype",
     "use_mtp",
 )
-_RECURRENT_STATE_FIELDS = (
-    "ssm_cfg",
-    "mamba_d_state",
-    "linear_conv_kernel_dim",
-    "linear_attn_config",
-    "ssm_state_size",
-    "mamba_num_heads",
-)
-_RECURRENT_ARCHITECTURES = ("mamba", "jamba", "rwkv")
 _INKLING_ARCHITECTURE = "InklingForConditionalGeneration"
 _INKLING_CACHE_SOURCE = (
     "https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/"
@@ -368,13 +360,6 @@ def _cache_window(raw: Mapping[str, Any]) -> int | None:
     return next(iter(supplied.values()), None)
 
 
-def _recognized_layer_types(architecture: str | None) -> frozenset[str]:
-    names = {"full_attention", "sliding_attention"}
-    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
-        names.add("deepseek_sparse_attention")
-    return frozenset(names)
-
-
 def _layer_types(raw: Mapping[str, Any], layers: int | None) -> list[str]:
     types = raw["layer_types"]
     if not isinstance(types, list) or (layers is not None and len(types) != layers):
@@ -396,37 +381,21 @@ def _attn_type_list(raw: Mapping[str, Any], layers: int | None) -> list[int]:
 def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str | None) -> tuple[str, ...]:
     """Sorted reasons config.json cannot establish the cache layout; empty when it can.
 
-    Layer types, attention-type lists and recurrent-state markers count independently, so recognized
-    values never hide declared state. ``architecture`` is the decoder architecture layout checks run
-    against; ``named`` is the architecture the config or an override names, which is a multimodal
-    wrapper's when the text config names none. Without a marker, an architecture that intake does not
-    recognize is pending too, unless intake derives a grouped cache from the config's own fields. Every caller
-    classifies through this function, and cache geometry overrides never reach it.
+    The markers come from cache_layout_markers, which the FPM collector checks too. ``architecture`` is the
+    decoder architecture layout checks run against; ``named`` is the architecture the config or an override
+    names, which is a multimodal wrapper's when the text config names none. Without a marker, an architecture
+    that intake does not recognize is pending too, unless intake derives a grouped cache from the config's own
+    fields. Every caller classifies through this function, and cache geometry overrides never reach it.
     """
-    reasons = []
-    layer_types = raw.get("layer_types")
-    if isinstance(layer_types, list):
-        recognized = _recognized_layer_types(architecture)
-        unrecognized = Counter(
-            value for value in layer_types if isinstance(value, str) and value.strip() and value not in recognized
-        )
-        reasons.extend(f"layer_types {name} x{count}" for name, count in unrecognized.items())
-    attn_types = raw.get("attn_type_list")
-    if isinstance(attn_types, list):
-        # 1 is full attention; any other integer is a layer type the config does not describe.
-        other = Counter(value for value in attn_types if type(value) is int and value != 1)
-        reasons.extend(f"attn_type_list {value} x{count}" for value, count in other.items())
-    reasons.extend(f"recurrent-state field {key}" for key in _RECURRENT_STATE_FIELDS if raw.get(key) is not None)
-    if any(name in (architecture or "").lower() for name in _RECURRENT_ARCHITECTURES):
-        reasons.append(f"recurrent architecture {architecture}")
+    reasons = cache_layout_markers(raw, architecture)
     if (
         not reasons
         and named
         and named not in _FULL_ATTENTION | _MLA_ARCHITECTURES
         and not _derives_grouped_cache(raw, architecture)
     ):
-        reasons.append(f"unrecognized architecture {named}")
-    return tuple(sorted(reasons))
+        return (f"unrecognized architecture {named}",)
+    return reasons
 
 
 def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inkling: bool = False) -> tuple[int, ...]:
@@ -454,7 +423,7 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
         local = tuple(sorted(local))
     if "layer_types" in raw:
         types = _layer_types(raw, layers)
-        recognized = _recognized_layer_types(architecture)
+        recognized = recognized_layer_types(architecture)
         if any(value not in recognized for value in types):
             raise ValueError("unsupported mixed or recurrent attention layout in layer_types")
         indexed = tuple(index for index, value in enumerate(types) if value == "sliding_attention")
