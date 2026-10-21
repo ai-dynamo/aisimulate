@@ -1058,7 +1058,10 @@ struct EngineBuildRequest {
     attention_dp_size: u32,
     dcp_size: Option<u32>,
     fpm_options: crate::FpmInterpolationConfig,
-    execution_profile: Option<crate::perfmodel::execution_profile::ExecutionProfileSelection>,
+    execution_profile: Option<(
+        crate::perfmodel::execution_profile::ExecutionProfileSelection,
+        crate::ForwardPassWorkerType,
+    )>,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
     cp_size: Option<u32>,
@@ -1606,9 +1609,9 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
             request.backend,
         )));
     }
-    if let Some(selection) = &request.execution_profile {
+    if let Some((selection, worker_type)) = &request.execution_profile {
         let spec = crate::perfmodel::engine::spec::EngineSpec::from_bincode(&spec_bytes)?;
-        let (spec, snapshot) = selection.apply(spec, &systems_root)?;
+        let (spec, snapshot) = selection.apply(spec, &systems_root, *worker_type)?;
         let mut engine = Engine::from_spec_bytes(&spec.to_bincode()?, snapshot.path())?;
         engine.profile_snapshot = Some(snapshot);
         return Ok(engine);
@@ -1716,7 +1719,12 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         attention_dp_size: config.attention_dp,
         dcp_size: config.dcp,
         fpm_options: config.estimator_config.fpm_interpolation.clone(),
-        execution_profile: config.estimator_config.op_level.execution_profile.clone(),
+        execution_profile: config
+            .estimator_config
+            .op_level
+            .execution_profile
+            .clone()
+            .map(|selection| (selection, config.worker_type)),
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
         cp_size: config.cp_size,

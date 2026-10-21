@@ -141,7 +141,7 @@ def dataset(tmp_path, monkeypatch, request):
         framework="vllm",
         framework_version="1.0",
         operation_family=None,
-        model=model,
+        model="meta-llama/Meta-Llama-3.1-8B",
         effective_settings={"tp": 1},
         unresolved_identity=None,
     )
@@ -266,6 +266,23 @@ def test_reject_invalid_inputs_before_materialization(dataset, change):
     with pytest.raises(ValueError):
         prepare_execution_profile(root, path, root / "prepared")
     assert not (root / "prepared").exists()
+
+
+@pytest.mark.parametrize("field", ["hardware", "framework", "framework_version"])
+def test_preparation_rejects_manifest_predictor_identity_mismatch(dataset, field):
+    root, path, manifest = dataset
+    manifest["identity"][field] = "another-runtime"
+    manifest["configuration_id"] = configuration_id(
+        manifest["category"], manifest["purpose"], Identity(**manifest["identity"])
+    )
+    write(root, path, manifest)
+    # The manifest is self-consistent, but labels a different runtime from the
+    # predictor config and the pinned profile it actually contains.
+    check_manifest(root, path)
+    output = root.parent / "rejected"
+    with pytest.raises(ValueError, match="manifest identity differs from predictor configuration"):
+        prepare_execution_profile(root, path, output)
+    assert not output.exists()
 
 
 @pytest.mark.parametrize("dataset_id", ["public/example", "internal/example"])

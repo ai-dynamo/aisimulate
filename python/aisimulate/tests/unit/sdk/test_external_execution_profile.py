@@ -129,6 +129,44 @@ def test_exact_cells_prefix_and_saved_config(profile):
         model.predict_decode_latency_total(1, 4)
 
 
+@pytest.mark.parametrize(
+    "change,pattern",
+    [
+        ("missing", "external execution profile"),
+        ("malformed", "expected ident"),
+        ("pin", "SHA-256"),
+        ("worker", "worker_type differs"),
+    ],
+)
+def test_config_normalization_defers_profile_loading_to_construction(profile, change, pattern):
+    config, payload, publish, _, path = profile
+    selection = config["estimator_config"]["op_level"]["execution_profile"]
+    if change == "missing":
+        path.unlink()
+    elif change == "malformed":
+        path.write_text("not JSON")
+        selection["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif change == "pin":
+        path.write_text("{}")
+    else:
+        payload["worker_type"] = "decode"
+        publish()
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    assert normalized["estimator_config"]["op_level"] == config["estimator_config"]["op_level"]
+    saved = json.loads(json.dumps(normalized))
+    assert RustForwardPassPerfModel.normalize_config(saved) == normalized
+    with pytest.raises(ValueError, match=pattern):
+        RustForwardPassPerfModel.best_available(saved)
+
+
+@pytest.mark.parametrize("field,value", [("path", "relative/profile.json"), ("sha256", "invalid-pin")])
+def test_config_normalization_still_validates_profile_selection(profile, field, value):
+    config, _, _, _, _ = profile
+    config["estimator_config"]["op_level"]["execution_profile"][field] = value
+    with pytest.raises(ValueError, match="absolute path with a lowercase SHA-256 pin"):
+        RustForwardPassPerfModel.normalize_config(config)
+
+
 def test_mutation_is_rejected_and_existing_model_owns_snapshot(profile):
     config, _, _, root, path = profile
     model = RustForwardPassPerfModel.best_available(config)

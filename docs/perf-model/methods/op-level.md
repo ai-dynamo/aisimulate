@@ -74,7 +74,8 @@ that alter the basis require requalification and a new profile pin.
 Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
 
 - Prefill: `[batch, new_tokens_per_request, cached_prefix_per_request]`.
-- Decode: `[batch, total_attention_length, 0]`.
+- Decode: `[batch, per_request_attention_length, 0]`, where the length is
+  `total_past_kv_tokens / batch + 1` (past KV plus the current token).
 
 Latencies and repetition factors must be finite and positive. The operator
 multiplies the measured scope latency by its repetition factor. It performs
@@ -86,7 +87,9 @@ fallback graphs, speculative token scaling, whole-forward, vision and other
 nested stage wrappers are rejected.
 
 Construction verifies the profile pin, compares the actual compiled basis,
-and copies verified retained-file bytes into engine-owned storage. Lazy table
+and copies verified retained-file bytes into engine-owned storage. Configuration
+normalization checks the selection and supported controls without opening the
+profile; its contents and worker phase are checked at construction. Lazy table
 reads use that snapshot, including on their first query. Changed files fail a
 new construction; they cannot change an existing model. Bundle paths cannot
 escape the root or traverse symlinks; hardware `data_dir`, backend versions and
@@ -148,8 +151,11 @@ model = RustForwardPassPerfModel.best_available(config)
 
 The output directory must not exist. Preparation verifies the declared files,
 row counts, configuration identity and the profile's exact retained-input
-inventory. It copies unchanged inputs into the runtime layout, then calls the
-canonical constructor to compare the compiled baseline and validate the retained
+inventory. The manifest's `hardware`, `framework` and `framework_version` must
+match the predictor configuration's `system`, `backend` and `backend_version`.
+The model identity may use a model ID while the predictor references a local
+model directory. Preparation copies unchanged inputs into the runtime layout,
+then calls the canonical constructor to compare the compiled baseline and validate the retained
 runtime inputs before returning the configuration with absolute local data paths.
 Malformed profiles and incomplete required inputs fail preparation and remove
 the partial output. Tables used only by replaced baseline operations are not

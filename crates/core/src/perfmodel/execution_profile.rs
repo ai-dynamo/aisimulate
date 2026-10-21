@@ -88,12 +88,6 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
             "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, a single prefill or decode worker, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
         ));
     }
-    let profile = selection.read()?;
-    if profile.worker_type != config.worker_type {
-        return Err(invalid(
-            "profile worker_type differs from the requested worker",
-        ));
-    }
     Ok(())
 }
 
@@ -149,8 +143,14 @@ impl ExecutionProfileSelection {
         &self,
         mut spec: EngineSpec,
         systems_root: &Path,
+        worker_type: ForwardPassWorkerType,
     ) -> Result<(EngineSpec, tempfile::TempDir), AicError> {
         let mut profile = self.read()?;
+        if profile.worker_type != worker_type {
+            return Err(invalid(
+                "profile worker_type differs from the requested worker",
+            ));
+        }
         let source_root = spec
             .engine
             .systems_path

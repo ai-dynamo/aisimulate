@@ -212,6 +212,9 @@ def prepare_execution_profile(root: Path, manifest_path: str, output_dir: Path) 
     selection = config["estimator_config"]["op_level"]["execution_profile"]
     if selection["sha256"] != profile.sha256:
         raise ValueError("configuration profile pin mismatch")
+    declared_identity = (manifest.identity.hardware, manifest.identity.framework, manifest.identity.framework_version)
+    if declared_identity != (config.get("system"), config.get("backend"), config.get("backend_version")):
+        raise ValueError("manifest identity differs from predictor configuration")
     inputs = {a.runtime_path: a for a in manifest.artifacts if a.runtime_path is not None}
     retained = json.loads(profile_bytes)["retained_files"]
     declared = {f["path"]: (f["sha256"], f["size_bytes"]) for f in retained}
