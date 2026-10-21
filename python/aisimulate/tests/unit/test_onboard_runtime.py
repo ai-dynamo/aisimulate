@@ -686,10 +686,21 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None, resource_overrides=None):
+def _imported(
+    tmp_path,
+    capsys,
+    *,
+    capacity_multiplier=1,
+    context_length=4096,
+    tp=2,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
+):
     checkpoint, index, _ = _campaign(
         tmp_path,
         capacity_multiplier=capacity_multiplier,
+        context_length=context_length,
         tp=tp,
         worker_type=worker_type,
         model=model,
@@ -750,6 +761,34 @@ def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, 
     assert prerequisite["detail"] == (
         f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
     )
+
+
+@pytest.mark.parametrize("extra_tokens", [-1, 0, 1], ids=["one-below", "exact-fit", "one-above"])
+def test_plan_accepts_an_exact_fit_of_observed_capacity_for_a_linear_profile(tmp_path, capsys, extra_tokens):
+    # Twice the probe's blocks give 24064 bytes: 94 blocks of 16 tokens, so 1504 tokens at 16 bytes per token.
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=2,
+        context_length=1504 + extra_tokens,
+        resource_overrides=_LINEAR_CLAIM,
+    )
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.runtime_memory.kv_cache_bytes == 24064
+    root = tmp_path / "collection"
+    command = ["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]
+    if extra_tokens > 0:
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        # vLLM starts when one full-context request fills the observed capacity exactly.
+        assert cli.main(command) == 0
+        assert json.loads((root / "support-plan.json").read_text())["resources"]["total_kv_size_tokens"] == 1504
 
 
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):

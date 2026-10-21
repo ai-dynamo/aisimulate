@@ -326,6 +326,12 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 raise ValueError(
                     "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
                 )
+        elif deployment.resources.memory_source == "runtime":
+            # vLLM starts when one full-context request fills the observed capacity exactly.
+            if estimate["total_kv_size_tokens"] < request.search.context_length:
+                raise ValueError(
+                    "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+                )
         elif estimate["total_kv_size_tokens"] <= request.search.context_length:
             raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the runtime context")
         plan["resources"] = estimate
