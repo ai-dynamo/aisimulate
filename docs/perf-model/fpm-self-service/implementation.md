@@ -768,16 +768,20 @@ have one integer per layer. The declared `num_hidden_layers` must be a positive
 integer; fractional counts are rejected rather than rounded or truncated.
 Conflicting window fields and encoder-decoder configs also fail.
 
-Two limits apply today. Runtime observation import accepts only vLLM
+One limit applies today. Runtime observation import accepts only vLLM
 `FullAttentionSpec` and `SlidingWindowSpec` cache groups, so a probe whose
 runtime reports another cache spec, such as vLLM's `MambaSpec` for its Mamba,
 Gated DeltaNet and KDA layers, is imported as incomplete with a diagnostic
-naming the spec, and no profile draft is written. The direct `collector --fpm`
-path also rejects configs whose `layer_types` declare linear attention, such as
-GLM-5.3-Flash and the Qwen3.5-family Gated DeltaNet hybrids, including
-Qwen3.6/3.8 checkpoints with that layout, in native and op-level modes.
-Registered model cases do not make the dense-attention FPM template represent
-recurrent state.
+naming the spec, and no profile draft is written.
+
+The direct `collector --fpm` path detects these layouts with the same markers.
+The rule for unrecognized architectures applies only at intake. No FPM attention
+template represents these layouts. Without `--fpm-model-profile` or
+`--fpm-backend-version`, the collector refuses them, and registered model cases
+do not change this. With one of these options, precision comes from the
+checkpoint, and the native runtime measures every cell. Each cell needs real
+prefix seeding and real decode warm-up, as described in
+[How the collection grid is determined](#how-the-collection-grid-is-determined).
 
 Planned work covers per-request state in the FPM profile, importing the
 recurrent-state cache groups a probe reports, and guided collection for these
@@ -1056,7 +1060,7 @@ Readiness counts describe the current reaggregation of verified native artifacts
 
 `ready_for_full_collection` permits the next collection step only for the verified sampled scope. For imported runtime profiles, `runtime_compatibility` separately reports whether the actual collection observations preserve accepted memory; requests without those observations retain the timing-only assessment. Readiness does not establish interpolation coverage, repeatability or workload accuracy. Full execution checks matching usable smoke or formal evidence for every current cell before launching new GPU work; it does not treat a completed memory probe, process exit or existing report file as sufficient. Continue the existing collection-quality, memory-finalization, replay and matched-serving steps afterward.
 
-If no usable decode exists, inspect the pinned runtime, exact warm-up flags, eligibility/skip reason and worker logs before deciding why. `fake_fallback` alone does not prove unsupported convolution: TP eligibility, prefix settings, capacity and transient execution failures can also matter. Preserve raw results and completed prefill. Record a deterministic capability failure as blocked and stop unchanged automatic retries. Unsupported convolution or other recurrent-state seeding needs a separate Dynamo/runtime implementation and bounded qualification of the resulting runtime; disabling required warm-up or relabeling synthetic state does not provide support. Continue independent configurations under their own checks.
+If no usable decode exists, inspect the pinned runtime, exact warm-up flags, eligibility/skip reason and worker logs before deciding why. `fake_fallback` alone does not prove unsupported convolution: TP eligibility, prefix settings, capacity and transient execution failures can also matter. Preserve raw results and completed prefill. Record a deterministic capability failure as blocked and stop unchanged automatic retries. Unsupported convolution or other recurrent-state seeding needs a separate Dynamo/runtime implementation and bounded qualification of the resulting runtime; disabling required warm-up or relabeling synthetic state does not provide support. For a cache layout that `config.json` cannot describe, the collector enforces this rule. Planning refuses a disabled seeding switch, and publication refuses a decode point without `real_kv` or an approved skip. Continue independent configurations under their own checks.
 
 One coordinator saves the report path, command/exit status, blockers and next action in the existing session checkpoint, using per-configuration `artifacts` and `progress` plus `research` for the investigation. For a read-only assessment, retain its emitted JSON in the research record or a separately saved evidence file; do not register a nonexistent report. Reload the checkpoint revision first and follow the [writer coordination rule](#orchestrate-independent-collection-campaigns); this assessment does not save conversational progress automatically. When execution updates a report, refresh its registered artifact reference. Preserve superseded evidence and decisions rather than editing a report to declare readiness.
 
@@ -1305,7 +1309,7 @@ Native artifact completion and skip checks account for the generated grid. A com
 
 Direct collector callers can set the same shared runtime flags. Omitting `--fpm-prefill-cudagraph-policy` retains the standalone collector's explicit 2,048-token capture default; select `runtime` deliberately to defer captures. Runtime policy with a numeric capture size is rejected. Omitting `--fpm-gpu-memory-utilization` preserves the existing runtime/default behavior; an explicit value must be finite and in `(0, 1]`. With a supplied FPM profile, omitted scheduler/context limits use that profile's bounds; without one, an omitted context retains the existing vLLM `-1` auto-fit behavior. Explicit limits must be positive and cannot exceed the supplied profile or contradict the prefill sampling bounds. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair. Validate the worker's actual FPM query shapes afterward, including summed queries for DEP.
 
-New collection campaigns request KV preparation in both phases by default: `DYN_BENCH_PREFILL_REAL_SEED=on` for cached prefill and `DYN_BENCH_KV_WARMUP=on` for decode. Cached prefill computes the required prefix before timing the forward pass; prefill with no existing KV has no prefix to seed. Requested prefill seeding requires a compatible runtime and is checked before model loading. Explicit deployment environment overrides remain explicit, subject to the existing collection protocol checks. These defaults are part of the collection identity; preserve old campaigns and use a fresh campaign when changing the policy.
+New collection campaigns request KV preparation in both phases by default: `DYN_BENCH_PREFILL_REAL_SEED=on` for cached prefill and `DYN_BENCH_KV_WARMUP=on` for decode. Cached prefill computes the required prefix before timing the forward pass; prefill with no existing KV has no prefix to seed. Requested prefill seeding requires a compatible runtime and is checked before model loading. Explicit deployment environment overrides remain explicit, subject to the existing collection protocol checks. For a [cache layout that `config.json` cannot describe](#cache-geometry-pending-the-runtime-probe), planning refuses an override that sets either switch to `off`, `0` or `false`. Publication then requires the native `real_prefix` regime for every cached prefill and `real_kv` or an approved skip for every decode point. These defaults are part of the collection identity; preserve old campaigns and use a fresh campaign when changing the policy.
 
 Decode warm-up still depends on the deployed runtime's eligibility and available cache capacity. An enabled switch does not prove real KV was used for every point: inspect raw `kv_seed_regime`, warm-up eligibility, skip reasons and fallback evidence. The current formal table labels ordinary prefill seeding `n/a`; retain the raw artifacts to distinguish `real_prefix` from `fake_prefix`. No successful collection establishes prediction accuracy by itself.
 

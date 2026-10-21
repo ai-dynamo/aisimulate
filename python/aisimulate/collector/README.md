@@ -190,6 +190,15 @@ pass its real local metadata explicitly with
 is also accepted). The resolved config snapshot and SHA-256 are frozen into the
 collection plan.
 
+The collector detects a cache layout that `config.json` cannot describe, such as
+linear-attention or recurrent state, with the same check as config intake. The
+[onboarding guide](../../../docs/perf-model/fpm-self-service/implementation.md#cache-geometry-pending-the-runtime-probe)
+lists the markers. No FPM attention template represents such a layout. Without
+`--fpm-model-profile` or `--fpm-backend-version`, the collector refuses it, and
+registered model cases do not change this. With one of these options, the
+collector gives the layout the `native_runtime` capability. Precision then comes
+from the checkpoint, and the runtime measures every cell.
+
 Generator and Collector share the Dynamo-native benchmark result schema
 version through the rendered `fpm_env.sh`; the staged `fpm_exec.sh` validates
 that contract in-pod without a Collector-side text patch. Formal
@@ -197,7 +206,11 @@ that contract in-pod without a Collector-side text patch. Formal
 `collector_attempt_id`, `runtime_run_id`, `runtime_grid_digest`, and
 `kv_seed_regime` on every row. The seed regime is `real_kv`, `fake_fallback`,
 an approved `skip:<reason>`, `legacy`, or `n/a`; non-benign warm-up skips
-remain `fake_fallback` rather than acceptable evidence. Republishing the same
+remain `fake_fallback` rather than acceptable evidence. A cache layout that
+`config.json` cannot describe needs real seeding. Planning refuses
+`DYN_BENCH_PREFILL_REAL_SEED` or `DYN_BENCH_KV_WARMUP` set to `off`, `0` or
+`false`. Publication refuses a cached prefill without the native `real_prefix`
+regime and a decode point without `real_kv` or an approved skip. Republishing the same
 attempt is idempotent. If a cell already exists under a different attempt or
 runtime identity, first publisher wins: that entire cell is skipped while
 non-overlapping cells in the same publication still land.
