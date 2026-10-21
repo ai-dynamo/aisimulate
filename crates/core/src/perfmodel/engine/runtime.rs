@@ -2314,6 +2314,7 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(is_context)?;
         self.reject_full_round_surface("ad-hoc operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
@@ -2363,6 +2364,7 @@ impl Engine {
         imbalance_correction_scale: f64,
         visual_block_upper_triangle: bool,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.check_profile_phase(true)?;
         self.reject_full_round_surface("ad-hoc attention kernel queries")?;
         if visual_block_upper_triangle && prefix != 0 {
             return Err(AicError::InvalidEngineConfig(
@@ -2418,6 +2420,7 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpSolValue>, AicError> {
+        self.check_profile_phase(is_context)?;
         self.reject_full_round_surface("SOL operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!(
@@ -3147,6 +3150,54 @@ mod tests {
         }
         // A valid decode profile keeps the existing empty-batch result.
         assert!(decode.decode_step_per_op(0, 4, 1, 1.0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn execution_profile_phase_guard_covers_ad_hoc_queries() {
+        let prefill = measured_profile_engine(true, false);
+        let decode = measured_profile_engine(false, false);
+        let opposite = [
+            prefill
+                .evaluate_ops_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            prefill
+                .evaluate_ops_sol_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_ops_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_ops_sol_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap_err(),
+            decode
+                .evaluate_context_attention_kernels_json("[]", 1, 4, 0, 1.0, false)
+                .unwrap_err(),
+        ];
+        for error in opposite {
+            assert!(
+                error.to_string().contains("phase is not qualified"),
+                "{error}"
+            );
+        }
+        // The qualified phase still serves ad-hoc lists.
+        assert!(
+            prefill
+                .evaluate_ops_json("[]", true, 1, 4, 0, 1.0, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            decode
+                .evaluate_ops_json("[]", false, 1, 4, 0, 1.0, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            prefill
+                .evaluate_context_attention_kernels_json("[]", 1, 4, 0, 1.0, false)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     /// GLM-5.3-Flash-shaped op list: per-layer names over repeated geometry,

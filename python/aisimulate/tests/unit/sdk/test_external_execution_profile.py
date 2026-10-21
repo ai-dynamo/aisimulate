@@ -459,3 +459,27 @@ def test_native_per_op_decode_rejects_profile_trajectory(profile, metadata, stri
     assert run(2, 1, 4, 1, 0, 1.0, 1.0, mode="static_gen", stride=stride) == ([], [])
     with pytest.raises(ValueError, match="one decode step"):
         run(2, 1, 4, 5, 0, 1.0, 1.0, mode="static_gen", stride=stride)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_native_ad_hoc_queries_enforce_profile_phase(profile, phase):
+    _, payload, _, root, _ = profile
+    spec = copy.deepcopy(payload["basis"])
+    spec["context_ops"] = payload["ops"] if phase == "prefill" else []
+    spec["engine"]["extra"]["execution_profile_phase"] = phase
+    handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
+    qualified = phase == "prefill"
+    opposite = [
+        lambda: handle.evaluate_ops_json("[]", not qualified, 1, 4),
+        lambda: handle.evaluate_ops_sol_json("[]", not qualified, 1, 4),
+    ]
+    if phase == "decode":
+        opposite.append(lambda: handle.evaluate_context_attention_kernels_json("[]", 1, 4))
+    for query in opposite:
+        with pytest.raises(ValueError, match="phase is not qualified"):
+            query()
+    # The qualified phase still serves ad-hoc lists.
+    assert handle.evaluate_ops_json("[]", qualified, 1, 4) == []
+    assert handle.evaluate_ops_sol_json("[]", qualified, 1, 4) == []
+    if qualified:
+        assert handle.evaluate_context_attention_kernels_json("[]", 1, 4) == []
