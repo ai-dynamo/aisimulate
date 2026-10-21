@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "scope": "Host runtime attribution for a Weka replay. No modeled GPU timing change.",
+  "base_commit": "a0a35e70937a1f680bbb30ca7404cc9cb9b65e4e",
+  "setup": "Linux x86_64 CPU replay. Model, trace, scheduler configuration, and other experimental patches remain fixed across all stages.",
+  "workload": {
+    "source_bytes": 64882247,
+    "source_plays": 16,
+    "source_requests": 4908
+  },
+  "end_to_end": {
+    "samples_per_stage": 1,
+    "runs": [
+      {
+        "stage": "unbuffered",
+        "command_wall_seconds": 85.5251647150144,
+        "native_replay_seconds": 17.149158742,
+        "outside_native_replay_seconds": 68.3760059730144,
+        "peak_observed_rss_bytes": 479133696
+      },
+      {
+        "stage": "buffered_rows",
+        "command_wall_seconds": 42.85685073770583,
+        "native_replay_seconds": 16.835226633,
+        "outside_native_replay_seconds": 26.021624104705825,
+        "peak_observed_rss_bytes": 471212032
+      },
+      {
+        "stage": "buffered_rows_hash_reuse_row_reader_and_admission_cache",
+        "command_wall_seconds": 28.016899468377233,
+        "native_replay_seconds": 17.183029523,
+        "outside_native_replay_seconds": 10.833869945377234,
+        "peak_observed_rss_bytes": 466042880
+      }
+    ],
+    "speedup_from_unbuffered": 3.0526277474617394,
+    "speedup_from_buffered": 1.529678570823959,
+    "unchanged_fields": [
+      "output_tokens",
+      "completed",
+      "lifecycle_digest",
+      "sim_seconds",
+      "tok_s_gpu"
+    ]
+  },
+  "native_import": {
+    "host": "macOS arm64",
+    "alternating_pairs": 3,
+    "baseline": "Buffered rows only",
+    "candidate": "Also reuse normalized source hashes and parse row buffers",
+    "baseline_median_seconds": 7.934008667,
+    "candidate_median_seconds": 3.38606725,
+    "baseline_median_peak_rss_bytes": 207142912,
+    "candidate_median_peak_rss_bytes": 219971584,
+    "unchanged": "Canonical row bytes, source digest, graph digest, play count, and request count."
+  },
+  "metadata_admission": {
+    "host": "macOS arm64",
+    "full_source_bytes": 1847151435,
+    "cold_seconds": 63.555758250004146,
+    "warm_seconds": 5.0749993533827364e-05,
+    "peak_estimate_bytes": 28434349072,
+    "low_live_headroom": "Still rejects admission on a cache hit."
+  },
+  "limits": [
+    "The complete model configuration and source trace are not included. These observations are not a reproducible standalone benchmark.",
+    "One end-to-end timing sample per stage does not establish timing variance or a general speedup guarantee.",
+    "The fixed experimental model and scheduler patches are outside this PR. Only host-runtime changes vary between stages.",
+    "The sample does not establish full-corpus replay cost.",
+    "The per-play hash memo raises native-import memory. Source validation, collision checks, and both resource guards remain active."
+  ]
+}

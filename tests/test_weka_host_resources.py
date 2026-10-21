@@ -8,11 +8,13 @@ from copy import deepcopy
 
 import pytest
 
+from aisimulate import resources
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.config.common import ResourceConfig
 from aisimulate.resources import (
     GB,
+    MIB,
     HostResources,
     ResourceLimitError,
     build_plan,
@@ -310,3 +312,150 @@ def test_weka_nested_subagent_outputs_are_included_in_admission(tmp_path):
     )
     assert plan["status"] == "resource_limited"
     assert plan["estimate"]["estimated_peak_bytes"] >= 4 * GB
+
+
+def test_weka_hash_arrays_cross_parser_buffers_without_changing_allocations(tmp_path):
+    hashes = [2**64 - 1] * 10000
+    trace = _write_trace(tmp_path, _play([_request(64, 3, hashes=hashes)]))
+    assert trace.stat().st_size > 2 * 64 * 1024
+    estimate = estimate_workload(_workload(trace), stack="engine")
+    assert estimate.allocation_model == "weka-materialized-v1"
+    assert estimate.input_token_bytes == 4 * 64
+    assert estimate.lower_bound_bytes == max(8, 4 * 3)
+    assert estimate.estimated_peak_bytes == 256 * MIB + 32 * trace.stat().st_size + 128 * len(hashes) + 32768
+
+
+@pytest.mark.parametrize("value", [-1, 2**64, 1.5, True, None, "1", [1], {"nested": 1}])
+def test_weka_invalid_hash_after_parser_buffer_has_no_qualified_estimate(tmp_path, value):
+    trace = _write_trace(tmp_path, _play([_request(hashes=[2**64 - 1] * 4000 + [value])]))
+    assert trace.stat().st_size > 64 * 1024
+    estimate = estimate_workload(_workload(trace), stack="engine")
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.reason == "cannot inspect Weka metadata: Weka hash_ids must contain unsigned 64-bit integers"
+
+
+def test_weka_truncated_hash_array_has_no_qualified_estimate(tmp_path):
+    trace = _write_trace(tmp_path, _play([_request(hashes=[2**64 - 1] * 4000)]))
+    trace.write_text(trace.read_text()[:-20])
+    estimate = estimate_workload(_workload(trace), stack="engine")
+    assert estimate.estimated_peak_bytes is None
+    assert estimate.reason.startswith("cannot inspect Weka metadata:")
+
+
+@pytest.fixture
+def weka_parses(monkeypatch):
+    resources._clear_trace_scan_cache()
+    calls = []
+    original = resources.ijson.parse
+
+    def parse(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(resources.ijson, "parse", parse)
+    yield calls
+    resources._clear_trace_scan_cache()
+
+
+def test_weka_cached_inspection_keeps_live_memory_admission(tmp_path, weka_parses):
+    workload = _workload(_write_trace(tmp_path, _play()))
+    first = estimate_workload(workload, stack="engine")
+    host = HostResources(8 * GB, 4 * GB, 4)
+    admitted = build_plan(workload, stack="engine", host=host, policy=ResourceConfig(memory_limit_gb=1))
+    limited = build_plan(workload, stack="engine", host=host, policy=ResourceConfig(memory_limit_gb=0.25))
+    assert admitted["status"] == "admitted"
+    assert limited["status"] == "resource_limited"
+    assert admitted["estimate"] == limited["estimate"]
+    assert first.estimated_peak_bytes == limited["estimate"]["estimated_peak_bytes"]
+    with pytest.raises(ResourceLimitError):
+        require_plan(limited)
+    assert len(weka_parses) == 1
+
+
+def test_weka_cached_profile_inspection_rechecks_live_headroom(tmp_path, weka_parses):
+    workload = _workload(_write_trace(tmp_path, _play()), agentic_profile={})
+    complete = estimate_workload(workload, stack="engine")
+    limited = estimate_workload(workload, stack="engine", inspection_budget_bytes=1)
+    assert complete.allocation_model == "agentic-profile-unqualified-v1"
+    assert complete.estimated_peak_bytes is None
+    assert limited.allocation_model == "agentic-profile-materialization-v1"
+    assert limited.estimated_peak_bytes > 1
+    assert len(weka_parses) == 1
+
+
+def test_weka_budget_limited_scans_are_not_cached(tmp_path, weka_parses):
+    workload = _workload(_write_trace(tmp_path, _play([_request(output_length=10**8)])))
+    early = estimate_workload(workload, stack="engine", inspection_budget_bytes=1)
+    assert early.lower_bound_bytes == 0
+    assert len(weka_parses) == 0
+    limited = estimate_workload(workload, stack="engine", inspection_budget_bytes=GB)
+    assert limited.estimated_peak_bytes > GB
+    assert len(weka_parses) == 1
+    assert estimate_workload(workload, stack="engine") == limited
+    assert len(weka_parses) == 2
+
+
+def test_weka_cache_invalidates_changed_files_and_rejects_malformed_tails(tmp_path, weka_parses):
+    path = _write_trace(tmp_path, _play())
+    workload = _workload(path)
+    first = estimate_workload(workload, stack="engine")
+    original = path.read_text()
+    path.write_text(original + "not JSON\n")
+    for _ in range(2):
+        assert estimate_workload(workload, stack="engine").estimated_peak_bytes is None
+    assert len(weka_parses) == 3
+    replacement = _write_trace(tmp_path, _play([_request(6400)]), name="replacement.jsonl")
+    replacement.replace(path)
+    assert estimate_workload(workload, stack="engine").input_token_bytes > first.input_token_bytes
+    assert len(weka_parses) == 4
+
+
+def test_weka_source_changed_during_inspection_is_not_cached(tmp_path, monkeypatch):
+    resources._clear_trace_scan_cache()
+    path = _write_trace(tmp_path, _play())
+    workload = _workload(path)
+    original = resources.ijson.parse
+    calls = []
+
+    def parse(*args, **kwargs):
+        calls.append(None)
+        yield from original(*args, **kwargs)
+        if len(calls) == 1:
+            with path.open("a") as stream:
+                stream.write(json.dumps(_play(play_id="added")) + "\n")
+
+    monkeypatch.setattr(resources.ijson, "parse", parse)
+    changed = estimate_workload(workload, stack="engine")
+    assert changed.estimated_peak_bytes is None
+    assert changed.reason == "Weka source changed during metadata inspection"
+    assert estimate_workload(workload, stack="engine").input_token_bytes == 4 * 128
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "options", [{"agentic_lanes": 2}, {"agentic_snapshot": {}}, {"agentic_warmup": True}, {"trace_block_size": 128}]
+)
+def test_weka_cache_keys_cover_allocation_configuration(tmp_path, weka_parses, options):
+    path = _write_trace(tmp_path, _play())
+    estimate_workload(_workload(path), stack="engine")
+    workload = _workload(path, **options)
+    actual = estimate_workload(workload, stack="engine")
+    expected = resources._inspect_weka_trace(workload, inspection_budget_bytes=None)
+    assert actual == expected
+    assert len(weka_parses) == 3
+
+
+def test_weka_cache_is_bounded_and_directory_changes_invalidate_it(tmp_path, monkeypatch, weka_parses):
+    monkeypatch.setattr(resources, "_TRACE_SCAN_CACHE_SIZE", 2)
+    paths = [_write_trace(tmp_path, _play(play_id=str(i)), name=f"{i}.jsonl") for i in range(3)]
+    for path in paths:
+        estimate_workload(_workload(path), stack="engine")
+    estimate_workload(_workload(paths[-1]), stack="engine")
+    estimate_workload(_workload(paths[0]), stack="engine")
+    assert len(weka_parses) == 4
+    assert len(resources._WEKA_SCAN_CACHE) == 2
+    before = estimate_workload(_workload(tmp_path), stack="engine")
+    _write_trace(tmp_path, _play(play_id="added"), name="added.jsonl")
+    after = estimate_workload(_workload(tmp_path), stack="engine")
+    assert after.input_token_bytes > before.input_token_bytes
+    assert len(weka_parses) == 4 + 3 + 4

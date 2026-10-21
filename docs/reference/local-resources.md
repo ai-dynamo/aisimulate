@@ -286,6 +286,13 @@ Play summaries such as `totals`, `tool_tokens`, and `system_tokens` do not
 represent additional replayed requests. Its qualified peak can admit parallel
 simulations when their combined estimates fit the live memory budget.
 
+Native Weka admission reuses completed corpus estimates through a process-local
+cache of at most 16 entries. Keys include file identities and fields that affect
+allocation. The estimator compares source identities before and after inspection,
+and excludes changed, invalid, empty, and budget-limited scans. Each admission
+still applies current memory headroom and profile limits. This cache does not
+retain native graphs.
+
 The planning peak is the 256 MiB process allowance plus the larger of these phases:
 
 - **Import:** the largest single play's JSON bytes times 32, source or normalized
