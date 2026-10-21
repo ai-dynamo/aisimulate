@@ -922,10 +922,16 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
             if starting_points
             else "No usable starting point exists. The probe takes an explicit topology: record your own."
         )
-    # Recurrent state comes with a marker; an unrecognized architecture alone does not declare it.
+    # Recurrent state comes with a marker; an unrecognized architecture alone does not declare it, and a matching
+    # per-token size then gives back a linear profile.
     if draft.layout_markers:
         lines.append(
             "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+        )
+    else:
+        lines.append(
+            "If you supply kv_bytes_per_token, onboard import-observations checks it, and when it matches, "
+            "import writes a linear profile."
         )
     lines.append("Nothing was saved.")
     return "\n".join(lines)

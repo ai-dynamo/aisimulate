@@ -27,6 +27,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
@@ -1533,6 +1534,36 @@ def _measured_kv_bytes(resources: Mapping[str, Any]) -> Fraction | None:
     return sum((Fraction(group.page_size_bytes, group.block_size_tokens) for group in groups), Fraction(0))
 
 
+def _linear_form_gap(resources: Mapping[str, Any]) -> str | None:
+    """Why measured resources have no linear form; None when they have one."""
+    if resources.get("cache_layout") != "grouped":
+        return f"the measurement's cache_layout is {resources.get('cache_layout')}, not grouped"
+    group = _windowed_group(_measured_groups(resources))
+    if group is not None:
+        field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
+        return f"cache group {group.name} has {field}"
+    measured = _measured_kv_bytes(resources)
+    if measured is None:
+        return "the measurement has no cache groups"
+    if measured.denominator != 1:
+        return f"the measured bytes per token, {measured}, are not a whole number"
+    return None
+
+
+def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The linear form of measured grouped resources; None when a linear cache does not describe them exactly.
+
+    Every group must be an attention group without a window, and the exact sum of page_size_bytes /
+    block_size_tokens must be a whole number of bytes per token. Every other field, such as runtime_memory and
+    the resource provenance, is kept. Import, acceptance, finalization and validation all use this function.
+    """
+    if _linear_form_gap(resources) is not None:
+        return None
+    linear = {key: deepcopy(value) for key, value in resources.items() if key != "cache_groups"}
+    linear.update(cache_layout="linear", kv_bytes_per_token=int(_measured_kv_bytes(resources)))
+    return linear
+
+
 def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> bool:
     """Whether a resource override agrees with what the runtime probe measured."""
     if key == "cache_groups":
@@ -1636,6 +1667,28 @@ def profile_from_observations(
             f"cache layout measured by the runtime probe ({', '.join(runtime)}). config.json does not establish "
             "cache or state geometry; these resources are onboard probe-runtime observations."
         )
+    # A matching linear claim gives back the linear form of the measured full-attention groups. A grouped claim,
+    # or no linear claim, keeps the measured groups.
+    measured, form = dict(resources), {}
+    claimed = " and ".join(key for key in ("cache_layout", "kv_bytes_per_token") if key in supplied)
+    layout_claim = supplied.get("cache_layout")
+    if resources.get("cache_layout") == "grouped" and (
+        layout_claim == "linear" or (layout_claim is None and "kv_bytes_per_token" in supplied)
+    ):
+        linear = linear_runtime_resources(resources)
+        if linear is None:
+            # Only a cache_layout claim without kv_bytes_per_token can match a sum that is not a whole number.
+            form["cache_form"] = (
+                f"grouped: the supplied {claimed} matched the measured full-attention groups, but "
+                f"{_linear_form_gap(resources)}"
+            )
+        else:
+            measured = linear
+            form["cache_form"] = (
+                f"linear: import wrote the linear form because the supplied {claimed} matched the measured "
+                "full-attention groups"
+            )
+            form["measured_cache_groups"] = resources["cache_groups"]
     parallel = request.parallelism()
     return FpmModelProfile.model_validate(
         {
@@ -1663,6 +1716,7 @@ def profile_from_observations(
                         for key, value in supplied.items()
                     },
                     "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
+                    **form,
                 },
                 sort_keys=True,
                 allow_nan=False,
@@ -1678,7 +1732,7 @@ def profile_from_observations(
                     "moe_tp": parallel["moe_tensor"],
                     "moe_ep": parallel["moe_expert"],
                     **precision,
-                    "resources": dict(resources),
+                    "resources": measured,
                 }
             ],
         }

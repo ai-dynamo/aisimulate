@@ -30,7 +30,15 @@ def _write(path, value):
 
 
 def _campaign(
-    tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2, cpu_policy=True, worker_type=None, model=None
+    tmp_path,
+    *,
+    capacity_multiplier=1,
+    context_length=4096,
+    tp=2,
+    cpu_policy=True,
+    worker_type=None,
+    model=None,
+    resource_overrides=None,
 ):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
@@ -137,7 +145,11 @@ def _campaign(
             "configurations": {
                 name: {
                     "draft_request": copy.deepcopy(draft),
-                    "inputs": {"precision": precision, "collection_deployment": launch["deployment"]},
+                    "inputs": {
+                        "precision": precision,
+                        "collection_deployment": launch["deployment"],
+                        **({"resource_overrides": resource_overrides} if resource_overrides else {}),
+                    },
                 }
                 for name in ("tp2", "incomplete")
             },
@@ -674,15 +686,53 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None):
+def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2, worker_type=None, model=None, resource_overrides=None):
     checkpoint, index, _ = _campaign(
-        tmp_path, capacity_multiplier=capacity_multiplier, tp=tp, worker_type=worker_type, model=model
+        tmp_path,
+        capacity_multiplier=capacity_multiplier,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     return checkpoint, index, request, result["configurations"]["tp2"]
+
+
+# The dense probe fixture measures two full-attention groups of 128 bytes per 16-token block: 16 bytes per token.
+_LINEAR_CLAIM = {"kv_bytes_per_token": 16}
+
+
+def test_matching_linear_claim_is_imported_and_accepted_as_a_linear_profile(tmp_path, capsys):
+    from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    resources = request.profile_deployment().resources
+    assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 16 and not resources.cache_groups
+    # The probe manifest records the evidence, which stays grouped.
+    assert runtime_probe_manifest(request)["observed_resources"]["cache_layout"] == "grouped"
+    verify_runtime_profile(request)
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):
+    checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["kv_bytes_per_token"] = 17
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    with pytest.raises(ValueError, match="runtime cache geometry or settings changed; a compatible fresh probe"):
+        save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
 
 
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
@@ -803,7 +853,7 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None):
+def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None, resource_overrides=None):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -816,7 +866,13 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
     from .test_onboard_finalization import _native
 
     checkpoint, _, request, files = _imported(
-        tmp_path, capsys, capacity_multiplier=10, tp=tp, worker_type=worker_type, model=model
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        tp=tp,
+        worker_type=worker_type,
+        model=model,
+        resource_overrides=resource_overrides,
     )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
@@ -888,6 +944,29 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
         },
     )
     return checkpoint, request, files, root
+
+
+def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linear_form(tmp_path, capsys, monkeypatch):
+    from aisimulate.support import finalization
+
+    _, request, _, root = _completed_runtime_collection(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    merge = finalization._merge_resources
+
+    def windowed(*args, **kwargs):
+        resources = merge(*args, **kwargs)
+        resources["cache_groups"][1]["sliding_window"] = 128
+        return resources
+
+    monkeypatch.setattr(finalization, "_merge_resources", windowed)
+    target = tmp_path / "finalized"
+    with pytest.raises(ValueError) as error:
+        finalization.finalize(request, root, target)
+    assert str(error.value) == (
+        "the accepted profile is linear, but the collection's measured cache groups have no linear form: "
+        "cache group runtime_group_1 has sliding_window=128"
+    )
+    assert not target.exists()
 
 
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
@@ -971,8 +1050,10 @@ def test_serving_role_round_trip_import_collection_and_finalization(tmp_path, ca
     check_plan(resolved, target)
 
 
-def _reviewed_capacity_revision(tmp_path, capsys):
-    checkpoint, original, files, root = _completed_runtime_collection(tmp_path, capsys)
+def _reviewed_capacity_revision(tmp_path, capsys, resource_overrides=None):
+    checkpoint, original, files, root = _completed_runtime_collection(
+        tmp_path, capsys, resource_overrides=resource_overrides
+    )
     collection = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
     index = Path(collection["runtime_observations"])
     document = json.loads(index.read_text())
@@ -994,13 +1075,20 @@ def _reviewed_capacity_revision(tmp_path, capsys):
     return checkpoint, original, files, root, revised
 
 
-def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys):
+@pytest.mark.parametrize("claim", [False, True])
+def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys, claim):
     from aisimulate.support.finalization import finalization_manifest, finalize
     from aisimulate.support.plan import check_plan, request_id
     from aisimulate.support.runtime import verify_runtime_profile
 
-    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(
+        tmp_path, capsys, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
     revised = SupportRequest.from_yaml(memory_config)
+    # The capacity revision imports the formal observations with the same checkpoint claim, so its form matches.
+    layout = "linear" if claim else "grouped"
+    assert original.profile_deployment().resources.cache_layout == layout
+    assert revised.profile_deployment().resources.cache_layout == layout
     before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
     accepted = checkpoint.read_bytes()
     with pytest.raises(ValueError, match="smaller than the accepted bound"):
@@ -1027,6 +1115,7 @@ def test_finalization_reuses_original_collection_with_accepted_observed_capacity
     )
     capsys.readouterr()
     resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == layout
     manifest = finalization_manifest(resolved)
     assert manifest["source_request_id"] == request_id(original)
     assert manifest["memory_revision"]["request_id"] == request_id(revised)

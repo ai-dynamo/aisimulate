@@ -1342,10 +1342,11 @@ def test_real_cli_unknown_multimodal_decoder_is_pending_the_runtime_probe_withou
     # The wrapper names an architecture intake does not recognize, so the runtime probe measures the geometry.
     assert "Cache geometry: pending runtime probe" in result.stderr
     assert "unrecognized architecture ExampleMultimodalForConditionalGeneration" in result.stderr
-    # User-owned inputs are still listed, and cache geometry is never asked for.
+    # User-owned inputs are still listed, and cache geometry is never asked for. A per-token size is optional:
+    # import checks it against the probe.
     assert "fmha_quant_mode" in result.stderr and "--resource-overrides" in result.stderr
-    for field in ("kv_bytes_per_token", "cache_layout"):
-        assert field not in result.stderr
+    assert "cache_layout" not in result.stderr and "  kv_bytes_per_token: " not in result.stderr
+    assert "If you supply kv_bytes_per_token, onboard import-observations checks it" in result.stderr
     assert "unsupported encoder, multimodal" not in result.stderr
     assert not output.parent.exists()
 
@@ -1954,7 +1955,15 @@ def test_recurrent_state_import_warning_needs_a_layout_marker(tmp_path, capsys, 
     overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
     overrides["num_experts"] = 0  # MiMoForCausalLM is not a known dense architecture.
     source, resources = _files(tmp_path, config={**_CONFIG, **fields}, overrides=overrides)
-    _stops_with_guidance(_args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit)
+    _, stderr = _stops_with_guidance(
+        _args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit
+    )
+    # Without a marker, the probe reports attention groups, so a matching per-token size gives a linear profile.
+    linear = (
+        "If you supply kv_bytes_per_token, onboard import-observations checks it, and when it matches, "
+        "import writes a linear profile."
+    )
+    assert (linear in stderr) is not import_limit
 
 
 def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):

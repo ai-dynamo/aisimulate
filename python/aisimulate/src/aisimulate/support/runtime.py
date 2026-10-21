@@ -17,7 +17,12 @@ import yaml
 
 from aisimulate.fpm_profile import FpmModelProfile
 
-from .config_profile import load_model_config, profile_from_observations, validate_overrides
+from .config_profile import (
+    linear_runtime_resources,
+    load_model_config,
+    profile_from_observations,
+    validate_overrides,
+)
 from .runtime_collection import collection_runtime_review as collection_runtime_review
 from .runtime_collection import verify_collection_runtime_bindings as verify_collection_runtime_bindings
 from .runtime_collection import verify_collection_runtime_plans as verify_collection_runtime_plans
@@ -397,7 +402,7 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     manifest = runtime_probe_manifest(request)
     if manifest is None:
         from .finalization import (
-            _merge_resources,
+            _finalized_resources,
             _verify_collection,
             finalization_manifest,
             verify_finalized_quality,
@@ -419,7 +424,8 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
             )
             if quality is not None:
                 evidence["collection_quality"] = quality
-            expected = _merge_resources(
+            expected, _ = _finalized_resources(
+                original,
                 observations,
                 evidence,
                 source_references=finalized.get("observation_provenance") == "source_references",
@@ -461,7 +467,9 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     actual = _resource_values(selected.resources.model_dump(mode="json"))
     observed_capacity = expected["runtime_memory"].pop("kv_cache_bytes")
     actual_capacity = actual["runtime_memory"].pop("kv_cache_bytes")
-    if actual != expected:
+    # The draft holds the grouped evidence, or its linear form after a matching linear claim. Only the evidence
+    # decides which forms exist.
+    if actual != expected and actual != linear_runtime_resources(expected):
         raise ValueError("runtime cache geometry or settings changed; a compatible fresh probe is required")
     overrides = (
         {}

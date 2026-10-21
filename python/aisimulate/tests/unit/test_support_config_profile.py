@@ -24,6 +24,7 @@ from aisimulate.support.config_profile import (
     _geometry,
     _runtime_layout,
     derive_profile,
+    linear_runtime_resources,
     load_model_config,
     profile_from_observations,
     validate_overrides,
@@ -643,6 +644,65 @@ def test_cache_group_claim_with_another_page_size_shows_both_lists():
     ) in message
 
 
+_RUNTIME_MEMORY = {
+    "kv_cache_bytes": 409_600,
+    "gpu_memory_utilization": 0.9,
+    "max_model_len": 2048,
+    "provenance": "observed runtime capacity",
+}
+_LINEAR_FORM = (
+    "linear: import wrote the linear form because the supplied {claimed} matched the measured full-attention groups"
+)
+
+
+def _groups(pages):
+    return [
+        {**_RUNTIME_GROUP, "name": f"runtime_group_{index}", "page_size_bytes": page, "block_size_tokens": block}
+        for index, (page, block) in enumerate(pages)
+    ]
+
+
+@pytest.mark.parametrize(
+    "pages,expected",
+    [
+        # One full-attention group: 4096 bytes per 64-token block is 64 bytes per token.
+        ([(4096, 64)], 64),
+        # 0.2 + 27.9 + 3.9 bytes per token is exactly 32, which a floating-point sum misses.
+        ([(2, 10), (279, 10), (39, 10)], 32),
+    ],
+)
+def test_linear_runtime_resources_sums_full_attention_groups(pages, expected):
+    measured = {**_GROUPED_OBSERVATION, "cache_groups": _groups(pages), "runtime_memory": dict(_RUNTIME_MEMORY)}
+    before = json.loads(json.dumps(measured))
+    linear = linear_runtime_resources(measured)
+    # Every other field, including the runtime memory and the provenance, is kept.
+    assert linear == {
+        **{key: value for key, value in before.items() if key != "cache_groups"},
+        "cache_layout": "linear",
+        "kv_bytes_per_token": expected,
+    }
+    assert type(linear["kv_bytes_per_token"]) is int
+    assert measured == before
+
+
+@pytest.mark.parametrize(
+    "resources",
+    [
+        {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]},
+        {
+            **_GROUPED_OBSERVATION,
+            "cache_groups": [_RUNTIME_GROUP, {**_WINDOWED_GROUP, "kind": "convolution", "sliding_window": 4}],
+        },
+        # 25 bytes per 4-token block is 25/4 bytes per token.
+        {**_GROUPED_OBSERVATION, "cache_groups": [{**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}]},
+        _LINEAR_OBSERVATION,
+    ],
+    ids=["sliding-window-group", "convolution-group", "fractional-sum", "linear-input"],
+)
+def test_linear_runtime_resources_has_no_linear_form_for_other_measurements(resources):
+    assert linear_runtime_resources(resources) is None
+
+
 @pytest.mark.parametrize(
     "pages",
     [
@@ -653,25 +713,109 @@ def test_cache_group_claim_with_another_page_size_shows_both_lists():
         [(2, 10), (279, 10), (39, 10)],
     ],
 )
-def test_linear_claims_match_the_measured_full_attention_groups(tmp_path, pages):
+@pytest.mark.parametrize("layout", [False, True])
+def test_matching_linear_claims_give_a_linear_profile(tmp_path, pages, layout):
     config = _config(tmp_path)
     request = _request(tensor_parallel=2)
     # Intake's exact per-rank value at TP2: 2 K/V * 2 layers * 1 rank-local KV head * head_dim 4 * 2 bytes.
     claim = derive_profile(config, request, _runtime()).resolved["kv_bytes_per_token"]
     assert claim == 32
-    groups = [
-        {**_RUNTIME_GROUP, "name": f"runtime_group_{index}", "page_size_bytes": page, "block_size_tokens": block}
-        for index, (page, block) in enumerate(pages)
-    ]
+    claims = {"cache_layout": "linear", "kv_bytes_per_token": claim} if layout else {"kv_bytes_per_token": claim}
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": _groups(pages), "runtime_memory": dict(_RUNTIME_MEMORY)}
+    profile = profile_from_observations(config, request, _LLAMA_PRECISION, observed, claims)
+    resources = profile.deployments[0].resources.model_dump(mode="json")
+    assert resources["cache_layout"] == "linear" and resources["kv_bytes_per_token"] == 32
+    assert "cache_groups" not in resources
+    assert resources["runtime_memory"] == _RUNTIME_MEMORY and resources["provenance"] == observed["provenance"]
+    provenance = json.loads(profile.provenance)
+    # The measured groups stay in the provenance for audit, with their block sizes.
+    assert provenance["measured_cache_groups"] == observed["cache_groups"]
+    claimed = "cache_layout and kv_bytes_per_token" if layout else "kv_bytes_per_token"
+    assert provenance["cache_form"] == _LINEAR_FORM.format(claimed=claimed)
+    assert _sources(profile) == dict.fromkeys(claims, _CHECKED)
+
+
+def test_linear_layout_claim_alone_uses_the_measured_whole_number(tmp_path):
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": _groups([(512, 16)]), "runtime_memory": dict(_RUNTIME_MEMORY)}
+    profile = profile_from_observations(
+        _config(tmp_path), _request(tensor_parallel=2), _LLAMA_PRECISION, observed, {"cache_layout": "linear"}
+    )
+    resources = profile.deployments[0].resources
+    assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 32
+    assert json.loads(profile.provenance)["cache_form"] == _LINEAR_FORM.format(claimed="cache_layout")
+
+
+def test_linear_layout_claim_with_a_fractional_measurement_keeps_the_grouped_form(tmp_path):
+    # 25 bytes per 4-token block is 25/4 bytes per token; a linear profile needs a whole number.
+    groups = [{**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}]
     observed = {**_GROUPED_OBSERVATION, "cache_groups": groups}
     profile = profile_from_observations(
-        config, request, _LLAMA_PRECISION, observed, {"cache_layout": "linear", "kv_bytes_per_token": claim}
+        _config(tmp_path), _request(tensor_parallel=2), _LLAMA_PRECISION, observed, {"cache_layout": "linear"}
     )
-    # The measurement is authoritative: the profile keeps the measured groups, not the cache_layout and
-    # kv_bytes_per_token overrides.
-    resources = profile.deployments[0].resources
-    assert resources.cache_layout == "grouped" and resources.kv_bytes_per_token is None
-    assert _sources(profile) == {"cache_layout": _CHECKED, "kv_bytes_per_token": _CHECKED}
+    assert profile.deployments[0].resources.cache_layout == "grouped"
+    provenance = json.loads(profile.provenance)
+    assert provenance["cache_form"] == (
+        "grouped: the supplied cache_layout matched the measured full-attention groups, but the measured bytes per "
+        "token, 25/4, are not a whole number"
+    )
+    assert "measured_cache_groups" not in provenance
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [{}, {"cache_layout": "grouped"}, {"cache_groups": _groups([(512, 16)])}],
+    ids=["no-claim", "grouped-claim", "cache-groups-claim"],
+)
+def test_without_a_linear_claim_the_profile_stays_grouped(tmp_path, claims):
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": _groups([(512, 16)])}
+    profile = profile_from_observations(
+        _config(tmp_path), _request(tensor_parallel=2), _LLAMA_PRECISION, observed, claims
+    )
+    assert profile.deployments[0].resources.cache_layout == "grouped"
+    provenance = json.loads(profile.provenance)
+    assert "cache_form" not in provenance and "measured_cache_groups" not in provenance
+
+
+def test_linear_and_grouped_profiles_of_one_measurement_differ_by_less_than_a_block(tmp_path, monkeypatch):
+    from aisimulate_core.sdk import engine, memory
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("the profile capacity path loaded a model graph or timing data")
+
+    for name in ("get_model", "build_model_config"):
+        monkeypatch.setattr(memory, name, forbidden)
+    monkeypatch.setattr(memory.perf_database, "get_database", forbidden)
+    monkeypatch.setattr(engine, "_literal_backend_version", lambda _s, _b, version, *_args: version)
+    # A pool that is not a whole number of 4096-byte pages: 100 pages plus 2000 bytes.
+    runtime = {**_RUNTIME_MEMORY, "kv_cache_bytes": 409_600 + 2000}
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP], "runtime_memory": runtime}
+    config = _config(tmp_path)
+    # The capacity path checks the profile architecture against this local checkpoint config.
+    payload = _request(tensor_parallel=2).model_dump(mode="json")
+    payload["identity"]["model"] = str(tmp_path)
+    request = SupportRequest.model_validate(payload)
+    capacities = {}
+    for claims in ({}, {"kv_bytes_per_token": 64}):
+        profile = profile_from_observations(config, request, _LLAMA_PRECISION, observed, claims)
+        capacities[profile.deployments[0].resources.cache_layout] = memory.estimate_kv_cache(
+            request.identity.model,
+            request.identity.gpu,
+            "vllm",
+            request.identity.framework_version,
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.9,
+            tp_size=2,
+            context_length=2048,
+            gpu_memory_capacity_bytes_override=10**9,
+            fpm_profile=profile.model_dump(mode="json"),
+        )
+    linear_tokens = capacities["linear"]["total_kv_size_tokens"]
+    # The grouped allocator stores whole 64-token blocks of 4096 bytes.
+    grouped_tokens = capacities["grouped"]["total_kv_size_bytes"] // 4096 * 64
+    assert (linear_tokens, grouped_tokens) == (6431, 6400)
+    assert abs(linear_tokens - grouped_tokens) < 64
 
 
 def test_linear_kv_claim_one_byte_off_shows_both_values():
@@ -760,12 +904,13 @@ def test_import_records_unused_cache_block_sizes_for_a_derivable_layout(tmp_path
     assert profile.deployments[0].resources.cache_groups[0].block_size_tokens == 64
 
 
-def test_unrecognized_architecture_imports_the_measured_groups():
+@pytest.mark.parametrize("claim", [False, True])
+def test_unrecognized_architecture_imports_the_measured_groups(claim):
     config = load_model_config(GLM.parent / "XiaomiMiMo--MiMo-7B-Base_config.json")
     assert config.runtime_layout == ("unrecognized architecture MiMoForCausalLM",)
     # At TP2: 2 K/V * 36 layers * 4 rank-local KV heads * head_dim 128 * 2 bytes = 73728 bytes per token.
     group = {**_RUNTIME_GROUP, "num_layers": 36, "block_size_tokens": 16, "page_size_bytes": 16 * 73728}
-    overrides = {"num_experts": 0, "cache_layout": "linear", "kv_bytes_per_token": 73728}
+    overrides = {"num_experts": 0, **({"kv_bytes_per_token": 73728} if claim else {})}
     profile = profile_from_observations(
         config,
         _request(tensor_parallel=2),
@@ -774,15 +919,19 @@ def test_unrecognized_architecture_imports_the_measured_groups():
         overrides,
     )
     assert profile.architecture == "MiMoForCausalLM"
-    assert profile.deployments[0].resources.cache_groups[0].num_layers == 36
+    resources = profile.deployments[0].resources
+    if claim:
+        # The matching kv_bytes_per_token gives back the linear profile that a typed size gave on main.
+        assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 73728
+    else:
+        assert resources.cache_layout == "grouped" and resources.cache_groups[0].num_layers == 36
     notes = json.loads(profile.provenance)["config_notes"]
     assert notes["cache_layout"].startswith(
         "cache layout measured by the runtime probe (unrecognized architecture MiMoForCausalLM)"
     )
     assert _sources(profile) == {
         "num_experts": "user assumption",
-        "cache_layout": _CHECKED,
-        "kv_bytes_per_token": _CHECKED,
+        **({"kv_bytes_per_token": _CHECKED} if claim else {}),
     }
 
 
