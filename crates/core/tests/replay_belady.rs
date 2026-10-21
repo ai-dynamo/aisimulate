@@ -30,6 +30,7 @@ fn request(index: usize, tokens: Vec<u32>, output_tokens: usize) -> ReplayReques
 fn spec(backend: Backend, workers: usize, requests: Vec<ReplayRequest>) -> ReplaySpec {
     ReplaySpec {
         version: CURRENT_REPLAY_SPEC_VERSION,
+        encoder: None,
         topology: ReplayTopology::aggregated(workers),
         engine: serde_json::to_value(ReplayEngineConfig {
             rank: EngineConfig {

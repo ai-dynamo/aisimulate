@@ -215,7 +215,8 @@ mod tests {
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 28);
+        // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -746,6 +747,7 @@ mod tests {
             max_in_flight: None,
             record_per_request: true,
             sla: Default::default(),
+            encoder: None,
             requests: Vec::new(),
         };
         let report = Replayer::new(
@@ -848,6 +850,11 @@ pub fn rebuild_replay_report_literals(
             prefill_worker_idx: record.prefill_worker_idx,
             decode_worker_idx: record.decode_worker_idx,
             prefill_admit_ms: record.prefill_admit_ms,
+            encoder_ready_ms: None,
+            frontend_ready_ms: None,
+            scheduler_received_ms: None,
+            selected_ms: None,
+            prefill_complete_ms: None,
             source_held_ms: record.source_held_ms,
             destination_reserved_ms: record.destination_reserved_ms,
             destination_activated_ms: record.destination_activated_ms,

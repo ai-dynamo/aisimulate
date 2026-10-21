@@ -64,6 +64,7 @@ fn public_replay_rejects_non_finite_timing_before_normalization() {
                         };
                         let spec = ReplaySpec {
                             version: 1,
+                            encoder: None,
                             topology: if disagg {
                                 ReplayTopology::Disaggregated {
                                     prefill: WorkerPoolSpec::default(),

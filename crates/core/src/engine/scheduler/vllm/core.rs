@@ -969,6 +969,17 @@ impl VllmCore {
         // fallible command is validated, violating RankEngine error atomicity.
         // While a model pass is in flight, also keep its physical transfer
         // completions hidden until complete_engine_boundary().
+        match &command {
+            SchedulerCommand::Submit(request)
+            | SchedulerCommand::SubmitHandoffPrefill { request, .. }
+            | SchedulerCommand::ReserveDestination { request, .. } => {
+                anyhow::ensure!(
+                    request.images.is_empty(),
+                    "native request images require the SGLang backend; vLLM and TRT-LLM do not support them"
+                );
+            }
+            _ => {}
+        }
         anyhow::ensure!(
             self.kv_manager.grouped().is_none()
                 || matches!(
@@ -2598,7 +2609,8 @@ impl VllmCore {
                 end = aligned;
             }
         }
-        let last_full = known / alignment * alignment;
+        // Match the state cache's replay boundary, including prompts that end on a full block.
+        let last_full = prompt.saturating_sub(1) / alignment * alignment;
         let tail = prompt / unit * unit;
         let next = start.checked_add(alignment - start % alignment);
         for stop in [
@@ -3721,6 +3733,31 @@ mod state_cache_tests {
 
     fn step(core: &mut VllmCore) -> EnginePassResult {
         core.try_execute_hidden_pass(0.0).unwrap()
+    }
+
+    #[test]
+    fn aligned_prompt_retains_a_reusable_state_after_long_decode() {
+        let mut config = args(64, true, None);
+        config.prefix_match_unit = Some(4);
+        let mut core = VllmCore::new(config);
+        submit(&mut core, 93_030, 16, 16);
+        for _ in 0..32 {
+            if core.state.requests.is_empty() {
+                break;
+            }
+            step(&mut core);
+        }
+        assert!(core.state.requests.is_empty());
+        let second = submit(&mut core, 93_031, 16, 1);
+        let pass = step(&mut core);
+        assert_eq!(
+            pass.admissions
+                .iter()
+                .find(|admission| admission.uuid == second)
+                .unwrap()
+                .reused_input_tokens,
+            12
+        );
     }
 
     #[test]

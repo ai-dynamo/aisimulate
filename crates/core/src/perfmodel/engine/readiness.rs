@@ -584,6 +584,10 @@ impl Availability<'_> {
             // State-space kernels explicitly fall back to their analytic SOL
             // on missing tables in every database mode.
             Mamba2(_) | Gdn(_) | Kda(_) => Ok(()),
+            MeasuredComposite(op) => {
+                op.validate()?;
+                op.validate_database(self.db)
+            }
             Mhc(_) => self.any(&["mhc_module_perf.parquet"]),
             WideEpContextMla(_) => self.any(&["wideep_context_mla_perf.parquet"]),
             WideEpGenerationMla(_) => self.any(&["wideep_generation_mla_perf.parquet"]),

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::{EstimatorConfig, ForwardPassWorkerType};
-use crate::common::enums::{DatabaseMode, TransferPolicy};
+use crate::common::enums::{DatabaseMode, EncoderParallel, TransferPolicy};
 use crate::{AicError, BackendKind};
 
 const fn one() -> u32 {
@@ -182,6 +182,10 @@ pub struct ForwardPassPerfModelConfig {
     pub enable_shared_layer: Option<bool>,
     #[serde(default)]
     pub strict_provenance: bool,
+    /// Compile the model's vision tower with this layout so the estimator can
+    /// price encoder calls; `None` prices the language model only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_parallel: Option<EncoderParallel>,
 }
 
 impl ForwardPassPerfModelConfig {
@@ -228,6 +232,7 @@ impl ForwardPassPerfModelConfig {
             moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
+            encoder_parallel: None,
         }
     }
 
@@ -351,6 +356,7 @@ impl ForwardPassPerfModelConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        crate::perfmodel::execution_profile::validate_config(self)?;
         let learned = &self.estimator_config.fpm_learned;
         if self.estimation_mode == EstimationMode::FpmLearned {
             if learned.artifact_path.is_some() == learned.checkpoint_path.is_some() {

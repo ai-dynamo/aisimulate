@@ -31,6 +31,7 @@ pub(crate) mod py_ops;
 pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
+pub mod execution_profile;
 pub(crate) mod fpm;
 pub(crate) mod kd_tree;
 pub mod memory;
@@ -38,7 +39,8 @@ pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
 
-pub use common::{AicError, enums::DatabaseMode};
+pub use common::{AicError, enums::DatabaseMode, enums::EncoderParallel};
+pub use engine::spec::{EncoderImageShape, VisionSpec};
 // Forward-pass perf model (PR #1152): a forward-pass latency model with online
 // correction, regression fallback, diagnostics, and readiness, built on the
 // compiled [`engine::Engine`]. Re-exported so Rust embedders (the Dynamo

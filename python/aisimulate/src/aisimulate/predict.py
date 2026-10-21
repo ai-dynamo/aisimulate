@@ -100,7 +100,7 @@ def run_prediction(
         providers: Resolved config adapters keyed by ``"<stack>.<section>"``.
         execution_mode: ``"offline"`` (default) or ``"online"``.
         output_requirements: Optional replay output requirements. When omitted,
-            defaults to raw-report capture for non-EPD predictions.
+            defaults to raw-report capture unless an analytical EPD overlay runs.
 
     Returns:
         A :class:`PredictionResult` with the summary, native report, replay
@@ -111,7 +111,8 @@ def run_prediction(
     """
     adapter_configs = dict(adapter_configs or {})
     providers = dict(providers or {})
-    epd = config.engine.workers.encoder is not None
+    encoder = config.engine.workers.encoder
+    analytical_epd = encoder is not None and encoder.mode == "analytical"
     adapter_specs = _compile_prediction_adapters(
         adapter_configs,
         providers,
@@ -125,7 +126,7 @@ def run_prediction(
     )
     runner_factory.capabilities().require_compatible(spec)
     if output_requirements is None:
-        output_requirements = ReplayOutputRequirements(include_raw_report=not epd)
+        output_requirements = ReplayOutputRequirements(include_raw_report=not analytical_epd)
     # Capacity is already computed by the runner. Retain its resolved precision
     # for ordinary output too, without recomputing a model or its memory budget.
     capture_memory_details = output_requirements.capture_memory_diagnostics
@@ -169,7 +170,7 @@ def run_prediction(
     report = replace(report, metadata=metadata)
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
-    if epd:
+    if analytical_epd:
         native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
         if "memory_diagnostics" in native["metadata"]:
             native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
@@ -180,7 +181,15 @@ def run_prediction(
                 f"analytical EPD report is missing required metadata field(s): {', '.join(missing)}"
             )
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
+    # The aggregated or the prefill worker hosts the measured frontend stages.
+    for role in ("aggregated", "prefill"):
+        vl = (spec.backend_deployment.performance_model_metadata.get(role) or {}).get("vl")
+        if isinstance(vl, dict):
+            native = {**native, "vl": vl}
+    # A native encoder pool carries the resolved identity it was scored with.
+    encoder_identity = spec.backend_deployment.performance_model_metadata.get("encoder")
+    if isinstance(encoder_identity, dict):
+        native = {**native, "encoder": encoder_identity}
     summary = prediction_summary(native)
     kv_precision = {}
     for role, memory in memory_diagnostics.items():
@@ -222,6 +231,9 @@ def run_prediction(
             )
     summary["prediction_provenance"] = provenance
     summary.update(normalize_power_summary(report.metrics))
+    if encoder is not None:
+        # Both tiers' GPUs, reported alike by the analytical overlay and the native pool.
+        summary["total_gpus"] = report.metadata["total_gpus"]
     if summary.get("completed_requests") == 0:
         summary.update(
             prediction_status="invalid",
