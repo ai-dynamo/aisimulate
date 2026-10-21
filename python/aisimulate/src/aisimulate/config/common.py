@@ -18,10 +18,16 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-def _absolute_systems_path(value: str) -> str:
-    if not value.strip() or "," in value:
-        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+def _absolute_path(value: str) -> str:
+    if not value.strip():
+        raise ValueError("path must be nonempty")
     return str(Path(value).expanduser().resolve())
+
+
+def _absolute_systems_path(value: str) -> str:
+    if "," in value:
+        raise ValueError("systems_path must name one nonempty local directory, not a comma-separated list")
+    return _absolute_path(value)
 
 
 SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
@@ -274,7 +280,7 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb"):
+    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

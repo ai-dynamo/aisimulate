@@ -32,7 +32,7 @@ use super::{
     },
     state::AggRequestState,
 };
-use crate::engine::{Command, CommandResult};
+use crate::engine::{Command, CommandResult, LifecycleEvent};
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::loadgen::{AgenticPreparationTransition, ReplayRequestPayload};
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -42,6 +42,12 @@ use anyhow::{Context, bail};
 use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
+
+use std::sync::Arc;
+
+use super::components::EncoderPool;
+use super::spec::EncoderSpec;
+use crate::engine::TimingModel;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct AggRuntimeStats {
@@ -60,6 +66,8 @@ where
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
     admission: AdmissionQueue<Metadata>,
+    /// Encoder pool every arrival crosses before the language workers, if any.
+    encoder: Option<EncoderPool<ReplayReadyArrival<Metadata>>>,
     requests: FxHashMap<Uuid, AggRequestState>,
     engine: EngineComponent<Observation>,
     collector: TraceCollector,
@@ -176,6 +184,7 @@ where
             profile_cancel_started: false,
             profile_canceled_requests: 0,
             profile_unsettled_requests: 0,
+            encoder: None,
         })
     }
 
@@ -189,6 +198,19 @@ where
     /// have `per_request` populated. Default `false` (cheap).
     pub(crate) fn with_per_request_records(mut self, capture: bool) -> Self {
         self.collector.set_capture_per_request(capture);
+        self
+    }
+
+    /// Route every arrival through an encoder pool before the language workers.
+    pub(crate) fn with_encoder(
+        mut self,
+        encoder: Option<(EncoderSpec, Arc<dyn TimingModel>)>,
+    ) -> Self {
+        if let Some((spec, timing)) = encoder {
+            self.collector
+                .set_encoder_gpus(spec.instances * spec.gpus_per_instance);
+            self.encoder = Some(EncoderPool::new(spec, timing));
+        }
         self
     }
 
@@ -257,6 +279,7 @@ where
     pub(crate) fn cluster_in_flight(&self) -> usize {
         self.engine.in_flight()
             + self.placement.pending_count()
+            + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
             + self.tokenization.as_ref().map_or(0, TokenizationStage::len)
     }
 
@@ -360,6 +383,7 @@ where
         arrival_time_ms: f64,
         metadata: Metadata,
         session_id: Option<String>,
+        registered: bool,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
         let input_length = request.input_length();
@@ -380,12 +404,15 @@ where
                 placement.request_id
             );
         }
-        self.collector
-            .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
-        if let Some(context) = request.metadata().replay_context.as_ref() {
-            self.collector.on_request_context(uuid, context);
+        // A request parked in the encoder pool was registered when it arrived.
+        if !registered {
+            self.collector
+                .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
+            if let Some(context) = request.metadata().replay_context.as_ref() {
+                self.collector.on_request_context(uuid, context);
+            }
+            self.traffic.on_arrival();
         }
-        self.traffic.on_arrival();
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
                 self.record_placement(placement);
@@ -511,7 +538,12 @@ where
         } else {
             next_event_ms
         };
-        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.engine.next_internal_deadline_ms(),
+            self.encoder
+                .as_ref()
+                .and_then(EncoderPool::next_deadline_ms),
+        );
         (
             choose_next_timestamp(
                 choose_next_timestamp(next_arrival_ms, next_event_ms),
@@ -691,6 +723,17 @@ where
         {
             self.record_fpm(payload.worker_idx, fpm)?;
         }
+        for event in payload.lifecycle_events {
+            // Aggregated ranks emit no handoff events; host stages are per-request timestamps.
+            if let LifecycleEvent::TtftMilestone {
+                request_id,
+                stage,
+                at_ms,
+            } = event
+            {
+                self.collector.on_ttft_milestone(request_id, stage, at_ms);
+            }
+        }
         self.process_completed_pass(
             payload.worker_idx,
             payload.completed_requests,
@@ -701,59 +744,129 @@ where
         )
     }
 
-    /// Release every admission made ready by the shared admission queue.
+    /// Release every admission made ready by the shared admission queue. With an
+    /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> anyhow::Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for ready in self.admission.drain_ready_compact(
+        for mut ready in self.admission.drain_ready_compact(
             self.now_ms,
             cluster_in_flight,
             self.artifact_sink.is_some(),
         )? {
-            let ReplayReadyArrival {
-                request,
-                arrival_time_ms,
-                scheduled_ready_at_ms,
-                authored_request_id,
-                play_id,
-                dispatched_at_ms,
-                metadata,
-                replay_hashes,
-                session_id,
-                turn_index,
-            } = ready;
-            let input_length = request.input_length();
-            let output_length = request.metadata().effective_max_output_tokens();
-            let session_metadata = session_id.clone().zip(turn_index);
-            let placement_session_id = request
-                .metadata()
-                .replay_context
-                .as_ref()
-                .and_then(|context| context.session_id())
-                .map(str::to_owned);
-            let uuid =
-                self.assign_request(request, arrival_time_ms, metadata, placement_session_id)?;
-            if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
-                self.collector
-                    .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
-            }
-            if let Some(sink) = &self.artifact_sink {
-                sink.record_request(ReplayArtifactRequest {
-                    request_id: uuid,
-                    observed_at_ms: self.now_ms,
-                    scheduled_ready_at_ms,
-                    input_length,
-                    output_length,
-                    replay_hashes,
-                })?;
-            }
-            if let Some((session_id, turn_index)) = session_metadata {
-                self.collector
-                    .on_session_metadata(uuid, session_id, turn_index);
+            if self.encoder.is_some() {
+                self.register_parked_arrival(&mut ready)?;
+                self.encoder
+                    .as_mut()
+                    .expect("encoder pool checked")
+                    .submit(ready);
+            } else {
+                self.admit_ready(ready, false)?;
             }
             released_any = true;
         }
         Ok(released_any)
+    }
+
+    /// A request entering the encoder pool has arrived: the collector and the
+    /// traffic statistics see it now, not when its embeddings are delivered.
+    /// The pool encodes `images_per_request` per request, so a request carrying
+    /// its own image placeholders is invalid here.
+    fn register_parked_arrival(
+        &mut self,
+        ready: &mut ReplayReadyArrival<Metadata>,
+    ) -> anyhow::Result<()> {
+        if !ready.request.metadata().images.is_empty() {
+            return Err(crate::replay::ReplayError::InvalidSpec(
+                "encoder pool runs take requests without image placeholders; \
+                 the pool encodes images_per_request per request"
+                    .to_string(),
+            )
+            .into());
+        }
+        let uuid = ready.request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
+        ready.request.metadata_mut().uuid = Some(uuid);
+        self.collector.try_on_arrival(
+            uuid,
+            ready.arrival_time_ms,
+            ready.request.input_length(),
+            ready.request.metadata().effective_max_output_tokens(),
+        )?;
+        if let Some(context) = ready.request.metadata().replay_context.as_ref() {
+            self.collector.on_request_context(uuid, context);
+        }
+        self.traffic.on_arrival();
+        Ok(())
+    }
+
+    /// Admit the requests whose embeddings the encoder pool delivered by now.
+    fn release_encoded_arrivals(&mut self) -> anyhow::Result<bool> {
+        let ready = match &mut self.encoder {
+            Some(encoder) => encoder.take_ready(self.now_ms)?,
+            None => return Ok(false),
+        };
+        let released_any = !ready.is_empty();
+        for (arrival, ready_ms) in ready {
+            let uuid = self.admit_ready(arrival, true)?;
+            self.collector.on_encoder_ready(uuid, ready_ms);
+        }
+        Ok(released_any)
+    }
+
+    /// Admit one ready arrival into the collector, router, and worker pool;
+    /// `registered` marks a request the encoder pool already registered.
+    fn admit_ready(
+        &mut self,
+        ready: ReplayReadyArrival<Metadata>,
+        registered: bool,
+    ) -> anyhow::Result<Uuid> {
+        let ReplayReadyArrival {
+            request,
+            arrival_time_ms,
+            scheduled_ready_at_ms,
+            authored_request_id,
+            play_id,
+            dispatched_at_ms,
+            metadata,
+            replay_hashes,
+            session_id,
+            turn_index,
+        } = ready;
+        let input_length = request.input_length();
+        let output_length = request.metadata().effective_max_output_tokens();
+        let session_metadata = session_id.clone().zip(turn_index);
+        let placement_session_id = request
+            .metadata()
+            .replay_context
+            .as_ref()
+            .and_then(|context| context.session_id())
+            .map(str::to_owned);
+        let uuid = self.assign_request(
+            request,
+            arrival_time_ms,
+            metadata,
+            placement_session_id,
+            registered,
+        )?;
+        if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
+            self.collector
+                .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
+        }
+        if let Some(sink) = &self.artifact_sink {
+            sink.record_request(ReplayArtifactRequest {
+                request_id: uuid,
+                observed_at_ms: self.now_ms,
+                scheduled_ready_at_ms,
+                input_length,
+                output_length,
+                replay_hashes,
+            })?;
+        }
+        if let Some((session_id, turn_index)) = session_metadata {
+            self.collector
+                .on_session_metadata(uuid, session_id, turn_index);
+        }
+        Ok(uuid)
     }
 
     /// Hand every request whose tokenization has finished to its worker's engine.
@@ -934,6 +1047,7 @@ where
             if self.admission.agentic_profile_client_complete(self.now_ms) {
                 return Ok(());
             }
+            changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             changed |= self.release_tokenized()?;
             if self.defer_drive && self.step_freed_slot {
@@ -1321,16 +1435,18 @@ where
     // ------------------------------------------------------------------
 
     /// Advance the sim clock to `new_now_ms`, integrating provisioned
-    /// worker-seconds over the interval just elapsed. `worker_count()` counts
-    /// active + starting-up + draining workers, so this captures the startup
-    /// ramp and the scale-down drain tail. Aggregated replay has no separate
-    /// prefill pool, so it reports through the decode role (prefill = 0).
+    /// worker-seconds and the encoder pool's GPU-seconds over the interval just
+    /// elapsed. `worker_count()` counts active + starting-up + draining
+    /// workers, so this captures the startup ramp and the scale-down drain
+    /// tail. Aggregated replay has no separate prefill pool, so it reports
+    /// through the decode role (prefill = 0).
     pub(crate) fn advance_now_ms(&mut self, new_now_ms: f64) {
         let dt_ms = (new_now_ms - self.now_ms).max(0.0);
         if dt_ms > 0.0 {
             let decode_worker_seconds = self.engine.worker_count() as f64 * dt_ms / 1000.0;
             self.collector
                 .add_worker_seconds(0.0, decode_worker_seconds);
+            self.collector.add_encoder_gpu_seconds(dt_ms / 1000.0);
         }
         self.now_ms = new_now_ms;
     }
@@ -1529,6 +1645,11 @@ where
         if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
             bail!("agentic_profile cannot be combined with max_sim_time_ms");
         }
+        // Requests parked in the pool are not in `self.requests` yet, which the
+        // grace cancellation reads.
+        if self.encoder.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with an encoder pool");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1674,8 +1795,9 @@ mod agentic_warmup_tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::engine::{Backend, EngineConfig, NativeHostOffloadConfig, TimingModelConfig};
-    use crate::replay::WorkerStage;
+    use crate::engine::{
+        Backend, EncoderShape, EngineConfig, ImageSpec, NativeHostOffloadConfig, TimingModelConfig,
+    };
     use crate::replay::components::{NoReplayMetadata, ReplayMode};
     use crate::replay::core::NoEngineEvents;
     use crate::replay::core::round_robin::AggregatedRoundRobinPlacement;
@@ -1687,6 +1809,7 @@ mod agentic_warmup_tests {
         AgenticSourceProvenance, PreparedAgenticSnapshots, ValidatedAgenticGraph, WorkloadDriver,
     };
     use crate::replay::scaling::ReplayScalingDecision;
+    use crate::replay::{EncoderSpec, WorkerStage};
 
     type Runtime =
         AggRuntimeImpl<AggregatedRoundRobinPlacement<()>, NoEngineEvents, NoReplayMetadata>;
@@ -1790,6 +1913,114 @@ mod agentic_warmup_tests {
         )
         .unwrap()
         .with_per_request_records(true)
+    }
+
+    #[test]
+    fn profile_rejects_an_encoder_pool() {
+        let timing = EngineConfig::for_backend(Backend::Sglang)
+            .built_in_timing_model()
+            .unwrap();
+        let mut replay = runtime(Backend::Sglang, 1024, 3.0).with_encoder(Some((
+            EncoderSpec {
+                instances: 1,
+                max_batch: 1,
+                gpus_per_instance: 1,
+                images_per_request: 1,
+                shape: EncoderShape {
+                    sequences: 1,
+                    patch_tokens: 1,
+                    transformer_tokens: 1,
+                    output_tokens: 1,
+                },
+                preprocess_ms_per_image: 0.0,
+                transfer_bytes_per_image: 0,
+                transfer_bandwidth_gb_s: 1.0,
+                timing_model: None,
+            },
+            timing,
+        )));
+        replay
+            .admission
+            .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 0.25,
+                response_grace_seconds: 0.03,
+                ..Default::default()
+            })
+            .unwrap();
+        let error = replay.run().unwrap_err();
+        assert!(error.to_string().contains("encoder pool"), "{error:#}");
+    }
+
+    #[test]
+    fn encoder_pool_rejects_requests_carrying_image_placeholders() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                block_size: 64,
+                num_gpu_blocks: 1024,
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 1.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::for_backend(Backend::Sglang)
+            },
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let shape = EncoderShape {
+            sequences: 1,
+            patch_tokens: 4,
+            transformer_tokens: 4,
+            output_tokens: 4,
+        };
+        let request = DirectRequest {
+            tokens: vec![1, 2, 3, 4],
+            max_output_tokens: 1,
+            uuid: Some(Uuid::from_u128(1)),
+            arrival_timestamp_ms: Some(0.0),
+            images: vec![ImageSpec {
+                identity: 1,
+                token_start: 0,
+                token_end: 4,
+                encoder: shape,
+                embedding_bytes: 0,
+            }],
+            ..DirectRequest::default()
+        };
+        let timing = EngineConfig::for_backend(Backend::Sglang)
+            .built_in_timing_model()
+            .unwrap();
+        let replay = Runtime::new_composed(
+            factory,
+            AdmissionQueue::new_requests(
+                std::collections::VecDeque::from([request]),
+                ReplayMode::Trace,
+            ),
+            1,
+            None,
+            |dp, topology| Ok(AggregatedRoundRobinPlacement::new(dp, topology)),
+        )
+        .unwrap()
+        .with_encoder(Some((
+            EncoderSpec {
+                instances: 1,
+                max_batch: 1,
+                gpus_per_instance: 1,
+                images_per_request: 1,
+                shape,
+                preprocess_ms_per_image: 0.0,
+                transfer_bytes_per_image: 0,
+                transfer_bandwidth_gb_s: 1.0,
+                timing_model: None,
+            },
+            timing,
+        )));
+        let error = replay.run().unwrap_err();
+        assert!(
+            error.to_string().contains("without image placeholders"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -2774,6 +3005,7 @@ where
             arrival_time_ms,
             Metadata::from_hashes(None),
             None,
+            false,
         )?;
         if self.defer_drive {
             self.drive_pending = true;

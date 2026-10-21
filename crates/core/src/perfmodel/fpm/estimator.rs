@@ -222,7 +222,10 @@ impl FpmLearnedConfig {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct OpLevelConfig {}
+pub struct OpLevelConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_profile: Option<crate::perfmodel::execution_profile::ExecutionProfileSelection>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

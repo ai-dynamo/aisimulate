@@ -526,6 +526,60 @@ fn runtime_checkpoint_rejects_wrong_identity_changed_controls_and_checksum() {
 }
 
 #[test]
+fn canonical_learned_checkpoint_rejects_native_only_controls() {
+    let controls = controls(LearnedUpdateMode::LeafOnly, LearnedDerivativeRefresh::Eager);
+    let (learner, seed_model) = fixture(
+        controls.clone(),
+        &[&[1.0]],
+        &[10.0],
+        10.0,
+        vec![leaf(0.0)],
+        settings(1.0, 0.0),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let seed_path = directory.path().join("seed");
+    learner.save(&seed_path, &seed_model, "{}").unwrap();
+    let mut config = canonical();
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned = controls;
+    config.estimator_config.fpm_learned.checkpoint_path = Some(seed_path);
+    config.estimator_config.correction.enabled = false;
+
+    for adaptation in [LearnedAdaptation::Frozen, LearnedAdaptation::Online] {
+        config.estimator_config.fpm_learned.adaptation = adaptation;
+        crate::ForwardPassPerfModel::best_available(config.clone()).unwrap();
+
+        // Neither learned mode prices a vision tower. Reject the layout before
+        // checkpoint identity validation or the learned-mode early return.
+        let mut vision = config.clone();
+        vision.encoder_parallel = Some(crate::EncoderParallel::Tp);
+        let error = crate::ForwardPassPerfModel::best_available(vision).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("encoder_parallel requires op_level timing"),
+            "{adaptation:?}: {error}"
+        );
+
+        // External operation profiles must not be silently ignored by a forest.
+        let mut external = config.clone();
+        external.estimator_config.op_level.execution_profile = Some(
+            crate::perfmodel::execution_profile::ExecutionProfileSelection {
+                path: directory.path().join("unused-execution-profile"),
+                sha256: "0".repeat(64),
+            },
+        );
+        let error = crate::ForwardPassPerfModel::best_available(external).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires explicit op_level/SILICON"),
+            "{adaptation:?}: {error}"
+        );
+    }
+}
+
+#[test]
 fn public_online_publication_and_checkpoint_resume_pending() {
     use crate::{
         EstimationMode, ForwardPassMetrics, ForwardPassPerfModel, ScheduledRequestMetrics,
