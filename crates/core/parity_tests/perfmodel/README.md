@@ -134,6 +134,24 @@ python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_golden
   kimi-k3-b300-sglang-next-dspark-nextn7::disagg
 ```
 
+To reproduce the attribution, start from this PR with its native extension
+built and with the pre-refresh `goldens/engine_step.json` from
+`9a08d1557462c02a6cc8552360afee89538a0540` checked out. Move every
+`data/b300_sxm/<family>/sglang/0.5.20` directory (`gemm`, `moe`, `kda`, `mhc`,
+`comm`, `glm53_attention`) out of the systems tree. Then restore one family
+at a time and run:
+
+```bash
+python/aisimulate/.venv/bin/python -m pytest -c python/aisimulate/pytest.ini -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
+  -k 'kimi-k3-b300-sglang-next-nospec and Static'
+```
+
+With no 0.5.20 families present, the static and disaggregated records pass
+against the old references. With only `gemm` or only `comm` present, the test
+reports the static deltas quoted above. With only `kda`, `moe`, `mhc` or
+`glm53_attention` present, it passes.
+
 ### B60 graph-timing data promotion in PR #329
 
 The `qwen3-30b-a3b-b60-vllm-scan-coverage` case follows the `current`
