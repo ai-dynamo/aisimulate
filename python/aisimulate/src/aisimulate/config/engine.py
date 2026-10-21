@@ -54,6 +54,14 @@ def resolve_block_size(backend: str, configured: int | None) -> int:
     return {"vllm": 64, "sglang": 1, "trtllm": 32}[backend] if configured is None else int(configured)
 
 
+def _validate_replay_estimation_mode(mode: str | None) -> None:
+    if mode == "fpm_learned":
+        raise ValueError(
+            "fpm_learned requires complete ForwardPassMetrics; engine replay's phase-only timing "
+            "interface cannot supply its batch features. Use the canonical FPM estimate/tune API"
+        )
+
+
 class AFDTopologyPredictionConfig(StrictModel):
     """One concrete attention/FFN-disaggregated topology."""
 
@@ -385,6 +393,7 @@ class TimingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        _validate_replay_estimation_mode(self.estimation_mode)
         if self.type != "default" and any(
             getattr(self, field) is not None
             for field in (
@@ -765,6 +774,7 @@ class EstimatorPolicyConfig(StrictModel):
 
     @model_validator(mode="after")
     def _supported_estimator_policies(self):
+        _validate_replay_estimation_mode(self.estimation_mode)
         mode = getattr(self, "mode", "aggregated")
         modes = mode.choices if hasattr(mode, "choices") else [mode]
         workers = getattr(self, "workers", None)

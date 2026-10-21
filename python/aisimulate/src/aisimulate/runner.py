@@ -22,7 +22,7 @@ from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfM
 
 from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
-from .config.engine import StateCacheConfig
+from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -1530,6 +1530,16 @@ def _materialize_engine_role(
     if isinstance(requested_rank, Mapping):
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        if (
+            isinstance(timing, Mapping)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing_config, Mapping)
+        ):
+            # Capacity materialization also constructs the canonical estimator,
+            # including with explicit KV blocks. Reject unsupported replay modes
+            # before it opens a learned source.
+            _validate_replay_estimation_mode(timing_config.get("estimation_mode"))
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
         selections = (requested_rank.get("speculation"), canonical)
         for spec in selections:

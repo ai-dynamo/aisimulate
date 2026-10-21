@@ -25,8 +25,9 @@ Frozen calibration and online tree adaptation are standalone telemetry APIs:
 pass complete `ForwardPassMetrics` for one iteration to the model returned by
 `best_available`. Engine replay, engine CLI prediction and Sweeper's current
 timing interfaces supply phase aggregates and cannot reconstruct the full
-learned feature vector. They reject learned execution at construction, even
-when the configuration itself parses. This release does not populate missing
+learned feature vector. Python prediction and Sweeper reject learned mode during
+configuration validation; native replay rejects it before loading a source.
+This release does not populate missing
 rank or request features from mean phase values.
 
 The original PR 280 design rationale, model details, evaluation method and result

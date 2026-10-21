@@ -17,6 +17,7 @@ pub struct EstimatorConfig {
     pub op_level: OpLevelConfig,
     pub fpm_interpolation: FpmInterpolationConfig,
     pub fpm_regression: FpmRegressionConfig,
+    #[serde(skip_serializing_if = "FpmLearnedConfig::is_default")]
     pub fpm_learned: FpmLearnedConfig,
     pub correction: CorrectionConfig,
 }
@@ -105,6 +106,10 @@ impl Default for FpmLearnedConfig {
 }
 
 impl FpmLearnedConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+
     /// Bind content before caller caches use the resolved configuration.
     pub(crate) fn resolve_source(&mut self) -> Result<(), AicError> {
         use sha2::{Digest, Sha256};
@@ -1450,6 +1455,38 @@ pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_learned_controls_preserve_existing_serialized_configuration() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"fpm_learned": {}}),
+        ] {
+            let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert!(serialized.get("fpm_learned").is_none());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+            assert_eq!(restored.fpm_learned, FpmLearnedConfig::default());
+        }
+    }
+
+    #[test]
+    fn nondefault_learned_controls_survive_serialization_without_a_source() {
+        for learned in [
+            serde_json::json!({"recent_window": 128}),
+            serde_json::json!({"seed": 42}),
+            serde_json::json!({"artifact_path": "seed.json"}),
+            serde_json::json!({"checkpoint_path": "checkpoint", "adaptation": "online"}),
+        ] {
+            let config: EstimatorConfig =
+                serde_json::from_value(serde_json::json!({"fpm_learned": learned})).unwrap();
+            let serialized = serde_json::to_value(&config).unwrap();
+            assert!(serialized.get("fpm_learned").is_some());
+            let restored: EstimatorConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored, config);
+        }
+    }
 
     #[test]
     fn linear_default_and_alias_keep_existing_wire_contract() {

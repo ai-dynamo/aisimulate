@@ -74,17 +74,6 @@ TRAINING_EXPORTER_VERSION = "1"
 # Export reads sklearn's fitted bin mapper and predictor arrays. A new version
 # needs explicit round-trip coverage before its private fitted state is accepted.
 ONLINE_SUPPORTED_SKLEARN_VERSIONS = frozenset({"1.9.1"})
-_CHECKPOINT_NON_IDENTITY_FIELDS = frozenset(
-    {
-        "estimator_config",
-        "estimation_mode",
-        "fallback_policy",
-        "systems_paths",
-        "database_mode",
-        "transfer_policy",
-        "strict_provenance",
-    }
-)
 _TRAINING_METADATA_FIELDS = frozenset(
     {"trainer", "model", "hyperparameters", "train_rows", "trees_fitted", "sklearn_version", "exporter_version"}
 )
@@ -667,17 +656,15 @@ def _export_hgb(model: Any) -> dict[str, Any]:
 
 
 def _checkpoint_identity(identity: dict[str, Any] | None, worker_type: str) -> dict[str, Any]:
-    """Use the canonical Rust resolver; exporter code never supplies identity defaults."""
+    """Use Rust's shared identity projection for exported artifacts and checkpoints."""
     if not isinstance(identity, dict):
         raise ValueError("online_checkpoint_dir requires an identity containing the canonical FPM configuration")
-    import aisimulate_core
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
-    resolved = json.loads(
-        aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(identity, allow_nan=False))
-    )
+    resolved = RustForwardPassPerfModel.learned_identity(identity)
     if resolved.get("worker_type") != worker_type:
         raise ValueError("checkpoint identity worker_type must match the training worker_type")
-    return {key: value for key, value in resolved.items() if key not in _CHECKPOINT_NON_IDENTITY_FIELDS}
+    return resolved
 
 
 def _online_store_metadata(model: Any, feature_count: int) -> dict[str, Any]:

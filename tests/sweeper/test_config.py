@@ -32,6 +32,17 @@ def _workload(**overrides):
     }
 
 
+@pytest.mark.parametrize("role", [None, "agg", "prefill", "decode"])
+def test_search_space_rejects_learned_timing_before_loading_source(role):
+    policy = {
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
+    }
+    overrides = policy if role is None else {"role_estimator_controls": {role: policy}}
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        SearchSpace(**_search_space(**overrides))
+
+
 def test_min_gpus_requires_sla_and_rejects_pareto_use():
     with pytest.raises(ValidationError, match="SLA bound"):
         OptimizationGoal(target="min_gpus")

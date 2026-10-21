@@ -1036,7 +1036,8 @@ impl ForwardPassPerfModel {
         }
     }
 
-    /// Fit pending observations in every online store, including partial batches.
+    /// Fit pending observations and expire globally aged rows in every online
+    /// store, including partial batches and idle stores.
     /// Prediction and checkpoint saving never implicitly flush pending feedback.
     pub fn flush_updates(&mut self) -> Result<(), AicError> {
         let ForwardPassPerfMode::Learned {

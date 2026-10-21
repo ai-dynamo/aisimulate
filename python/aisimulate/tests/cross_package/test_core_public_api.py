@@ -480,6 +480,36 @@ def test_distribution_carries_typing_contract() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "method_name,annotations,return_type",
+    [
+        ("learned_identity", {"config_json": "str"}, "str"),
+        ("learned_online_diagnostics", {}, "str | None"),
+        ("flush_updates", {}, "None"),
+        ("export_learned_artifact", {}, "str"),
+        ("save_online_checkpoint", {"path": "str"}, "None"),
+    ],
+)
+def test_learned_model_stubs_match_native_contract(method_name, annotations, return_type) -> None:
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    model = next(
+        node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "RustForwardPassPerfModel"
+    )
+    method = next(
+        (node for node in model.body if isinstance(node, ast.FunctionDef) and node.name == method_name),
+        None,
+    )
+    assert method is not None, f"The shipped RustForwardPassPerfModel stub omits {method_name}"
+    parameters = inspect.signature(getattr(aisimulate_core.RustForwardPassPerfModel, method_name)).parameters
+    assert [argument.arg for argument in method.args.args] == list(parameters)
+    assert {
+        argument.arg: ast.unparse(argument.annotation) for argument in method.args.args if argument.arg != "self"
+    } == (annotations)
+    assert ast.unparse(method.returns) == return_type
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aisimulate_core")

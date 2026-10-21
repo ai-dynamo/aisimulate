@@ -3161,7 +3161,6 @@ fn canonical_learned_validates_optional_metadata_and_never_falls_back_on_bad_art
     );
     let mut wrong = config.clone();
     wrong.system = "another-gpu".into();
-    wrong.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
     assert!(
         ForwardPassPerfModel::best_available(wrong)
             .unwrap_err()
@@ -3169,9 +3168,7 @@ fn canonical_learned_validates_optional_metadata_and_never_falls_back_on_bad_art
             .contains("metadata.identity")
     );
     std::fs::write(&path, "not a JSON forest").unwrap();
-    let mut malformed = config;
-    malformed.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
-    assert!(ForwardPassPerfModel::best_available(malformed).is_err());
+    assert!(ForwardPassPerfModel::best_available(config).is_err());
 }
 
 #[test]
@@ -3192,14 +3189,16 @@ fn canonical_learned_selection_is_explicit_and_online_rejects_cascaded_correctio
     );
     config.estimation_mode = crate::EstimationMode::FpmLearned;
     config.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("fallback_policy='deny'")
+    );
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Deny;
     assert_eq!(
         config.candidate_modes(),
-        vec![
-            crate::EstimationMode::FpmLearned,
-            crate::EstimationMode::OpLevel,
-            crate::EstimationMode::FpmInterpolation,
-            crate::EstimationMode::FpmRegression
-        ]
+        vec![crate::EstimationMode::FpmLearned]
     );
     config.estimator_config.fpm_learned.adaptation = super::LearnedAdaptation::Online;
     config.estimator_config.fpm_learned.checkpoint_path = Some("unused-checkpoint".into());

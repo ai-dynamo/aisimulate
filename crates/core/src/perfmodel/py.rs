@@ -2041,6 +2041,17 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Resolve the deployment identity used by learned artifacts and checkpoints.
+    #[staticmethod]
+    fn learned_identity(config_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?
+            .resolve()
+            .map_err(aic_to_py)?;
+        let identity =
+            crate::perfmodel::fpm::canonical_learned_identity(&config).map_err(aic_to_py)?;
+        serde_json::to_string(&identity).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Size declarative resources using canonical configuration, without timing
     /// data or analytical graph construction.
     #[staticmethod]

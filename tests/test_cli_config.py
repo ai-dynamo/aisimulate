@@ -29,6 +29,26 @@ def _engine() -> dict:
     }
 
 
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
+def test_engine_configuration_rejects_learned_timing_before_loading_source(config_type, role):
+    engine = _engine()
+    policy = {
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
+    }
+    if role is None:
+        engine.update(policy)
+    elif role == "aggregated":
+        engine["workers"][role]["timing"] = policy
+    else:
+        engine["mode"] = "disaggregated"
+        engine["workers"] = {"prefill": {}, "decode": {}}
+        engine["workers"][role]["timing"] = policy
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        config_type.model_validate({"engine": engine})
+
+
 @pytest.mark.parametrize(
     "load",
     [

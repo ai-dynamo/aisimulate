@@ -287,6 +287,13 @@ pub(super) fn load(
         state.learner.config = config.clone();
         state.learner.restored_corrections = Some(state.correction_json);
         validate_state(&state.learner, learned)?;
+        for (kind, store_state) in &mut state.learner.stores {
+            fitting::cache_frozen_anchor_prefix(
+                store_state,
+                learned.store(*kind).expect("validated store"),
+                config,
+            );
+        }
         return Ok(state.learner);
     }
     let target = match learned.target() {
@@ -330,6 +337,7 @@ pub(super) fn load(
         }
         let mut state = StoreState {
             anchors: Arc::new(anchors),
+            frozen_anchor_prefix: Vec::new(),
             history_grouping_ms: None,
             thresholds: seed.bin_thresholds,
             offsets,
@@ -367,6 +375,7 @@ pub(super) fn load(
             let start = std::time::Instant::now();
             state.anchors = Arc::new(state.anchors.group_by_bins()?);
             state.history_grouping_ms = Some(start.elapsed().as_secs_f64() * 1000.0);
+            fitting::cache_frozen_anchor_prefix(&mut state, store, config);
         }
         learner.stores.insert(kind, state);
     }

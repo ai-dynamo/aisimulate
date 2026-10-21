@@ -404,6 +404,16 @@ class RustForwardPassPerfModel:
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
     @staticmethod
+    def learned_identity(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
+        """Resolve the Rust-owned deployment identity for learned artifacts and checkpoints."""
+        import aisimulate_core
+
+        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.learned_identity(json.dumps(payload, allow_nan=False))
+        )
+
+    @staticmethod
     def estimate_cache_budget(
         config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
     ) -> dict[str, Any]:
@@ -480,7 +490,7 @@ class RustForwardPassPerfModel:
         return None if raw is None else json.loads(raw)
 
     def flush_updates(self) -> None:
-        """Publish pending online observations, including a partial update batch."""
+        """Fit partial pending batches and expire globally aged feedback in every store."""
         self._inner.flush_updates()
 
     def export_learned_artifact(self) -> dict[str, Any]:

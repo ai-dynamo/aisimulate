@@ -222,6 +222,8 @@ pub(super) fn bootstrap(
     };
     let mut prefix = vec![store.baseline; rows.len()];
     let mut trees = Vec::with_capacity(store.trees.len());
+    let start = mutable_start(config, store.trees.len());
+    state.frozen_anchor_prefix.clear();
     for (index, tree) in store.trees.iter().enumerate() {
         let gradients: Vec<_> = prefix
             .iter()
@@ -258,9 +260,35 @@ pub(super) fn bootstrap(
         for (i, p) in prefix.iter_mut().enumerate() {
             *p += tree.value[leaf_index(tree, rows.x(i))];
         }
+        if start > 0 && index + 1 == start {
+            state.frozen_anchor_prefix = prefix.clone();
+        }
     }
     state.trees = trees;
     Ok(())
+}
+
+/// Reconstruct derived state after anchor grouping or runtime deserialization.
+/// Use exactly the eager fitter's baseline and tree accumulation order.
+pub(super) fn cache_frozen_anchor_prefix(
+    state: &mut StoreState,
+    store: &LearnedStore,
+    config: &FpmLearnedConfig,
+) {
+    let start = mutable_start(config, store.trees.len());
+    state.frozen_anchor_prefix = if start == 0 {
+        Vec::new()
+    } else {
+        let mut prefix = vec![store.baseline; state.anchors.y.len()];
+        for tree in &store.trees[..start] {
+            for (row, p) in prefix.iter_mut().enumerate() {
+                let offset = row * state.anchors.width;
+                let x = &state.anchors.x[offset..offset + state.anchors.width];
+                *p += tree.value[leaf_index(tree, x)];
+            }
+        }
+        prefix
+    };
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -696,6 +724,9 @@ fn eager_fit(
     let mut replacement = store.clone(); // Small prediction arrays, never the N×T learner.
     let mut prefix = vec![store.baseline; rows.len()];
     let start = mutable_start(config, store.trees.len());
+    if start > 0 {
+        prefix[..rows.anchors.y.len()].copy_from_slice(&state.frozen_anchor_prefix);
+    }
     let mut states = Vec::with_capacity(store.trees.len() - start);
     let mut recent_gradients = if lazy(config) {
         vec![vec![0.0; store.trees.len()]; rows.recent.len()]
@@ -706,7 +737,7 @@ fn eager_fit(
     let weights = GroupWeights::new(config, rows.anchors.original_rows(), rows.recent.len());
     for (index, tree) in replacement.trees.iter_mut().enumerate() {
         if index < start {
-            for (i, p) in prefix.iter_mut().enumerate() {
+            for (i, p) in prefix.iter_mut().enumerate().skip(rows.anchors.y.len()) {
                 *p += tree.value[leaf_index(tree, rows.x(i))];
             }
             continue;
@@ -1037,29 +1068,29 @@ fn lazy_fit(
     }
 }
 
-/// Returns (predictor, eager, lazy_fallback, rebuilt_nodes). Dataset membership
-/// is committed only after fitting succeeds; failed batches remain pending.
+/// Returns (predictor, eager, lazy_fallback, rebuilt_nodes), or None when only
+/// never-fitted pending rows expired. Dataset membership is committed only
+/// after fitting succeeds; failed batches remain pending.
 pub(super) fn fit_batch(
     state: &mut StoreState,
     store: &LearnedStore,
     config: &FpmLearnedConfig,
     target: &LearnedTarget,
-) -> Result<(LearnedStore, bool, bool, u64), AicError> {
+    next_row_id: u64,
+) -> Result<Option<(LearnedStore, bool, bool, u64)>, AicError> {
     // FIFO membership is staged until the complete fitting transaction succeeds.
+    // All stores share the accepted-observation clock. Another store may have
+    // advanced it since this store last admitted a pending row.
+    let oldest_retained_id = config
+        .recent_max_age_observations
+        .map(|age| next_row_id.saturating_sub(age as u64));
     let retained_ids: std::collections::BTreeSet<u64> = state
         .recent
         .iter()
         .chain(&state.pending)
         .rev()
         .take(config.recent_window)
-        .filter(|row| {
-            config.recent_max_age_observations.is_none_or(|age| {
-                state
-                    .pending
-                    .last()
-                    .is_none_or(|last| row.id >= last.id.saturating_sub(age as u64 - 1))
-            })
-        })
+        .filter(|row| oldest_retained_id.is_none_or(|oldest| row.id >= oldest))
         .map(|row| row.id)
         .collect();
     let removals: Vec<_> = state
@@ -1075,6 +1106,13 @@ pub(super) fn fit_batch(
         .filter_map(|(i, row)| retained_ids.contains(&row.id).then_some(i))
         .collect();
     let dropped = state.recent.len() + state.pending.len() - retained_ids.len();
+    if removals.is_empty() && additions.is_empty() {
+        // Expired pending labels never contributed to fitted statistics. Do not
+        // apply another update_step or count a publication just to discard them.
+        state.pending.clear();
+        state.counters.evicted += dropped as u64;
+        return Ok(None);
+    }
     let try_lazy =
         lazy(config) && state.counters.batches_since_eager + 1 < config.eager_refresh_interval;
     if try_lazy {
@@ -1089,7 +1127,7 @@ pub(super) fn fit_batch(
                 state.recent.push_back(row);
             }
             state.counters.evicted += dropped as u64;
-            return Ok((result.store, false, false, 0));
+            return Ok(Some((result.store, false, false, 0)));
         }
     }
     let rows = Rows {
@@ -1123,7 +1161,7 @@ pub(super) fn fit_batch(
         }
     }
     state.counters.evicted += dropped as u64;
-    Ok((result.store, true, try_lazy, result.rebuilt))
+    Ok(Some((result.store, true, try_lazy, result.rebuilt)))
 }
 
 /// A conservative bound avoids publishing a model whose finite raw leaves can
