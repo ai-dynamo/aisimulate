@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = Path("scripts/ci/bundled_configs.json")
 BASELINE = Path(__file__).with_name("bundled_config_legacy.json")
 # Changes to this frozen exception set require an explicit checker/policy review.
-BASELINE_SHA256 = "8c283262bfd1a904f5b3ad9544c492c7a7b2f2c682408989eedb5ead4492545b"
+BASELINE_SHA256 = "5d88f361eba4d2e6a33a9fc5f5f6e1e2c1e45dca8fd4d39a7d0d69b412e3eafe"
 CONFIG_PREFIX = "aisimulate_core/model_configs/"
 CONFIG_SUFFIXES = {".json", ".yaml", ".yml", ".toml"}
 FIELDS = ("dependency_type", "name", "version", "spdx_license")

@@ -295,13 +295,13 @@
     {
       "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json",
       "sha256": "83c004ce1072723d175d384feff8d3a5d675aab7f7a902528e170a400a535314",
-      "origin": "upstream",
+      "origin": "legacy_unresolved",
       "source": {
         "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/config.json",
         "revision": "e815299b0bcbac849fa540c768ef21845365c9eb",
         "path": "config.json"
       },
-      "license": "MIT",
+      "license": "UNKNOWN",
       "copyright_owner": "DeepSeek",
       "modified": true,
       "notice": {
@@ -309,7 +309,12 @@
         "section": "DeepSeek model configuration files",
         "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
       },
-      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately.",
+      "unresolved_reason": "Upstream has MIT LICENSE-CODE and a separate LICENSE-MODEL. Canonical notices currently assign MIT, but applicability to this copied configuration requires maintainer/OSRB confirmation.",
+      "upstream_license_files": {
+        "code": "https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/LICENSE-CODE",
+        "model": "https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/LICENSE-MODEL"
+      }
     },
     {
       "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json",

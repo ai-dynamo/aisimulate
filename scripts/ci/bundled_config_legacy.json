@@ -31,6 +31,7 @@
     "aisimulate_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json": "3ae7fa89c2f7d1354096418ddaf1331e9e0898a8ca11e804fb6dbaa087efb7da",
     "aisimulate_core/model_configs/XiaomiMiMo--MiMo-7B-Base_config.json": "3e0849e97570c2a9f6efa30b801f69a9943e7022fbba99381fd6003a3562c442",
     "aisimulate_core/model_configs/XiaomiMiMo--MiMo-V2-Flash_config.json": "302eebf52fa0dae403ab6fd1783b932900246fc309db2cc9d486ec0b7471a217",
+    "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json": "83c004ce1072723d175d384feff8d3a5d675aab7f7a902528e170a400a535314",
     "aisimulate_core/model_configs/google--gemma-4-26B-A4B_config.json": "0364256c5de7863a22b5dd666043d542d42b681c02fd83eb67dc7b483d859e96",
     "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-405B_config.json": "b75e46be030e920b46bc5e92de48554ce07937ced57b1b2fe1ba722cc94ffc76",
     "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-70B_config.json": "5866f0abbb3050fd6948c0afde03651b2445a16480338ff01dc11d4a12ccd3f2",
