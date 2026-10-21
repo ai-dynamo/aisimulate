@@ -75,6 +75,19 @@ jobs:
         run: |
           python scripts/ci/check_copyright.py
           python scripts/ci/check_packaged_legal_files.py
+      - name: Check bundled configuration provenance
+        run: |
+          python -m pytest -c /dev/null tests/test_bundled_configs.py -q \
+            -p no:cacheprovider --override-ini="addopts=" --override-ini="filterwarnings=error" \
+            --override-ini="markers=unit: Unit tests"
+          python scripts/ci/check_bundled_configs.py \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-source"
+      - name: Preserve bundled configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-source
+          path: ${{ runner.temp }}/bundled-configs-source/*
+          if-no-files-found: error
       - name: Check documentation destinations
         run: |
           python -m unittest discover -s scripts/ci -p test_documentation_links.py

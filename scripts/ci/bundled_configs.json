@@ -1,0 +1,1029 @@
+{
+  "schema_version": 1,
+  "description": "Per-file provenance for bundled model configurations. Canonical license/copyright material remains in LICENSE and THIRD_PARTY_NOTICES.md.",
+  "licenses": {
+    "LicenseRef-Qwen3.8-Max": {
+      "license_text_sha256": [
+        "397da6f971d6949a826ac2b87bab4a9bd6cc895c2fc83737bcc84f6d48e4a351"
+      ]
+    },
+    "MIT": {
+      "license_text_sha256": [
+        "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      ]
+    },
+    "LicenseRef-Llama-4-Community": {
+      "license_text_sha256": [
+        "747b9ee8c0338f86a41799b6af9e7fdcce17cc8fb8b8b8d628f97bc68166710f"
+      ]
+    },
+    "Apache-2.0": {
+      "license_text_sha256": [
+        "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "aisimulate_core/model_configs/MiniMaxAI--MiniMax-M2.5_config.json",
+      "sha256": "3ff405539448d89e911d14d7f22eefe92c11b1294b74c1d7a0d100eb1bdd644c",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/MiniMaxAI--MiniMax-M2.7_config.json",
+      "sha256": "697c30492781d55ac516011f937b5cdec045710b5b0c9ca39a6ea277785df9aa",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/MiniMaxAI--MiniMax-M3_config.json",
+      "sha256": "7726ac24cb99116b67275430374140fcebd0525e55869b80ce3acb53848bc636",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-0.6B_config.json",
+      "sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-1.7B_config.json",
+      "sha256": "1ddb5b89ebc90dcb417a45c213d818577e65976454d29385c8f6140771d95197",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-235B-A22B-FP8_config.json",
+      "sha256": "f666a1099576294bf252b16a899d415425663ed1930b1482967ddd30b085bbc4",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-235B-A22B_config.json",
+      "sha256": "0ecd5d6fe6f2db6739e4e36ab06b88ebe7bd013ef31b9583f43796059a2b23a4",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-30B-A3B-FP8_config.json",
+      "sha256": "d33c579e6a0f520344712e22dfb9d6fa49ed23e43ce3f32f12daea43597eddae",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-30B-A3B_config.json",
+      "sha256": "2850ddb3bf7aecad20b611e2d44f3077fc8193f4827c93beddd4c02ad63c2297",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json",
+      "sha256": "b198935c1a28058dc92bbe402691948d8c9965316cd84aacac4a1c3efa48c1ca",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_hf_quant_config.json",
+      "sha256": "8b0a750ed2a9e81d1bec59ab11860b9d174f8e29a5c52cd5d24f2456ab7f9859",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-32B-FP8_config.json",
+      "sha256": "e546dacd2c772660270233f5579e9ab923cc2a7ec5ed3c58c27c2bc62cbf5169",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-32B_config.json",
+      "sha256": "97e295b63283935788fac5e4f8860862a56d4089538cafc93f0431f2ebe483bb",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-8B_config.json",
+      "sha256": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-Coder-480B-A35B-Instruct_config.json",
+      "sha256": "0c8da8dea4ef290b08290074f4c61c8cf10b998c073d9e5b778fe33862f8540b",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-235B-A22B-Instruct_config.json",
+      "sha256": "5f1c6d6b8e882070e72d5ea4a1ed132dd07da185a4a537ed091b98e54d32e5f2",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-2B-Instruct_config.json",
+      "sha256": "e8346dd5f0db75cc2f52ef0286cd8960c75479b721cca8ae919b5089904de289",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-30B-A3B-Instruct_config.json",
+      "sha256": "c92f442bae42407f2962908f157e8cdfe74dd398ee323885f81484acca871c6a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-32B-Instruct_config.json",
+      "sha256": "d2dd0c60d01b9e195d9447c52da61c7302d28828524914c044d9c6e1b81d0427",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-32B-Thinking_config.json",
+      "sha256": "d2dd0c60d01b9e195d9447c52da61c7302d28828524914c044d9c6e1b81d0427",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-4B-Instruct_config.json",
+      "sha256": "b3236c654bfdf45728e761d536328d6ea88bc5d982c8af30ee25cbad41b5eb53",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3-VL-8B-Instruct_config.json",
+      "sha256": "c1c2ccb5226e1bdb4049e0b27a662ddefd438ba87fa0d316575ffed60938e264",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.5-122B-A10B_config.json",
+      "sha256": "b2698498bc15b8942e8a0fa0fefb362a2e2488b3da38f14b4701885feb0be526",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.5-27B_config.json",
+      "sha256": "f8d190c5b89c1521220f935d2567a587d6e291ed69066a45a106560b05a2174c",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.5-35B-A3B_config.json",
+      "sha256": "5e4d7f74fec2f360eb9cfbfcd6ec0c4c76e684d3a11caaed259d9fd9bfbc7944",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.5-397B-A17B_config.json",
+      "sha256": "3ae7fa89c2f7d1354096418ddaf1331e9e0898a8ca11e804fb6dbaa087efb7da",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json",
+      "sha256": "b7396b749964c6afb5387c58e6425db8628e85f8ae66739d284eb1c8f42c4d4e",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B-FP8/blob/d2dc35658bcf77e66643428cb52e774cc3b5bd29/config.json",
+        "revision": "d2dc35658bcf77e66643428cb52e774cc3b5bd29",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-Qwen3.8-Max",
+      "copyright_owner": "Qwen",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "Qwen3.8-Max model configuration files",
+        "license_text_sha256": "397da6f971d6949a826ac2b87bab4a9bd6cc895c2fc83737bcc84f6d48e4a351"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json",
+      "sha256": "4e3819548967e319ab435d044a3a331dbe3b078590ce822e9d74b79430533987",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/207bd685a7e3696cfaff12ded7c6a7ea0f88c996/config.json",
+        "revision": "207bd685a7e3696cfaff12ded7c6a7ea0f88c996",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-Qwen3.8-Max",
+      "copyright_owner": "Qwen",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "Qwen3.8-Max model configuration files",
+        "license_text_sha256": "397da6f971d6949a826ac2b87bab4a9bd6cc895c2fc83737bcc84f6d48e4a351"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/XiaomiMiMo--MiMo-7B-Base_config.json",
+      "sha256": "3e0849e97570c2a9f6efa30b801f69a9943e7022fbba99381fd6003a3562c442",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/XiaomiMiMo--MiMo-V2-Flash_config.json",
+      "sha256": "302eebf52fa0dae403ab6fd1783b932900246fc309db2cc9d486ec0b7471a217",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-R1_config.json",
+      "sha256": "79ddea672a62e95d3f0be27be434375538e1988975971cffcf87c96c1de84a65",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1/blob/56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad/config.json",
+        "revision": "56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json",
+      "sha256": "c7fa8b191e9936d8e6a57d864baab82b792fae16a116416cdd3a75ba76bc5af1",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3.2/blob/c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3/config.json",
+        "revision": "c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json",
+      "sha256": "83c004ce1072723d175d384feff8d3a5d675aab7f7a902528e170a400a535314",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/e815299b0bcbac849fa540c768ef21845365c9eb/config.json",
+        "revision": "e815299b0bcbac849fa540c768ef21845365c9eb",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": true,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      },
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json",
+      "sha256": "1821e692ca68149e482538400dfb4fc5a0b4dc5da9d6659952c8a4934d5763f4",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/60d8d70770c6776ff598c94bb586a859a38244f1/config.json",
+        "revision": "60d8d70770c6776ff598c94bb586a859a38244f1",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": true,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      },
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json",
+      "sha256": "6fccb45a06b59a94033d0c74ec23bf860e67bc0f4ebc18ea1e33d357fac3336c",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/b5968e9190ef611bbf34a7229255be88a0e937c1/config.json",
+        "revision": "b5968e9190ef611bbf34a7229255be88a0e937c1",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": true,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      },
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+    },
+    {
+      "path": "aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json",
+      "sha256": "8be45ce0476004a3f529fd896115a4a2e800a129ad2d3ec05b16050f52e21879",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/fb2764a5cf321eaa5070ca8f9e892818f477c16d/config.json",
+        "revision": "fb2764a5cf321eaa5070ca8f9e892818f477c16d",
+        "path": "config.json"
+      },
+      "license": "MIT",
+      "copyright_owner": "DeepSeek",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "DeepSeek model configuration files",
+        "license_text_sha256": "789377a8cfe3a67c77bd2bd9f9cb9b0142a9a905906c91bcaba52092a8d03169"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/google--gemma-4-26B-A4B_config.json",
+      "sha256": "0364256c5de7863a22b5dd666043d542d42b681c02fd83eb67dc7b483d859e96",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json",
+      "sha256": "39f9056ad8911d045fc44a9174e9b4acb8b42f9fc583dc92e62a9e107491bd18",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json",
+        "revision": "73d14711bcc77c16df3470856949c3764056b617",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-Llama-4-Community",
+      "copyright_owner": "Meta Platforms, Inc.",
+      "modified": true,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "Meta Llama 4",
+        "license_text_sha256": "747b9ee8c0338f86a41799b6af9e7fdcce17cc8fb8b8b8d628f97bc68166710f",
+        "required_attribution": [
+          "Llama 4 is licensed under the Llama 4 Community License, Copyright \u00a9 Meta Platforms, Inc. All Rights Reserved."
+        ]
+      },
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json",
+      "sha256": "5eda6f9bdb2bd6b6959455679f75c4c107ea763b3cce0f9e0c74091ca80d1906",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json",
+        "revision": "92f3b1597a195b523d8d9e5700e57e4fbb8f20d3",
+        "path": "config.json"
+      },
+      "license": "LicenseRef-Llama-4-Community",
+      "copyright_owner": "Meta Platforms, Inc.",
+      "modified": true,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "section": "Meta Llama 4",
+        "license_text_sha256": "747b9ee8c0338f86a41799b6af9e7fdcce17cc8fb8b8b8d628f97bc68166710f",
+        "required_attribution": [
+          "Llama 4 is licensed under the Llama 4 Community License, Copyright \u00a9 Meta Platforms, Inc. All Rights Reserved."
+        ]
+      },
+      "modifications": "Configuration adapted for AISimulate; see the source revision and canonical attribution. Bundled bytes are pinned separately."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-405B_config.json",
+      "sha256": "b75e46be030e920b46bc5e92de48554ce07937ced57b1b2fe1ba722cc94ffc76",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-70B_config.json",
+      "sha256": "5866f0abbb3050fd6948c0afde03651b2445a16480338ff01dc11d4a12ccd3f2",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+      "sha256": "398adf8b93f20e64932517492099d4e471e36a1723b5bf4e1311638f6a13f909",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/meta-models--Muse-Glimmer-30B_config.json",
+      "sha256": "5a9df2d8a385b3d361ab6ae68d73586f4e775033933bd0cd863fb7f3820e6a14",
+      "origin": "upstream",
+      "source": {
+        "url": "https://huggingface.co/meta-models/Muse-Glimmer-30B/blob/f84ecc3a0ea984a4c04542a84269e3d065350a6e/config.json",
+        "revision": "f84ecc3a0ea984a4c04542a84269e3d065350a6e",
+        "path": "config.json"
+      },
+      "license": "Apache-2.0",
+      "copyright_owner": "Meta Platforms, Inc. and affiliates.",
+      "modified": false,
+      "notice": {
+        "file": "THIRD_PARTY_NOTICES.md",
+        "license_text_sha256": "9f0fa95bf1bc23b53b6f0620c72ab54a8bb8a4ff79b2235f283722bf4a2b110a",
+        "section": "Meta Muse Glimmer model configuration",
+        "license_file": "LICENSE"
+      }
+    },
+    {
+      "path": "aisimulate_core/model_configs/mistralai--Mixtral-8x22B-v0.1_config.json",
+      "sha256": "76c13a9f976ff6389ed2c6b6c5e3a6b056a3778ac2e9666f04f9a8b693bf5e38",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/mistralai--Mixtral-8x7B-v0.1_config.json",
+      "sha256": "7a2531a01919d29c44b33515c16c63456b4ce853aa7ae1d7bd676f99c51afff7",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/moonshotai--Kimi-K2-Instruct_config.json",
+      "sha256": "17caf15bd0614a4580e066eec2f459f5b0b1372648e355e6d770305b092662ce",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/moonshotai--Kimi-K2.5_config.json",
+      "sha256": "1a8a4903e63893b0f5be0450a089cee4a36778900cafae913e0c21208b462ce0",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/moonshotai--Kimi-K3_config.json",
+      "sha256": "9710e121a58d03ac92c8d6da287a19541994319afbbe6d6202af001ffd379213",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V3.1-NVFP4_config.json",
+      "sha256": "29b950edfbf0d38ebb921f2007fb01e5a63afe33d7e096cc546ad93868e2d0a4",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V3.1-NVFP4_hf_quant_config.json",
+      "sha256": "59f3db248b2e81f9ab0ac51ca8eba1f2ac4449156df8659982f70a97d48b1b65",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V3.2-NVFP4_config.json",
+      "sha256": "6c15a56d351458fa62d2eb1b6fa6a56d150c48b9eb520bab00a85ae608b59488",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V3.2-NVFP4_hf_quant_config.json",
+      "sha256": "f92c34c4bce4fb655705e7234a13d402d2735410d02a0c52c8bb080d052a91b9",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V4-Flash-NVFP4_config.json",
+      "sha256": "0c5dc7303ff322d73e0cd5caf9cc1b65d6efeff68fab53514531c2e959b1d616",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V4-Flash-NVFP4_hf_quant_config.json",
+      "sha256": "1fbdb2bd9831a11cb822bc048fd45180927bcfb821ba32a3a7050f96a37b0b5f",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V4-Pro-NVFP4_config.json",
+      "sha256": "05e9f7d612bb89a9eef2e973af50d5d99e747668a76f398a13eed0d9b155ce09",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--DeepSeek-V4-Pro-NVFP4_hf_quant_config.json",
+      "sha256": "9f5773b597b3ab01ea9c3f2ddbbea6719bb455e58f53b23ae22c4aad69dc0451",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5-NVFP4_config.json",
+      "sha256": "308d3ceebe7bd9c2246d20550d5b793098dd03838d1e504f8236063ae152bcae",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5-NVFP4_hf_quant_config.json",
+      "sha256": "6ccd19d1220c1fffa24eb7af3e3273032d1b02c6b80b693fd31fbee3fa73ea56",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.1-NVFP4_config.json",
+      "sha256": "cdd21b8a536b06387c099363df529d6bebdd4c88a890686a7bbbcc32c196f0d6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.1-NVFP4_hf_quant_config.json",
+      "sha256": "d481bfd88c63196413458727eec6e91799b4c3850813794f5b7e27fc19b82e7a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_config.json",
+      "sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.2-NVFP4_hf_quant_config.json",
+      "sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json",
+      "sha256": "e23c5d98f53e861d49a51bd3c68591621c5482ce829e42c31724152322fba03d",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json",
+      "sha256": "1277df937b780e7de8eace66286ffad207f57d33b536b40c9c35635b235c17c6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_config.json",
+      "sha256": "d3783a603e5aa9cb58eff7a5d8ac9c42d83156b229efe185c72e9e2dc8444923",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--GLM-5.3-NVFP4_hf_quant_config.json",
+      "sha256": "212394aabaa6a4e7823668e7a03d6295422aa2ca2cbdbfbfc519eab602ad20e6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Gemma-4-26B-A4B-NVFP4_config.json",
+      "sha256": "4e379cc809c617a49179a49140f553a2d6a5ec538ed480832b0c54f6ace43d98",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Gemma-4-26B-A4B-NVFP4_hf_quant_config.json",
+      "sha256": "fca2ea21cded31e6cff2c56ee83a162dcd5d3ff292cbf2f6083702e9fc324454",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Gemma-4-31B-IT-NVFP4_config.json",
+      "sha256": "aa03a6a490fb743b8186f09c60ec39a30fdbaf7c3a18dfef8e52a62c2beb9ae4",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Gemma-4-31B-IT-NVFP4_hf_quant_config.json",
+      "sha256": "7295b239347a50abc3888c4a8208b8644eb0bd3d92810117bdea1768e5f21129",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Kimi-K2.5-NVFP4_config.json",
+      "sha256": "c375d7d566b6fa706ba46fec9ef938e829c5ba1accb20541d4f0c75dddefcd8f",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Kimi-K2.6-NVFP4_config.json",
+      "sha256": "af4c0fea7ec43d5438532eeef8daa9fcabbdf97ddedc9da2319aa675f68f51ff",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Kimi-K2.6-NVFP4_hf_quant_config.json",
+      "sha256": "6ee4be1d46bf2b5204284b6641ed7bb5d9fc2fc7e8157a4eb06d5fe500dddc3a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Kimi-K2.7-Code-NVFP4_config.json",
+      "sha256": "b203b07a34c3462df0b30eea7c99cc31b3d682c365cacc75edb8823a0ab97758",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Kimi-K2.7-Code-NVFP4_hf_quant_config.json",
+      "sha256": "4baf41307796a29aa0dc67de3ab33d590b9ad20bac5042b22dac842b3ecb766c",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Llama-3.1-70B-Instruct-FP8_config.json",
+      "sha256": "cfd56137fa9c0632c022a322e8e19e4dcc0474e1b2f0c7d9f7cc64d212c9fd18",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Llama-3.1-70B-Instruct-FP8_hf_quant_config.json",
+      "sha256": "8d26f1ffdd8b22de0f7b280923af5806dfaff6b0dc5aacc454782732cc0795dd",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Llama-3_3-Nemotron-Super-49B-v1_config.json",
+      "sha256": "ea288aea647aa22e9a233aca6db14cd9ef0ee96773074dbf34cbcd9cc53a4747",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M2.5-NVFP4_config.json",
+      "sha256": "c59bf551a0c315a6d8101afaf441fd53108792e997796e0e3e9cfe75903362fd",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M2.5-NVFP4_hf_quant_config.json",
+      "sha256": "253ea166454ff40d6a5387379973156c8bf9aee56e34d3d08e543925ab9f0b19",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M2.7-NVFP4_config.json",
+      "sha256": "24abe73e3a7d4d2e8e0d20ea13f322b8823a804e6598a4d0f7bfc0d0d367ea9d",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M2.7-NVFP4_hf_quant_config.json",
+      "sha256": "b8c904443b70ab92b6c6ca3b54081cbce84c60a215e50a6ed59e28a4dcc45d0e",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M3-NVFP4_config.json",
+      "sha256": "440d22038ffa0bcb93fa01e8d2d555e3840d939167c08eace81b9cce386fb117",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--MiniMax-M3-NVFP4_hf_quant_config.json",
+      "sha256": "11581ca203bcd77dae53cc77b49392cb17545b097586249dfac12e093bfaa1ec",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16_config.json",
+      "sha256": "cf3cc01496f22ebc4f969e6ffbea75ff8796a94b406d16cc1e12520923f82474",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4_config.json",
+      "sha256": "f4fcbaaaed3ee215f86205a7600636cd930bde069f2b603d7ff908c046a0cd96",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4_hf_quant_config.json",
+      "sha256": "e98beaf63ecc8d9fe07257984370549dfd637254fff477cc5cc8a00f446d5c3c",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json",
+      "sha256": "4e5eef674539c087f87eb24534cee57ee00219f18e5311eba8640d4d6bdd968a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_hf_quant_config.json",
+      "sha256": "9419fe2913d51002bed43b4aebe1e71a48978645aa79f30d7f79720eb9cd58d5",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json",
+      "sha256": "ca3c3905933218c19214b2222473abda4c38a884b7f8d0f312b20d54b16251d6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_hf_quant_config.json",
+      "sha256": "62a90df1fe0a7346f83db88da82ee5ee28dfa7cdded0dc949cfa428b94186700",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16_config.json",
+      "sha256": "f0bdfbad05ddf17f50ca06c91696e17ebcc7a7fefd3bfb2ec5a088801a7a6d5e",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8_config.json",
+      "sha256": "f0bdfbad05ddf17f50ca06c91696e17ebcc7a7fefd3bfb2ec5a088801a7a6d5e",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8_hf_quant_config.json",
+      "sha256": "1ff70dcbe6be5d58b1b1fe6282e6dfd2bee4328c6c5a4df03160dbed963af11a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json",
+      "sha256": "f0bdfbad05ddf17f50ca06c91696e17ebcc7a7fefd3bfb2ec5a088801a7a6d5e",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_hf_quant_config.json",
+      "sha256": "22afb7331a805475caebf8a9a3b6ad5e498a9abacb1c575c06423a728f3f76f7",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json",
+      "sha256": "3440a8570e178cfc8a44e0877d48d6bc959cceed89a8e3a9afa7fa45790dea4e",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_hf_quant_config.json",
+      "sha256": "b680153193d9845c5320cc97aa3e9ca3a27d81709449b1c96eda199f6df9564a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Nemotron-H-56B-Base-8K_config.json",
+      "sha256": "4db4f4ccd945ff562b01374c67c7a369ca691c04b3b000cbfa09e7b4f36d71bd",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3-235B-A22B-NVFP4_config.json",
+      "sha256": "ae63d836960de3676f5a391e0cbf4e838f7bb6e53e4bb8056970c1e3177e74f9",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3-235B-A22B-NVFP4_hf_quant_config.json",
+      "sha256": "6423e9dd81773597a783e1109ffeb8d8b6a30a85c0eb4e503524a4fdf5f7f98b",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.5-122B-A10B-NVFP4_config.json",
+      "sha256": "4bbd5a6e8662d412cb6e57efeee5dfd4f8e13dc07e2b43398994f85a58f9993d",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.5-122B-A10B-NVFP4_hf_quant_config.json",
+      "sha256": "0ee08c97b6123d808734e28951385ce0722c61737ac8c14a9f9a9e3889646c83",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4_config.json",
+      "sha256": "8058591f5ffb5bdacf6cdd87a0d1db126a12cf19259257aec25a91ec22918779",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.5-397B-A17B-NVFP4_hf_quant_config.json",
+      "sha256": "f5f3730bc4233c54c7e632884d6d29a6e82bc3e66ae6da8e46e14ce441a1da1b",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.6-27B-NVFP4_config.json",
+      "sha256": "c04a19ba293737ad7be4f6e96d6666cb7e479cbe19ecc0c289fad267135b0338",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.6-27B-NVFP4_hf_quant_config.json",
+      "sha256": "fd7200cd8bca2a8a5d777061521abf83e2deb97ab6bc2f04e7a0a3d3f8ecd5c1",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.6-35B-A3B-NVFP4_config.json",
+      "sha256": "58aefa1c9eff7989f431d748f2ddec39446cb1fd2a69acc46e285c6a37b0cecc",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/nvidia--Qwen3.6-35B-A3B-NVFP4_hf_quant_config.json",
+      "sha256": "75fe7cc8d5836b58734e05ee67423a4ce91d602aaad45c8173a1b7597cd57663",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/openai--gpt-oss-120b_config.json",
+      "sha256": "16ab7c244969a11c430e3b01da1fca8e842f82b057db4c0a1397f8381bf7ac5a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/openai--gpt-oss-20b_config.json",
+      "sha256": "afeaac8ba417e457b97e896dbaaed6f3b33870b968060b59453cda60c6adbd4c",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/sgl-project--DeepSeek-V4-Flash-FP8_config.json",
+      "sha256": "266d9d86331c1938a3341c23e4b369cd23ef017ab603c5cb86e61fd0ca3c95a3",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/sgl-project--DeepSeek-V4-Pro-FP8_config.json",
+      "sha256": "1e1d71e54a916e82d40147d7c4d05034766b5893766f780f1b7e15f4b5ce4be6",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash-FP8_config.json",
+      "sha256": "14631d0d410d13af9fbe6a83ebc3b81b75c55520dd335acb0e92a08f55f0c246",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/stepfun-ai--Step-3.7-Flash_config.json",
+      "sha256": "873c684ec45f9bcb492245e140022e68cba30a6f3fd302da9fd2328397638717",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5-FP8_config.json",
+      "sha256": "5ea2d79d3a77fe90836c18893de00996d096cd01516b52b88c6fc18993cb4df8",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.1-FP8_config.json",
+      "sha256": "69b4e81fafca7389fa1e102046ea13aa1c6ec9ed64a9a00f2056fe402034c8ec",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.1_config.json",
+      "sha256": "726e45e28d1be1636a5834048a4101a2cfe384819ad2ebe08d41f6fe04656526",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.2-FP8_config.json",
+      "sha256": "22e49334abf8562fecf70ca3292ba3f5b33f5602fb2bf10b52dd64a66cfe65ff",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.2_config.json",
+      "sha256": "185f93ee6d12548e16a847e279dc0c3c90b1524c970b0866b42fb545747d859a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.3-FP8_config.json",
+      "sha256": "22e49334abf8562fecf70ca3292ba3f5b33f5602fb2bf10b52dd64a66cfe65ff",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json",
+      "sha256": "bb8f01c42cb92a52ca72e65afb4d5bd8d11aef083cd210e8de25dfb904f23e9f",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5.3_config.json",
+      "sha256": "185f93ee6d12548e16a847e279dc0c3c90b1524c970b0866b42fb545747d859a",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    },
+    {
+      "path": "aisimulate_core/model_configs/zai-org--GLM-5_config.json",
+      "sha256": "308d3ceebe7bd9c2246d20550d5b793098dd03838d1e504f8236063ae152bcae",
+      "origin": "legacy_unresolved",
+      "license": "UNKNOWN",
+      "unresolved_reason": "Pre-existing configuration from the bootstrap source commit; upstream revision, license and modification status have not been individually established."
+    }
+  ]
+}
