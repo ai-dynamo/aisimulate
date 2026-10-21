@@ -876,6 +876,11 @@ class Task:
     # =====================================================================
 
     def __post_init__(self) -> None:
+        # The Literal annotation is not enforced at runtime; reject removed or
+        # unknown modes here instead of building a disagg-shaped Task.
+        if self.serving_mode not in ("agg", "disagg"):
+            hint = f" AFD was removed from Task. {_AFD_MIGRATION_HINT}" if self.serving_mode == "afd" else ""
+            raise ValueError(f"Invalid serving_mode: {self.serving_mode!r}; use 'agg' or 'disagg'.{hint}")
         self.moe_backend = config.normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = config.normalize_kernel_backend(
             self.attention_backend,
@@ -950,8 +955,6 @@ class Task:
         workers model the engines' encoder-instance default (weight-sharded
         ViT), and language-only P/agg workers host no ViT to shard."""
         if self.enable_epd:
-            if self.serving_mode not in ("agg", "disagg"):
-                raise ValueError(f"enable_epd requires serving_mode 'agg' or 'disagg', got {self.serving_mode!r}.")
             self.enable_encoder_dp = False
 
     def _validate_megamoe_backend_support(self) -> None:
