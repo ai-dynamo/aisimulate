@@ -52,6 +52,18 @@ impl ImageSpec {
     }
 }
 
+/// Rank named by a router's `kv.fetch` hint as the holder of a prompt prefix.
+///
+/// It stands in for the hint's `source_control_endpoint`, which identifies one
+/// worker and attention-DP rank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct KvHintSource {
+    /// Logical worker owning the source rank.
+    pub worker_id: u64,
+    /// Attention-DP rank within that worker.
+    pub dp_rank: u32,
+}
+
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -72,6 +84,10 @@ pub struct Request {
     /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,
+    /// Optional router hint naming another rank that may hold a prefix of
+    /// `tokens`. Never the receiving rank itself. Engines without KVCR ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kv_hint: Option<KvHintSource>,
 }
 
 /// Commands supported by the standalone scheduler.

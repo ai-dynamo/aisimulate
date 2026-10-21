@@ -65,6 +65,14 @@ impl ReadyCounts {
     }
 }
 
+/// One client's next event, from [`FairTransfers::next_client_events`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClientEvent {
+    /// Jobs past their first byte, by direction.
+    ready: [usize; 2],
+    pub(crate) at: f64,
+}
+
 #[derive(Default)]
 pub(crate) struct FairTransfers {
     now: f64,
@@ -108,6 +116,41 @@ impl FairTransfers {
             .iter()
             .map(|job| self.event_time(job, &counts))
             .min_by(f64::total_cmp)
+    }
+
+    /// Earliest first-byte or completion event of each client with jobs, as
+    /// `(client, event)` into `events`, in two passes over all jobs. `events` is
+    /// cleared first and keeps its capacity. With an unlimited `shared_rate`,
+    /// only a client's own jobs set their rates, so no other client's event
+    /// can move its event earlier.
+    pub(crate) fn next_client_events(&self, events: &mut FxHashMap<u64, ClientEvent>) {
+        events.clear();
+        for job in &self.jobs {
+            debug_assert!(job.shared_rate.is_infinite());
+            let event = events.entry(job.client).or_insert(ClientEvent {
+                ready: [0; 2],
+                at: f64::INFINITY,
+            });
+            if job.ready <= self.now {
+                event.ready[job.direction as usize] += 1;
+            }
+        }
+        for job in &self.jobs {
+            let event = events
+                .get_mut(&job.client)
+                .expect("the first pass counts every client");
+            let at = if job.ready > self.now {
+                job.ready
+            } else {
+                // Same arithmetic as `ReadyCounts::rate`, so the event
+                // matches the boundary `advance` selects.
+                let rate = job.client_rate / event.ready[job.direction as usize].max(1) as f64;
+                self.now + job.bytes / rate
+            };
+            if at.total_cmp(&event.at).is_lt() {
+                event.at = at;
+            }
+        }
     }
 
     /// Move service to `target`, returning `(job id, completion time)` in
@@ -264,5 +307,29 @@ mod tests {
         assert_eq!((visits.get(), counts.total), (64, [16, 16]));
         assert_eq!(counts.rate(&jobs[0]), MB / 8.0);
         assert_eq!(ReadyCounts::new(jobs.iter(), 1.0).rate(&jobs[0]), MB / 16.0);
+    }
+
+    #[test]
+    fn a_client_event_ignores_other_clients_under_an_unlimited_shared_rate() {
+        let mut transfers = FairTransfers::default();
+        let mut events = FxHashMap::default();
+        let mut event = |transfers: &FairTransfers, client| {
+            transfers.next_client_events(&mut events);
+            events.get(&client).map(|event| event.at)
+        };
+        // Client 0: two 1 MB reads share 1 GB/s; client 1: one read ready at 0.5.
+        for id in 0..2 {
+            transfers.submit(job(id, 0, Direction::Read, 0.0, (1.0, 0.0)));
+        }
+        transfers.submit(job(2, 1, Direction::Read, 0.5, (1.0, 0.0)));
+        assert_eq!(transfers.next_event(), Some(0.5));
+        assert_eq!(event(&transfers, 0), Some(2.0));
+        assert_eq!(event(&transfers, 1), Some(0.5));
+        assert_eq!(event(&transfers, 7), None);
+        // Each prediction is the boundary `advance` selects.
+        assert_eq!(transfers.advance(1.0), []);
+        assert_eq!(event(&transfers, 1), Some(1.5));
+        assert_eq!(transfers.advance(2.0), [(2, 1.5), (0, 2.0), (1, 2.0)]);
+        assert_eq!(event(&transfers, 0), None);
     }
 }

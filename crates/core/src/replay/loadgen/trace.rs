@@ -26,12 +26,6 @@ use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
 use crate::engine::ImageSpec;
 use crate::replay::protocol::DirectRequest;
 
-/// High bits marking a synthetic image placeholder block hash. Distinct from the
-/// cached-prefix (`0xCAC0`) and prefix-group (`0xD00D`) tags so image tokens never
-/// collide with text blocks; identity occupies bits 20..48 and the block index
-/// within the image the low 20 bits.
-const IMAGE_HASH_TAG: u64 = 0x1A6E_0000_0000_0000;
-
 #[derive(Debug, Deserialize)]
 struct RawAppliedComputeAgenticRecord {
     num_turns: usize,
@@ -269,6 +263,8 @@ pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRo
     }
 }
 
+const HASH_ID_OVERFLOW: &str = "trace contains more unique hash IDs than u32 can represent";
+
 #[derive(Debug, Default)]
 struct HashIdInterner {
     canonical_ids: FxHashMap<u64, u32>,
@@ -302,13 +298,63 @@ impl HashIdInterner {
         match self.canonical_ids.entry(hash_id) {
             std::collections::hash_map::Entry::Occupied(entry) => Ok(*entry.get()),
             std::collections::hash_map::Entry::Vacant(entry) => {
-                let canonical_id = u32::try_from(next_id)
-                    .context("trace contains more unique hash IDs than u32 can represent")?;
+                let canonical_id = u32::try_from(next_id).context(HASH_ID_OVERFLOW)?;
                 entry.insert(canonical_id);
                 Ok(canonical_id)
             }
         }
     }
+}
+
+/// A run of generated blocks that recurs across prompts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SharedBlocks {
+    /// A prefix group's shared prompt prefix.
+    Group(u64),
+    /// One image identity's placeholder tokens.
+    Image(u64),
+}
+
+/// Dense block IDs for generated prompts, in first-seen order. Shared runs keep
+/// their block IDs here; every other block takes the next ID without a map
+/// entry.
+#[derive(Debug, Default)]
+pub(super) struct SyntheticHashIds {
+    pub(super) next_id: usize,
+    /// Each shared run's block IDs, by offset into the run.
+    shared: FxHashMap<SharedBlocks, Vec<u32>>,
+}
+
+impl SyntheticHashIds {
+    /// Appends new IDs until `hash_ids` holds `len` blocks.
+    pub(super) fn fill_unique(&mut self, hash_ids: &mut Vec<u32>, len: usize) -> Result<()> {
+        fill_new_hash_ids(&mut self.next_id, hash_ids, len)
+    }
+
+    /// Appends the first `len` blocks of a shared run, numbering blocks the run
+    /// has not used before.
+    pub(super) fn extend_shared(
+        &mut self,
+        hash_ids: &mut Vec<u32>,
+        run: SharedBlocks,
+        len: usize,
+    ) -> Result<()> {
+        let ids = self.shared.entry(run).or_default();
+        fill_new_hash_ids(&mut self.next_id, ids, len)?;
+        hash_ids.extend_from_slice(&ids[..len]);
+        Ok(())
+    }
+}
+
+fn fill_new_hash_ids(next_id: &mut usize, hash_ids: &mut Vec<u32>, len: usize) -> Result<()> {
+    let end = next_id
+        .checked_add(len.saturating_sub(hash_ids.len()))
+        // IDs run up to `u32::MAX` inclusive, as in `HashIdInterner`.
+        .filter(|&end| end <= 1 << 32)
+        .context(HASH_ID_OVERFLOW)?;
+    hash_ids.extend((*next_id..end).map(|id| id as u32));
+    *next_id = end;
+    Ok(())
 }
 
 pub fn validate_trace_files(format: TraceFileFormat, paths: &[PathBuf]) -> Result<()> {
@@ -433,6 +479,7 @@ impl TurnTrace {
             dp_rank: 0,
             preferred_dp_rank: None,
             preferred_prefill_dp_rank: None,
+            kv_hints: None,
             arrival_timestamp_ms,
             priority: self.priority,
             strict_priority: self.strict_priority,
@@ -692,8 +739,7 @@ impl Trace {
             .with_context(|| format!("failed to open trace file {}", path.display()))?;
         let reader = BufReader::new(file);
         let mut sessions = Vec::new();
-        let mut hash_id_interner = HashIdInterner::default();
-        let mut next_unique_hash = 1_u64;
+        let mut synthetic_ids = SyntheticHashIds::default();
 
         for (line_idx, line) in reader.lines().enumerate() {
             let line = line.with_context(|| {
@@ -742,24 +788,19 @@ impl Trace {
                 );
             }
 
-            let group_id = if shared_prefix_ratio > 0.0 && num_prefix_groups > 0 {
-                Some(line_idx % num_prefix_groups)
-            } else {
-                None
-            };
             let mut current_input_length = raw.input_prompt_length;
+            let initial_blocks = current_input_length.div_ceil(trace_block_size);
             let mut hash_ids = Vec::new();
-            let shared_initial_blocks = ((current_input_length.div_ceil(trace_block_size) as f64)
-                * shared_prefix_ratio)
-                .round() as usize;
-            extend_applied_compute_agentic_hash_ids(
-                &mut hash_ids,
-                current_input_length,
-                trace_block_size,
-                shared_initial_blocks,
-                group_id,
-                &mut next_unique_hash,
-            )?;
+            if shared_prefix_ratio > 0.0 && num_prefix_groups > 0 {
+                let shared_initial_blocks =
+                    ((initial_blocks as f64) * shared_prefix_ratio).round() as usize;
+                synthetic_ids.extend_shared(
+                    &mut hash_ids,
+                    SharedBlocks::Group((line_idx % num_prefix_groups) as u64),
+                    shared_initial_blocks,
+                )?;
+            }
+            synthetic_ids.fill_unique(&mut hash_ids, initial_blocks)?;
 
             let mut turns = Vec::with_capacity(raw.num_turns + 1);
             let mut next_turn_delay_ms = 0.0;
@@ -776,7 +817,7 @@ impl Trace {
                 turns.push(TurnTrace {
                     input_length: current_input_length,
                     max_output_tokens: raw.assistant_response_length[turn_idx],
-                    hash_ids: hash_id_interner.intern_all(hash_ids.clone())?,
+                    hash_ids: hash_ids.clone(),
                     delay_after_previous_ms: next_turn_delay_ms,
                     ..Default::default()
                 });
@@ -790,13 +831,9 @@ impl Trace {
                             line_idx + 1
                         )
                     })?;
-                extend_applied_compute_agentic_hash_ids(
+                synthetic_ids.fill_unique(
                     &mut hash_ids,
-                    current_input_length,
-                    trace_block_size,
-                    shared_initial_blocks,
-                    group_id,
-                    &mut next_unique_hash,
+                    current_input_length.div_ceil(trace_block_size),
                 )?;
                 next_turn_delay_ms = tool_call_latency * 1000.0;
             }
@@ -804,7 +841,7 @@ impl Trace {
             turns.push(TurnTrace {
                 input_length: current_input_length,
                 max_output_tokens: raw.final_assistant_response_length,
-                hash_ids: hash_id_interner.intern_all(hash_ids)?,
+                hash_ids,
                 delay_after_previous_ms: next_turn_delay_ms,
                 ..Default::default()
             });
@@ -868,7 +905,6 @@ impl Trace {
                 images.identity_pool != Some(0),
                 "image identity_pool must be positive"
             );
-            // The placeholder hash keeps 28 bits of identity and 20 bits of block index.
             ensure!(
                 images.visual_tokens <= 1 << 20,
                 "image visual_tokens must not exceed 2^20"
@@ -899,8 +935,11 @@ impl Trace {
             .first_turn_arrivals
             .timestamps(spec.num_sessions, spec.arrival_seed)?;
 
-        let mut next_unique_hash = 1_u64;
-        let mut hash_id_interner = HashIdInterner::default();
+        // Every turn starts with the cached prefix, so it takes the first IDs.
+        let mut synthetic_ids = SyntheticHashIds::default();
+        let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
+        let mut cached_prefix = Vec::with_capacity(cached_prefix_blocks);
+        synthetic_ids.fill_unique(&mut cached_prefix, cached_prefix_blocks)?;
         for (session_idx, first_arrival_timestamp_ms) in first_arrivals.into_iter().enumerate() {
             let group_id = if spec.num_prefix_groups > 0 && spec.shared_prefix_ratio > 0.0 {
                 Some(rng.random_range(0..spec.num_prefix_groups) as u64)
@@ -918,36 +957,29 @@ impl Trace {
                         text_length
                     );
                 }
-                let (images, mut hash_ids) = synthetic_turn_images(&spec, &mut next_image);
+                let (images, mut hash_ids) =
+                    synthetic_turn_images(&spec, &mut next_image, &mut synthetic_ids)?;
                 let input_length =
                     text_length + images.iter().map(ImageSpec::visual_tokens).sum::<usize>();
                 let num_blocks = input_length.div_ceil(spec.block_size);
                 let grouped_prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
                 let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
-                let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
                 hash_ids.reserve(num_blocks.saturating_sub(hash_ids.len()));
-
-                for block_idx in 0..cached_prefix_blocks {
-                    hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
+                hash_ids.extend_from_slice(&cached_prefix);
+                if let Some(group_id) = group_id {
+                    synthetic_ids.extend_shared(
+                        &mut hash_ids,
+                        SharedBlocks::Group(group_id),
+                        grouped_prefix_blocks.saturating_sub(cached_prefix_blocks),
+                    )?;
                 }
-                for block_idx in cached_prefix_blocks..grouped_prefix_blocks {
-                    if let Some(group_id) = group_id {
-                        hash_ids.push(0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64);
-                    }
-                }
-
-                while hash_ids.len() < num_blocks {
-                    hash_ids.push(next_unique_hash);
-                    next_unique_hash = next_unique_hash
-                        .checked_add(1)
-                        .expect("synthetic hash id overflow");
-                }
+                synthetic_ids.fill_unique(&mut hash_ids, num_blocks)?;
 
                 turns.push(TurnTrace {
                     input_length,
                     max_output_tokens,
-                    hash_ids: hash_id_interner.intern_all(hash_ids)?,
+                    hash_ids,
                     delay_after_previous_ms: if turn_idx == 0 {
                         0.0
                     } else {
@@ -1553,7 +1585,7 @@ impl AgenticTraceBuilder {
         let hash_ids = self.hash_ids.intern_all(hash_ids)?;
         // Graph IDs stay below u32::MAX, as the driver's numbering always has.
         if self.hash_ids.len() > u32::MAX as usize {
-            bail!("trace contains more unique hash IDs than u32 can represent");
+            bail!(HASH_ID_OVERFLOW);
         }
         self.nodes.push(AgenticNode {
             replay_key,
@@ -2057,31 +2089,6 @@ fn relation_rank(relation: AgenticDependencyRelation) -> u8 {
     }
 }
 
-fn extend_applied_compute_agentic_hash_ids(
-    hash_ids: &mut Vec<u64>,
-    input_length: usize,
-    trace_block_size: usize,
-    shared_initial_blocks: usize,
-    group_id: Option<usize>,
-    next_unique_hash: &mut u64,
-) -> Result<()> {
-    let target_blocks = input_length.div_ceil(trace_block_size);
-    while hash_ids.len() < target_blocks {
-        let block_idx = hash_ids.len();
-        if block_idx < shared_initial_blocks
-            && let Some(group_id) = group_id
-        {
-            hash_ids.push(0xA63E_0000_0000_0000 | ((group_id as u64) << 32) | block_idx as u64);
-            continue;
-        }
-        hash_ids.push(*next_unique_hash);
-        *next_unique_hash = next_unique_hash
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("synthetic hash id overflow"))?;
-    }
-    Ok(())
-}
-
 /// Lay out one turn's image placeholders ahead of its text and return them with
 /// the per-token hash IDs of their placeholder blocks.
 ///
@@ -2092,9 +2099,10 @@ fn extend_applied_compute_agentic_hash_ids(
 fn synthetic_turn_images(
     spec: &SyntheticTraceSpec,
     next_image: &mut u64,
-) -> (Vec<ImageSpec>, Vec<u64>) {
+    synthetic_ids: &mut SyntheticHashIds,
+) -> Result<(Vec<ImageSpec>, Vec<u32>)> {
     let Some(images) = spec.images else {
-        return (Vec::new(), Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let mut specs = Vec::with_capacity(images.count);
     let mut hash_ids = Vec::with_capacity(images.count * images.visual_tokens);
@@ -2103,9 +2111,11 @@ fn synthetic_turn_images(
         let ordinal = *next_image;
         *next_image += 1;
         let identity = images.identity_pool.map_or(ordinal, |pool| ordinal % pool);
-        hash_ids.extend((0..images.visual_tokens as u64).map(|block_idx| {
-            IMAGE_HASH_TAG | ((identity & 0x0FFF_FFFF) << 20) | (block_idx & 0x000F_FFFF)
-        }));
+        synthetic_ids.extend_shared(
+            &mut hash_ids,
+            SharedBlocks::Image(identity),
+            images.visual_tokens,
+        )?;
         specs.push(ImageSpec {
             identity,
             token_start,
@@ -2115,7 +2125,7 @@ fn synthetic_turn_images(
         });
         token_start += images.visual_tokens;
     }
-    (specs, hash_ids)
+    Ok((specs, hash_ids))
 }
 
 fn sample_delay_ms(spec: &DelaySpec, rng: &mut StdRng) -> Result<f64> {

@@ -3,42 +3,19 @@
 
 //! G3 writes own G2 source pins; promotions own pending G2 destinations.
 //! Request termination detaches from admitted promotions rather than aborting I/O.
+use super::host_offload::{MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS, RestoreRounds};
+use super::kvcr::planned_meta;
 use crate::engine::g3_offload::{Direction, Probe, SharedG3Tier};
 use crate::engine::host_offload::{
-    HostBlockKey, HostBlockMeta, HostTier, Lookup, StoreOutcome, TransferId,
+    ExternalPlan, HostBlockKey, HostBlockMeta, HostTier, Lookup, TransferId,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use rustc_hash::FxHashSet;
+use std::collections::BTreeMap;
 use uuid::Uuid;
-
-/// Restore rounds (lookups that submit G3 promotions) a waiting request may
-/// make while its DP rank schedules no work and emits no output. A prefix
-/// larger than G2 can evict its own promotions forever; past this bound the
-/// request stops restoring from G3 and computes what G2 cannot supply. A
-/// request merely waiting behind running work never reaches it.
-const MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS: usize = 1024;
-
-/// Request-local G3 restore progress.
-#[derive(Default)]
-pub(super) struct G3Restore {
-    rounds_without_progress: usize,
-    /// The rank's progress count at this request's last round.
-    rank_progress: u64,
-}
-
-impl G3Restore {
-    pub(super) fn bypassed(&self) -> bool {
-        self.rounds_without_progress >= MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS
-    }
-
-    /// The request was scheduled or preempted: its restores start over.
-    pub(super) fn reset(&mut self) {
-        self.rounds_without_progress = 0;
-    }
-}
 
 struct G3StagingState {
     owner: Option<Uuid>,
-    reservations: Vec<TransferId>,
+    reservation: TransferId,
 }
 
 pub(super) struct VllmG3OffloadAdapter {
@@ -46,7 +23,7 @@ pub(super) struct VllmG3OffloadAdapter {
     worker: usize,
     stages: BTreeMap<u64, G3StagingState>,
     attempted_at: f64,
-    attempted: BTreeSet<(Uuid, HostBlockKey)>,
+    attempted: FxHashSet<(Uuid, HostBlockKey)>,
     pub(super) epoch: u64,
     observed_completion_epoch: u64,
     /// Passes in which this rank scheduled work or emitted output.
@@ -60,7 +37,7 @@ impl VllmG3OffloadAdapter {
             worker,
             stages: BTreeMap::new(),
             attempted_at: 0.0,
-            attempted: BTreeSet::new(),
+            attempted: FxHashSet::default(),
             epoch: 0,
             observed_completion_epoch: 0,
             rank_progress: 0,
@@ -93,14 +70,16 @@ impl VllmG3OffloadAdapter {
         self.epoch += u64::from(job.is_some());
     }
 
-    /// Return true only when a concrete pending transfer can wake the lookup.
+    /// Promote, as one G2 reservation, the leading `keys` G2 lacks and G3
+    /// holds. Return true only when a concrete pending transfer can wake the
+    /// lookup.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn stage(
         &mut self,
         tier: &mut HostTier,
         client: u64,
         owner: Uuid,
-        restore: &mut G3Restore,
+        restore: &mut RestoreRounds,
         keys: &[HostBlockKey],
         meta: Option<&[HostBlockMeta]>,
         now: f64,
@@ -109,12 +88,15 @@ impl VllmG3OffloadAdapter {
             self.attempted_at = now;
             self.attempted.clear();
         }
-        let mut missing = Vec::new();
-        let mut reservations = Vec::new();
+        let (mut plan, mut no_room) = (None::<ExternalPlan>, None);
         let mut deferred = false;
         let mut registry = self.registry.lock().unwrap();
-        for (index, key) in keys.iter().copied().enumerate() {
-            match tier.lookup(key) {
+        // Like vLLM's tiering manager, which reserves each promoted block with
+        // its own `prepare_write([key])`, a promotion protects only the blocks
+        // it reserves: it may evict a later G2 hit of this same prefix, which
+        // the walk then sees as missing.
+        for key in keys.iter().copied() {
+            match tier.planned_lookup(plan.as_ref(), key) {
                 Lookup::Hit => {}
                 Lookup::Pending { .. } => deferred = true,
                 Lookup::Miss => match registry.probe(self.worker, key) {
@@ -129,43 +111,51 @@ impl VllmG3OffloadAdapter {
                                 .iter()
                                 .copied()
                                 .take_while(|key| {
-                                    !matches!(tier.lookup(*key), Lookup::Miss)
-                                        || registry.contains(self.worker, *key)
+                                    !matches!(
+                                        tier.planned_lookup(plan.as_ref(), *key),
+                                        Lookup::Miss
+                                    ) || registry.contains(self.worker, *key)
                                 })
                                 .collect::<Vec<_>>();
-                            if !tier.can_reserve_external_prefix(&prefix) {
+                            let fits = match &plan {
+                                Some(plan) => tier.plan_can_reserve_prefix(plan, &prefix),
+                                None => tier.can_reserve_external_prefix(&prefix),
+                            };
+                            if !fits {
                                 break;
                             }
                         }
-                        let meta = meta.map(|meta| &meta[index..=index]);
-                        let StoreOutcome::Prepared { transfer_id, .. } =
-                            tier.reserve_external(client, owner, &[key], meta, now)
-                        else {
+                        let plan = plan.get_or_insert_with(|| tier.plan_external(&[], now));
+                        if !tier.plan_reserve(plan, key) {
+                            no_room = Some(key);
                             break;
-                        };
-                        missing.push(key);
-                        reservations.push(transfer_id);
+                        }
                     }
                     Probe::Pending => deferred = true,
                     Probe::Miss => break,
                 },
             }
         }
-        if missing.is_empty() {
-            return deferred;
+        let plan = plan.filter(|plan| !plan.reserved().is_empty());
+        let missing = plan
+            .as_ref()
+            .map(|plan| plan.reserved().to_vec())
+            .unwrap_or_default();
+        let reservation = plan.map(|plan| {
+            let meta = meta.map(|meta| planned_meta(keys, meta, &missing));
+            tier.reserve_planned(client, owner, plan, meta, now)
+        });
+        if let Some(key) = no_room {
+            tier.note_external_capacity_retry(owner, key, now);
         }
-        let Some(job) = registry.submit(self.worker, Direction::Read, &missing, now) else {
-            for reservation in reservations {
-                tier.cancel_external(reservation);
-            }
+        let Some(reservation) = reservation else {
             return deferred;
         };
-        if restore.rank_progress != self.rank_progress {
-            restore.rank_progress = self.rank_progress;
-            restore.rounds_without_progress = 0;
-        }
-        restore.rounds_without_progress += 1;
-        if restore.bypassed() {
+        let Some(job) = registry.submit(self.worker, Direction::Read, &missing, now) else {
+            tier.cancel_external(reservation);
+            return deferred;
+        };
+        if restore.record_round(self.rank_progress) {
             registry.stats.bypassed_restores += 1;
             tracing::warn!(
                 %owner,
@@ -179,7 +169,7 @@ impl VllmG3OffloadAdapter {
             job,
             G3StagingState {
                 owner: Some(owner),
-                reservations,
+                reservation,
             },
         );
         self.epoch += 1;
@@ -201,10 +191,8 @@ impl VllmG3OffloadAdapter {
                     let stage = self
                         .stages
                         .remove(&completion.id)
-                        .expect("promotion owns G2 reservations");
-                    for reservation in stage.reservations {
-                        tier.complete_external(reservation);
-                    }
+                        .expect("promotion owns its G2 reservation");
+                    tier.complete_external(stage.reservation);
                 }
             }
             self.epoch += 1;
@@ -248,6 +236,7 @@ impl VllmG3OffloadAdapter {
 mod tests {
     use super::*;
     use crate::engine::g3_offload::G3Tier;
+    use crate::engine::host_offload::StoreOutcome;
     use crate::engine::host_offload::{C, private};
     use crate::engine::{G3OffloadConfig, G3Scope};
 
@@ -299,7 +288,7 @@ mod tests {
             keys: &[HostBlockKey],
             now: f64,
         ) -> bool {
-            self.stage(tier, C, owner, &mut G3Restore::default(), keys, None, now)
+            self.stage(tier, C, owner, &mut Default::default(), keys, None, now)
         }
     }
 
@@ -345,6 +334,31 @@ mod tests {
         g3.advance(&mut tier, now + 4.0);
         assert_eq!(tier.lookup(a), Lookup::Hit);
         assert_eq!(tier.lookup(b), Lookup::Hit);
+    }
+
+    #[test]
+    fn one_promotion_is_one_reservation_that_may_evict_a_later_prefix_hit() {
+        // Like vLLM's per-block `prepare_write([key])`: promoting A evicts H,
+        // the least recently used block though a later hit of this prefix;
+        // H is then promoted in the same reservation, evicting X.
+        let (mut g3, mut tier, registry) = fixture(2);
+        let [a, h, x] = [1, 2, 9].map(HostBlockKey::new);
+        seed(&mut tier, h);
+        seed(&mut tier, x);
+        let now = seed_secondary(&registry, &mut tier, &[a, h]);
+        assert!(g3.stage_new(&mut tier, Uuid::nil(), &[a, h], now));
+        let Lookup::Pending { transfer_id } = tier.lookup(a) else {
+            panic!("A is promoted")
+        };
+        assert_eq!(tier.lookup(h), Lookup::Pending { transfer_id });
+        assert_eq!(tier.lookup(x), Lookup::Miss);
+        assert_eq!(g3.stages.len(), 1);
+        g3.advance(&mut tier, now + 10.0);
+        assert_eq!([tier.lookup(a), tier.lookup(h)], [Lookup::Hit; 2]);
+        assert_eq!(
+            registry.lock().unwrap().snapshot().read.completed_bytes,
+            2_000_000
+        );
     }
 
     #[test]
@@ -627,7 +641,7 @@ mod tests {
         let (mut g3, mut tier, registry) = fixture(1);
         let [a, b] = [1, 2].map(HostBlockKey::new);
         let mut now = seed_secondary(&registry, &mut tier, &[a, b]);
-        let mut restore = G3Restore::default();
+        let mut restore = RestoreRounds::default();
         // Rank progress before round 10 starts the count over.
         let rounds = 10 + MAX_RESTORE_ROUNDS_WITHOUT_PROGRESS;
         for round in 0..rounds {

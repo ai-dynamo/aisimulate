@@ -12,6 +12,7 @@ pub mod generalized;
 mod handoff;
 mod host_offload;
 mod kv_manager;
+pub(crate) mod kvcr;
 mod launch;
 mod offload_lru;
 mod offload_transfer;
@@ -36,19 +37,20 @@ pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
     Backend, EngineConfig, FrontendConfig, FrontendStage, G2Scope, G3OffloadConfig, G3Scope,
-    NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy, StateCacheConfig,
-    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    KvcrConfig, NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy,
+    StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{
     HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms,
     transfer_delay_ms,
 };
+pub use kvcr::{KvcrPullCounts, KvcrStats};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
     EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, KvEventTier,
-    LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects, PressureEvent,
-    PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
+    KvHintSource, LifecycleEvent, Metrics, Output, PassCompletionEffects, PassStartEffects,
+    PressureEvent, PressureKind, PressureState, Request, StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;

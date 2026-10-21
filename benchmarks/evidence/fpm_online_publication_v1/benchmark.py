@@ -171,12 +171,8 @@ def measure(root, arm):
         "first_prediction_ms": first,
         "initial_predictions_ms": initial,
         "final_predictions_ms": final,
-        "initial_prediction_sha256": hashlib.sha256(
-            json.dumps(initial).encode()
-        ).hexdigest(),
-        "final_prediction_sha256": hashlib.sha256(
-            json.dumps(final).encode()
-        ).hexdigest(),
+        "initial_prediction_sha256": hashlib.sha256(json.dumps(initial).encode()).hexdigest(),
+        "final_prediction_sha256": hashlib.sha256(json.dumps(final).encode()).hexdigest(),
         "warm_query_us_rounds": warm,
         "warm_query_us_median": statistics.median(warm),
         "update_us_median": statistics.median(updates),
@@ -184,9 +180,7 @@ def measure(root, arm):
         "update_us_max": max(updates),
         "process_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "diagnostics": diagnostics,
-        "selector_diagnostics": (
-            model.learned_selector_diagnostics() if arm == "selector" else None
-        ),
+        "selector_diagnostics": (model.learned_selector_diagnostics() if arm == "selector" else None),
         "config": config if arm != "base" else "PR493 compatibility adapter",
     }
     print(json.dumps(answer, allow_nan=False))
@@ -194,12 +188,8 @@ def measure(root, arm):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "action", choices=["prepare", "base", "frozen", "online", "selector"]
-    )
+    parser.add_argument("action", choices=["prepare", "base", "frozen", "online", "selector"])
     parser.add_argument("root", type=Path)
     parser.add_argument("--history-rows", type=int, default=10000)
     args = parser.parse_args()
-    prepare(args.root, args.history_rows) if args.action == "prepare" else measure(
-        args.root, args.action
-    )
+    prepare(args.root, args.history_rows) if args.action == "prepare" else measure(args.root, args.action)

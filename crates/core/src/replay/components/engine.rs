@@ -7,13 +7,15 @@ use std::sync::{Arc, OnceLock};
 
 use crate::engine::generalized::{PassId, SameTimestampRetry, SchedulerCommand};
 use crate::engine::{
-    Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, Metrics,
+    Command, CommandResult, Engine, ForwardPassMetrics, HostOffloadObserver, KvHintSource, Metrics,
     PassCompletionEffects, Request,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use uuid::Uuid;
 
-use super::super::core::{EngineEventBatch, EngineProgress, NoEngineEvents, WorkerTopology};
+use super::super::core::{
+    EngineEventBatch, EngineProgress, NoEngineEvents, Placement, WorkerTopology,
+};
 use super::super::events::{EnginePassCompletion, SimulationWorkerStage, WorkerCompletionPayload};
 use super::{
     EngineEffects, EnginePassMode, InternalEngineEffects, ObservedCommandEffects,
@@ -193,6 +195,9 @@ where
                 factory.g3_block_bytes,
             )?);
         }
+        if let Some(config) = factory.kvcr_config.clone() {
+            factory.kvcr = Some(crate::engine::kvcr::KvcrRegistry::new(config));
+        }
         let mut component = Self {
             stage,
             _pass_mode: pass_mode,
@@ -266,6 +271,13 @@ where
             .g3_tier
             .as_ref()
             .map(|r| r.lock().unwrap().snapshot())
+    }
+
+    pub(crate) fn kvcr_stats(&self) -> Option<crate::engine::KvcrStats> {
+        self.factory
+            .kvcr
+            .as_ref()
+            .map(|r| r.lock().unwrap().stats())
     }
 
     pub(crate) fn g2_domains(&self) -> Vec<crate::replay::G2DomainStats> {
@@ -416,6 +428,12 @@ where
         if let Some(registry) = &self.factory.g3_tier {
             registry.lock().unwrap().unregister_worker(worker_id)?;
         }
+        if let Some(registry) = &self.factory.kvcr {
+            registry
+                .lock()
+                .unwrap()
+                .unregister_worker(worker_id as u64)?;
+        }
         self.ready_workers.remove(&worker_id);
         self.deferred_ready_workers.remove(&worker_id);
         self.workers
@@ -553,6 +571,7 @@ where
         Some(WorkerTopology {
             worker_id,
             scheduler_ids: self.workers.get(worker_id)?.as_ref()?.scheduler_ids.clone(),
+            router_hint: self.accepts_kv_hints(),
         })
     }
 
@@ -573,6 +592,46 @@ where
             .get(scheduler_id)
             .and_then(|owner| *owner)?;
         Some((owner.worker_id, owner.dp_rank))
+    }
+
+    /// Whether this pool's engines act on router hints (it configures `kvcr`).
+    pub(crate) fn accepts_kv_hints(&self) -> bool {
+        self.factory.kvcr_config.is_some()
+    }
+
+    /// The source a placement's `kv.fetch` hint names, for the receiving engine.
+    /// `None` without KVCR in this pool, without a hint, for a self-hint and
+    /// for a source that is draining or has left the pool: new pulls from a
+    /// draining source would hold off its removal.
+    pub(crate) fn kv_hint_source(&self, placement: &Placement) -> Result<Option<KvHintSource>> {
+        let Some(hints) = placement.kv_hints.filter(|_| self.accepts_kv_hints()) else {
+            return Ok(None);
+        };
+        let source = hints.fetch.source_scheduler_id;
+        ensure!(
+            source < self.scheduler_owners.len(),
+            "offline {:?} placement: kv_hints source scheduler {source} never existed",
+            self.stage
+        );
+        if source == placement.scheduler_id {
+            return Ok(None);
+        }
+        Ok(self
+            .rank_identity(source)
+            .filter(|(worker_id, _)| !self.pending_removal.contains(worker_id))
+            .map(|(worker_id, dp_rank)| KvHintSource {
+                worker_id: worker_id as u64,
+                dp_rank,
+            }))
+    }
+
+    /// Drop a hint resolved before a delay (such as tokenization) whose source
+    /// has since started draining, so a late pull does not hold off its removal.
+    pub(crate) fn live_kv_hint(&self, hint: Option<KvHintSource>) -> Option<KvHintSource> {
+        hint.filter(|hint| {
+            usize::try_from(hint.worker_id)
+                .is_ok_and(|worker_id| !self.pending_removal.contains(&worker_id))
+        })
     }
 
     fn update_scheduler_metrics(
@@ -697,6 +756,7 @@ where
         &mut self,
         scheduler_id: usize,
         request: DirectRequest,
+        kv_hint: Option<KvHintSource>,
         now_ms: f64,
     ) -> Result<()> {
         let expected = request
@@ -704,7 +764,7 @@ where
             .context("offline replay request must have a UUID before dispatch")?;
         let effects = self.apply_command(
             scheduler_id,
-            Command::Submit(native_request(request)?),
+            Command::Submit(native_request(request, kv_hint)?),
             now_ms,
         )?;
         if !matches!(effects.result, CommandResult::Submitted(id) if id == expected) {
@@ -843,6 +903,12 @@ where
                 self.refresh_worker(worker_id);
                 continue;
             };
+            if let Some(registry) = &self.factory.kvcr {
+                registry
+                    .lock()
+                    .unwrap()
+                    .note_pass(worker_id as u64, started.end_ms);
+            }
 
             let same_timestamp_retry = started.same_timestamp_retry;
             let mut pending = PendingPass {
@@ -984,7 +1050,20 @@ where
             }
             return Ok(effects);
         }
+        self.start_parked_kvcr_pulls();
         Ok(EngineEffects::default())
+    }
+
+    /// Start the KVCR pulls staged at `now_ms` once the scan has run every
+    /// pass starting then, so a pull waits for a source pass at the same
+    /// instant whatever the worker order. No worker needs a refresh: the
+    /// ready set does not depend on when a pull starts (a staged pull already
+    /// counts as registry work), and `next_internal_deadline_ms` reads each
+    /// target's deadline from the registry when the driver asks.
+    fn start_parked_kvcr_pulls(&self) {
+        if let Some(registry) = &self.factory.kvcr {
+            registry.lock().unwrap().start_parked();
+        }
     }
 
     pub(crate) fn on_scheduled_completion(
@@ -1185,7 +1264,7 @@ where
     }
 }
 
-fn native_request(request: DirectRequest) -> Result<Request> {
+fn native_request(request: DirectRequest, kv_hint: Option<KvHintSource>) -> Result<Request> {
     Ok(Request {
         request_id: request
             .uuid
@@ -1197,6 +1276,7 @@ fn native_request(request: DirectRequest) -> Result<Request> {
             .replay_context
             .and_then(|context| context.session_id().map(str::to_owned)),
         images: request.images,
+        kv_hint,
     })
 }
 
@@ -1289,10 +1369,11 @@ fn native_fpm(dp_rank: u32, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
 mod tests {
     use super::*;
     use crate::engine::{
-        Backend, EngineConfig, FrontendConfig, FrontendStage, KvEvent, SglangConfig,
-        TimingModelConfig,
+        Backend, EngineConfig, FrontendConfig, FrontendStage, KvEvent, KvcrConfig,
+        NativeHostOffloadConfig, SglangConfig, TimingModelConfig,
     };
     use crate::replay::components::AdmissionEvent;
+    use crate::replay::core::{KvFetchAction, KvHints};
     use crate::replay::{ReplayEngineConfig, ReplayEngineFactory, WorkerStage};
 
     #[test]
@@ -1422,6 +1503,7 @@ mod tests {
                             uuid: Some(uuid),
                             ..Default::default()
                         },
+                        None,
                         0.0,
                     )
                     .unwrap();
@@ -1538,6 +1620,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(32)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1596,6 +1679,7 @@ mod tests {
                     uuid: Some(uuid),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1652,7 +1736,7 @@ mod tests {
         };
         // One 1 MB block per prompt: each D2H or H2D takes 1 ms at 1 GB/s.
         let run = |component: &mut EngineComponent, worker, id, now: f64| {
-            component.dispatch(worker, request(id), now).unwrap();
+            component.dispatch(worker, request(id), None, now).unwrap();
             let mut admissions = component.drive_ready(now, None).unwrap().admissions;
             assert_eq!(component.next_internal_deadline_ms(), Some(now + 1.0));
             assert!(
@@ -1674,7 +1758,7 @@ mod tests {
         });
 
         // Worker 1 computes the block; scale-in marks it while its D2H runs.
-        component.dispatch(1, request(1), 0.0).unwrap();
+        component.dispatch(1, request(1), None, 0.0).unwrap();
         component.drive_ready(0.0, None).unwrap();
         assert_eq!(component.in_flight(), 0);
         assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
@@ -1830,6 +1914,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(31)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -1979,6 +2064,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(1)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -2024,6 +2110,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(20)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -2036,6 +2123,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(21)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -2065,6 +2153,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(22)),
                     ..Default::default()
                 },
+                None,
                 0.0,
             )
             .unwrap();
@@ -2119,6 +2208,7 @@ mod tests {
                         uuid: Some(uuid),
                         ..Default::default()
                     },
+                    None,
                     0.0,
                 )
                 .unwrap();
@@ -2183,6 +2273,7 @@ mod tests {
                     uuid: Some(Uuid::from_u128(2)),
                     ..Default::default()
                 },
+                None,
                 37.0,
             )
             .unwrap();
@@ -2218,5 +2309,126 @@ mod tests {
             !EngineEffects::<()>::default()
                 .should_retain_immediate_completion(EngineProgress::default())
         );
+    }
+
+    fn placement_with_hint(scheduler_id: usize, source_scheduler_id: Option<usize>) -> Placement {
+        Placement {
+            request_id: Uuid::from_u128(1),
+            scheduler_id,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            kv_hints: source_scheduler_id.map(|source_scheduler_id| KvHints {
+                fetch: KvFetchAction {
+                    source_scheduler_id,
+                },
+            }),
+            placement_replica_id: None,
+        }
+    }
+
+    fn attention_dp_component(
+        num_workers: usize,
+        dp_size: u32,
+        kvcr: Option<KvcrConfig>,
+    ) -> EngineComponent {
+        let config = ReplayEngineConfig {
+            dp_size,
+            rank: EngineConfig {
+                kv_cache_bytes_per_token: Some(250_000),
+                native_host_offload: Some(NativeHostOffloadConfig::new(4)),
+                kvcr,
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            num_workers,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn kv_hint_source_resolves_the_source_scheduler_to_worker_and_rank() {
+        let mut component = attention_dp_component(2, 2, Some(KvcrConfig::default()));
+        let source = |component: &EngineComponent, target, source| {
+            component.kv_hint_source(&placement_with_hint(target, source))
+        };
+        let (worker0, worker1) = (
+            component.worker_topology(0).unwrap(),
+            component.worker_topology(1).unwrap(),
+        );
+        assert!(worker0.router_hint && worker1.router_hint);
+        let (worker0, worker1) = (worker0.scheduler_ids, worker1.scheduler_ids);
+
+        // No hint, no source.
+        assert_eq!(source(&component, worker0[0], None).unwrap(), None);
+        // A peer on another worker and a peer rank on the same worker.
+        let worker1_rank0 = Some(KvHintSource {
+            worker_id: 1,
+            dp_rank: 0,
+        });
+        assert_eq!(
+            source(&component, worker0[1], Some(worker1[0])).unwrap(),
+            worker1_rank0
+        );
+        assert_eq!(
+            source(&component, worker1[1], Some(worker1[0])).unwrap(),
+            worker1_rank0
+        );
+        // A rank never fetches from itself.
+        assert_eq!(
+            source(&component, worker1[1], Some(worker1[1])).unwrap(),
+            None
+        );
+        // A scheduler id that never existed is a placement-policy error that
+        // names the pool.
+        let never = component.scheduler_owners.len();
+        let error = source(&component, worker0[0], Some(never)).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "offline Aggregated placement: kv_hints source scheduler {never} never existed"
+            )),
+            "{error}"
+        );
+        // A draining source and one that has left the pool are ignored.
+        assert_eq!(worker1[0], 2);
+        let resolved = source(&component, worker0[0], Some(2)).unwrap();
+        assert!(resolved.is_some());
+        component.mark_for_removal(1);
+        assert_eq!(source(&component, worker0[0], Some(2)).unwrap(), None);
+        // A hint resolved before the drain is dropped when it is finally dispatched.
+        assert_eq!(component.live_kv_hint(resolved), None);
+        assert!(component.tombstone_worker(1).unwrap());
+        assert_eq!(source(&component, worker0[0], Some(2)).unwrap(), None);
+
+        // Without KVCR no worker advertises router hints and every hint is ignored.
+        let plain = attention_dp_component(2, 2, None);
+        assert!(!plain.worker_topology(0).unwrap().router_hint);
+        for hinted in [worker1[0], worker0[0], never] {
+            assert_eq!(source(&plain, worker0[1], Some(hinted)).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn kvcr_workers_join_the_registry_at_build_and_leave_at_removal() {
+        // Build registers a worker's ranks; its removal unregisters them and no others.
+        let mut component = attention_dp_component(2, 2, Some(KvcrConfig::default()));
+        let registry = component.factory.kvcr.clone().unwrap();
+        let rank1 = |worker_id| KvHintSource {
+            worker_id,
+            dp_rank: 1,
+        };
+        assert!(registry.lock().unwrap().source(rank1(1)).is_some());
+        assert!(component.tombstone_worker(1).unwrap());
+        let registry = registry.lock().unwrap();
+        assert!(registry.source(rank1(1)).is_none());
+        assert!(registry.source(rank1(0)).is_some());
     }
 }

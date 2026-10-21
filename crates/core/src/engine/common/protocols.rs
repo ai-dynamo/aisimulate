@@ -83,6 +83,7 @@ pub(crate) struct DirectRequest {
     /// Image placeholders inside `tokens`; empty for text-only requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ImageSpec>,
+    pub kv_hint: Option<crate::engine::KvHintSource>,
 }
 
 impl DirectRequest {

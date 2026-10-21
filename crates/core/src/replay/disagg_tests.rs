@@ -86,6 +86,7 @@ impl QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             })
             .collect()
@@ -110,6 +111,7 @@ impl PlacementPolicy<ReplayRequestPayload> for QueueUntilWorkerPlacement {
                 scheduler_id,
                 reported_overlap_tokens: 0,
                 cache_sample: None,
+                kv_hints: None,
                 placement_replica_id: None,
             }),
             None => {
