@@ -125,6 +125,88 @@ def test_unsupported_topology_and_precision_fail_explicitly():
         type(info["extra_params"]).from_text_config(config)
 
 
+def _ffn_specs(model):
+    return [body["Glm53Ffn"] for op in model.context_ops if "Glm53Ffn" in (body := json.loads(op._spec_json()))]
+
+
+# vLLM enable_expert_parallel shards experts over the whole TP group (MoE
+# TP=1); SGLang --ep-size also allows MoE TP = TP / EP.
+_EP_LAYOUTS = [
+    ("vllm", 2, 1, 2),
+    ("vllm", 4, 1, 4),
+    ("vllm", 8, 1, 8),
+    ("sglang", 2, 1, 2),
+    ("sglang", 4, 1, 4),
+    ("sglang", 4, 2, 2),
+    ("sglang", 8, 1, 8),
+    ("sglang", 8, 2, 4),
+]
+
+
+@pytest.mark.parametrize("path", MODEL_REVISIONS)
+@pytest.mark.parametrize(("backend", "tp", "moe_tp", "moe_ep"), _EP_LAYOUTS)
+def test_expert_parallel_shards_only_routed_experts(path, backend, tp, moe_tp, moe_ep):
+    ep = get_model(path, ModelConfig(tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep), backend)
+    base = build(path, backend, tp)
+    for ep_ffn, tp_ffn in zip(_ffn_specs(ep), _ffn_specs(base), strict=True):
+        if ep_ffn["is_dense"]:
+            assert ep_ffn == tp_ffn
+            continue
+        moes = [child["Moe"] for child in ep_ffn["children"] + ep_ffn["measured"] if "Moe" in child]
+        assert len(moes) == 2 and moes[0] == moes[1]
+        assert (moes[0]["moe_tp_size"], moes[0]["moe_ep_size"], moes[0]["attention_dp_size"]) == (moe_tp, moe_ep, 1)
+        assert moes[0]["num_experts"] // moe_ep == 288 // moe_ep
+        # Shared expert, router and activation keep the attention-TP geometry.
+        assert [c for c in ep_ffn["children"] if "Moe" not in c] == [c for c in tp_ffn["children"] if "Moe" not in c]
+        assert [c for c in ep_ffn["measured"] if "Moe" not in c] == [c for c in tp_ffn["measured"] if "Moe" not in c]
+
+    # The only difference from pure TP is the routed MoE layout: attention,
+    # KV, mHC and the TP all-reduce collectives are unchanged, and no
+    # dispatch/all-to-all op is added.
+    def strip(model):
+        out = []
+        for op in model.context_ops + model.generation_ops:
+            body = json.loads(op._spec_json())
+            if "Glm53Ffn" in body and not body["Glm53Ffn"]["is_dense"]:
+                continue
+            out.append(body)
+        return out
+
+    assert strip(ep) == strip(base)
+    assert not any(
+        kind.startswith("MoeDispatch") or kind.startswith("MoeA2a")
+        for op in ep.context_ops
+        for kind in json.loads(op._spec_json())
+    )
+    # MoE TP x EP = TP: each rank still holds 1/TP of the routed weights.
+    assert ep.get_resident_weights_bytes() == base.get_resident_weights_bytes()
+    assert ep.get_kvcache_bytes_per_sequence(4096) == base.get_kvcache_bytes_per_sequence(4096)
+
+
+def test_expert_parallel_topology_rejections():
+    path = "zai-org/GLM-5.3-Flash"
+
+    def ep(backend="sglang", tp=4, moe_tp=1, moe_ep=4, **kwargs):
+        return get_model(path, ModelConfig(tp_size=tp, moe_tp_size=moe_tp, moe_ep_size=moe_ep, **kwargs), backend)
+
+    # Data-parallel attention needs AG/RS (and vLLM SP-MoE) modelling.
+    for backend in ("vllm", "sglang"):
+        with pytest.raises(NotImplementedError, match="data-parallel attention is not supported"):
+            ep(backend, tp=2, moe_tp=1, moe_ep=4, attention_dp_size=2)
+        with pytest.raises(NotImplementedError, match="DP=PP=CP=1"):
+            ep(backend, pp_size=2)
+    # MoE width must equal the attention TP group.
+    for moe_tp, moe_ep in ((1, 2), (1, 8), (2, 4)):
+        with pytest.raises(ValueError, match="moe_tp_size"):
+            ep(tp=4, moe_tp=moe_tp, moe_ep=moe_ep)
+    # vLLM has no MoE TP x EP hybrid without DP.
+    with pytest.raises(NotImplementedError, match="MoE TP=1 and EP=TP"):
+        ep("vllm", tp=4, moe_tp=2, moe_ep=2)
+    for backend in ("deepep_moe", "megamoe"):
+        with pytest.raises(NotImplementedError, match="DeepEP/megamoe/wideep"):
+            ep(moe_backend=backend)
+
+
 @pytest.mark.parametrize(("path", "fmt"), [("zai-org/GLM-5.3-Flash", "fp8"), ("nvidia/GLM-5.3-Flash-NVFP4", "nvfp4")])
 def test_pinned_checkpoint_quantization_layouts_are_recognized(path, fmt):
     assert _checkpoint_format(get_model_config_from_model_path(path)["raw_config"]["quantization_config"]) == fmt
@@ -540,6 +622,27 @@ def test_sol_is_unchanged_by_measured_composition(backend, prefill_ms, decode_ms
         assert model.static_phase_latency(batch_size=32, input_tokens=4096, output_tokens=2, prefill=False) == decode_ms
     finally:
         model.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_ep4_sol_differs_from_tp4_only_in_routed_experts(backend):
+    def ops(moe_tp, moe_ep, prefill):
+        config = _config("SOL", backend).to_dict() | dict(tp=4, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
+        model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+        try:
+            args = dict(batch_size=1, context_length=2048) if prefill else dict(batch_size=32, context_length=2048)
+            return {op["name"]: op for op in model.static_phase_diagnostics(prefill=prefill, **args)}
+        finally:
+            model.close()
+
+    sparse = {f"ffn_{layer}" for layer in range(3, 45)}
+    for prefill in (True, False):
+        tp4, ep4 = ops(4, 1, prefill), ops(1, 4, prefill)
+        assert tp4.keys() == ep4.keys()
+        changed = {name for name in tp4 if tp4[name]["latency_ms"] != ep4[name]["latency_ms"]}
+        # Attention, mHC, dense FFN and every TP all-reduce/gather are identical.
+        assert changed <= sparse and changed
+        assert all(ep4[name]["source"] == "sol" for name in ep4)
 
 
 def test_kda_kernels_match_collected_kda_rows():

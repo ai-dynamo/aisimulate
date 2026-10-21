@@ -528,7 +528,12 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
         ),
         (
             NotImplementedError,
-            r"GLM-5\.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+            r"GLM-5\.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+            r"data-parallel attention is not supported",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP",
         ),
         (
             NotImplementedError,

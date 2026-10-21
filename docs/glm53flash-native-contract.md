@@ -14,8 +14,14 @@ maximum context is retained as metadata, not a measured-coverage claim.
 
 Construct production models through
 `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
-The topology is TP 1/2/4/8, MoE TP equal to attention TP,
-DP=PP=CP=EP=1, `nextn=0`, and full decoder execution. There is no system
+The topology is TP 1/2/4/8 attention with DP=PP=CP=1, routed experts on the
+same ranks with MoE TP x EP = TP (vLLM expert parallelism is MoE TP=1, EP=TP;
+SGLang also accepts MoE TP = TP/EP), `nextn=0`, and full decoder execution.
+Dense FFN and shared experts stay TP-sharded. In this layout every rank holds
+all tokens, so EP adds no all-to-all: only the expert weights are sharded.
+Data-parallel attention, sequence-parallel MoE and DeepEP/megamoe/wideep
+backends are rejected. FPM profiles are pure TP, so an EP request finds no FPM
+cell. There is no system
 gate: whether a deployment fits a system is a capacity question, decided by
 measured allocator admission at collection time and by the memory checks at
 prediction time. For example, NVFP4 TP1 was admitted on one GB300 (Mamba
@@ -59,8 +65,9 @@ over existing state is a decode in vLLM's KDA metadata, so it is priced by the
 rank's scheduled tokens: vLLM sequence-parallel MoE requires EP and DP>1. Known approximation: the router is priced by the BF16 (288 x 4096) GEMM row.
 The serving gate (vLLM `GateLinear`, SGLang `MoEGate`) uses BF16 weights with
 FP32 output; no generic `gemm_perf` dtype captures the FP32 output and the
-difference is negligible at this shape; pure-TP MoE dispatch and combine
-are the explicit all-reduces, so no `MoEDispatch` op is emitted.
+difference is negligible at this shape; with TP attention (pure TP or EP)
+MoE dispatch and combine are the explicit all-reduces, so no `MoEDispatch` op
+is emitted.
 
 - Attention includes local projections, KDA gates/convolution/recurrence/output
   norm, or NoPE sparse MLA and its IndexPool. Block input norm and output

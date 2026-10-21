@@ -434,9 +434,11 @@ def test_unrecognized_quantized_moe_error_remains_blocking():
     "message,expected",
     [
         (
-            "GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+            "GLM-5.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+            "data-parallel attention is not supported",
             STATUS_SDK_UNREPRESENTABLE,
         ),
+        ("GLM-5.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP", STATUS_SDK_UNREPRESENTABLE),
         (
             "GLM-5.3-Flash requires its checkpoint's native FP8/NVFP4 precision partition",
             STATUS_SDK_UNREPRESENTABLE,

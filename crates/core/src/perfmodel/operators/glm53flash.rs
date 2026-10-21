@@ -794,6 +794,18 @@ pub(crate) fn routed_moe_sol(
         .scaled(m.scale_factor))
 }
 
+/// Routed experts over the attention TP group: MoE TP x EP = TP with TP
+/// attention (attention DP 1). Every rank holds all tokens, so dispatch and
+/// combine are the explicit TP all-reduces; no all-to-all is involved.
+/// vLLM expert parallelism always shards experts over the whole group
+/// (MoE TP 1); SGLang also runs MoE TP = TP / EP.
+fn routed_layout_ok(m: &MoeOp, tp: u32, backend: &str) -> bool {
+    matches!(m.moe_ep_size, 1 | 2 | 4 | 8)
+        && m.moe_tp_size.checked_mul(m.moe_ep_size) == Some(tp)
+        && m.attention_dp_size == 1
+        && (backend != "vllm" || m.moe_ep_size == 1 || m.moe_tp_size == 1)
+}
+
 /// Native local FFN boundary, including gate/router, routed and shared experts,
 /// clamp and activation; excluding the final separately modeled collective.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -851,7 +863,7 @@ impl Glm53FfnOp {
             })
         {
             return Err(AicError::ModelConfig(
-                "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 pure-TP contract"
+                "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 TP-attention contract"
                     .into(),
             ));
         }
@@ -897,12 +909,25 @@ impl Glm53FfnOp {
                 && r.hidden_size==self.hidden_size && r.num_experts==self.num_experts && r.topk==self.topk)
                     && matches!(&self.children[4],Op::Moe(m) if m.hidden_size==self.hidden_size
                 && m.inter_size==self.intermediate_size && m.topk==self.topk && m.num_experts==self.num_experts
-                && m.moe_tp_size==self.tp_size && m.moe_ep_size==1 && m.attention_dp_size==1
+                && routed_layout_ok(m, self.tp_size, &self.backend)
                 && m.quant_mode==self.moe_quant_mode && m.scale_factor==1.0 && m.is_gated)));
         if !valid {
             return Err(AicError::ModelConfig(
                 "GLM FFN analytical children disagree with its measured geometry".into(),
             ));
+        }
+        // SOL and SILICON must price one routed-expert layout.
+        if let (Some(Op::Moe(sol)), Some(Op::Moe(measured))) = (
+            self.children.get(4),
+            self.measured.iter().find(|op| matches!(op, Op::Moe(_))),
+        ) {
+            if (sol.moe_tp_size, sol.moe_ep_size) != (measured.moe_tp_size, measured.moe_ep_size)
+                || measured.attention_dp_size != 1
+            {
+                return Err(AicError::ModelConfig(
+                    "GLM FFN measured MoE layout disagrees with its analytical child".into(),
+                ));
+            }
         }
         validate_measured("ffn", &self.measured)
     }
@@ -1352,6 +1377,215 @@ pub(crate) mod tests {
             assert!(routed <= moe.query(&db, t).unwrap().latency_ms);
         }
     }
+    /// Sparse GLM FFN on `tp` attention ranks with a `moe_tp x moe_ep`
+    /// routed-expert layout; the measured MoE child is the analytical one.
+    fn sparse_ffn(tp: u32, moe_tp: u32, moe_ep: u32) -> Glm53FfnOp {
+        use crate::operators::{elementwise::ElementwiseOp, gemm::GemmOp};
+        let q = GemmQuantMode::Fp8Block;
+        let width = 2048 / tp;
+        let moe = Op::Moe(MoeOp::new(
+            "moe",
+            4096,
+            2048,
+            8,
+            288,
+            moe_tp,
+            moe_ep,
+            MoeQuantMode::Fp8Block,
+            "uniform",
+        ));
+        Glm53FfnOp {
+            name: "ffn_3".into(),
+            backend: "sglang".into(),
+            checkpoint_format: "fp8".into(),
+            is_context: false,
+            is_dense: false,
+            hidden_size: 4096,
+            intermediate_size: 2048,
+            num_experts: 288,
+            topk: 8,
+            tp_size: tp,
+            n_shared_experts: 1,
+            swiglu_limit: 10.0,
+            scoring_func: "sigmoid".into(),
+            routed_scaling_factor: 2.5,
+            n_group: 1,
+            topk_group: 1,
+            norm_topk_prob: true,
+            gemm_quant_mode: q,
+            shared_quant_mode: q,
+            moe_quant_mode: MoeQuantMode::Fp8Block,
+            children: vec![
+                Op::Gemm(GemmOp::new("shared_up", 2 * width, 4096, q)),
+                Op::Elementwise(ElementwiseOp::new("shared_act", 6.0 * f64::from(width))),
+                Op::Gemm(GemmOp::new("shared_down", 4096, width, q)),
+                Op::Glm53Router(Glm53RouterOp {
+                    name: "router".into(),
+                    backend: "sglang".into(),
+                    checkpoint_format: "fp8".into(),
+                    hidden_size: 4096,
+                    num_experts: 288,
+                    topk: 8,
+                }),
+                moe.clone(),
+            ],
+            measured: vec![moe],
+        }
+    }
+
+    fn routed(op: &Glm53FfnOp) -> &MoeOp {
+        match &op.children[4] {
+            Op::Moe(m) => m,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn ffn_accepts_expert_parallel_routed_experts_only_under_tp_attention() {
+        for (tp, moe_tp, moe_ep) in [
+            (1, 1, 1),
+            (4, 4, 1),
+            (4, 1, 4),
+            (4, 2, 2),
+            (8, 1, 8),
+            (8, 2, 4),
+        ] {
+            let op = sparse_ffn(tp, moe_tp, moe_ep);
+            assert!(op.validate().is_ok(), "tp={tp} moe_tp={moe_tp} ep={moe_ep}");
+        }
+        // MoE width must equal the attention TP group: no partial or
+        // over-wide expert groups, no EP16.
+        for (tp, moe_tp, moe_ep) in [(4, 1, 8), (4, 2, 4), (4, 1, 2), (8, 1, 16), (2, 4, 1)] {
+            let op = sparse_ffn(tp, moe_tp, moe_ep);
+            assert!(
+                op.validate().is_err(),
+                "tp={tp} moe_tp={moe_tp} ep={moe_ep}"
+            );
+        }
+        // vLLM has no MoE TP x EP hybrid without DP.
+        let mut hybrid = sparse_ffn(4, 2, 2);
+        hybrid.backend = "vllm".into();
+        if let Op::Glm53Router(r) = &mut hybrid.children[3] {
+            r.backend = "vllm".into();
+        }
+        assert!(hybrid.validate().is_err());
+        let mut pure_ep = sparse_ffn(4, 1, 4);
+        pure_ep.backend = "vllm".into();
+        if let Op::Glm53Router(r) = &mut pure_ep.children[3] {
+            r.backend = "vllm".into();
+        }
+        assert!(pure_ep.validate().is_ok());
+        // Data-parallel attention (tokens gathered into the expert pool)
+        // needs AG/RS modelling and stays rejected.
+        let mut dp = sparse_ffn(4, 1, 4);
+        for child in dp.children.iter_mut().chain(dp.measured.iter_mut()) {
+            if let Op::Moe(m) = child {
+                m.attention_dp_size = 2;
+            }
+        }
+        assert!(dp.validate().is_err());
+        // SOL and SILICON must price the same routed layout.
+        let mut split = sparse_ffn(4, 1, 4);
+        if let Op::Moe(m) = &mut split.measured[0] {
+            (m.moe_tp_size, m.moe_ep_size) = (4, 1);
+        }
+        let err = split.validate().unwrap_err();
+        assert!(err.to_string().contains("measured MoE layout"), "{err}");
+    }
+
+    #[test]
+    fn ep4_routed_experts_hold_72_local_experts() {
+        let ep4 = sparse_ffn(4, 1, 4);
+        let tp4 = sparse_ffn(4, 4, 1);
+        let m = routed(&ep4);
+        assert_eq!((m.moe_tp_size, m.moe_ep_size), (1, 4));
+        assert_eq!(m.num_experts / m.moe_ep_size, 72);
+        let expert = 4096.0 * 2048.0 * 3.0 * MoeQuantMode::Fp8Block.mapping().memory;
+        assert_eq!(m.weight_bytes(), 72.0 * expert);
+        // TP4 holds a quarter of all 288 experts: the same bytes per rank, so
+        // the FFN inventory (shared expert still TP4-sharded) is unchanged.
+        assert_eq!(routed(&tp4).weight_bytes(), 288.0 * expert / 4.0);
+        assert_eq!(ep4.weight_bytes(), tp4.weight_bytes());
+    }
+
+    #[test]
+    fn ep4_sol_changes_only_routed_expert_activation_traffic() {
+        let db = db(DatabaseMode::Sol);
+        let spec = &db.system_spec;
+        let (ep4, tp4) = (sparse_ffn(4, 1, 4), sparse_ffn(4, 4, 1));
+        for t in [1u32, 8, 32, 2048] {
+            let ctx = RuntimeContext {
+                batch_size: t,
+                num_tokens: t,
+                ..RuntimeContext::default()
+            };
+            let x = f64::from(t);
+            let (e, p) = (
+                routed_moe_sol(routed(&ep4), spec, x).unwrap().sol.unwrap(),
+                routed_moe_sol(routed(&tp4), spec, x).unwrap().sol.unwrap(),
+            );
+            // Same expert FLOPs per rank: tokens*topk/4 full experts versus
+            // tokens*topk quarter-width shards.
+            assert!((e.math_ms - p.math_ms).abs() <= 1e-12 * p.math_ms, "t={t}");
+            // Same distinct-expert weight bytes; EP4 reads/writes the full
+            // intermediate activation for a quarter of the assignments, so
+            // its activation traffic is a*(2h+3i)/4 versus a*(2h+3i/4).
+            let a = x * 8.0;
+            let (h, i) = (4096.0, 2048.0);
+            let delta = a
+                * (2.0 * h + 0.75 * i - (2.0 * h + 3.0 * i) / 4.0)
+                * MoeQuantMode::Fp8Block.mapping().memory;
+            let bytes = |r: &SolComponents| r.mem_ms * spec.gpu.mem_bw / 1e3;
+            assert!(
+                ((bytes(&p) - bytes(&e)) - delta).abs() <= 1e-6 * delta,
+                "t={t}"
+            );
+            // Every non-routed child (shared expert, router) is identical.
+            let rest = |op: &Glm53FfnOp| {
+                op.sol(&db, &ctx).unwrap().latency_ms
+                    - routed_moe_sol(routed(op), spec, x).unwrap().latency_ms
+            };
+            assert!(
+                (rest(&ep4) - rest(&tp4)).abs() <= 1e-12 * rest(&tp4),
+                "t={t}"
+            );
+        }
+    }
+
+    #[test]
+    fn measured_routed_lookup_is_keyed_on_moe_ep() {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+        // TEST_ONLY synthetic EP4 rows; not measured timings.
+        let tmp = tempfile::tempdir().unwrap();
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["fp8_block"; 3]),
+                Col::I64("num_tokens", vec![1, 8, 64]),
+                Col::I64("hidden_size", vec![4096; 3]),
+                Col::I64("inter_size", vec![2048; 3]),
+                Col::I64("topk", vec![8; 3]),
+                Col::I64("num_experts", vec![288; 3]),
+                Col::I64("moe_tp_size", vec![1; 3]),
+                Col::I64("moe_ep_size", vec![4; 3]),
+                Col::Str("distribution", vec!["uniform"; 3]),
+                Col::F64("latency", vec![0.05, 0.1, 0.4]),
+            ],
+        );
+        let silicon = PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        let ep4 = routed(&sparse_ffn(4, 1, 4)).query(&silicon, 8).unwrap();
+        assert_eq!(ep4.source, Source::Silicon);
+        assert_eq!(ep4.latency_ms, 0.1);
+        // The TP4 layout never borrows the EP4 rows.
+        let err = routed(&sparse_ffn(4, 4, 1)).query(&silicon, 8).unwrap_err();
+        assert!(err.is_missing_perf_data(), "{err}");
+    }
+
     #[test]
     fn sparse_mla_projection_precision_matches_backend_and_checkpoint() {
         for backend in ["vllm", "sglang"] {
