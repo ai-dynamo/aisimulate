@@ -282,6 +282,9 @@ sections and skipped-section reasons to the normal prediction summary.
   `kvcache_quant_mode`: compare it with the deployment before interpreting token capacity.
   An omitted engine override can infer FP8; see [KV precision](../perf-model/configuration.md#kv-precision-and-token-capacity).
   The field is omitted when the estimator cannot establish the quantization mode.
+  When exported, `memory_breakdown.reserved_bytes` reports fixed rank-local non-KV
+  reservations, such as the VL embedding cache, separately from `cuda_graph_reserved_bytes`.
+  Older reports may omit `reserved_bytes`.
   `estimated_num_gpu_blocks` is captured at this stage,
   before adjustments such as FPM profile-domain limits. It is neither a final runtime capacity
   nor observed memory usage. Explicit KV blocks, nested rank input,

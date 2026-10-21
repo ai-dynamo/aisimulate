@@ -126,6 +126,7 @@ class LiteralSite(NamedTuple):
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+# https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 # Adds `field: None` for new optional AISimulate fields and empty images for the
 # pinned text-only Request; Dynamo behavior is otherwise unchanged.
 OPTIONAL_FIELD_LITERALS = (
@@ -156,6 +157,13 @@ OPTIONAL_FIELD_LITERALS = (
         "pub(in crate::replay) fn generate_trace_worker_artifacts_with_visibility(",
         "ReplaySpec",
         "src/replay/spec.rs",
+    ),
+    LiteralSite(
+        "lib/bindings/python/rust/llm/replay.rs",
+        "5f0f5910a77f6bb1bd315c67b75e161d792dddc8fd6381ea35e2046855470f41",
+        "fn build_synthetic_workload(",
+        "SyntheticTraceSpec",
+        "src/replay/loadgen/types.rs",
     ),
 )
 _OPTION_TYPE = re.compile(r"(?:(?:std|core)::option::)?Option\s*<.*>", re.DOTALL)
@@ -239,6 +247,7 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     missing = [name for name in struct_fields if name not in present]
     defaults = {
         "ReplaySpec": {"encoder": ((True, "Option<EncoderSpec>"), "None")},
+        "SyntheticTraceSpec": {"images": ((True, "Option<SyntheticImages>"), "None")},
         "SglangConfig": {
             "host_loop": ((True, "bool"), "false"),
             "vlm_cache_bytes": ((True, "u64"), "SglangConfig::default().vlm_cache_bytes"),
@@ -320,7 +329,8 @@ def _patch_ttft_lifecycle(source: str, api: str) -> tuple[str, list[str]]:
 
 # Fail closed: each file must match its reviewed sha256 before any file is written.
 # Request/placement additions must be public `Option`s or the reviewed Request.images;
-# ReplaySpec accepts only the reviewed encoder field. Removed fields remain errors.
+# ReplaySpec and SyntheticTraceSpec accept only reviewed text-only defaults.
+# Removed fields remain errors.
 def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
     originals, patched, records = {}, {}, []
     for site in OPTIONAL_FIELD_LITERALS:

@@ -6,6 +6,7 @@
 import dataclasses
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 import yaml
@@ -71,6 +72,48 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank(cache_mib):
     assert args["frontend"]["stages"][0]["workers"] == 1
     assert spec.workload["images"]["identity"] == {"pool": 2}
     assert spec.workload["isl"] == 128  # placeholders are laid out by the workload driver
+
+
+@pytest.mark.parametrize("cache_mib", [0, 100])
+def test_native_vl_memory_detail_matches_schema(tmp_path, capsys, cache_mib):
+    from jsonschema import Draft202012Validator
+
+    from aisimulate.detail import format_prediction_details
+
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["kv_cache"] = {"block_size": 1}
+    worker["vision"] = {"cache_mib": cache_mib}
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "out"
+    assert (
+        main(["predict", "-c", str(path), "--detail", "memory", "--format", "json", "--output-dir", str(output)]) == 0
+    )
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads((output / "prediction.json").read_text())
+    details = stdout["details"]
+    assert details == saved["details"]
+    breakdown = details["sections"]["memory"]["roles"]["aggregated"]["memory_breakdown"]
+    assert breakdown["reserved_bytes"] == cache_mib << 20
+    assert breakdown["cuda_graph_reserved_bytes"] == 0
+    assert "reserved_bytes:" in format_prediction_details(details)
+
+    schema = json.loads(
+        (Path(__file__).resolve().parents[1] / "docs/reference/schemas/prediction-details.schema.json").read_text()
+    )
+    validator = Draft202012Validator(schema)
+    validator.validate(details)
+
+    # Version 1.0 reports written before this diagnostic was exported stay valid.
+    del breakdown["reserved_bytes"]
+    validator.validate(details)
+    for invalid in (-1, 0.5, True, "104857600", None):
+        breakdown["reserved_bytes"] = invalid
+        assert not validator.is_valid(details), f"accepted invalid reservation {invalid!r}"
+    breakdown["reserved_bytes"] = cache_mib << 20
+    breakdown["unknown_reservation_bytes"] = 0
+    assert not validator.is_valid(details)
 
 
 @pytest.mark.parametrize("layout", [None, "TP"])

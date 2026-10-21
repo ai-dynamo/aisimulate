@@ -3663,7 +3663,7 @@ def test_simulation_dynamo_replay_specs_remain_text_only(tmp_path, monkeypatch, 
         extra += "pub future_control: Option<bool>,"
     api.write_text(f"pub struct ReplaySpec {{pub version: u32, {extra}}}")
     sites, originals = [], {}
-    for site in builder.OPTIONAL_FIELD_LITERALS[2:]:
+    for site in (site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "ReplaySpec"):
         source = site.anchor + ") -> Result<ReplaySpec> {\n    ReplaySpec {\n        version: 1,\n    }\n}\n"
         path = dynamo / site.path
         path.parent.mkdir(parents=True)
@@ -3686,6 +3686,83 @@ def test_simulation_dynamo_replay_specs_remain_text_only(tmp_path, monkeypatch, 
             patched = (dynamo / record["path"]).read_text()
             assert ("encoder: None," in patched) == bool(encoder_type)
             assert record["after_sha256"] == hashlib.sha256(patched.encode()).hexdigest()
+
+
+_SYNTHETIC_TRACE_LITERAL = """fn build_synthetic_workload() -> anyhow::Result<RsTrace> {
+    RsTrace::synthetic(SyntheticTraceSpec {
+        block_size,
+        num_sessions: request_count,
+        turns_per_session,
+        input_tokens: LengthSpec {
+            mean: input_tokens,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: output_tokens,
+            stddev: 0.0,
+        },
+        shared_prefix_ratio,
+        cached_prefix_tokens: 0,
+        num_prefix_groups,
+        first_turn_arrivals,
+        inter_turn_delays: if inter_turn_delay_ms == 0.0 {
+            DelaySpec::None
+        } else {
+            DelaySpec::ConstantMs(inter_turn_delay_ms)
+        },
+        seed: 42,
+        arrival_seed,
+    })
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "image_field",
+    [
+        "",
+        "pub images: Option<SyntheticImages>,",
+        "pub images: Option<OtherImages>,",
+        "images: Option<SyntheticImages>,",
+    ],
+)
+@pytest.mark.parametrize("drift", [None, "source", "new_field"])
+def test_simulation_dynamo_synthetic_trace_remains_text_only(tmp_path, monkeypatch, image_field, drift):
+    from scripts.performance import build_simulation_dynamo as builder
+
+    site = next(site for site in builder.OPTIONAL_FIELD_LITERALS if site.struct == "SyntheticTraceSpec")
+    core, dynamo = tmp_path / "core", tmp_path / "dynamo"
+    api = core / site.api
+    api.parent.mkdir(parents=True)
+    fields = image_field + ("pub future_control: Option<bool>," if drift == "new_field" else "")
+    api.write_text(
+        (REPOSITORY_ROOT / "crates/core" / site.api).read_text().replace("pub images: Option<SyntheticImages>,", fields)
+    )
+    path = dynamo / site.path
+    path.parent.mkdir(parents=True)
+    path.write_text(_SYNTHETIC_TRACE_LITERAL + ("// changed\n" if drift == "source" else ""))
+    original = path.read_text()
+    site = site._replace(sha256=hashlib.sha256(_SYNTHETIC_TRACE_LITERAL.encode()).hexdigest())
+    monkeypatch.setattr(builder, "OPTIONAL_FIELD_LITERALS", (site,))
+    if image_field not in ("", "pub images: Option<SyntheticImages>,") or drift:
+        with pytest.raises(ValueError, match="reviewed source|unreviewed AISimulate SyntheticTraceSpec"):
+            builder.patch_optional_literal_fields(core, dynamo)
+        assert path.read_text() == original
+    else:
+        [record] = builder.patch_optional_literal_fields(core, dynamo)
+        assert record["inserted_fields"] == (["images"] if image_field else [])
+        expected = (
+            original.replace(
+                "        arrival_seed,\n",
+                "        arrival_seed,\n"
+                "        // Modified by AISimulate CI: retain the pinned text-only replay configuration.\n"
+                "        images: None,\n",
+            )
+            if image_field
+            else original
+        )
+        assert path.read_text() == expected
+        assert record["after_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("fields", ["", "pub host_loop: bool, pub vlm_cache_bytes: u64,"])

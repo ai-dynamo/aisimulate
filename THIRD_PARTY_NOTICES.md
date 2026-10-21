@@ -1345,15 +1345,17 @@ and their regression fixtures in `tests/test_ci_workflow_contracts.py`
 are adapted and modified from NVIDIA Dynamo's
 `lib/mocker/src/grouped_scheduler/compatibility.rs` and
 `lib/mocker/src/replay/offline/extensions/kv_router/mod.rs`,
-`lib/mocker/src/replay/offline/entrypoints.rs`, and
-`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs` at commit
+`lib/mocker/src/replay/offline/entrypoints.rs`,
+`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs`, and
+`lib/bindings/python/rust/llm/replay.rs` at commit
 `def3b79b15c266805540a678dd400aeb6ccada1d`:
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 
-Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
 Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
 The adaptation adds `None` for new optional AISimulate fields to the native
@@ -1361,7 +1363,8 @@ request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It also sets an empty image list for the pinned text-only
 request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
 instead of adding multimodal support to Dynamo's adapter. Both offline replay
-specifications disable the encoder pool. The lifecycle conversion explicitly
+specifications disable the encoder pool; the Python binding's synthetic trace
+explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
 rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
 It preserves the upstream copyright headers and marks each modification in the output.
 
