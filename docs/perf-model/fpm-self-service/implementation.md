@@ -760,17 +760,19 @@ the precision with the probe's values. Provenance records each override that
 matches as checked against the probe.
 
 If a `cache_layout: linear` or `kv_bytes_per_token` claim matches, import writes
-the linear form of the measurement. Its `kv_bytes_per_token` is the measured
+the measurement in the linear layout. Its `kv_bytes_per_token` is the measured
 bytes per token, and it has no `cache_groups`. The scheduler limits, the runtime
 memory and the resource provenance stay as measured. The profile provenance
-keeps the measured cache groups with their block sizes and says why import
-wrote the linear form. A `cache_layout: linear` claim without
-`kv_bytes_per_token` also needs a whole number of measured bytes per token.
-Otherwise import keeps the grouped form and records the reason in the
-provenance. A `cache_layout: grouped` or `cache_groups` claim keeps the grouped
-form. Acceptance takes either form, because both come from the probe evidence.
-Finalization keeps the linear form. The token capacity of the two forms differs
-by less than one block.
+keeps the measured cache groups with their block sizes, and its
+`cache_layout_reason` says why import wrote the linear layout. A
+`cache_layout: linear` claim without `kv_bytes_per_token` also needs a whole
+number of measured bytes per token. Otherwise import keeps the grouped layout,
+and `cache_layout_reason` gives the reason.
+
+A `cache_layout: grouped` or `cache_groups` claim keeps the grouped layout.
+Acceptance takes either layout, because both come from the probe evidence.
+Finalization keeps a linear profile linear. The token capacity of the two
+layouts differs by less than one block.
 
 A `cache_block_sizes` override is an error for these layouts, at intake and at
 import. It names cache groups that intake derives from `config.json`, and these
@@ -1605,7 +1607,7 @@ The command verifies the immutable onboarding and collector plans, passed cell a
 
 Saved effective collection options must match the reviewed request, including capture policy and explicit capture sizes. Finalization also rejects an observed immutable model revision or loaded-config commit that contradicts the requested immutable revision. Local PVC model paths and missing revision metadata remain valid; this check does not prove weight contents.
 
-The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary prediction/recommendation configs and a verified copy of the formal data pair. The original collection is unchanged. Runtime cache groups preserve allocation padding and shared-pool slot costs, including null/permanent reservations, instead of deriving an invented non-KV breakdown. A profile that `onboard import-observations` made linear from a matching claim stays linear. Finalization writes the linear form of the merged groups and keeps those groups in the profile provenance. If they have no linear form, finalization stops with the reason. Runtime memory is tied to the recorded scheduler, context, precision, topology and memory policy; changing these settings requires new compatible memory evidence.
+The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary prediction/recommendation configs and a verified copy of the formal data pair. The original collection is unchanged. Runtime cache groups preserve allocation padding and shared-pool slot costs, including null/permanent reservations, instead of deriving an invented non-KV breakdown. A linear profile that has runtime-probe evidence stays linear. Finalization writes the merged groups in the linear layout and keeps those groups in the profile provenance. If a linear layout cannot describe them, finalization stops with the reason. Runtime memory is tied to the recorded scheduler, context, precision, topology and memory policy; changing these settings requires new compatible memory evidence.
 
 If formal observations show less usable cache capacity than the accepted runtime probe, preserve the original collection and import its complete formal runtime observation index through `onboard import-observations`. Review and explicitly accept the resulting capacity revision in the same configuration's checkpoint. Then finalize with both requests:
 

@@ -267,12 +267,11 @@ def _finalized_resources(
     *,
     source_references: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The finalized resources in the accepted source profile's cache form, and the merged grouped measurements.
+    """The finalized resources in the source profile's cache layout, and the merged grouped measurements.
 
-    Finalization, the finalized check and the validation workflow all derive the expected resources here. The
-    probe reports grouped resources, so a profile imported from its evidence is linear only when a matching
-    linear claim gave it the linear form; finalization keeps that form. A config-derived profile is finalized
-    to the merged grouped measurements, as before.
+    Finalization, the finalized check and the validation workflow all derive the expected resources here. A linear
+    profile that has runtime-probe evidence stays linear, so the merged groups are returned in the linear layout.
+    Every other profile, such as a config-derived one, gets the merged grouped measurements, as before.
     """
     from .runtime import runtime_probe_manifest
 
