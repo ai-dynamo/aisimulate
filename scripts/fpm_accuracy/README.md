@@ -71,7 +71,8 @@ identity), and other execution fields must be nonblank strings. Optional v7
 collection selectors (`measurement_policy`, `state_protocol`, `timing_boundary`,
 `measurement_repeats`, `warmup_repeats`, `sglang_allocator_max_split_size_mb`,
 and `sglang_allocator_policy_sha256`) are also checked against every Parquet row
-when present. Repeat counts and allocator size must be integers: warmups may be
+when present. A matching first row does not admit mismatched later rows.
+Repeat counts and allocator size must be integers: warmups may be
 zero, while measurements and allocator size must be positive. The allocator
 policy hash must be a nonempty lowercase SHA-256. Unknown selector fields still
 fail closed; older v7 pairs need not include these optional fields. This does not

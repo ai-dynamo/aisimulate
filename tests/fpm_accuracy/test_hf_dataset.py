@@ -1536,14 +1536,17 @@ def test_v7_collection_selector_must_match_parquet(tmp_path, field, mutation):
     else:
         value = V7_COLLECTION_FIELDS[field]
         changed = value + 1 if isinstance(value, int) else "d" * 64
-        table = table.set_column(table.schema.get_field_index(field), field, pa.array([changed]))
+        table = pa.concat_tables([table, table])
+        table = table.set_column(table.schema.get_field_index(field), field, pa.array([value, changed]))
     pq.write_table(table, fpm_path)
     metadata_path = tmp_path / CONFIGURATION_PATH / "fpm/fpm.metadata.json"
     metadata = json.loads(metadata_path.read_text())
+    metadata["row_count"] = table.num_rows
     metadata["parquet_sha256"] = _sha256(fpm_path)
     _write_json(metadata_path, metadata)
     manifest_path = tmp_path / CONFIGURATION_PATH / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
+    manifest["fpm"][0]["row_count"] = table.num_rows
     manifest["fpm"][0]["sha256"] = _sha256(fpm_path)
     _write_json(manifest_path, manifest)
     dataset = HfDataset.from_local(tmp_path, revision=REVISION)
