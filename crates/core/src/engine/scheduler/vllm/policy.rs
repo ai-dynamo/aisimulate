@@ -368,6 +368,12 @@ pub(super) fn decide_destination_admission<'a, S: PolicySequence + 'a>(
     }
 }
 
+/// Whether admission under `policy` reads the handoff completion tails, so
+/// callers can skip computing them when it does not.
+pub(super) fn reserves_handoff_completion_headroom(policy: SchedulingPolicy) -> bool {
+    matches!(policy, SchedulingPolicy::TrtllmGuaranteedNoEvict)
+}
+
 /// Completion tail already promised to non-running destination handoffs.
 /// vLLM remains optimistic/preemptible; TRT-LLM no-evict admission must keep
 /// both held and activated-waiting tails unavailable.

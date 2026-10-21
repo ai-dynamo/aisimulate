@@ -1272,6 +1272,12 @@ impl VllmCore {
         &self,
         exclude_request: Option<Uuid>,
     ) -> (usize, usize) {
+        // Skip the scan when admission ignores its result: on a decode worker
+        // every activated handoff stays tracked until it finishes, so the scan
+        // below walks every resident request.
+        if !policy::reserves_handoff_completion_headroom(self.args.scheduling_policy()) {
+            return (0, 0);
+        }
         let held = self
             .destination_holds
             .payloads()
