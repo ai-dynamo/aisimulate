@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
     Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
-    FrontendStage, NativeHostOffloadConfig, PassCompletionEffects, Request, SglangConfig,
-    TimingModel, TimingModelConfig, VisionShape,
+    FrontendStage, ImageSpec, NativeHostOffloadConfig, PassCompletionEffects, Request,
+    SglangConfig, TimingModel, TimingModelConfig, VisionShape,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
@@ -1706,6 +1706,70 @@ impl TimingModel for FixedExternalTiming {
     }
 }
 
+#[rstest::rstest]
+fn native_images_require_sglang_even_with_vision_timing(
+    #[values(Backend::Vllm, Backend::Sglang, Backend::Trtllm)] backend: Backend,
+) {
+    let config = EngineConfig {
+        backend,
+        block_size: 4,
+        num_gpu_blocks: 16,
+        ..EngineConfig::default()
+    };
+    let timing = Arc::new(FixedExternalTiming {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+        vision_ms_per_image: Some(5.0),
+    });
+    let mut engine = EngineFactory::with_timing_model(config, timing)
+        .unwrap()
+        .build(EngineIdentity::new(0), NonZeroU32::MIN)
+        .unwrap();
+    let request_id = Uuid::from_u128(1);
+    let result = engine.apply_command_effects(
+        SchedulerCommand::new(
+            0,
+            Command::Submit(Request {
+                request_id,
+                tokens: (0..8).collect(),
+                max_output_tokens: 1,
+                output_token_ids: None,
+                session_id: None,
+                images: vec![ImageSpec {
+                    identity: 1,
+                    token_start: 4,
+                    token_end: 8,
+                    encoder: EncoderShape {
+                        sequences: 1,
+                        patch_tokens: 16,
+                        transformer_tokens: 16,
+                        output_tokens: 4,
+                    },
+                    embedding_bytes: 128,
+                }],
+            }),
+        ),
+        0.0,
+    );
+    if backend != Backend::Sglang {
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("images require the SGLang backend"));
+        return;
+    }
+    result.unwrap();
+    let started = engine.execute_pass(0.0).unwrap().unwrap();
+    // Hand oracle: one 5 ms image plus a 1 ms language prefill.
+    assert_eq!(started.end_ms, 6.0);
+    let completed = engine
+        .complete_pass(started.pass_id, started.end_ms)
+        .unwrap();
+    let outputs = &completed.effects.by_rank[0].effects.outputs;
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(outputs[0].request_id, request_id);
+    assert!(outputs[0].completed);
+    assert!(engine.is_drained());
+}
+
 #[test]
 fn runner_must_resolve_external_timing_before_execution() {
     let spec = spec(engine_config(TimingModelConfig::External {
@@ -2152,12 +2216,18 @@ fn encoder_pool_requires_its_own_timing_model() {
     assert!(error.to_string().contains("with_encoder_timing"), "{error}");
 }
 
-#[test]
-fn encoder_pool_gates_admission_to_the_language_worker() {
-    // Two encoder instances ahead of disaggregated SGLang ranks under a
+#[rstest::rstest]
+fn encoder_pool_gates_admission_to_the_language_worker(
+    #[values(Backend::Vllm, Backend::Sglang, Backend::Trtllm)] backend: Backend,
+) {
+    // Two encoder instances ahead of disaggregated language ranks under a
     // concurrency cap of one: a request's three images spread over both
     // instances and it reaches the prefill rank when its last part arrived.
-    let (replay, timing) = encoder_replay();
+    let (mut replay, timing) = encoder_replay();
+    for role in ["prefill", "decode"] {
+        replay.engine[role]["rank"]["backend"] = serde_json::to_value(backend).unwrap();
+        replay.engine[role]["rank"]["block_size"] = serde_json::json!(4);
+    }
     let report = run_encoder_replay(replay, timing);
 
     assert_eq!(report.request_counts.completed_requests, 2);

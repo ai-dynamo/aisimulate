@@ -699,9 +699,127 @@ mod tests {
 
     use super::*;
     use crate::engine::{
-        HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
-        TimingModelConfig,
+        EncoderShape, HostOffloadObservation, HostOffloadObservationData, ImageSpec,
+        NativeHostOffloadConfig, PressureKind, TimingModelConfig,
     };
+
+    #[rstest::rstest]
+    fn unsupported_native_images_reject_without_consuming_request_or_handoff_ids(
+        #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+        #[values(WorkerType::Aggregated, WorkerType::Prefill, WorkerType::Decode)]
+        worker_type: WorkerType,
+    ) {
+        let config = EngineConfig {
+            backend,
+            worker_type,
+            num_gpu_blocks: 8,
+            block_size: 4,
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::default()
+        };
+        let mut rank = SchedulerRank::new(
+            RankIdentity {
+                worker_id: 0,
+                dp_rank: 0,
+                dp_size: NonZeroU32::MIN,
+            },
+            &config,
+        )
+        .unwrap();
+        let request_id = Uuid::from_u128(1);
+        let handoff_id = HandoffId::from(Uuid::from_u128(2));
+        let mut request = Request {
+            request_id,
+            tokens: (0..8).collect(),
+            max_output_tokens: 1,
+            output_token_ids: None,
+            session_id: None,
+            images: vec![ImageSpec {
+                identity: 1,
+                token_start: 4,
+                token_end: 8,
+                encoder: EncoderShape {
+                    sequences: 1,
+                    patch_tokens: 16,
+                    transformer_tokens: 16,
+                    output_tokens: 4,
+                },
+                embedding_bytes: 128,
+            }],
+        };
+        let command = |request| match worker_type {
+            WorkerType::Aggregated => Command::Submit(request),
+            WorkerType::Prefill => Command::SubmitHandoffPrefill {
+                handoff_id,
+                request,
+            },
+            WorkerType::Decode => Command::ReserveDestination {
+                handoff_id,
+                request,
+            },
+        };
+        let context = CommandContext {
+            now_ms: 0.0,
+            pass_in_flight: false,
+        };
+        let before = rank.metrics();
+        let error = rank
+            .apply_command_effects(command(request.clone()), context, None)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("images require the SGLang backend"),
+            "{error:#}"
+        );
+        assert_eq!(rank.metrics(), before);
+        assert!(rank.is_drained());
+        assert!(rank.handoff_requests.is_empty());
+
+        // The same request and handoff IDs remain usable for a text request.
+        request.images.clear();
+        let effects = rank
+            .apply_command_effects(command(request), context, None)
+            .unwrap();
+        let expected = if worker_type == WorkerType::Decode {
+            CommandResult::DestinationAccepted { request_id }
+        } else {
+            CommandResult::Submitted(request_id)
+        };
+        assert_eq!(effects.result, expected);
+        if worker_type == WorkerType::Decode {
+            rank.apply_command_effects(Command::ActivateDestination { handoff_id }, context, None)
+                .unwrap();
+        }
+        let pass = rank.execute_pass(0.0).unwrap();
+        let completion = rank.complete_pass(pass.pending, pass.end_ms).unwrap();
+        if worker_type == WorkerType::Prefill {
+            assert!(completion.lifecycle_events.iter().any(|event| matches!(
+                event,
+                LifecycleEvent::SourceHeld { handoff_id: id, .. } if *id == handoff_id
+            )));
+            rank.apply_command_effects(
+                Command::ReleaseSource { handoff_id },
+                CommandContext {
+                    now_ms: pass.end_ms,
+                    pass_in_flight: false,
+                },
+                None,
+            )
+            .unwrap();
+        } else {
+            assert!(
+                completion
+                    .outputs
+                    .iter()
+                    .any(|output| output.request_id == request_id && output.completed)
+            );
+        }
+        assert!(rank.is_drained());
+    }
 
     #[test]
     fn state_cache_parameters_reach_rank_local_args() {

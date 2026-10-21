@@ -969,6 +969,17 @@ impl VllmCore {
         // fallible command is validated, violating RankEngine error atomicity.
         // While a model pass is in flight, also keep its physical transfer
         // completions hidden until complete_engine_boundary().
+        match &command {
+            SchedulerCommand::Submit(request)
+            | SchedulerCommand::SubmitHandoffPrefill { request, .. }
+            | SchedulerCommand::ReserveDestination { request, .. } => {
+                anyhow::ensure!(
+                    request.images.is_empty(),
+                    "native request images require the SGLang backend; vLLM and TRT-LLM do not support them"
+                );
+            }
+            _ => {}
+        }
         anyhow::ensure!(
             self.kv_manager.grouped().is_none()
                 || matches!(

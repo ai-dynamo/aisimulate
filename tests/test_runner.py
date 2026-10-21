@@ -317,6 +317,51 @@ def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy(
     assert legacy["total_output_tokens"] == 16
 
 
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_native_replay_rejects_unsupported_images_without_restricting_text(backend):
+    from aisimulate import _runtime
+
+    payload = {
+        "spec": {
+            "version": 1,
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+            "engine": {
+                "rank": {
+                    "backend": backend,
+                    "block_size": 4,
+                    "num_gpu_blocks": 128,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+                }
+            },
+            "requests": [],
+        },
+        "traffic": {
+            "source_type": "synthetic",
+            "load_type": "concurrency",
+            "concurrency": 1,
+            "request_count": 1,
+            "isl": 4,
+            "osl": 1,
+        },
+    }
+    text_report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
+    assert text_report["completed_requests"] == 1
+    assert text_report["total_input_tokens"] == 4
+    assert text_report["mean_ttft_ms"] == 1.0
+
+    payload["traffic"].update(
+        image_count=1,
+        image_visual_tokens=4,
+        image_sequences=1,
+        image_patch_tokens=16,
+        image_transformer_tokens=16,
+        image_output_tokens=4,
+        image_embedding_bytes=128,
+    )
+    with pytest.raises(RuntimeError, match="images require the SGLang backend"):
+        _runtime.run_replay_json(json.dumps(payload))
+
+
 @pytest.mark.parametrize("failure", ["download", "validation"])
 def test_native_replay_preserves_checkpoint_failure_classification(monkeypatch, failure):
     from aisimulate_core.sdk import engine, utils
