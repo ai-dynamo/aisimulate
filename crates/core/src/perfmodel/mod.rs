@@ -46,7 +46,7 @@ pub use engine::spec::{EncoderImageShape, VisionSpec};
 // planner / Mocker) can use it natively; also exposed to Python via the
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
-    CorrectionConfig, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
+    CorrectionConfig, CorrectionMode, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
