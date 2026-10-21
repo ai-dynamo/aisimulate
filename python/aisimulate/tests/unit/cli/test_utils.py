@@ -578,7 +578,8 @@ class TestMergeExperimentResultsByMode:
 
 @pytest.mark.parametrize("load_target", [{"target_request_rate": 1.0}, {"target_concurrency": 1.0}])
 @pytest.mark.parametrize("gpu_cap", [None, 4])
-def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, gpu_cap):
+@pytest.mark.parametrize("multiple_backends", [False, True])
+def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, gpu_cap, multiple_backends):
     from aisimulate.legacy_cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
@@ -588,6 +589,8 @@ def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, 
         ("fast", "agg", 8, 120.0, 2.0),
         ("disagg", "disagg", 4, 110.0, 1.0),
     ]:
+        if name == "fast" and not multiple_backends:
+            continue
         task = MagicMock(
             primary_backend_name=name,
             serving_mode=mode,
@@ -616,12 +619,14 @@ def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, 
 
     # Both agg options meet the same load/SLA. One replica needs 2 GPUs versus
     # 8 GPUs, so a faster per-GPU rate cannot justify the more expensive one.
-    assert configs["agg"].iloc[0]["total_gpus_needed"] == 2
-    assert configs["agg"].iloc[0]["backend"] == "cheap"
-    assert scores["agg"] == 0.5
+    agg_key = "agg" if multiple_backends else "cheap"
+    assert configs[agg_key].iloc[0]["total_gpus_needed"] == 2
+    if multiple_backends:
+        assert configs[agg_key].iloc[0]["backend"] == "cheap"
+    assert scores[agg_key] == 0.5
     # An exact-budget disagg fit must use the same inverse-GPU units as agg.
     assert scores["disagg"] == 0.25
-    assert chosen == "agg"
+    assert chosen == agg_key
 
 
 @pytest.mark.parametrize("mode", ["agg", "disagg", "afd"])

@@ -419,7 +419,8 @@ def pick_load_match(
     best_throughput = 0.0
     if not best_config_df.empty:
         row = best_config_df.iloc[0]
-        if max_total_gpus and int(row.get("total_gpus_needed", 0)) >= max_total_gpus:
+        gpu_capped = "load_served_pct" in row.index and pd.notna(row["load_served_pct"])
+        if gpu_capped:
             best_throughput = float(row.get("tokens/s/gpu_cluster", 0.0))
         else:
             gpus = row.get("total_gpus_needed", 1)
