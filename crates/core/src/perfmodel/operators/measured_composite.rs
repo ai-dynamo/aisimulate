@@ -14,8 +14,8 @@ use crate::perf_database::PerfDatabase;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasuredCell {
-    /// (batch, new tokens per request, cached prefix) for prefill;
-    /// (batch, total attention length, zero) for decode.
+    /// (batch, new tokens per request, cached prefix per request) for prefill;
+    /// (batch, past KV per request + 1, zero) for decode.
     pub shape: [u32; 3],
     pub latency_ms: f64,
 }
@@ -136,7 +136,7 @@ impl MeasuredCompositeOp {
         if !latency.is_finite() || latency <= 0.0 {
             return Err(invalid("invalid measured latency"));
         }
-        Ok(PerformanceResult::new(latency, Source::Estimated))
+        Ok(PerformanceResult::new(latency, Source::Silicon))
     }
 }
 
@@ -179,7 +179,14 @@ mod tests {
             ..Default::default()
         };
         // Hand-selected measurements: three executions of 2 ms, then 5 ms.
-        assert_eq!(op.query(&db, &ctx).unwrap().latency_ms, 6.0);
+        let measured = op.query(&db, &ctx).unwrap();
+        assert_eq!(measured.latency_ms, 6.0);
+        assert_eq!(measured.energy_wms, 0.0);
+        assert_eq!(measured.source, Source::Silicon);
+        assert_eq!(
+            measured.plus(PerformanceResult::silicon(1.0)).source,
+            Source::Silicon
+        );
         ctx.prefix = 4;
         assert_eq!(op.query(&db, &ctx).unwrap().latency_ms, 15.0);
         ctx.s = 5;

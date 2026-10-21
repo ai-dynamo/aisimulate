@@ -156,7 +156,8 @@ def check_dataset(root: Path) -> DatasetIndex:
         path = _verify(root, reference.index)
         if reference.layout == "legacy-fpm":
             legacy = json.loads(path.read_bytes())
-            if category != "fpm" or legacy.get("catalog_version") not in {5, 6, 7}:
+            version = legacy.get("catalog_version") if isinstance(legacy, dict) else None
+            if category != "fpm" or type(version) is not int or version not in {5, 6, 7}:
                 raise ValueError("unsupported legacy FPM index")
             continue
         entries = CategoryIndex.model_validate_json(path.read_bytes())
@@ -204,19 +205,34 @@ def prepare_execution_profile(root: Path, manifest_path: str, output_dir: Path) 
     if hashlib.sha256(config_bytes).hexdigest() != config_artifact.sha256:
         raise ValueError("configuration changed during preparation")
     config = json.loads(config_bytes)
+    if not isinstance(config, dict):
+        raise ValueError("predictor config must be a JSON object")
     model = config.get("model")
     if isinstance(model, str) and model not in DefaultHFModels and not Path(model).is_dir():
         raise ValueError(
             "offline profile preparation requires bundled model metadata or an existing local model directory"
         )
-    selection = config["estimator_config"]["op_level"]["execution_profile"]
-    if selection["sha256"] != profile.sha256:
+    selection = config
+    for key in ("estimator_config", "op_level", "execution_profile"):
+        selection = selection.get(key) if isinstance(selection, dict) else None
+    if not isinstance(selection, dict):
+        raise ValueError("predictor config lacks estimator_config.op_level.execution_profile")
+    if selection.get("sha256") != profile.sha256:
         raise ValueError("configuration profile pin mismatch")
     declared_identity = (manifest.identity.hardware, manifest.identity.framework, manifest.identity.framework_version)
     if declared_identity != (config.get("system"), config.get("backend"), config.get("backend_version")):
         raise ValueError("manifest identity differs from predictor configuration")
     inputs = {a.runtime_path: a for a in manifest.artifacts if a.runtime_path is not None}
-    retained = json.loads(profile_bytes)["retained_files"]
+    profile_doc = json.loads(profile_bytes)
+    retained = profile_doc.get("retained_files") if isinstance(profile_doc, dict) else None
+    if not isinstance(retained, list) or not all(
+        isinstance(f, dict)
+        and isinstance(f.get("path"), str)
+        and isinstance(f.get("sha256"), str)
+        and type(f.get("size_bytes")) is int
+        for f in retained
+    ):
+        raise ValueError("profile retained_files is malformed")
     declared = {f["path"]: (f["sha256"], f["size_bytes"]) for f in retained}
     actual = {p: (a.sha256, a.bytes) for p, a in inputs.items()}
     if len(declared) != len(retained) or declared != actual:

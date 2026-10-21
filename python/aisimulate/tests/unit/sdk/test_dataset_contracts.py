@@ -268,6 +268,122 @@ def test_reject_invalid_inputs_before_materialization(dataset, change):
     assert not (root / "prepared").exists()
 
 
+@pytest.mark.parametrize(
+    "keys,value,pattern",
+    [
+        ((), [], "predictor config must be a JSON object"),
+        ((), {}, "execution_profile"),
+        (("estimator_config",), None, "execution_profile"),
+        (("estimator_config",), [], "execution_profile"),
+        (("estimator_config", "op_level"), None, "execution_profile"),
+        (("estimator_config", "op_level"), {}, "execution_profile"),
+        (("estimator_config", "op_level", "execution_profile"), [], "execution_profile"),
+        (("estimator_config", "op_level", "execution_profile"), {}, "profile pin"),
+        (("estimator_config", "op_level", "execution_profile", "sha256"), [], "profile pin"),
+    ],
+)
+def test_preparation_rejects_malformed_predictor_json(dataset, keys, value, pattern):
+    root, path, manifest = dataset
+    record = next(a for a in manifest["artifacts"] if a["role"] == "predictor-config")
+    config = json.loads((root / record["path"]).read_bytes())
+    if keys:
+        parent = config
+        for key in keys[:-1]:
+            parent = parent[key]
+        parent[keys[-1]] = value
+    else:
+        config = value
+    write(root, record["path"], config)
+    record.update(artifact(root, record["path"], record["role"]))
+    write(root, path, manifest)
+    # Rehashed artifacts pass integrity checks and reach the JSON boundary.
+    check_manifest(root, path)
+    output = root.parent / "rejected"
+    with pytest.raises(ValueError, match=pattern):
+        prepare_execution_profile(root, path, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "keys,value",
+    [
+        ((), []),
+        ((), {}),
+        (("retained_files",), None),
+        (("retained_files",), {}),
+        (("retained_files",), [None]),
+        (("retained_files",), [{}]),
+        (("retained_files",), [{"path": "h200_sxm.yaml", "size_bytes": 1}]),
+        (("retained_files",), [{"path": "h200_sxm.yaml", "sha256": "0" * 64}]),
+        (("retained_files", 0, "path"), []),
+        (("retained_files", 0, "sha256"), {}),
+        (("retained_files", 0, "size_bytes"), []),
+        (("retained_files", 0, "size_bytes"), True),
+        (("retained_files", 0, "size_bytes"), 1.5),
+    ],
+)
+def test_preparation_rejects_malformed_profile_json(dataset, keys, value):
+    root, path, manifest = dataset
+    record = next(a for a in manifest["artifacts"] if a["role"] == "execution-profile")
+    profile = json.loads((root / record["path"]).read_bytes())
+    if keys:
+        parent = profile
+        for key in keys[:-1]:
+            parent = parent[key]
+        parent[keys[-1]] = value
+    else:
+        profile = value
+    write(root, record["path"], profile)
+    record.update(artifact(root, record["path"], record["role"]))
+    config_record = next(a for a in manifest["artifacts"] if a["role"] == "predictor-config")
+    config = json.loads((root / config_record["path"]).read_bytes())
+    config["estimator_config"]["op_level"]["execution_profile"]["sha256"] = record["sha256"]
+    write(root, config_record["path"], config)
+    config_record.update(artifact(root, config_record["path"], config_record["role"]))
+    write(root, path, manifest)
+    check_manifest(root, path)
+    output = root.parent / "rejected"
+    with pytest.raises(ValueError, match="profile retained_files is malformed"):
+        prepare_execution_profile(root, path, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "legacy,valid",
+    [
+        ({"catalog_version": 5}, True),
+        ({"catalog_version": 6}, True),
+        ({"catalog_version": 7}, True),
+        ([], False),
+        ({}, False),
+        ({"catalog_version": []}, False),
+        ({"catalog_version": {}}, False),
+        ({"catalog_version": 5.0}, False),
+        ({"catalog_version": "5"}, False),
+        ({"catalog_version": True}, False),
+    ],
+)
+def test_legacy_fpm_discovery_requires_supported_integer_version(tmp_path, legacy, valid):
+    path = "catalog/fpm/index.json"
+    write(tmp_path, path, legacy)
+    write(
+        tmp_path,
+        "catalog/dataset.json",
+        {
+            "schema_version": "aisim-dataset-index/v1",
+            "dataset_id": "public/example",
+            "categories": {
+                "fpm": {"root": "data/fpm", "index": artifact(tmp_path, path, "category-index"), "layout": "legacy-fpm"}
+            },
+        },
+    )
+    if valid:
+        assert check_dataset(tmp_path).categories["fpm"].layout == "legacy-fpm"
+    else:
+        with pytest.raises(ValueError, match="unsupported legacy FPM index"):
+            check_dataset(tmp_path)
+
+
 @pytest.mark.parametrize("field", ["hardware", "framework", "framework_version"])
 def test_preparation_rejects_manifest_predictor_identity_mismatch(dataset, field):
     root, path, manifest = dataset

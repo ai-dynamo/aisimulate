@@ -73,14 +73,15 @@ that alter the basis require requalification and a new profile pin.
 `backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
 Each cell contains `shape` and `latency_ms`. Sort cells by their unique shape:
 
-- Prefill: `[batch, new_tokens_per_request, cached_prefix_per_request]`.
-- Decode: `[batch, per_request_attention_length, 0]`, where the length is
-  `total_past_kv_tokens / batch + 1` (past KV plus the current token).
+- Prefill: `[batch, total_input_length - prefix, prefix]`, where input length
+  and cached prefix are per request; the second entry is the new token count.
+- Decode: `[batch, total_past_kv_tokens / batch + 1, 0]`, where the second entry
+  is the per-request attention length (past KV plus the current token).
 
 Latencies and repetition factors must be finite and positive. The operator
 multiplies the measured scope latency by its repetition factor. It performs
 no interpolation, extrapolation, correction, or SOL substitution. Missing
-cells fail explicitly. Composite estimates report `estimated` source and zero
+cells fail explicitly. Exact measured results report `silicon` source and zero
 energy to indicate missing energy evidence. Existing operations keep their
 own lookup rules. Profiles may use `Overlap` for parallel operation groups;
 fallback graphs, speculative token scaling, whole-forward, vision and other

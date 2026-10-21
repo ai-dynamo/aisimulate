@@ -119,6 +119,8 @@ def test_exact_cells_prefix_and_saved_config(profile):
     # Independent synthetic oracle: three repetitions of 2 ms or 5 ms.
     assert model.predict_prefill_latency(1, 4, 0) == 6.0
     assert model.predict_prefill_latency(1, 8, 4) == 15.0
+    [evidence] = model.static_phase_diagnostics(batch_size=1, context_length=8, prefix=4, prefill=True)
+    assert (evidence["latency_ms"], evidence["energy_wms"], evidence["source"]) == (15.0, 0.0, "silicon")
     saved = model.diagnostics()["provenance"]["config"]
     assert saved["estimator_config"]["op_level"] == config["estimator_config"]["op_level"]
     assert RustForwardPassPerfModel.best_available(saved).predict_prefill_latency(1, 4, 0) == 6.0
@@ -261,6 +263,8 @@ def test_decode_profile_and_separate_profile_identity(profile):
     publish()
     decode = RustForwardPassPerfModel.best_available(config)
     assert decode.predict_decode_latency_total(2, 8) == 21.0
+    [evidence] = decode.static_phase_diagnostics(batch_size=2, context_length=4, prefill=False)
+    assert (evidence["latency_ms"], evidence["energy_wms"], evidence["source"]) == (21.0, 0.0, "silicon")
     assert prefill.predict_prefill_latency(1, 4, 0) == 6.0
     with pytest.raises(ValueError, match="homogeneous"):
         decode.predict_decode_latency_total(2, 9)
