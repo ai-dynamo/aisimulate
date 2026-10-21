@@ -909,6 +909,23 @@ class TestKVCacheElementsPerToken:
         assert model.model_family == expected_family
         assert model.get_kvcache_elements_per_token() == expected_elems
 
+    @pytest.mark.parametrize("tp,expected_elements", [(1, 4096), (2, 2048), (4, 2048)])
+    @pytest.mark.parametrize("kv_dtype", [common.KVCacheQuantMode.fp8, common.KVCacheQuantMode.bfloat16])
+    def test_nemotron_h_counts_only_attention_kv(self, tp, expected_elements, kv_dtype):
+        model = self._build_model(
+            "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+            tp,
+            kvcache_quant_mode=kv_dtype,
+            moe_tp_size=1,
+            moe_ep_size=tp,
+        )
+        # The bundled config has 8 attention layers, 2 KV heads, and 128-wide heads.
+        # TP >= 2 retains one KV head per rank, including replicated heads at TP4.
+        assert model.get_kvcache_elements_per_token() == expected_elements
+        bytes_per_token = expected_elements * kv_dtype.value.memory
+        assert model.get_kvcache_bytes_per_sequence(64) == 64 * bytes_per_token
+        assert model.get_kvcache_max_tokens(64 * bytes_per_token) == 64
+
     @pytest.mark.parametrize(
         "hf_id",
         [
