@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use super::{EstimatorConfig, ForwardPassWorkerType};
-use crate::common::enums::{DatabaseMode, TransferPolicy};
+use crate::common::enums::{DatabaseMode, EncoderParallel, TransferPolicy};
 use crate::{AicError, BackendKind};
 
 const fn one() -> u32 {
@@ -180,6 +180,10 @@ pub struct ForwardPassPerfModelConfig {
     pub enable_shared_layer: Option<bool>,
     #[serde(default)]
     pub strict_provenance: bool,
+    /// Compile the model's vision tower with this layout so the estimator can
+    /// price encoder calls; `None` prices the language model only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder_parallel: Option<EncoderParallel>,
 }
 
 impl ForwardPassPerfModelConfig {
@@ -226,6 +230,7 @@ impl ForwardPassPerfModelConfig {
             moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
+            encoder_parallel: None,
         }
     }
 
@@ -297,7 +302,9 @@ impl ForwardPassPerfModelConfig {
                     "fpm_profile requires a literal backend_version",
                 ));
             }
-            if self.nextn != 0 || self.speculation.is_some() {
+            if (self.nextn != 0 && self.validate_fpm_execution()?.is_none())
+                || self.speculation.is_some()
+            {
                 return Err(invalid_config(
                     "FPM profiles support plain autoregressive decoder-only execution",
                 ));
@@ -467,7 +474,11 @@ impl ForwardPassPerfModelConfig {
                 ));
             }
         }
-        if self.estimation_mode == EstimationMode::FpmInterpolation && self.nextn != 0 {
+        let execution = self.validate_fpm_execution()?;
+        if self.estimation_mode == EstimationMode::FpmInterpolation
+            && self.nextn != 0
+            && execution.is_none()
+        {
             return Err(invalid_config(
                 "estimation_mode='fpm_interpolation' does not support MTP speculative decoding",
             ));
@@ -497,6 +508,42 @@ impl ForwardPassPerfModelConfig {
             }
         }
         self.estimator_config.validate()
+    }
+
+    pub(crate) fn validate_fpm_execution(
+        &self,
+    ) -> Result<Option<super::FpmExecutionBinding>, AicError> {
+        let Some(binding) = self.fpm_execution_binding()? else {
+            return Ok(None);
+        };
+        if self.estimation_mode != EstimationMode::FpmInterpolation
+            || self.estimator_config.fpm_interpolation.method
+                != super::FpmInterpolationMethod::Direct
+            || self.fallback_policy != ForwardPassFallbackPolicy::Deny
+            || self.database_mode != DatabaseMode::Silicon
+        {
+            return Err(invalid_config(
+                "speculative-round FPM requires explicit fpm_interpolation, direct method, SILICON data and fallback_policy='deny'",
+            ));
+        }
+        if self.nextn != binding.execution_profile.num_draft_tokens || self.speculation.is_some() {
+            return Err(invalid_config(
+                "speculative-round FPM nextn must match num_draft_tokens and cannot use generic speculation",
+            ));
+        }
+        if self.backend != BackendKind::Vllm
+            || self.pp != 1
+            || self.attention_dp != 1
+            || self.cp_size.is_some_and(|cp| cp != 1)
+            || self.dcp.is_some()
+            || self.moe_ep_size.is_some_and(|ep| ep != 1)
+            || self.moe_tp_size.is_some_and(|tp| tp != 1 && tp != self.tp)
+        {
+            return Err(invalid_config(
+                "speculative-round FPM supports vLLM pure TP with PP1/DP1/CP1 and no recorded DCP",
+            ));
+        }
+        Ok(Some(binding))
     }
 }
 

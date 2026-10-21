@@ -10,6 +10,7 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
     EngineRecommendationConfig,
+    HostWorkerPredictionConfig,
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
@@ -126,6 +127,8 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+    hosted = WorkersPredictionConfig(prefill=HostWorkerPredictionConfig(host_loop=True))
+    assert hosted.prefill is not None and hosted.prefill.host_loop is True
 
 
 def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
@@ -1021,6 +1024,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
+    if mode != "aggregated":
+        worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
     roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
     raw["engine"]["mode"] = mode
     for public_role in roles:
@@ -1570,18 +1575,30 @@ def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dc
 
 @pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
 @pytest.mark.parametrize("warmup", [False, True])
-def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int, warmup: bool) -> None:
+@pytest.mark.parametrize("imported", [False, True])
+def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(
+    seed: int, warmup: bool, imported: bool
+) -> None:
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
     from aisimulate.recommend import _recommendation_workload
     from aisimulate.sweeper.config import Workload
 
+    snapshot = {"seed": seed}
+    if imported:
+        snapshot.update(
+            initial_selections=[
+                {"source_play_id": "reference-a", "t_star_ms": 40.56078627883167},
+                {"source_play_id": "reference-b", "t_star_ms": 50.0},
+            ],
+            corpus_cursor=3,
+        )
     traffic = {
         "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
         "load": {
             "type": "trace_timestamps",
             "agentic_lanes": 2,
-            "agentic_snapshot": {"seed": seed},
+            "agentic_snapshot": snapshot,
             "agentic_warmup": warmup,
         },
     }
@@ -1591,12 +1608,12 @@ def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: 
         {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
     )
     workload = prediction_to_replay_spec(prediction).workload
-    assert workload["agentic_snapshot"] == {"seed": seed}
+    assert workload["agentic_snapshot"] == snapshot
     assert workload.get("agentic_warmup", False) is warmup
     recommended = _recommendation_workload(traffic)
-    assert recommended["agentic_snapshot"] == {"seed": seed}
+    assert recommended["agentic_snapshot"] == snapshot
     assert recommended.get("agentic_warmup", False) is warmup
-    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == {"seed": seed}
+    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == snapshot
     assert Workload.model_validate(recommended).agentic_warmup is warmup
 
 
@@ -1656,6 +1673,77 @@ def test_agentic_snapshot_is_opt_in() -> None:
     assert "agentic_warmup" not in prediction_to_replay_spec(config).workload
     assert config.traffic.load.agentic_profile is None
     assert "agentic_profile" not in prediction_to_replay_spec(config).workload
+
+
+def test_imported_agentic_snapshot_round_trips_without_changing_legacy_serialization():
+    from aisimulate.config.traffic import AgenticSnapshotOptions, TrafficPredictionConfig
+
+    snapshot = {
+        "seed": 42,
+        "initial_selections": [{"source_play_id": "reference-play", "t_star_ms": 40.56078627883167}],
+        "corpus_cursor": 2,
+    }
+    config = TrafficPredictionConfig.model_validate(
+        {
+            "source": {"type": "trace", "paths": ["corpus.jsonl"], "format": "weka"},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": snapshot},
+        }
+    )
+    assert config.load.agentic_snapshot.model_dump() == snapshot
+    assert (
+        AgenticSnapshotOptions.model_validate(snapshot).model_dump_json()
+        == config.load.agentic_snapshot.model_dump_json()
+    )
+    assert AgenticSnapshotOptions(seed=42).model_dump() == {"seed": 42}
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"seed": 42, "initial_selections": []},
+        {"seed": 42, "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}]},
+        {"seed": 42, "initial_selections": [{"source_play_id": "", "t_star_ms": 5.0}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": float("nan")}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": -1.0}], "corpus_cursor": 1},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}], "corpus_cursor": 0},
+        {"seed": 42, "initial_selections": [{"source_play_id": "a", "t_star_ms": 5.0}], "corpus_cursor": True},
+    ],
+)
+def test_imported_agentic_snapshot_rejects_invalid_metadata(snapshot):
+    from aisimulate.config.traffic import AgenticSnapshotOptions
+
+    with pytest.raises(ValidationError):
+        AgenticSnapshotOptions.model_validate(snapshot)
+
+
+@pytest.mark.parametrize("selection_count", [1, 3])
+def test_imported_agentic_snapshot_requires_one_selection_per_lane(selection_count: int) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.sweeper.config import Workload
+
+    snapshot = {
+        "seed": 42,
+        "initial_selections": [
+            {"source_play_id": f"reference-{index}", "t_star_ms": 50.0} for index in range(selection_count)
+        ],
+        "corpus_cursor": selection_count,
+    }
+    load = {"type": "trace_timestamps", "agentic_lanes": 2, "agentic_snapshot": snapshot}
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError, match="exactly one selection per lane"):
+            schema.model_validate({"source": {"type": "trace", "format": "weka", "paths": ["corpus"]}, "load": load})
+    with pytest.raises(ValidationError, match="exactly one selection per lane"):
+        Workload.model_validate(
+            {
+                "source_type": "trace",
+                "trace_path": "corpus",
+                "trace_format": "weka",
+                "load_type": "trace_timestamps",
+                "agentic_lanes": 2,
+                "agentic_snapshot": snapshot,
+            }
+        )
 
 
 @pytest.mark.parametrize("warmup", [False, True])

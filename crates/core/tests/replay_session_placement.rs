@@ -170,6 +170,7 @@ fn spec(disagg: bool, max_in_flight: Option<usize>) -> ReplaySpec {
         ..Default::default()
     };
     ReplaySpec {
+        encoder: None,
         version: CURRENT_REPLAY_SPEC_VERSION,
         topology: if disagg {
             ReplayTopology::Disaggregated {

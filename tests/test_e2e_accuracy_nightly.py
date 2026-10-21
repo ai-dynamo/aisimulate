@@ -26,6 +26,23 @@ import scripts.pages.build_pages_site as pages
 import scripts.pages.prepare_e2e_accuracy_pages as publish
 
 
+def legacy_manifest():
+    return {
+        "max_age_days": 180,
+        "minimum_free_bytes": 35000000000,
+        "parts": [
+            {
+                "name": "inferencex-2026-09-14.dump.zst.part00",
+                "sha256": "6cd2b2e7e8cd1386d59717a45f8a30af2ff6c21fd975185b5d713cb073720c9a",
+                "size": 1992294400,
+            }
+        ],
+        "release_tag": "db-dump/2026-09-14",
+        "schema_version": 1,
+        "selection_policy": "gym-resolved-config-v2",
+    }
+
+
 def tables():
     return {
         "configs": [{"id": 1, "is_multinode": False}],
@@ -276,7 +293,7 @@ def test_copy_reader_rejects_incomplete_or_ambiguous_data(text):
     ],
 )
 def test_manifest_rejected_before_downloading_or_loading_runtime(tmp_path, change):
-    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    manifest = legacy_manifest()
     manifest.update(change)
     output = tmp_path / "download"
     with pytest.raises(ValueError):
@@ -290,7 +307,7 @@ def test_manifest_rejected_before_downloading_or_loading_runtime(tmp_path, chang
 
 @pytest.mark.parametrize("change", [{"name": "../other"}, {"sha256": "bad"}, {"size": True}, {"size": -1}])
 def test_manifest_validates_every_part_before_starting_downloads(tmp_path, change):
-    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    manifest = legacy_manifest()
     manifest["parts"][-1].update(change)
     with pytest.raises(ValueError, match="pinned dump part"):
         fetch.fetch(manifest, tmp_path / "download")
@@ -298,7 +315,7 @@ def test_manifest_validates_every_part_before_starting_downloads(tmp_path, chang
 
 
 def test_fetch_verifies_pinned_bytes_and_extracts_only_measurement_tables(tmp_path, monkeypatch):
-    manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    manifest = legacy_manifest()
     payload = b"pinned compressed fixture"
     manifest["parts"] = [dict(manifest["parts"][0], size=len(payload), sha256=hashlib.sha256(payload).hexdigest())]
     manifest["minimum_free_bytes"] = 1
@@ -379,9 +396,9 @@ def artifact(tmp_path, monkeypatch, request):
     source = tmp_path / "tables.json"
     source.write_text(json.dumps(tables()))
     manifest = tmp_path / "manifest.json"
-    legacy_manifest = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
-    legacy_manifest.update(selection_policy=fetch.POLICY, max_age_days=30)
-    manifest.write_text(json.dumps(legacy_manifest))
+    manifest_data = legacy_manifest()
+    manifest_data.update(selection_policy=fetch.POLICY, max_age_days=30)
+    manifest.write_text(json.dumps(manifest_data))
     monkeypatch.setattr(
         campaign,
         "wheel_identity",
@@ -733,18 +750,26 @@ def test_nightly_accuracy_is_independent_from_release_staging_and_keeps_preview_
     )
     shard_uploads = [step for step in shards["steps"] if "upload-artifact@" in step.get("uses", "")]
     assert len(shard_uploads) == 3
+    assert all("-encrypted/" in step["with"]["path"] for step in shard_uploads)
+    measurement_uploads = [
+        s for s in workflow["jobs"]["measurements"]["steps"] if "upload-artifact@" in s.get("uses", "")
+    ]
+    assert len(measurement_uploads) == 1
+    assert measurement_uploads[0]["with"]["path"].endswith("accuracy-measurements-encrypted/")
+    assert matrix["secrets"]["HF_READ_AISIM_INFX_CACHE"] == "${{ secrets.HF_READ_AISIM_INFX_CACHE }}"
+    assert workflow["on"]["workflow_call"]["secrets"]["HF_READ_AISIM_INFX_CACHE"]["required"] == "true"
     assert (
         shard_uploads[0]["with"]["name"] == "e2e-accuracy-results-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}"
     )
     assert all(step["with"]["overwrite"] == "true" for step in shard_uploads)
     assert shard_uploads[1]["if"] == "always()"
-    assert shard_uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/results.jsonl"
+    assert shard_uploads[1]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence-encrypted/results.jsonl.enc"
     assert shard_uploads[2]["if"] == "always() && inputs.preview"
     assert (
         shard_uploads[2]["with"]["name"]
         == "e2e-accuracy-preview-evidence-${{ inputs.artifact_key }}-shard-${{ matrix.shard }}"
     )
-    assert shard_uploads[2]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence/"
+    assert shard_uploads[2]["with"]["path"] == "${{ runner.temp }}/accuracy-evidence-encrypted/"
     wheel_upload = next(s for s in workflow["jobs"]["wheel"]["steps"] if "upload-artifact@" in s.get("uses", ""))
     assert wheel_upload["with"]["overwrite"] == "true"
     assert wheel_upload["with"]["name"] == "e2e-accuracy-wheel-${{ inputs.artifact_key }}"
@@ -1106,7 +1131,7 @@ def test_invalid_exclusion_counts_cannot_publish(artifact, counts):
 
 @pytest.fixture
 def latest_dump(monkeypatch):
-    template = json.loads((ROOT / ".github/e2e-accuracy-dataset.json").read_text())
+    template = legacy_manifest()
     tag = "db-dump/2026-09-28"
     name = "inferencex-2026-09-28.dump.zst.part00"
     checksum = "a" * 64
@@ -1726,6 +1751,9 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     data = resolved_tables()
     if resolution_stage:
         data["benchmark_results"].append({**data["benchmark_results"][0], "id": 2, "conc": 128})
+        if resolution_stage == "mtp_acceptance_missing":
+            data["configs"].append({**data["configs"][0], "id": "hf:mtp", "spec_method": "mtp"})
+            data["benchmark_results"][-1]["config_id"] = "hf:mtp"
     tables_path = tmp_path / "resolved-tables.json"
     tables_path.write_text(json.dumps(data))
     manifest = tmp_path / "resolved-manifest.json"
@@ -1781,6 +1809,11 @@ def test_resolved_campaign_publishes_replay_when_baseline_fails(artifact, tmp_pa
     )
     summary = json.loads((output / "summary.json").read_text())
     assert publish.validate_artifact(archive(summary), run) == summary
+    hf_manifest = json.loads(manifest.read_text())
+    assert summary["snapshot"]["measurement_source_url"] == (
+        "https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/" + hf_manifest["revision"]
+    )
+    assert summary["snapshot"]["campaign"]["selection_policy"] == "hf-current-view-config-v2"
     resolved = json.loads((evidence / "resolved-points.json").read_text())
     qualification = json.loads((output / "qualification.json").read_text())
     assert qualification["cohort_sha256"] == campaign.sha(

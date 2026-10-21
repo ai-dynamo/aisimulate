@@ -53,6 +53,7 @@ fn run(
     let driver = WorkloadDriver::new_agentic_trace_with_lanes(graph, 4, 1).unwrap();
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::aggregated(1),
         engine: serde_json::to_value(ReplayEngineConfig {
             rank: EngineConfig {
@@ -309,6 +310,7 @@ fn g2_spec(disaggregated: bool, shared: bool, host_blocks: Option<usize>, h2d: f
         ..EngineConfig::for_backend(Backend::Vllm)
     };
     ReplaySpec {
+        encoder: None,
         version: 1,
         topology: if disaggregated {
             ReplayTopology::Disaggregated {
@@ -408,7 +410,7 @@ fn agentx_g2_restores_evicted_parent_after_tool_gap_and_join(
 
 fn g2_snapshot_driver(warmup: bool, from_start: bool) -> WorkloadDriver {
     let prepared = g2_graph()
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let play = if from_start {
         prepared.context().prepare_play_from_start(0, 0).unwrap()
@@ -555,7 +557,7 @@ fn snapshot_pin_report(
     disaggregated: bool,
 ) -> ReplayReport {
     let prepared = graph
-        .prepare_snapshots(3, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(3, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     // "profile" profiles after warmup; "profile-cold" profiles straight from
     // the snapshot without warmup's timer rebasing.
@@ -587,6 +589,7 @@ fn snapshot_pin_report(
     };
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: if disaggregated {
             ReplayTopology::Disaggregated {
                 prefill: WorkerPoolSpec::default(),

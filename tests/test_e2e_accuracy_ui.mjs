@@ -1068,3 +1068,37 @@ test("decoding filter recomputes MAPE, keeps failures, and restores its URL", ()
   assert.equal(app.run("state.data.totals.rows"), 6);
   assert.equal(app.run("state.data.totals.aisimulate.tpot_mape_pct"), 12.5);
 });
+
+for (const policy of ["hf-current-view-config-v1", "hf-current-view-config-v2"]) {
+test(`HF campaigns show pinned provenance and source-resolved settings (${policy})`, async () => {
+  const data = withEvaluation();
+  const revision = data.snapshot.evaluated_revision;
+  data.snapshot.release_tag = "hf/" + "c".repeat(40);
+  data.snapshot.measurement_source_url = "https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/" + "c".repeat(40);
+  data.snapshot.campaign = {
+    ...revision, status: "complete", advisory: true, run_id: "123",
+    wheel_sha256: "a".repeat(64), dataset_sha256: "b".repeat(64),
+    selected: data.totals.rows, published: data.totals.rows,
+    backend_versions: [], exclusion_reasons: {}, selection_policy: policy,
+  };
+  const app = setup(async () => response(data));
+  app.set("revisionFixture", revision);
+  app.run('Object.assign(state.catalog.branches[0], {status: "evaluated", evaluated_revision: revisionFixture, published_from_commit: null})');
+  await app.run('loadBranch("main")');
+  assert.match(app.element("provenance-content").innerHTML, /huggingface.co/);
+  assert.match(app.element("provenance-content").innerHTML, /source-resolved serving settings/);
+  assert.doesNotMatch(app.element("provenance-content").innerHTML, /max_num_batched_tokens=8192/);
+  for (const change of [
+    {release_tag: "hf/main"},
+    {release_tag: "hf/main", measurement_source_url: ""},
+    {measurement_source_url: data.snapshot.measurement_source_url.replace("aisim-infx-cache", "another-repo")},
+    {measurement_source_url: data.snapshot.measurement_source_url.slice(0, -1) + "d"},
+  ]) {
+    const invalid = structuredClone(data);
+    Object.assign(invalid.snapshot, change);
+    app.set("invalid", invalid);
+    assert.throws(() => app.run("validateSummary(invalid)"));
+  }
+});
+
+}

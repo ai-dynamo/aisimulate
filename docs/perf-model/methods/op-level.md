@@ -49,7 +49,8 @@ constructor and Rust operation executor as ordinary op-level prediction.
 Set `estimation_mode: op_level`, `fallback_policy: deny`, `database_mode: SILICON`,
 `enable_shared_layer: false`, and `estimator_config.correction.enabled: false`.
 Choose `worker_type: prefill` or `decode`, an explicit backend version and a
-single PP/attention-DP/CP/DCP rank. Speculation, decoder replay, automatic
+single PP/attention-DP/CP/DCP rank. Keep `encoder_parallel` unset: these profiles
+qualify the language-model phase only. Speculation, decoder replay, automatic
 estimator selection and shared-source inheritance are not supported.
 Supply the external hardware and performance-data root through `systems_paths`.
 

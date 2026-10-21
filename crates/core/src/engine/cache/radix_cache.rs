@@ -174,6 +174,18 @@ pub struct TreeNode {
     pub lock_ref: usize,
     /// Monotonic timestamp for LRU eviction.
     pub last_access_time: Instant,
+    /// Bumped whenever this edge's tail changes in place (leaf extension or partial eviction),
+    /// so a [`PrefixMatchHint`] ending at this node is not reused across such a change.
+    edge_version: u64,
+}
+
+/// Where a read-only prefix match fully matched its deepest node, so the same page hashes can be
+/// matched again from that node instead of from the root.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PrefixMatchHint {
+    node: NodeId,
+    edge_version: u64,
+    pages: usize,
 }
 
 /// Radix tree for SGLang KV cache simulation.
@@ -224,6 +236,7 @@ impl RadixCache {
             value: Vec::new(),
             lock_ref: 0,
             last_access_time: Instant::now(),
+            edge_version: 0,
         });
         Self {
             nodes,
@@ -543,9 +556,52 @@ impl RadixCache {
 
     /// Read-only prefix match using page hashes already owned by the request.
     pub(crate) fn prefix_match_hashes_len(&self, page_keys: &[LocalBlockHash]) -> usize {
-        let mut current = self.root;
-        let mut matched_pages: usize = 0;
+        self.prefix_match_hashes_from(self.root, 0, page_keys).0 * self.page_size
+    }
 
+    /// Read-only prefix match that resumes from `hint` when its node is unchanged, and updates
+    /// `hint` for the next call. `hint` must come from a match of the same request's page hashes,
+    /// which only grow, so the prefix it covers is unchanged.
+    ///
+    /// Content on the path to the hinted node can only change by evicting that node (its
+    /// descendants go first) or by changing its own tail in place; splits keep the path intact.
+    /// Matching beyond it walks on as usual, so newly inserted children are still found.
+    pub(crate) fn prefix_match_hashes_len_hinted(
+        &self,
+        page_keys: &[LocalBlockHash],
+        hint: &mut Option<PrefixMatchHint>,
+    ) -> usize {
+        let (start, start_pages) = match *hint {
+            Some(hint)
+                if hint.pages <= page_keys.len()
+                    && self
+                        .nodes
+                        .get(hint.node)
+                        .is_some_and(|node| node.edge_version == hint.edge_version) =>
+            {
+                (hint.node, hint.pages)
+            }
+            _ => (self.root, 0),
+        };
+        let (matched_pages, node, node_pages) =
+            self.prefix_match_hashes_from(start, start_pages, page_keys);
+        *hint = Some(PrefixMatchHint {
+            node,
+            edge_version: self.nodes[node].edge_version,
+            pages: node_pages,
+        });
+        matched_pages * self.page_size
+    }
+
+    /// Match `page_keys[matched_pages..]` below `current`, which fully matches
+    /// `page_keys[..matched_pages]`. Returns the matched page count and the deepest fully matched
+    /// node with its page count.
+    fn prefix_match_hashes_from(
+        &self,
+        mut current: NodeId,
+        mut matched_pages: usize,
+        page_keys: &[LocalBlockHash],
+    ) -> (usize, NodeId, usize) {
         while matched_pages < page_keys.len() {
             let child_id = match self.nodes[current]
                 .children
@@ -560,15 +616,14 @@ impl RadixCache {
             let common_len = Self::key_match(child_key, &page_keys[matched_pages..]);
 
             if common_len < child_key.len() {
-                matched_pages += common_len;
-                break;
+                return (matched_pages + common_len, current, matched_pages);
             }
 
             matched_pages += common_len;
             current = child_id;
         }
 
-        matched_pages * self.page_size
+        (matched_pages, current, matched_pages)
     }
 
     /// Insert a token sequence into the tree. Key is page-aligned before insertion.
@@ -801,6 +856,7 @@ impl RadixCache {
         debug_assert!(node.lock_ref <= 1);
         node.key.extend_from_slice(key);
         node.value.extend_from_slice(value);
+        node.edge_version += 1;
         if node.lock_ref == 0 {
             self.evictable_size += key.len() * self.page_size;
         } else {
@@ -843,6 +899,7 @@ impl RadixCache {
             value: prefix_value,
             lock_ref,
             last_access_time: accessed,
+            edge_version: 0,
         };
         let inter_id = self.nodes.insert(intermediate);
 
@@ -874,6 +931,7 @@ impl RadixCache {
             value: value.to_vec(),
             lock_ref: 0,
             last_access_time: now,
+            edge_version: 0,
         };
         let ck = key[0];
         let new_id = self.nodes.insert(new_node);
@@ -1000,6 +1058,7 @@ impl RadixCache {
                 let (nodes, page_pool) = (&mut self.nodes, &mut self.page_pool);
                 let victim_node = &mut nodes[victim_id];
                 victim_node.key.truncate(split_pos);
+                victim_node.edge_version += 1;
                 let evicted_values = &victim_node.value[split_pos..];
                 if let Some(belady) = &mut self.belady {
                     for page in evicted_values {
@@ -1268,6 +1327,41 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 5);
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[10, 20, 30, 40, 50, 60, 70, 80]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
+    }
+
+    #[test]
+    fn hinted_prefix_match_follows_tree_changes() {
+        let query = RadixCache::new(1, 1).page_hashes(&[1, 2, 3, 4, 5, 6]);
+        let check = |cache: &RadixCache, hint: &mut Option<PrefixMatchHint>, expected: usize| {
+            assert_eq!(cache.prefix_match_hashes_len_hinted(&query, hint), expected);
+            assert_eq!(cache.prefix_match_hashes_len(&query), expected);
+        };
+
+        // In-place changes to the hinted leaf's tail.
+        let mut cache = RadixCache::new(100, 1);
+        let mut hint = None;
+        cache.insert(&[1, 2, 3], &[0, 1, 2]);
+        check(&cache, &mut hint, 3);
+        let (_, leaf) = cache.match_prefix(&[1, 2, 3]);
+        cache.insert_from_node(leaf, 3, &[1, 2, 3, 4], &[0, 1, 2, 3]);
+        check(&cache, &mut hint, 4);
+        cache.evict(2);
+        check(&cache, &mut hint, 2);
+        cache.evict(2);
+        check(&cache, &mut hint, 0);
+
+        // A new child below the hinted internal node, then splits above and at the hinted node.
+        let mut cache = RadixCache::new(100, 1);
+        let mut hint = None;
+        cache.insert(&[1, 2, 3, 9], &[0, 1, 2, 3]);
+        cache.insert(&[1, 2, 3, 8], &[0, 1, 2, 4]);
+        check(&cache, &mut hint, 3);
+        cache.insert(&[1, 2, 3, 4, 5], &[0, 1, 2, 5, 6]);
+        check(&cache, &mut hint, 5);
+        cache.insert(&[1, 7], &[0, 7]);
+        check(&cache, &mut hint, 5);
+        cache.insert(&[1, 2, 3, 4, 7], &[0, 1, 2, 5, 8]);
+        check(&cache, &mut hint, 5);
     }
 
     #[test]

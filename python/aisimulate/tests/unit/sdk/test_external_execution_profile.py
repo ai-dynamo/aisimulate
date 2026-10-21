@@ -157,6 +157,8 @@ def test_mutation_is_rejected_and_existing_model_owns_snapshot(profile):
         ("cp_size", 2),
         ("dcp", 2),
         ("backend_version", "latest"),
+        ("encoder_parallel", "tp"),
+        ("encoder_parallel", "dp"),
     ],
 )
 def test_rejects_unsupported_modes_before_compilation(profile, field, value):
@@ -381,23 +383,23 @@ def test_decode_profile_rejects_trajectories_even_with_all_exact_cells(profile, 
 
 
 @pytest.mark.parametrize("metadata", [False, True])
-def test_native_per_op_queries_enforce_profile_phase(profile, metadata):
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_native_per_op_queries_enforce_profile_phase(profile, metadata, phase):
     _, payload, _, root, _ = profile
     spec = copy.deepcopy(payload["basis"])
-    spec["context_ops"] = payload["ops"]
-    spec["engine"]["extra"]["execution_profile_phase"] = "prefill"
+    spec["context_ops"] = payload["ops"] if phase == "prefill" else []
+    spec["engine"]["extra"]["execution_profile_phase"] = phase
     handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
-    decode = handle._decode_step_per_op_with_metadata if metadata else handle.decode_step_per_op
-    for batch in [0, 1]:
-        with pytest.raises(ValueError, match="phase is not qualified"):
-            decode(batch, 4, 1)
-    spec["context_ops"] = []
-    spec["engine"]["extra"]["execution_profile_phase"] = "decode"
-    handle = _native.AicEngine.from_spec(bytes(_native.engine_spec_bincode_from_json(json.dumps(spec))), str(root))
-    run = handle._run_static_per_op_with_metadata if metadata else handle.run_static_per_op
-    for mode in ["static_ctx", "static"]:
-        with pytest.raises(ValueError, match="phase is not qualified"):
-            run(1, 1, 4, 2, 0, 1.0, 1.0, mode=mode)
+    if phase == "prefill":
+        decode = handle._decode_step_per_op_with_metadata if metadata else handle.decode_step_per_op
+        for batch in [0, 1]:
+            with pytest.raises(ValueError, match="phase is not qualified"):
+                decode(batch, 4, 1)
+    else:
+        run = handle._run_static_per_op_with_metadata if metadata else handle.run_static_per_op
+        for mode in ["static_ctx", "static"]:
+            with pytest.raises(ValueError, match="phase is not qualified"):
+                run(1, 1, 4, 2, 0, 1.0, 1.0, mode=mode)
 
 
 @pytest.mark.parametrize("metadata", [False, True])

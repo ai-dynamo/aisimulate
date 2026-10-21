@@ -180,7 +180,7 @@ function renderSnapshot() {
       ${snapshot.campaign.configuration ? `Configuration evidence: ${snapshot.campaign.configuration.counts.verified ?? 0} verified; ${snapshot.campaign.configuration.counts.estimated ?? 0} estimated (assumptions, not verified historical settings).<br />` : ""}
       Excluded before comparison: ${escapeHtml(JSON.stringify(snapshot.campaign.exclusion_reasons))}.<br />
       Prediction database versions: ${escapeHtml(snapshot.campaign.backend_versions.join(", "))}.<br />
-      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${["gym-resolved-config-v2", "gym-resolved-config-v3"].includes(snapshot.campaign.selection_policy) ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
+      Policy: ${escapeHtml(snapshot.campaign.selection_policy)}; ${["gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1", "hf-current-view-config-v2"].includes(snapshot.campaign.selection_policy) ? "source-resolved serving settings and workload; independent estimate and replay outcomes" : "max_num_seqs=max(256, concurrency), max_num_batched_tokens=8192, enable_prefix_caching=False, aic_forward_model=op_level"}; unresolved recipes are excluded.</p>
       <code>Wheel SHA-256: ${escapeHtml(snapshot.campaign.wheel_sha256)}</code>
       <code>Dataset manifest SHA-256: ${escapeHtml(snapshot.campaign.dataset_sha256)}</code>` : ""}
     <p>Snapshot file source: ${state.branch.published_from_commit
@@ -559,8 +559,11 @@ function validateSummary(data) {
       aicSuccesses === topology.aic.points;
   };
   if (!object(data) || data.schema_version !== 1 || !object(data.snapshot) || !object(data.scope) ||
-    typeof data.snapshot.release_tag !== "string" || data.snapshot.measurement_source_url !==
-      `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}` ||
+    typeof data.snapshot.release_tag !== "string" ||
+    (data.snapshot.release_tag.startsWith("hf/") && !/^hf\/[0-9a-f]{40}$/.test(data.snapshot.release_tag)) ||
+    data.snapshot.measurement_source_url !== (data.snapshot.release_tag.startsWith("hf/")
+      ? `https://huggingface.co/datasets/ai-dynamo/aisim-infx-cache/tree/${data.snapshot.release_tag.slice(3)}`
+      : `https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/${data.snapshot.release_tag}`) ||
     !object(data.snapshot.aisimulate_packages) ||
     !["measurement_date_through", "aisimulate_completed_at"].every((key) =>
       data.snapshot[key] == null || typeof data.snapshot[key] === "string") ||
@@ -627,7 +630,7 @@ function validateSummary(data) {
     !Number.isInteger(campaign.selected) || campaign.selected < data.totals.rows ||
     campaign.published !== data.totals.rows || !Array.isArray(campaign.backend_versions) ||
     !campaign.backend_versions.every((version) => typeof version === "string") ||
-    !["latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3"].includes(campaign.selection_policy) ||
+    !["latest-complete-config-run-v1", "gym-resolved-config-v2", "gym-resolved-config-v3", "hf-current-view-config-v1", "hf-current-view-config-v2"].includes(campaign.selection_policy) ||
     !validExclusions)) {
     throw new Error("invalid accuracy campaign provenance");
   }

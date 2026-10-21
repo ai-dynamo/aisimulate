@@ -14,6 +14,96 @@ Use [FPM self-service](../fpm-self-service/README.md) to prepare, review, collec
 or import a profile. The existing [implementation guide](../fpm-self-service/implementation.md)
 owns artifact validation, publication, checkpoints, and recovery.
 
+## Recorded speculative-round identity
+
+A profile deployment may record the following optional identity. The parent
+profile's `model_revision` and the draft revision must be lowercase 40-hex
+immutable checkpoint commits. This schema describes a **complete target-plus-draft
+round**, not an AR target-verification approximation:
+
+```yaml
+execution_profile:
+  kind: speculative_round
+  method: eagle3
+  num_draft_tokens: 3
+  draft_model: example/draft-model
+  draft_revision: "2222222222222222222222222222222222222222"
+  timing_scope: model_step_cuda
+```
+
+The initial identity contract permits vLLM pure TP with DP1/PP1/CP1 and 1–5
+draft tokens. Acceptance length belongs to replay progress, not this timing
+selector. Omitting `execution_profile` preserves existing AR profile JSON and
+cell keys. Consumption requires explicit `estimation_mode: fpm_interpolation`,
+`method: direct`, `database_mode: SILICON`, `fallback_policy: deny`, and `nextn`
+equal to `num_draft_tokens`. Ordinary AR profiles cannot supply SD-round timing.
+
+Rust produces the exact table `execution_profile` string by prefixing
+`speculative_round_v1:` to its canonical serialization of
+`{"model_revision": ..., "execution_profile": ...}`. The descriptor's field
+order is `kind`, `method`, `num_draft_tokens`, `draft_model`, `draft_revision`,
+`timing_scope`. Use the profile's `execution_identity(model_revision)` helper;
+do not hand-build a selector or substitute another checkpoint, draft, depth,
+or timing boundary. The resulting four-column suffix is
+`["", selector, "none", "text"]`; the existing Op layout and binary schema do
+not change. Malformed, unknown-version, or noncanonical speculative selectors
+are invalid data, not a fallback opportunity.
+
+### Native-CUDA measured rows
+
+Speculative-round rows require schema 7, backend `vllm`, sidecar
+`measurement_policy: vllm_native_fpm_model_step_cuda_v1`, and sidecar
+`timing_scope: model_step_cuda`. Every row carries that same measurement policy
+and scope, plus:
+
+| Field | Meaning |
+|---|---|
+| `measurement_reduction` | `single_sample` or `actual_upper_median` |
+| `source_sample_count` | Integer 1 for a raw sample; at least 2 for an actual upper median |
+| `latency_ms` | The selected real observation's complete native CUDA elapsed time |
+
+An actual upper median selects a real sample and retains **that sample's own
+workload coordinates**. It does not average latencies, use an unmeasured nominal
+coordinate, or divide the recorded time by the sample count. Preserve raw
+observations and selection provenance alongside the table. The policy does not
+admit AR-labelled rows or scheduler/host wall-time rows; renaming a CPU clock is
+not a valid conversion. Cached prefill and decode must retain the existing
+`real_kv` provenance requirement. Missing or fabricated state cannot be healed
+into these measured-only cells.
+
+### Consuming a measured round
+
+Use the same canonical `ForwardPassPerfModel.best_available(config)` path as
+ordinary FPM profiles. Both prefill and decode cells must carry the identical
+execution binding. The decode lookup uses request count and actual total past
+KV tokens, without multiplying the request count by `nextn + 1`. The measured
+latency already includes target verification, sampling and draft work; no draft
+operation tail is added. Prefill must likewise use the matching measured SD
+prefill cell, not a relabelled AR prefill cell.
+
+Resources must use a linear cache with observed `runtime_memory`. The recorded
+usable KV pool already reflects draft and graph allocations; capacity sizing
+does not subtract them again. Pending or analytically declared memory alone is
+insufficient. Grouped caches, generic `speculation` configurations, recorded
+DCP and non-pure-TP topologies remain unsupported on this route. Use `nextn`
+with the exact recorded `execution_profile`; generic speculation cost graphs
+must not be composed with measurements that already include the draft work.
+
+Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
+static/detailed queries, and replay's decode query with actual total KV tokens.
+Raw mixed FPM, static multi-round generation, per-operation and ad-hoc operation
+queries fail explicitly. Ordinary replay retains its existing separate P/D
+phase composition; this is an approximation for mixed iterations, not a measured
+mixed-round model. Partial-width decode rounds still use the configured depth's
+timing. The existing replay prefill callback uses integer per-request mean
+lengths, so ragged batches can lose remainder tokens; raw FPM totals do not have
+that approximation. Enable query coverage to identify holes rather than
+extrapolating.
+
+The SD identity does not expand the guided `onboard` collector or its replay
+validation scope. Prepare and validate the measured table separately, then use
+ordinary `predict` with the [replay SD controls](../../replay/engine/speculation.md#measured-sd-round-fpm).
+
 ## Direct and SOL-assisted methods
 
 - `method: direct` needs a verified resource profile and `database_mode: SILICON`.

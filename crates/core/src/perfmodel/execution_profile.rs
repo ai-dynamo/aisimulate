@@ -71,6 +71,7 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || config.nextn != 0
         || config.speculation.is_some()
         || config.fpm_profile.is_some()
+        || config.encoder_parallel.is_some()
         || config.decoder_replay
         || config.pp != 1
         || config.attention_dp != 1
@@ -84,7 +85,7 @@ pub(crate) fn validate_config(config: &ForwardPassPerfModelConfig) -> Result<(),
         || !is_digest(&selection.sha256)
     {
         return Err(invalid(
-            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, a single prefill or decode worker, PP1/DP1/CP1/DCP1, no speculation, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
+            "requires explicit op_level/SILICON, fallback deny, shared layer and correction disabled, a single prefill or decode worker, PP1/DP1/CP1/DCP1, no speculation or vision encoder, a literal backend version, and an absolute path with a lowercase SHA-256 pin",
         ));
     }
     let profile = selection.read()?;

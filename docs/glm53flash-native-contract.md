@@ -14,15 +14,15 @@ maximum context is retained as metadata, not a measured-coverage claim.
 
 Construct production models through
 `RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(...))`.
-The initial topology is TP 1/2/4, MoE TP equal to attention TP,
-DP=PP=CP=EP=1, `nextn=0`, and full decoder execution. GB300 TP2/TP4 are the
-formal targets; TP1 acceptance requires measured allocator admission.
-NVFP4 TP1 has that admission on one GB300 (Mamba block size 8576), and its
-FPM and Ops data were collected. FP8 TP1 does not fit on one GB300: the
-native runtime runs out of memory while creating weights. The model accepts
-FP8 TP1, but its resident-weight inventory (about 298-299 GiB) already
-exceeds GB300's 277.5 GiB, so memory checks report it as out of memory.
-TensorRT-LLM fails explicitly. No new estimator constructor is introduced.
+The topology is TP 1/2/4/8, MoE TP equal to attention TP,
+DP=PP=CP=EP=1, `nextn=0`, and full decoder execution. There is no system
+gate: whether a deployment fits a system is a capacity question, decided by
+measured allocator admission at collection time and by the memory checks at
+prediction time. For example, NVFP4 TP1 was admitted on one GB300 (Mamba
+block size 8576). The model accepts FP8 TP1, but its resident-weight
+inventory (about 298-299 GiB) exceeds one GPU of every supported system, so
+memory checks report it as out of memory. TensorRT-LLM fails explicitly.
+No new estimator constructor is introduced.
 
 The appended native variants are `Glm53Attention`, `Glm53Mhc`, and
 `Glm53Router` (diagnostic), `Glm53Ffn`, and `Glm53Primitive`. Their serialized bodies include `backend` and
@@ -70,7 +70,7 @@ are the explicit all-reduces, so no `MoEDispatch` op is emitted.
   for short prefill and also omits index query/head-gate projections there. KDA uses BF16 projections
   and FP32 recurrent state. vLLM also materializes sparse MLA projections in
   BF16; SGLang retains FP8 main sparse projections for the native FP8 checkpoint.
-- mHC requires explicit `tp_size` and `is_context` in its native identity: TP1/2/4 cannot
+- mHC requires explicit `tp_size` and `is_context` in its native identity: TP sizes cannot
   borrow one another's measured dispatch. Its replicated local SOL work is
   unchanged by this identity field. Missing TP or phase metadata is rejected.
   mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,

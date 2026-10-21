@@ -873,15 +873,15 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     # adds two output widths across the base token-count grid. DeepSeek-V4 Pro
     # adds (n, k) = (7168, 384) for all 74 standard / 21 XPU token counts;
     # its other shared-expert projections overlap the existing base shapes.
-    # GLM-5.3-Flash adds eight new off-grid output widths at k=4096 (its
+    # GLM-5.3-Flash adds ten new off-grid output widths at k=4096 (its
     # declared widths minus those another model already declares) across the
     # 74 standard / 21 XPU token counts.
-    assert len(cases) == 38110
+    assert len(cases) == 38258
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert not any(case.n == 65536 and case.k == 65536 for case in cases)
 
-    assert len(xpu_cases) == 9849
+    assert len(xpu_cases) == 9891
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]

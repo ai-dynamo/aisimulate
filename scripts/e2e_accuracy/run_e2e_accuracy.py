@@ -31,8 +31,14 @@ from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from scripts.e2e_accuracy.build_e2e_accuracy_overview import GPUS_PER_NODE_BY_FAMILY, build_summary
+from scripts.e2e_accuracy.build_e2e_accuracy_overview import (
+    GPUS_PER_NODE_BY_FAMILY,
+    build_summary,
+    measurement_source_url,
+)
 from scripts.e2e_accuracy.fetch_accuracy_measurements import MTP_POLICY, RESOLVED_POLICY, digest, validate_manifest
+from scripts.e2e_accuracy.hf_measurements import MTP_POLICY as HF_MTP_POLICY
+from scripts.e2e_accuracy.hf_measurements import POLICY as HF_POLICY
 from scripts.e2e_accuracy.source.cohort import select_points as select_resolved_points
 from scripts.e2e_accuracy.source.recipes.runtime_evidence import prepare_runtime_evidence
 from scripts.pages.build_pages_site import _accuracy_summary
@@ -736,9 +742,9 @@ def campaign(args) -> None:
     validate_manifest(manifest)
     identity = wheel_identity(args.wheel)
     tables = json.loads(args.tables.read_text())
-    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY}
+    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY, HF_POLICY, HF_MTP_POLICY}
     if resolved:
-        options = {"include_mtp": True} if manifest["selection_policy"] == MTP_POLICY else {}
+        options = {"include_mtp": True} if manifest["selection_policy"] in {MTP_POLICY, HF_MTP_POLICY} else {}
         points, selection = select_resolved_points(tables, manifest["max_age_days"], **options)
         for point in points:
             point["id"] = sha([point["benchmark"]["id"], point["config"]["id"]])
@@ -843,6 +849,7 @@ def driver_digest() -> str:
             str(path.relative_to(Path(__file__).parent)): digest(path)
             for path in [
                 Path(__file__),
+                Path(__file__).with_name("hf_measurements.py"),
                 *sorted(Path(__file__).with_name("source").rglob("*.py")),
                 *sorted(Path(__file__).with_name("source").rglob("*.json")),
             ]
@@ -903,7 +910,7 @@ def merge_shards(args) -> None:
 
 def publish_campaign(metadata, results, cohort_sha, started, output, run_attempt) -> None:
     manifest, identity, selection = (metadata[key] for key in ("manifest", "identity", "selection"))
-    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY}
+    resolved = manifest["selection_policy"] in {RESOLVED_POLICY, MTP_POLICY, HF_POLICY, HF_MTP_POLICY}
     preview = metadata["preview"]
     points = [{"id": id_} for id_ in metadata["point_ids"]]
     rows = qualify_results(points, results)
@@ -941,9 +948,7 @@ def publish_campaign(metadata, results, cohort_sha, started, output, run_attempt
             "dump_max_date": selection["measurement_date_through"],
         },
         predictions_sha256=sha(predictions),
-        source_url=REPOSITORY.replace("ai-dynamo/aisimulate", "SemiAnalysisAI/InferenceX-app")
-        + "/releases/tag/"
-        + manifest["release_tag"],
+        source_url=measurement_source_url(manifest["release_tag"]),
         branch=metadata["branch"],
         preview=preview,
         exclude_multinode=not resolved,

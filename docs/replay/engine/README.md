@@ -73,6 +73,7 @@ domains instead of the single values above; see
 | `engine.kv_transfer` | [P/D KV transfer](kv-transfer.md) |
 | `engine.speculation`, `engine.nextn`, `engine.nextn_accepted` | [Speculative decoding](speculation.md) |
 | `engine.afd`, `engine.workers.encoder` | [Analytical AFD and EPD](analytical.md) |
+| `engine.workers.{aggregated,prefill}.{host_loop, frontend, host_profile, vision}` | [Workers](workers.md#sglang-host-loop-frontend-and-vision); design on [SGLang VL host loop](sglang-vl-host-loop.md) |
 | `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
 Field tables on these pages use the following columns:
@@ -95,7 +96,7 @@ Field tables on these pages use the following columns:
 | `engine.backend_version` | Latest data for the backend | fixed | Selects performance data only. It does not change scheduler behavior. Must be a queryable version for the hardware and backend: `current`, `previous` when configured, `next` when newer data is available, or a version one of those available aliases resolves to. See [backend versions](#backend-versions). |
 | `engine.context_length` | `max` | fixed | Positive prompt-plus-output token limit, or `max`. With a number, prompts at or above the limit are rejected and generation stops at the limit. `max` applies the model config's maximum on vLLM; SGLang and TensorRT-LLM then run without a limit. |
 | `engine.workers` | Required | Per mode | Role mappings; see [Worker roles](#worker-roles). A role may be `{}` to use all defaults. |
-| `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD and analytical EPD are rejected. |
+| `engine.tokenization` | Unset (off) | predict only | Optional `workers` (positive integer, default `1`), `base_ms` and `per_input_token_us` (finite and non-negative, default `0`). Tokenizes each request on its worker before the engine; see [Request tokenization](#tokenization). Aggregated and disaggregated token replay on `--stack engine` only; online replay, worker scaling, AFD, encoder pools and SGLang frontend stages (which already price the tokenizer) are rejected. |
 
 <a id="tokenization"></a>
 
@@ -184,8 +185,8 @@ present follow `engine.mode`:
 Each role has the same sub-blocks (`parallelism`, `scheduler`, `kv_cache`,
 `timing`, plus `hardware` and `startup_seconds`), configured independently. In
 `recommend`, a mode domain may declare all three roles; each candidate keeps
-only the roles its mode uses. An optional `encoder` role adds an analytical
-EPD encoder pool; see [EPD](analytical.md#epd).
+only the roles its mode uses. An optional `encoder` role adds an analytical or
+native EPD encoder pool; see [EPD](analytical.md#epd).
 
 All roles share `model`, `backend` and `backend_version`;
 per-role overrides of these fields are rejected. Only disaggregated `prefill`

@@ -81,6 +81,131 @@ published wheel may predate this guide. See [environment setup](implementation.m
 [executor prerequisites](implementation.md#choose-the-collection-executor) and
 [execution-route constraints](implementation.md#choose-the-model-execution-route).
 
+## Reuse a published profile
+
+Published FPM tables use checked-in pin manifests under
+[`aisimulate_core/systems/profiles/`](../../../python/aisimulate/src/aisimulate_core/systems/profiles/).
+Each model family has an `hf_dataset.json`; additional manifests can preserve
+separate historical campaigns, such as `dsv41_fpm/four_gpu_hf_dataset.json`.
+Discover the bundled manifests and their profile keys without downloading data:
+
+```bash
+python -m aisimulate_core.sdk.fpm_dataset --list
+python -m aisimulate_core.sdk.fpm_dataset --list kimi_k3_fpm
+```
+
+Listing includes each profile's admission and, when recorded, `admission_reason`.
+Review that reason before opting in: some entries provide original artifacts that
+the native consumer cannot load. The opt-in warning also reports this reason.
+
+Materialize one key to obtain a verified systems root. This Kimi profile is
+development data, so reproducing it requires an explicit opt-in:
+
+```bash
+python -m aisimulate_core.sdk.fpm_dataset \
+  kimi_k3_fpm gb300-vllm-mxfp4-tp8-dcp8-primary-v0.29.0 \
+  --allow-unqualified
+```
+
+The CLI prints the resulting root. The equivalent SDK call is
+`materialize_fpm_profile("kimi_k3_fpm", key, allow_unqualified=True)` from
+`aisimulate_core.sdk.fpm_dataset`. Both interfaces also accept an explicit
+manifest file path. Supply the returned root in `systems_paths` when constructing
+the canonical performance model or in `engine.systems_paths` for prediction.
+See [Example A](examples.md#a1-import-the-measured-pair) for the complete Kimi
+identity, resource settings and Replay input; a key alone does not configure them.
+
+Each profile gets its own cache root, even when another profile uses the same
+system, backend and version. The native loader reads one
+`data/<system>/<backend>/<version>/fpm_forward_perf.parquet` and its
+`fpm_forward_perf.metadata.json` pair per root. Do not combine distinct
+deployments into that path or put multiple alternative roots in a request as a
+substitute for selecting its exact profile.
+
+Downloads occur only on explicit materialization. File hashes are checked on
+download and every cache reuse. `--local-files-only` (SDK:
+`local_files_only=True`) permits verified cached data only and never downloads;
+`--cache-dir` (SDK: `cache_dir`) selects the cache location. Keep materialized
+roots unchanged. A new pin produces a new cache root, while corrupt cached
+files fail verification. For profiles with `packaged_system`, the cache identity
+also includes the installed hardware YAML's actual SHA-256. If those bytes change
+after a package update, materialize a new root. Offline use requires a cache
+prepared for the currently installed hardware bytes as well as the dataset pin.
+
+### Pin format and admission
+
+| Field | Meaning |
+| --- | --- |
+| `format_version` | `1` for the pin-manifest format; independent of the timing sidecar schema version. |
+| `repo_id` | Hugging Face dataset repository, such as `nvidia/aisimulate-fpm-dataset`. |
+| `revision` | Full lowercase 40-character dataset commit SHA; branches and tags are rejected. |
+| `profiles.<key>.admission` | `serving`, `development`, or `quarantined`. Only `serving` materializes by default. |
+| `profiles.<key>.files` | Pinned dataset files, including the timing pair and an archived system YAML when available. Retain published resource/provenance artifacts where available. |
+| `files[].path` | Relative POSIX source path within the pinned dataset. |
+| `files[].sha256` | Full lowercase SHA-256 of the exact source bytes, also verified after materialization. |
+| `files[].target` | Relative POSIX destination within this profile's systems root. |
+| `profiles.<key>.packaged_system` | Optional system name, such as `gb300`, that explicitly requests the installed `aisimulate_core/systems/<system>.yaml` as a hardware reference. Its actual hash participates in cache identity and verification. |
+| `profiles.<key>.system_config_source` | Provenance annotation. `packaged_reference_not_collection` identifies a reference YAML when the dataset lacks the collection-time YAML. |
+| `profiles.<key>.admission_reason` | Reason for the declared admission, including missing qualification evidence or native-consumer incompatibility. Exposed in profile listings and opt-in warnings when recorded. |
+| `profiles.<key>.identity` | Legacy descriptive metadata only. The downloader does not compare it with table rows or a requested deployment. |
+
+Name new keys `<system>-<backend>-<quant>-tp<N>`, adding deployment qualifiers
+such as DCP/EP, execution scope, KV precision, or runtime version when needed to
+distinguish entries. Quantization in a key is a readable shorthand; mixed-precision
+deployments still require every actual precision field from their measurements.
+Existing keys remain valid. New manifests omit `identity` to avoid duplicating
+the authoritative table/sidecar identity. Existing `identity` blocks remain for
+compatibility and cache stability: the complete profile entry contributes to
+the cache fingerprint, but this is not an identity validation step. Native
+loading and canonical model queries still enforce their schema, provenance and
+exact deployment checks.
+
+Prefer the archived collection-time system YAML. Some historical publications
+lack that artifact; their new pins explicitly request the installed hardware YAML
+through `packaged_system`,
+with `system_config_source: packaged_reference_not_collection` and are not
+serving-admitted. This current hardware reference supplies loader configuration;
+it does not establish the collected system's settings. The materializer copies
+only that hardware YAML from the package. Attention-lane defaults retain the
+loader's ordinary package fallback, and the profile root has no release-slot
+aliases from `query_versions.yaml`: use the exact recorded `backend_version`.
+Do not present installed references as collection provenance or silently replace
+an archived YAML. DeepSeek V4.1 and GLM-5.3-Flash retain their existing archived
+system configurations and admission decisions.
+
+MiniMax-M3-NVFP4 currently has published measurement artifacts but no loadable FPM
+Parquet/metadata pair at the pinned dataset revision, so it has no materialization
+key. A follow-up publication must supply the pair and its provenance before adding
+a pin. Across the six newly indexed model families, 30 entries are `development`
+and three are `quarantined`: the Kimi synthetic-attention comparator and two
+MiniMax-M2.7 H200 TP4/EP4 KV-on/off artifacts. Those MiniMax sidecars lack
+`coordinate_system`, `measurement_policy`, and top-level `system` and
+`backend_version`, so the native FPM consumer cannot load them.
+`--allow-unqualified` retrieves these original artifacts; it does not repair
+their metadata, make predictions possible, or promote their admission.
+
+### Maintain the pins
+
+The collection or dataset-PR author owns the AISimulate follow-up PR after a
+dataset change merges; the performance-model CODEOWNERS review it. Pin the merged
+dataset commit, verify every file hash and canonical target, retain provenance
+and applicable notices, and review each profile's admission against its evidence.
+Hardware-reference changes belong in the canonical packaged system YAML; the
+materializer accounts for changed bytes when selecting a cache root. Do not
+advance a pin automatically or change admission merely because a download or
+smoke query succeeds. Changes to these manifests go through ordinary repository
+review; no registry service is required.
+
+Materialization verifies storage integrity and applies the manifest's admission
+gate. It does not establish resource capacity, workload coverage, or prediction
+accuracy. Preserve these separate results and perform
+[matched serving validation](implementation.md#stage-6-matched-serving) for the
+intended deployment. This reuse path also does not expand guided onboarding's
+backend, topology, or execution-identity support, or the built-in model registry.
+For example, the current model-name construction path rejects Inkling's
+`InklingForConditionalGeneration` architecture even though its artifacts can be
+materialized; a compatible consumer is still required.
+
 ## Workflow
 
 The six stages below match the [agent onboarding procedure](implementation.md#onboard-with-an-agent).
