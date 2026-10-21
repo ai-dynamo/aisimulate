@@ -1175,7 +1175,8 @@ def test_scripted_identity_failure_lists_all_missing_identity_without_input(tmp_
 
 def test_scripted_profile_failure_lists_every_unresolved_field_without_input(tmp_path, monkeypatch, capsys):
     _terminal(monkeypatch)
-    unknown = {"_name_or_path": "example/unknown", "architectures": ["UnknownForCausalLM"]}
+    # A config that names no architecture leaves every field, cache geometry included, to the user.
+    unknown = {"_name_or_path": "example/unknown"}
     source, _ = _files(tmp_path, config=unknown)
     output = tmp_path / "new" / "request.yaml"
 
@@ -1185,6 +1186,7 @@ def test_scripted_profile_failure_lists_every_unresolved_field_without_input(tmp
     assert result.value.code == 2
     errors = capsys.readouterr().err
     for field in (
+        "architecture",
         "context_length",
         "num_experts",
         "kv_bytes_per_token",
@@ -1323,7 +1325,7 @@ def test_real_cli_multimodal_intake_preserves_text_scope_and_original_source(tmp
     assert provenance["config_notes"]["hidden_size"] == "config hidden_size=128"
 
 
-def test_real_cli_unknown_multimodal_decoder_lists_missing_resource_bounds_without_writing(tmp_path):
+def test_real_cli_unknown_multimodal_decoder_is_pending_the_runtime_probe_without_writing(tmp_path):
     text = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
     text["num_experts"] = 0
     source, _ = _files(tmp_path, config=_multimodal_config(text))
@@ -1337,9 +1339,13 @@ def test_real_cli_unknown_multimodal_decoder_lists_missing_resource_bounds_witho
     )
     assert result.returncode == 2, result.stderr
     assert "Text decoder only" in result.stdout
+    # The wrapper names an architecture intake does not recognize, so the runtime probe measures the geometry.
+    assert "Cache geometry: pending runtime probe" in result.stderr
+    assert "unrecognized architecture ExampleMultimodalForConditionalGeneration" in result.stderr
+    # User-owned inputs are still listed, and cache geometry is never asked for.
+    assert "fmha_quant_mode" in result.stderr and "--resource-overrides" in result.stderr
     for field in ("kv_bytes_per_token", "cache_layout"):
-        assert field in result.stderr
-    assert "--resource-overrides" in result.stderr
+        assert field not in result.stderr
     assert "unsupported encoder, multimodal" not in result.stderr
     assert not output.parent.exists()
 
@@ -1381,9 +1387,10 @@ def test_guided_missing_identity_is_asked_before_profile_fields(tmp_path, monkey
 
 
 def test_guided_unknown_model_metadata_bounds_pilot_before_ordinary_prompts(tmp_path, monkeypatch):
-    config = {**_CONFIG, "architectures": ["UnknownForCausalLM"], "model_type": "unknown"}
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
     del config["max_position_embeddings"]
-    source, resources = _files(tmp_path, config=config)
+    # The override places a full-attention decoder; its context limit and expert count stay unknown.
+    source, resources = _files(tmp_path, config=config, overrides={**_OVERRIDES, "architecture": "LlamaForCausalLM"})
     output = tmp_path / "request.yaml"
     prompts = _terminal(monkeypatch, ["invalid", "2048", "-1", "0", "accept"])
 
@@ -1448,7 +1455,7 @@ def test_guided_precision_answers_resolve_supported_memory_without_redundant_pro
 
 
 def test_guided_memory_accepts_exact_units_and_reprompts_invalid_quantities(tmp_path, monkeypatch, capsys):
-    config = {**_CONFIG, "architectures": ["UnknownForCausalLM"], "model_type": "unknown", "num_local_experts": 0}
+    config = {**_CONFIG, "num_local_experts": 0}
     overrides = {key: value for key, value in _OVERRIDES.items() if key != "weights_bytes"}
     source, resources = _files(tmp_path, config=config, overrides=overrides)
     output = tmp_path / "request.yaml"
@@ -1611,10 +1618,12 @@ def test_config_route_option_relationships_are_rejected_before_reading_files(
 def test_config_init_to_plan_replay_preserves_full_topology_without_source_files(
     tmp_path, monkeypatch, capsys, tp, dp, moe_tp, moe_ep, preset, multimodal, interactive
 ):
+    # An MLA-family decoder keeps explicit cache accounting, so the typed resources complete its profile.
+    # An unrecognized architecture would instead leave the cache geometry to the runtime probe.
     config = {
         **_CONFIG,
-        "architectures": ["ExampleMoeForCausalLM"],
-        "model_type": "example_moe",
+        "architectures": ["DeepseekV3ForCausalLM"],
+        "model_type": "deepseek_v3",
         "num_local_experts": 8,
     }
     if multimodal:
@@ -1777,6 +1786,9 @@ def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, ca
     assert "linear_attention x34" in stderr and "onboard probe-runtime" in stderr
     assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
     assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
+    assert stderr.count("run onboard probe-runtime") == 1
+    # No geometry was typed, so there is nothing for the import to check.
+    assert "supplied cache geometry" not in stderr
     # No user-owned input is left, and geometry is never a user input.
     assert "fmha_quant_mode" not in stderr and "Unresolved profile fields" not in stderr
     assert "--resource-overrides" not in stderr
@@ -1829,7 +1841,44 @@ def test_runtime_resolved_automatic_topology_stops_with_probe_guidance(tmp_path,
     # The shortlist remains available as starting points for the explicit topology, and claims no geometry check.
     assert "Suggested worker topologies" in stderr and "--tensor-parallel" in stderr
     assert "pending the runtime probe" in stderr and "geometry checks passed" not in stderr
+    assert "record one of the starting points above, or your own" in stderr
     assert "Selected" not in stdout
+
+
+def test_runtime_resolved_automatic_topology_lists_each_missing_input_once(tmp_path, capsys):
+    command = [*_AUTOMATIC_ARGS, "--model-config", str(_GLM), "--output", str(tmp_path / "request.yaml")]
+    _, stderr = _stops_with_guidance(command, capsys)
+    # The guidance lists the unresolved precision once; the shortlist does not repeat it for each candidate.
+    assert stderr.count("resolve attention precision from the pinned runtime") == 1
+    assert stderr.count("resolve KV-cache dtype from explicit checkpoint metadata") == 1
+    assert "Missing" not in stderr and stderr.count("run onboard probe-runtime") == 1
+
+
+def test_runtime_resolved_guidance_without_a_usable_starting_point(tmp_path, monkeypatch, capsys):
+    from aisimulate.support import config_profile, topology
+
+    # The packaged per-rank reservation alone exceeds this GPU's budget, so the shortlist rejects every candidate.
+    spec = {
+        "gpu": {"mem_capacity": 1024**3},
+        "node": {"num_gpus_per_node": 8, "intra_node_bw": 1000, "inter_node_bw": 100},
+        "misc": {"other_mem": 2 * 1024**3},
+    }
+    hardware = tmp_path / "hardware.yaml"
+    hardware.write_text(yaml.safe_dump(spec))
+    monkeypatch.setattr(topology, "packaged_hardware_path", lambda system: hardware)
+    monkeypatch.setattr(config_profile, "packaged_hardware_path", lambda system: hardware)
+    command = [
+        *_AUTOMATIC_ARGS,
+        "--model-config",
+        str(_GLM),
+        *_glm_precision(tmp_path),
+        "--output",
+        str(tmp_path / "x"),
+    ]
+    _, stderr = _stops_with_guidance(command, capsys)
+    assert "No eligible topology remains" in stderr
+    assert "No usable starting point exists" in stderr and "record your own" in stderr
+    assert "record one of the starting points above" not in stderr
 
 
 @pytest.mark.parametrize("parallel_configs", [False, True])
@@ -1863,3 +1912,71 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     assert "onboard probe-runtime" in stderr and "fmha_quant_mode" not in stderr
     assert explicit_topology or "explicit topology" in stderr
     assert not out.exists()
+
+
+def test_issue_475_typed_geometry_is_a_claim_the_import_checks(tmp_path, capsys):
+    out = tmp_path / "onboard-original.yaml"
+    typed = tmp_path / "typed.yaml"
+    typed.write_text(yaml.safe_dump({**_GLM_PRECISION, "cache_layout": "linear", "kv_bytes_per_token": 6000}))
+    command = [*_ISSUE_ARGS, "--model-config", str(_GLM), "--resource-overrides", str(typed), "--output", str(out)]
+    stdout, stderr = _stops_with_guidance(command, capsys)
+    assert "onboard import-observations checks the supplied cache geometry against the probe's measurement" in stderr
+    # The profile inputs echo the user's own typed values; the guidance itself never asks for geometry.
+    assert "kv_bytes_per_token: 6000 (source: user override; onboard import-observations checks it" in stdout
+    assert not [key for key in _GEOMETRY_KEYS if key in stderr]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["typed.yaml"]
+
+
+@pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "MambaForCausalLM"])
+def test_printed_cache_layout_note_follows_an_architecture_override(tmp_path, capsys, architecture):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    overrides = {**_OVERRIDES, "architecture": architecture, "num_experts": 0}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    if architecture == "MambaForCausalLM":
+        stdout, _ = _stops_with_guidance(_args(output, source, resources), capsys)
+        note = "cache layout pending the runtime probe (recurrent architecture MambaForCausalLM)"
+        assert f"Config cache_layout: {note}" in stdout
+    else:
+        assert cli.main(_args(output, source, resources)) == 0
+        assert "Config cache_layout" not in capsys.readouterr().out
+        provenance = json.loads(SupportRequest.from_yaml(output).fpm_profile.provenance)
+        assert "cache_layout" not in provenance["config_notes"]
+
+
+def test_guided_architecture_answer_prints_the_matching_cache_layout_note(tmp_path, monkeypatch, capsys):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    source, resources = _files(tmp_path, config=config)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["MiMoForCausalLM", "0"])
+    stdout, _ = _stops_with_guidance(_args(output, source, resources) + ["--interactive"], capsys)
+    assert [prompt.split(":", 1)[0].split(" ", 1)[0] for prompt in prompts] == ["architecture", "num_experts"]
+    # The note is printed after the answer, so it describes the classification the answer produced.
+    note = "cache layout pending the runtime probe (unrecognized architecture MiMoForCausalLM)"
+    assert f"Config cache_layout: {note}" in stdout
+    assert not output.exists()
+
+
+def test_guided_review_edit_that_leaves_geometry_pending_is_rejected(tmp_path, monkeypatch, capsys):
+    config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
+    overrides = {**_OVERRIDES, "architecture": "LlamaForCausalLM", "num_experts": 0}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["edit", "architecture", "MiMoForCausalLM", "accept"])
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    stdout = capsys.readouterr().out
+    assert "Edit rejected: Cache geometry: pending runtime probe, so init cannot save this profile" in stdout
+    assert "unrecognized architecture MiMoForCausalLM" in stdout
+    assert "model config did not produce a complete FPM profile" not in stdout
+    assert SupportRequest.from_yaml(output).fpm_profile.architecture == "LlamaForCausalLM"
+
+
+def test_automatic_topology_lists_inputs_every_candidate_needs_once(tmp_path, capsys):
+    source, _ = _files(tmp_path)
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(tmp_path / "request.yaml", source, tensor_parallel=None))
+    assert result.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "No fully assessed topology default" in stderr and stderr.count("needs_inputs") == 2
+    assert stderr.count("Every candidate is missing fmha_quant_mode: resolve attention precision") == 1
+    assert stderr.count("resolve attention precision from the pinned runtime") == 1

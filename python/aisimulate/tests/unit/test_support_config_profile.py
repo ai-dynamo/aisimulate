@@ -11,17 +11,21 @@ from __future__ import annotations
 import builtins
 import hashlib
 import json
+import math
+import re
 from pathlib import Path
 
 import pytest
 
 from aisimulate.support.config_profile import (
+    _ATTENTION_DIMENSIONS,
     ProfileRequestError,
     _geometry,
     _runtime_layout,
     derive_profile,
     load_model_config,
     profile_from_observations,
+    validate_overrides,
 )
 from aisimulate.support.schema import SupportRequest
 
@@ -118,28 +122,117 @@ def test_glm53_flash_config_is_runtime_resolved_not_rejected():
     )
 
 
+_NEMOTRON_H = {
+    "nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-FP8_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8_config.json",
+    "nvidia--NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4_config.json",
+    "nvidia--NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4_config.json",
+    "nvidia--Nemotron-H-56B-Base-8K_config.json",
+}
+# Packaged configs whose declared architecture intake does not recognize, by the architecture their reason names.
+# The Qwen3-VL and Llama 4 text configs name no decoder architecture, so their wrapper names it.
+_UNRECOGNIZED = {
+    **dict.fromkeys(
+        (f"Qwen--Qwen3-VL-{size}" for size in ("2B-Instruct", "4B-Instruct", "8B-Instruct", "32B-Instruct")),
+        "Qwen3VLForConditionalGeneration",
+    ),
+    "Qwen--Qwen3-VL-32B-Thinking": "Qwen3VLForConditionalGeneration",
+    "Qwen--Qwen3-VL-235B-A22B-Instruct": "Qwen3VLMoeForConditionalGeneration",
+    "Qwen--Qwen3-VL-30B-A3B-Instruct": "Qwen3VLMoeForConditionalGeneration",
+    "meta-llama--Llama-4-Maverick-17B-128E-Instruct": "Llama4ForConditionalGeneration",
+    "meta-llama--Llama-4-Scout-17B-16E-Instruct": "Llama4ForConditionalGeneration",
+    "MiniMaxAI--MiniMax-M3": "MiniMaxM3ForCausalLM",
+    "nvidia--MiniMax-M3-NVFP4": "MiniMaxM3SparseForCausalLM",
+    "XiaomiMiMo--MiMo-7B-Base": "MiMoForCausalLM",
+    "nvidia--Llama-3_3-Nemotron-Super-49B-v1": "DeciLMForCausalLM",
+}
+# DeepSeek, Kimi K2 and GLM-5 MLA/DSA configs keep explicit cache accounting.
+_MLA = (
+    "deepseek-ai--DeepSeek-R1",
+    "deepseek-ai--DeepSeek-V3",
+    "deepseek-ai--DeepSeek-V3.2",
+    "nvidia--DeepSeek-V3.1-NVFP4",
+    "nvidia--DeepSeek-V3.2-NVFP4",
+    "moonshotai--Kimi-K2-Instruct",
+    "moonshotai--Kimi-K2.5",
+    "nvidia--Kimi-K2.5-NVFP4",
+    "nvidia--Kimi-K2.6-NVFP4",
+    "nvidia--Kimi-K2.7-Code-NVFP4",
+    "zai-org--GLM-5",
+    "zai-org--GLM-5-FP8",
+    "zai-org--GLM-5.1",
+    "zai-org--GLM-5.1-FP8",
+    "zai-org--GLM-5.2",
+    "zai-org--GLM-5.2-FP8",
+    "zai-org--GLM-5.3",
+    "zai-org--GLM-5.3-FP8",
+    "nvidia--GLM-5-NVFP4",
+    "nvidia--GLM-5.1-NVFP4",
+    "nvidia--GLM-5.2-NVFP4",
+    "nvidia--GLM-5.3-NVFP4",
+)
+
+
 def test_packaged_nemotron_h_hybrids_are_runtime_resolved():
     paths = sorted(GLM.parent.glob("*_config.json"))
-    nemotron = [path for path in paths if json.loads(path.read_text()).get("architectures") == ["NemotronHForCausalLM"]]
-    assert len(nemotron) == 9
+    nemotron = {
+        path.name for path in paths if json.loads(path.read_text()).get("architectures") == ["NemotronHForCausalLM"]
+    }
+    assert nemotron == _NEMOTRON_H
     geometry = {"cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"}
-    loaded = 0
-    for path in nemotron:
-        try:
-            config = load_model_config(path)
-        except ValueError as error:
-            # A few packaged configs spell time_step_limit with Infinity, which the loader rejects as non-finite
-            # before any layout is classified: they are never rejected for their cache layout.
-            assert "must be finite" in str(error), path.name
-            continue
-        loaded += 1
+    for name in sorted(nemotron):
+        # Every one loads, including those whose unread time_step_limit spells Infinity.
+        config = load_model_config(GLM.parent / name)
         assert {"recurrent-state field mamba_num_heads", "recurrent-state field ssm_state_size"} <= set(
             config.runtime_layout
-        ), path.name
+        ), name
         draft = derive_profile(config, None)
-        assert set(draft.pending_runtime) == {"cache_geometry"}, path.name
-        assert not geometry & draft.missing.keys(), path.name
-    assert loaded
+        assert set(draft.pending_runtime) == {"cache_geometry"}, name
+        assert not geometry & draft.missing.keys(), name
+
+
+def test_packaged_unrecognized_architectures_are_pending_and_mla_keeps_explicit_accounting():
+    unrecognized, unloadable = {}, set()
+    for path in sorted(GLM.parent.glob("*_config.json")):
+        name = path.name.removesuffix("_config.json")
+        try:
+            config = load_model_config(path)
+        except ValueError:
+            unloadable.add(name)
+            continue
+        reasons = [reason for reason in config.runtime_layout if reason.startswith("unrecognized architecture")]
+        if reasons:
+            unrecognized[name] = reasons
+    # Unrelated quantization and expert-count metadata errors stop these before any layout is classified.
+    assert unloadable == {
+        "nvidia--DeepSeek-V4-Flash-NVFP4",
+        "nvidia--DeepSeek-V4-Pro-NVFP4",
+        "nvidia--Gemma-4-31B-IT-NVFP4",
+    }
+    assert unrecognized == {name: [f"unrecognized architecture {arch}"] for name, arch in _UNRECOGNIZED.items()}
+    geometry = {"cache_layout", "kv_bytes_per_token"}
+    for name, architecture in _UNRECOGNIZED.items():
+        draft = derive_profile(load_model_config(GLM.parent / f"{name}_config.json"), None)
+        assert (
+            draft.profile is None
+            and f"unrecognized architecture {architecture}" in draft.pending_runtime["cache_geometry"]
+        ), name
+        assert geometry.isdisjoint(draft.missing), name
+    for name in _MLA:
+        config = load_model_config(GLM.parent / f"{name}_config.json")
+        draft = derive_profile(config, None)
+        assert config.runtime_layout == () and draft.pending_runtime == {}, name
+        assert geometry <= draft.missing.keys(), name
+        reason = draft.missing["kv_bytes_per_token"]
+        assert "MLA/DSA" in reason and "unknown layouts" not in reason, name
+    # A file that names no architecture, such as a ModelOpt sidecar, keeps asking for explicit accounting.
+    sidecar = derive_profile(load_model_config(GLM.parent / "nvidia--GLM-5-NVFP4_hf_quant_config.json"), None)
+    assert sidecar.pending_runtime == {} and {"architecture", *geometry} <= sidecar.missing.keys()
+    assert "MLA/DSA and unknown layouts" in sidecar.missing["kv_bytes_per_token"]
 
 
 @pytest.mark.parametrize(
@@ -198,7 +291,56 @@ def test_packaged_nemotron_h_hybrids_are_runtime_resolved():
     ],
 )
 def test_runtime_layout_reasons(raw, architecture, expected):
-    assert _runtime_layout(raw, architecture) == expected
+    assert _runtime_layout(raw, architecture, architecture) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,architecture,named,expected",
+    [
+        ({}, "MiMoForCausalLM", "MiMoForCausalLM", ("unrecognized architecture MiMoForCausalLM",)),
+        # A multimodal wrapper names a text config that names no decoder architecture.
+        ({}, None, "Qwen3VLForConditionalGeneration", ("unrecognized architecture Qwen3VLForConditionalGeneration",)),
+        # A config that names no architecture keeps today's explicit inputs.
+        ({}, None, None, ()),
+        ({}, None, "LlamaForCausalLM", ()),
+        ({}, "Qwen3MoeForCausalLM", "Qwen3MoeForCausalLM", ()),
+        # MLA/DSA families keep explicit cache accounting.
+        ({}, "DeepseekV3ForCausalLM", "DeepseekV3ForCausalLM", ()),
+        ({}, "DeepseekV32ForCausalLM", "DeepseekV32ForCausalLM", ()),
+        ({}, "GlmMoeDsaForCausalLM", "GlmMoeDsaForCausalLM", ()),
+        # Declared windows or convolution state derive a grouped cache, whatever the architecture.
+        ({"num_hidden_layers": 2, "sliding_window": 128}, "GptOssForCausalLM", "GptOssForCausalLM", ()),
+        (
+            {"num_hidden_layers": 2, "layer_types": ["full_attention", "sliding_attention"], "sliding_window": 128},
+            "Gemma4ForConditionalGeneration",
+            "Gemma4ForConditionalGeneration",
+            (),
+        ),
+        (
+            {"num_hidden_layers": 2, "sliding_window": 128, "use_sliding_window": False},
+            "MiMoForCausalLM",
+            "MiMoForCausalLM",
+            ("unrecognized architecture MiMoForCausalLM",),
+        ),
+        # A marker already makes the layout pending, so it is the only reason.
+        ({"mamba_d_state": 16}, "MiMoForCausalLM", "MiMoForCausalLM", ("recurrent-state field mamba_d_state",)),
+    ],
+)
+def test_unrecognized_architecture_reason(raw, architecture, named, expected):
+    assert _runtime_layout(raw, architecture, named) == expected
+
+
+def test_attention_dimensions_are_listed_explicitly():
+    expected = {
+        "kv_lora_rank",
+        "q_lora_rank",
+        "qk_nope_head_dim",
+        "qk_rope_head_dim",
+        "v_head_dim",
+        "index_head_dim",
+        "index_n_heads",
+    }
+    assert expected == _ATTENTION_DIMENSIONS
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -287,49 +429,150 @@ def test_recognized_layouts_still_reject_zero_ordinary_dimensions(tmp_path):
 
 
 def test_runtime_resolved_geometry_skips_head_derived_values():
-    dims = _geometry(load_model_config(GLM), None, _glm_request())
+    config = load_model_config(GLM)
+    dims = _geometry(config, None, config.runtime_layout, _glm_request())
     assert "local_kv_heads" not in dims and dims["num_hidden_layers"] == 45
     # A declared 0 is "no such dimension", not a size to compute with.
     assert "head_dim" not in dims
 
 
 def test_runtime_resolved_geometry_keeps_the_attention_head_tp_check():
+    config = load_model_config(GLM)
     with pytest.raises(ProfileRequestError, match="num_attention_heads must divide"):
-        _geometry(load_model_config(GLM), None, _glm_request(tensor_parallel=3, moe_tensor_parallel=3))
+        _geometry(config, None, config.runtime_layout, _glm_request(tensor_parallel=3, moe_tensor_parallel=3))
+
+
+_GLM_PRECISION = {
+    "gemm_quant_mode": "fp8_block",
+    "moe_quant_mode": "fp8_block",
+    "fmha_quant_mode": "bfloat16",
+    "comm_quant_mode": "half",
+    "kv_cache_dtype": "bfloat16",
+}
+# The group list stands in for the runtime report, which always states each group's sliding_window. A real GLM
+# probe also reports state groups. The spec guard in collector/fpm_forward/runtime_memory.py keeps that probe
+# incomplete until state groups are supported.
+_GROUPED_OBSERVATION = {
+    "cache_layout": "grouped",
+    "cache_groups": [
+        {
+            "name": "full_attention",
+            "kind": "attention",
+            "num_layers": 11,
+            "block_size_tokens": 64,
+            "page_size_bytes": 4096,
+            "sliding_window": None,
+        }
+    ],
+    "max_num_tokens": 8192,
+    "max_batch_size": 256,
+    "provenance": "observed runtime resources",
+}
+# A linear observation exercises the typed kv_bytes_per_token check; it is not a claim about GLM's runtime.
+_LINEAR_OBSERVATION = {
+    "cache_layout": "linear",
+    "kv_bytes_per_token": 6000,
+    "max_num_tokens": 8192,
+    "max_batch_size": 256,
+    "provenance": "observed runtime resources",
+}
+
+
+def _import(resources, overrides=None):
+    return profile_from_observations(load_model_config(GLM), _glm_request(), _GLM_PRECISION, resources, overrides)
 
 
 def test_runtime_resolved_config_accepts_observed_cache_geometry():
     # The runtime import path revalidates the same config that intake accepted.
-    # The group list stands in for the runtime report. A real GLM probe also reports state groups. The spec guard in
-    # collector/fpm_forward/runtime_memory.py keeps that probe incomplete until state groups are supported.
-    profile = profile_from_observations(
-        load_model_config(GLM),
-        _glm_request(),
-        {
-            "gemm_quant_mode": "fp8_block",
-            "moe_quant_mode": "fp8_block",
-            "fmha_quant_mode": "bfloat16",
-            "comm_quant_mode": "half",
-            "kv_cache_dtype": "bfloat16",
-        },
-        {
-            "cache_layout": "grouped",
-            "cache_groups": [
-                {
-                    "name": "full_attention",
-                    "kind": "attention",
-                    "num_layers": 11,
-                    "block_size_tokens": 64,
-                    "page_size_bytes": 4096,
-                }
-            ],
-            "max_num_tokens": 8192,
-            "max_batch_size": 256,
-            "provenance": "observed runtime resources",
-        },
-    )
+    profile = _import(_GROUPED_OBSERVATION)
     assert profile.architecture == "Glm5NextForConditionalGeneration"
     assert profile.deployments[0].resources.cache_groups[0].num_layers == 11
+
+
+def test_imported_provenance_says_the_probe_measured_the_pending_geometry():
+    config = load_model_config(GLM)
+    notes = json.loads(_import(_GROUPED_OBSERVATION).provenance)["config_notes"]
+    assert notes["cache_layout"].startswith("cache layout measured by the runtime probe (")
+    assert "pending" not in notes["cache_layout"] and "linear_attention x34" in notes["cache_layout"]
+    assert {key: value for key, value in notes.items() if key != "cache_layout"} == {
+        key: value for key, value in config.notes.items() if key != "cache_layout"
+    }
+
+
+@pytest.mark.parametrize(
+    "typed,resources",
+    [
+        ({"cache_layout": "linear", "kv_bytes_per_token": 6000}, _LINEAR_OBSERVATION),
+        (
+            {"cache_layout": "grouped", "cache_groups": _GROUPED_OBSERVATION["cache_groups"]},
+            _GROUPED_OBSERVATION,
+        ),
+    ],
+)
+def test_typed_geometry_that_matches_the_probe_builds_the_profile(typed, resources):
+    profile = _import(resources, typed)
+    assert profile.deployments[0].resources.cache_layout == resources["cache_layout"]
+    recorded = json.loads(profile.provenance)["user_overrides"]
+    assert recorded.keys() == typed.keys()
+    for key, value in validate_overrides(typed).items():
+        assert recorded[key] == {
+            "value": value,
+            "source": "user override; checked against the runtime probe's measurement",
+        }
+
+
+def test_typed_kv_bytes_that_differ_from_the_probe_name_both_values():
+    with pytest.raises(ValueError) as error:
+        _import(_LINEAR_OBSERVATION, {"cache_layout": "linear", "kv_bytes_per_token": 5000})
+    message = str(error.value)
+    assert "resource_overrides.kv_bytes_per_token=5000" in message
+    assert "measured kv_bytes_per_token=6000" in message
+    assert "the measurement is authoritative" in message
+    assert "Correct or remove the override" in message and "fresh onboard probe-runtime" in message
+
+
+def test_typed_kv_bytes_against_a_grouped_probe_names_the_measured_layout():
+    with pytest.raises(ValueError) as error:
+        _import(_GROUPED_OBSERVATION, {"kv_bytes_per_token": 6000})
+    message = str(error.value)
+    assert "resource_overrides.kv_bytes_per_token=6000" in message
+    assert "the runtime probe measured no kv_bytes_per_token for its grouped cache_layout" in message
+
+
+@pytest.mark.parametrize(
+    "typed,expected",
+    [
+        (
+            {
+                "cache_layout": "grouped",
+                "cache_groups": [{**_GROUPED_OBSERVATION["cache_groups"][0], "num_layers": 12}],
+            },
+            'resource_overrides.cache_groups=[{"block_size_tokens":64,"kind":"attention","name":"full_attention",'
+            '"num_layers":12,"page_size_bytes":4096,"sliding_window":null}] differs',
+        ),
+        ({"max_num_tokens": 4096}, "resource_overrides.max_num_tokens=4096 differs"),
+        ({"max_batch_size": 128}, "measured max_batch_size=256; the measurement is authoritative"),
+    ],
+)
+def test_import_mismatches_render_values_compactly(typed, expected):
+    with pytest.raises(ValueError, match=re.escape(expected)):
+        _import(_GROUPED_OBSERVATION, typed)
+
+
+def test_observation_import_checks_layout_against_the_architecture_intake_used(tmp_path):
+    # The wrapper names LlamaForCausalLM, but the text config names no decoder architecture, so intake does not
+    # treat the decoder as Llama's layout: TP8 with four attention heads completes a profile.
+    text = {key: value for key, value in _config(tmp_path).raw.items() if key not in ("architectures", "model_type")}
+    config = _config(tmp_path, text_config=text)
+    assert config.decoder_architecture is None and config.suggestions["architecture"] == "LlamaForCausalLM"
+    request = _request(tensor_parallel=8)
+    overrides = _runtime(num_experts=0, cache_layout="linear", kv_bytes_per_token=64)
+    assert derive_profile(config, request, overrides).profile is not None
+    # Import revalidates the same deployment against the same architecture, so it accepts it too.
+    precision = {"gemm_quant_mode": "bfloat16", "moe_quant_mode": "bfloat16", **_runtime()}
+    resources = {**_LINEAR_OBSERVATION, "kv_bytes_per_token": 64}
+    profile = profile_from_observations(config, request, precision, resources, overrides)
+    assert profile.architecture == "LlamaForCausalLM" and profile.deployments[0].tp == 8
 
 
 @pytest.mark.parametrize("preview", [False, True])
@@ -375,42 +618,59 @@ def test_full_attention_architecture_with_runtime_resolved_layout_assumes_no_lin
     assert {"cache_layout", "kv_bytes_per_token"}.isdisjoint(draft.resolved | draft.missing)
 
 
+_CHECKED_BY_IMPORT = "user override; onboard import-observations checks it against the runtime probe's measurement"
+# Every non-KV memory field declared: the declared-memory path must still not trust typed geometry.
+_DECLARED_MEMORY = {"weights_bytes": 1, "activations_bytes": 1, "runtime_overhead_bytes": 1, "comm_overhead_bytes": 1}
+
+
 @pytest.mark.parametrize("preview", [False, True])
+@pytest.mark.parametrize("memory", [{}, _DECLARED_MEMORY])
 @pytest.mark.parametrize(
-    "override",
+    "typed",
     [
         {"cache_layout": "linear"},
         {"kv_bytes_per_token": 6000},
-        {
-            "cache_groups": [
-                {
-                    "name": "full_attention",
-                    "kind": "attention",
-                    "num_layers": 11,
-                    "block_size_tokens": 64,
-                    "page_size_bytes": 4096,
-                }
-            ]
-        },
-        {"cache_block_sizes": {"full_attention": 64}},
-        # The refusal is decided by key, so it wins whatever the value is.
-        {"cache_layout": "hybrid"},
-        {"kv_bytes_per_token": 0},
-        {"cache_groups": []},
-        {"cache_block_sizes": {"unknown_group": 0}},
+        {"cache_layout": "linear", "kv_bytes_per_token": 6000},
+        {"cache_layout": "grouped", "cache_groups": _GROUPED_OBSERVATION["cache_groups"]},
     ],
 )
-def test_runtime_resolved_layout_rejects_guessed_geometry(preview, override):
-    with pytest.raises(ValueError, match="measured by onboard probe-runtime"):
-        derive_profile(load_model_config(GLM), None if preview else _glm_request(), override)
+def test_runtime_resolved_layout_records_typed_geometry_as_a_claim(preview, memory, typed):
+    draft = derive_profile(load_model_config(GLM), None if preview else _glm_request(), _runtime(**memory, **typed))
+    # A claim never completes a profile, and never changes the classification.
+    assert draft.profile is None
+    assert draft.pending_runtime == derive_profile(load_model_config(GLM), None).pending_runtime
+    for key, value in validate_overrides(typed).items():
+        assert draft.resolved[key] == value
+        assert draft.sources[key] == _CHECKED_BY_IMPORT
+    assert not {"cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"} & draft.missing.keys()
 
 
-def test_geometry_refusal_names_the_supplied_keys_and_the_layout():
-    overrides = _runtime(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear")
+@pytest.mark.parametrize(
+    "typed,message",
+    [
+        ({"cache_layout": "hybrid"}, "unknown cache_layout"),
+        ({"kv_bytes_per_token": 0}, "kv_bytes_per_token must be an integer"),
+        ({"cache_groups": []}, "cache_groups must be a nonempty list"),
+        (
+            {"cache_layout": "linear", "cache_groups": _GROUPED_OBSERVATION["cache_groups"]},
+            "cache_groups cannot be combined with linear cache_layout",
+        ),
+    ],
+)
+def test_runtime_resolved_layout_validates_typed_geometry_like_any_override(typed, message):
+    with pytest.raises(ValueError, match=message):
+        derive_profile(load_model_config(GLM), _glm_request(), typed)
+
+
+@pytest.mark.parametrize("preview", [False, True])
+# The refusal is decided by key, so it wins whatever the value is.
+@pytest.mark.parametrize("blocks", [{"full_attention": 64}, {"unknown_group": 0}])
+def test_runtime_resolved_layout_has_no_cache_groups_for_block_sizes(preview, blocks):
     with pytest.raises(ValueError) as error:
-        derive_profile(load_model_config(GLM), _glm_request(), overrides)
+        derive_profile(load_model_config(GLM), None if preview else _glm_request(), {"cache_block_sizes": blocks})
     message = str(error.value)
-    assert "remove ['cache_layout', 'kv_bytes_per_token'] from resource overrides" in message
+    assert "cache_block_sizes names config-derived cache groups, and this layout has none" in message
+    assert "onboard probe-runtime reports the runtime cache groups with their block sizes" in message
     assert "layer_types linear_attention x34" in message
 
 
@@ -426,15 +686,51 @@ def test_architecture_override_cannot_bypass_runtime_resolved_geometry(tmp_path,
     draft = derive_profile(config, request, overrides)
     assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
     assert "recurrent architecture MambaForCausalLM" in draft.pending_runtime["cache_geometry"]
-    with pytest.raises(ValueError, match="measured by onboard probe-runtime") as error:
-        derive_profile(
-            config, request, {**overrides, "weights_bytes": 1, "kv_bytes_per_token": 1, "cache_layout": "linear"}
-        )
-    assert "remove ['cache_layout', 'kv_bytes_per_token'] from resource overrides" in str(error.value)
+    # Typed geometry with every non-KV memory field declared is still only a claim for the import to check.
+    typed = derive_profile(
+        config, request, {**overrides, **_DECLARED_MEMORY, "kv_bytes_per_token": 1, "cache_layout": "linear"}
+    )
+    assert typed.profile is None and typed.pending_runtime == draft.pending_runtime
+    assert typed.sources["kv_bytes_per_token"] == typed.sources["cache_layout"] == _CHECKED_BY_IMPORT
     # Declaring the same architecture in the original config is classified identically.
     declared = _config(tmp_path, architectures=["MambaForCausalLM"], model_type="unknown", num_experts=0)
     assert declared.runtime_layout == ("recurrent architecture MambaForCausalLM",)
     assert derive_profile(declared, request, _runtime()).pending_runtime == draft.pending_runtime
+
+
+@pytest.mark.parametrize(
+    "architecture,pending",
+    [
+        ("LlamaForCausalLM", None),
+        ("MambaForCausalLM", "recurrent architecture MambaForCausalLM"),
+        ("MiMoForCausalLM", "unrecognized architecture MiMoForCausalLM"),
+    ],
+)
+def test_cache_layout_note_follows_an_architecture_override(tmp_path, architecture, pending):
+    # The config names no architecture, so its own notes cannot say how an override classifies the layout.
+    config = _config(tmp_path, architectures=None, model_type="unknown")
+    assert "cache_layout" not in config.notes
+    draft = derive_profile(config, _request(), _runtime(architecture=architecture, num_experts=0))
+    if pending is None:
+        assert draft.profile is not None and "cache_layout" not in draft.notes
+        assert "cache_layout" not in json.loads(draft.profile.provenance)["config_notes"]
+    else:
+        assert draft.notes["cache_layout"].startswith(f"cache layout pending the runtime probe ({pending})")
+        assert pending in draft.pending_runtime["cache_geometry"]
+    assert {key: value for key, value in draft.notes.items() if key != "cache_layout"} == config.notes
+
+
+def test_cache_layout_note_is_not_pending_when_an_override_recognizes_the_layout(tmp_path):
+    # Sparse-attention layer types are recognized only for the DSA architectures, so the config's own note is stale.
+    config = _config(tmp_path, architectures=None, model_type="unknown", layer_types=["deepseek_sparse_attention"] * 2)
+    assert config.notes["cache_layout"].startswith("cache layout pending the runtime probe")
+    overrides = _runtime(
+        architecture="GlmMoeDsaForCausalLM", num_experts=4, cache_layout="linear", kv_bytes_per_token=64
+    )
+    draft = derive_profile(config, _request("moe"), overrides)
+    assert draft.pending_runtime == {} and draft.profile is not None
+    assert "cache_layout" not in draft.notes
+    assert "cache_layout" not in json.loads(draft.profile.provenance)["config_notes"]
 
 
 def test_explicit_decoder_layout_is_not_overridden_by_inkling_wrapper(tmp_path):
@@ -860,21 +1156,25 @@ def test_unknown_quantization_never_falls_back_to_residual_bfloat16(tmp_path):
     assert {"weights_bytes"}.isdisjoint(draft.resolved)
 
 
-def test_missing_fields_are_complete_and_unknown_layout_can_use_explicit_resources(tmp_path):
+def test_unknown_architecture_is_pending_and_still_asks_for_user_owned_inputs(tmp_path):
     config = _config(tmp_path, architectures=["NewDecoderForCausalLM"], model_type="new_decoder")
     assert "num_experts" not in config.suggestions
+    assert config.runtime_layout == ("unrecognized architecture NewDecoderForCausalLM",)
     draft = derive_profile(config, _request())
-    assert {"num_experts", "kv_bytes_per_token", "cache_layout"} <= set(draft.missing)
+    assert set(draft.pending_runtime) == {"cache_geometry"}
+    assert {"num_experts", "fmha_quant_mode", "kv_cache_dtype"} <= set(draft.missing)
+    assert {"kv_bytes_per_token", "cache_layout"}.isdisjoint(draft.missing)
     assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
-    complete = derive_profile(
+    explicit = derive_profile(
         config,
         _request(),
         _runtime(
             num_experts=0, weights_bytes=1000, activations_bytes=2000, kv_bytes_per_token=32, cache_layout="linear"
         ),
     )
-    assert complete.profile is not None
-    assert "user override" in complete.sources["weights_bytes"]
+    assert explicit.profile is None and explicit.missing == {}
+    assert "user override" in explicit.sources["weights_bytes"]
+    assert explicit.sources["kv_bytes_per_token"] == _CHECKED_BY_IMPORT
 
 
 @pytest.mark.parametrize(
@@ -911,6 +1211,73 @@ def test_json_must_be_finite_object_with_unique_keys(tmp_path, raw):
         load_model_config(path)
 
 
+def _sidecar(tmp_path, **updates):
+    sidecar = {
+        "producer": {"name": "modelopt", "version": "0.0.0"},
+        "quantization": {"quant_algo": "FP8", "kv_cache_quant_algo": "FP8"},
+        **updates,
+    }
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(sidecar))
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+@pytest.mark.parametrize("sidecar", [False, True])
+def test_unread_non_finite_numbers_load(tmp_path, value, sidecar):
+    # NemotronH configs spell time_step_limit as [0.0, Infinity]; intake never reads that field.
+    if sidecar:
+        _sidecar(tmp_path, calibration_range=[0.0, value])
+    config = _config(tmp_path, time_step_limit=[0.0, value])
+    assert config.source_files.keys() == ({"hf_quant_config.json"} if sidecar else set())
+    assert all("time_step_limit" not in note and "calibration_range" not in note for note in config.notes.values())
+
+
+@pytest.mark.parametrize("value", [math.inf, -math.inf, math.nan])
+@pytest.mark.parametrize(
+    "updates,field",
+    [
+        ({"max_position_embeddings": "VALUE"}, "max_position_embeddings"),
+        ({"hidden_size": "VALUE"}, "hidden_size"),
+        ({"sliding_window": "VALUE"}, "sliding_window"),
+        ({"layer_types": ["full_attention", "VALUE"]}, "layer_types"),
+        # Fields read without an integer, string or boolean check, including echoed metadata.
+        ({"use_mtp": "VALUE"}, "use_mtp"),
+        ({"compress_ratios": [4, "VALUE"]}, r"compress_ratios\[1\]"),
+        ({"max_window_layers": "VALUE"}, "max_window_layers"),
+        (
+            {"quantization_config": {"kv_cache_scheme": {"num_bits": 8, "type": "float", "group_size": "VALUE"}}},
+            r"quantization_config\.kv_cache_scheme\.group_size",
+        ),
+    ],
+)
+def test_non_finite_numbers_in_read_fields_name_the_field(tmp_path, value, updates, field):
+    updates = json.loads(json.dumps(updates).replace('"VALUE"', json.dumps(value)))
+    with pytest.raises(ValueError, match=field):
+        _config(tmp_path, **updates)
+
+
+@pytest.mark.parametrize("value", [math.inf, math.nan])
+def test_non_finite_numbers_in_the_read_sidecar_section_name_the_field(tmp_path, value):
+    _sidecar(tmp_path, quantization={"quant_algo": "FP8", "group_size": value})
+    with pytest.raises(ValueError, match=r"hf_quant_config\.json quantization\.group_size"):
+        _config(tmp_path)
+
+
+def test_unread_infinity_never_reaches_profile_provenance(tmp_path):
+    def reject(constant):
+        raise AssertionError(f"non-finite {constant} reached an output")
+
+    _sidecar(tmp_path, calibration_range=[0.0, math.inf])
+    config = _config(tmp_path, time_step_limit=[0.0, math.inf])
+    draft = derive_profile(config, _request(), _runtime(weights_bytes=1024))
+    assert draft.profile is not None
+    for provenance in (draft.profile.provenance, draft.profile.deployments[0].resources.provenance):
+        json.loads(provenance, parse_constant=reject)
+    json.loads(draft.profile.model_dump_json(), parse_constant=reject)
+    json.loads(
+        json.dumps({"resolved": draft.resolved, "sources": draft.sources, "notes": draft.notes}), parse_constant=reject
+    )
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -940,10 +1307,7 @@ def test_overrides_are_strict_even_before_identity_is_complete(tmp_path, overrid
     "updates,match",
     [
         ({"sliding_window": 128}, "unsupported"),
-        # Runtime-resolved layouts load, but their geometry is only ever measured.
-        ({"layer_types": ["full_attention", "linear_attention"]}, "measured by onboard probe-runtime"),
         ({"is_encoder_decoder": True}, "unsupported"),
-        ({"ssm_cfg": {"d_state": 16}}, "measured by onboard probe-runtime"),
         ({"kv_lora_rank": 8}, "unsupported"),
     ],
 )
@@ -953,6 +1317,22 @@ def test_known_incompatible_state_cannot_be_papered_over_with_overrides(tmp_path
     with pytest.raises(ValueError, match=match):
         config = _config(tmp_path, **updates)
         derive_profile(config, _request(), _runtime(weights_bytes=1, kv_bytes_per_token=1, cache_layout="linear"))
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "updates", [{"layer_types": ["full_attention", "linear_attention"]}, {"ssm_cfg": {"d_state": 16}}]
+)
+def test_runtime_resolved_state_cannot_be_papered_over_with_typed_geometry(tmp_path, updates, nested):
+    # These layouts load, and their geometry is measured by the runtime probe: typed geometry is only a claim.
+    if nested:
+        updates = {"text_config": {**_config(tmp_path).raw, **updates}}
+    config = _config(tmp_path, **updates)
+    draft = derive_profile(
+        config, _request(), _runtime(**_DECLARED_MEMORY, kv_bytes_per_token=1, cache_layout="linear")
+    )
+    assert draft.profile is None and set(draft.pending_runtime) == {"cache_geometry"}
+    assert draft.sources["kv_bytes_per_token"] == _CHECKED_BY_IMPORT
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -1053,7 +1433,8 @@ def test_bundled_custom_layout_keeps_null_geometry_unresolved():
     assert config.suggestions["context_length"] == 131072
     assert config.raw["intermediate_size"] is None
     assert "intermediate_size" not in config.notes
-    assert {"kv_bytes_per_token", "num_experts"} <= draft.missing.keys()
+    assert "unrecognized architecture DeciLMForCausalLM" in draft.pending_runtime["cache_geometry"]
+    assert "num_experts" in draft.missing and "kv_bytes_per_token" not in draft.missing
     assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
 
 

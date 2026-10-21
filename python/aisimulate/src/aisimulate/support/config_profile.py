@@ -13,9 +13,10 @@ model, imports remote configuration code, or builds an operation graph. Tensor
 storage estimates cover the declared vanilla decoder layouts, not arbitrary
 implementations sharing their field names. Runtime reservations and activation
 estimates are not measurements or a guarantee that a deployment fits. A layout the
-config cannot establish (unrecognized layer types, recurrent state) is
-runtime-resolved: its cache geometry is measured by the runtime probe, never
-derived or accepted as an override.
+config cannot establish (unrecognized layer types, recurrent state, an architecture
+intake does not recognize) is runtime-resolved: the runtime probe measures its cache
+geometry. Intake never derives it, and a typed geometry override is a claim that
+observation import checks against the measurement.
 """
 
 from __future__ import annotations
@@ -73,8 +74,31 @@ _NONNEGATIVE_FIELDS = frozenset(
 _BYTE_FIELDS = frozenset(field for field in INTEGER_FIELDS if "bytes" in field)
 _NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
 _CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
-# Overrides that state cache geometry; a runtime-resolved layout takes it only from the runtime probe.
+# Overrides that state cache geometry. For a runtime-resolved layout, intake never asks for them, and typed
+# cache_layout, kv_bytes_per_token and cache_groups are claims that observation import checks against the probe.
 _GEOMETRY_OVERRIDES = frozenset(("cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"))
+# Typed geometry that observation import compares with the runtime probe's resources.
+_CHECKED_GEOMETRY = ("cache_layout", "cache_groups", "kv_bytes_per_token")
+# Fields intake reads before or without an integer, string or boolean check. Those checks reject any float, so a
+# JSON Infinity or NaN in another read field already fails with that field's name; these are checked explicitly.
+# Intake reads every other field through those checks or only for its presence, so JSON Infinity or NaN elsewhere,
+# such as NemotronH's time_step_limit, loads and never reaches an output.
+_UNTYPED_READ_FIELDS = (
+    "quantization_config",
+    "quant_algo",
+    "kv_cache_quant_algo",
+    "expert_dtype",
+    "kv_lora_rank",
+    "q_lora_rank",
+    "compress_ratios",
+    "attention_k_eq_v",
+    "max_window_layers",
+    "sliding_window_pattern",
+    "lm_head_bias",
+    "use_qk_norm",
+    "moe_router_dtype",
+    "use_mtp",
+)
 _RECURRENT_STATE_FIELDS = (
     "ssm_cfg",
     "mamba_d_state",
@@ -104,6 +128,8 @@ _ARCHITECTURES = {
 }
 _DENSE = frozenset(("LlamaForCausalLM", "MistralForCausalLM", "Qwen2ForCausalLM", "Qwen3ForCausalLM"))
 _FULL_ATTENTION = _DENSE | {"MixtralForCausalLM", "Qwen3MoeForCausalLM", "MiniMaxM2ForCausalLM"}
+# MLA/DSA decoders: intake asks for their cache accounting instead of leaving it to the runtime probe.
+_MLA_ARCHITECTURES = frozenset(("DeepseekV3ForCausalLM", "DeepseekV32ForCausalLM", "GlmMoeDsaForCausalLM"))
 _WEIGHT_LAYOUTS = _DENSE | {"MixtralForCausalLM"}
 _EXPERT_ALIASES = ("num_local_experts", "n_routed_experts", "num_experts")
 _INT_ALIASES = {
@@ -131,7 +157,17 @@ _EXTRA_DIMENSIONS = (
 )
 # A runtime-resolved layout may declare these as 0 when a layer type has no such attention shape.
 _ATTENTION_INT_ALIASES = frozenset(("num_key_value_heads", "head_dim"))
-_ATTENTION_DIMENSIONS = frozenset(_EXTRA_DIMENSIONS) - {"moe_intermediate_size", "num_experts_per_tok"}
+_ATTENTION_DIMENSIONS = frozenset(
+    (
+        "kv_lora_rank",
+        "q_lora_rank",
+        "qk_nope_head_dim",
+        "qk_rope_head_dim",
+        "v_head_dim",
+        "index_head_dim",
+        "index_n_heads",
+    )
+)
 _AUXILIARY_DIMENSIONS = (
     "n_shared_experts",
     "shared_intermediate_size",
@@ -164,6 +200,8 @@ class ProfileDraft:
     sources: dict[str, str]
     # Facts only the runtime probe can establish, by field. A draft with any has no profile.
     pending_runtime: dict[str, str] = field(default_factory=dict)
+    # Config notes for the classification this draft used; an architecture override can change the layout notes.
+    notes: dict[str, str] = field(default_factory=dict)
 
 
 class ProfileRequestError(ValueError):
@@ -217,11 +255,16 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _finite_float(value: str) -> float:
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError("config JSON numbers must be finite")
-    return result
+def _require_finite(value: Any, field: str) -> None:
+    """Reject JSON Infinity or NaN in a field intake reads. Parsing accepts them, for fields intake never reads."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{field} must be a finite number, not Infinity or NaN")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _require_finite(item, f"{field}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_finite(item, f"{field}[{index}]")
 
 
 def _architecture(raw: Mapping[str, Any]) -> str | None:
@@ -334,11 +377,15 @@ def _attn_type_list(raw: Mapping[str, Any], layers: int | None) -> list[int]:
     return values
 
 
-def _runtime_layout(raw: Mapping[str, Any], architecture: str | None) -> tuple[str, ...]:
+def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str | None) -> tuple[str, ...]:
     """Sorted reasons config.json cannot establish the cache layout; empty when it can.
 
     Layer types, attention-type lists and recurrent-state markers count independently, so recognized
-    values never hide declared state.
+    values never hide declared state. ``architecture`` is the decoder architecture layout checks run
+    against; ``named`` is the architecture the config or an override names, which is a multimodal
+    wrapper's when the text config names none. Without a marker, an architecture that intake does not
+    recognize is pending too, unless the config's own fields declare a grouped cache. Every caller
+    classifies through this function, and typed geometry overrides never reach it.
     """
     reasons = []
     layer_types = raw.get("layer_types")
@@ -356,6 +403,13 @@ def _runtime_layout(raw: Mapping[str, Any], architecture: str | None) -> tuple[s
     reasons.extend(f"recurrent-state field {key}" for key in _RECURRENT_STATE_FIELDS if raw.get(key) is not None)
     if any(name in (architecture or "").lower() for name in _RECURRENT_ARCHITECTURES):
         reasons.append(f"recurrent architecture {architecture}")
+    if (
+        not reasons
+        and named
+        and named not in _FULL_ATTENTION | _MLA_ARCHITECTURES
+        and not _grouped_cache_fields(raw, architecture)
+    ):
+        reasons.append(f"unrecognized architecture {named}")
     return tuple(sorted(reasons))
 
 
@@ -398,9 +452,8 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
     return local or ()
 
 
-def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
-    if _runtime_layout(raw, architecture):
-        return False
+def _grouped_cache_fields(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether the config's own fields declare windowed attention or convolution state."""
     return bool(
         raw.get("use_sconv")
         or _cache_layer_ids(raw, architecture)
@@ -413,7 +466,16 @@ def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> boo
     )
 
 
-def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inkling: bool = False) -> None:
+def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    # Markers win over grouped fields. An unrecognized architecture is pending only without grouped fields,
+    # so checking markers alone gives the same answer.
+    return not _runtime_layout(raw, architecture, None) and _grouped_cache_fields(raw, architecture)
+
+
+def _validate_layout(
+    raw: Mapping[str, Any], architecture: str | None, named: str | None, *, inkling: bool = False
+) -> tuple[str, ...]:
+    """Check the declared layout; return why config.json cannot establish it, empty when it can."""
     for key in (
         "attention_bias",
         "mlp_bias",
@@ -432,7 +494,8 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
             "requires explicit use_sconv=true. Verify the runtime/config or provide a complete FPM profile. "
             f"Source: {_INKLING_CACHE_SOURCE.rsplit('/', 1)[0]}/model.py"
         )
-    if _runtime_layout(raw, architecture):
+    runtime = _runtime_layout(raw, architecture, named)
+    if runtime:
         # The runtime probe measures this layout's cache geometry; intake only checks the config is well formed.
         _cache_window(raw)
         layers = _aliased_int(raw, "num_hidden_layers")
@@ -440,7 +503,7 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
             _layer_types(raw, layers)
         if "attn_type_list" in raw:
             _attn_type_list(raw, layers)
-        return
+        return runtime
     sliding = _cache_layer_ids(raw, architecture, inkling=inkling)
     layers = _aliased_int(raw, "num_hidden_layers")
     if "attn_type_list" in raw:
@@ -475,6 +538,32 @@ def _validate_layout(raw: Mapping[str, Any], architecture: str | None, *, inklin
             raise ValueError("use_sconv requires an explicit sconv_kernel_size or conv_kernel_size")
         if _dtype(raw) not in (None, "bfloat16"):
             raise ValueError("Inkling convolution cache requires bfloat16 runtime storage")
+    return ()
+
+
+def _layout_notes(raw: Mapping[str, Any], architecture: str | None, runtime: tuple[str, ...]) -> dict[str, str]:
+    """Config notes on the cache layout, for the classification a caller used."""
+    if runtime:
+        return {
+            "cache_layout": (
+                f"cache layout pending the runtime probe ({', '.join(runtime)}). config.json does not establish "
+                "cache or state geometry. onboard probe-runtime measures it."
+            )
+        }
+    if not _uses_grouped_cache(raw, architecture):
+        return {}
+    notes = {
+        "cache_layout": (
+            "grouped cache: full-history attention, explicit sliding attention windows, and declared convolution "
+            "state are accounted separately; runtime KV dtype, block sizes and page padding are not model-config facts"
+        )
+    }
+    if raw.get("use_sconv"):
+        notes["convolution_cache"] = (
+            "Inkling convolution state uses BF16 packed K/V and output streams; "
+            f"pinned runtime layout: {_INKLING_CACHE_SOURCE}"
+        )
+    return notes
 
 
 def _validate_architecture(raw: Mapping[str, Any], architecture: str | None, experts: int | None) -> None:
@@ -491,7 +580,8 @@ def load_model_config(path: str | Path) -> ModelConfig:
     """Load local config/ModelOpt metadata with separate byte-level provenance."""
     path = Path(path).expanduser().absolute()
     payload = path.read_bytes()
-    raw = json.loads(payload, object_pairs_hook=_unique_object, parse_float=_finite_float, parse_constant=_finite_float)
+    # JSON Infinity and NaN parse as floats: fields intake reads reject them, and other fields are never read.
+    raw = json.loads(payload, object_pairs_hook=_unique_object)
     if not isinstance(raw, dict):
         raise ValueError("model config JSON must be an object")
     document = raw
@@ -533,16 +623,18 @@ def load_model_config(path: str | Path) -> ModelConfig:
             notes["shared_metadata"] = (
                 f"config-level {', '.join(inherited)} inherited because text_config does not declare that metadata"
             )
+    for key in _UNTYPED_READ_FIELDS:
+        _require_finite(raw.get(key), key)
     sidecar_path = path.parent / "hf_quant_config.json"
     if sidecar_path.is_file():
         from aisimulate_core.sdk.fpm_model_metadata import attach_quantization_sidecar
 
         sidecar_payload = sidecar_path.read_bytes()
-        sidecar = json.loads(
-            sidecar_payload, object_pairs_hook=_unique_object, parse_float=_finite_float, parse_constant=_finite_float
-        )
+        sidecar = json.loads(sidecar_payload, object_pairs_hook=_unique_object)
         if not isinstance(sidecar, dict):
             raise ValueError("hf_quant_config.json must be an object")
+        # Intake reads only the sidecar's quantization section.
+        _require_finite(sidecar.get("quantization"), "hf_quant_config.json quantization")
         if document.get("hf_quant_config") is not None and document["hf_quant_config"] != sidecar:
             raise ValueError("conflicting inline hf_quant_config and adjacent hf_quant_config.json")
         source_files[sidecar_path.name] = hashlib.sha256(sidecar_payload).hexdigest()
@@ -571,8 +663,8 @@ def load_model_config(path: str | Path) -> ModelConfig:
     inkling = architecture == _INKLING_ARCHITECTURE
     # A runtime-resolved layout may use zero or absent ordinary attention dimensions.
     # Validate its structure first, then exempt those dimensions from the GQA/MHA minimums.
-    _validate_layout(raw, decoder_architecture, inkling=inkling)
-    runtime_layout = _runtime_layout(raw, decoder_architecture)
+    # A multimodal wrapper names the decoder when the text config names no architecture.
+    runtime_layout = _validate_layout(raw, decoder_architecture, decoder_architecture or architecture, inkling=inkling)
     geometry = {key: _aliased_int(raw, key, runtime_resolved=bool(runtime_layout)) for key in _INT_ALIASES}
     for key in _EXTRA_DIMENSIONS:
         if raw.get(key) is not None:
@@ -597,21 +689,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
     for key in (*_EXTRA_DIMENSIONS, *_AUXILIARY_DIMENSIONS):
         if raw.get(key) is not None:
             notes[key] = f"config {key}={raw[key]}"
-    if runtime_layout:
-        notes["cache_layout"] = (
-            f"cache layout pending the runtime probe ({', '.join(runtime_layout)}). config.json does not establish "
-            "cache or state geometry. onboard probe-runtime measures it."
-        )
-    elif _uses_grouped_cache(raw, decoder_architecture):
-        notes["cache_layout"] = (
-            "grouped cache: full-history attention, explicit sliding attention windows, and declared convolution "
-            "state are accounted separately; runtime KV dtype, block sizes and page padding are not model-config facts"
-        )
-        if raw.get("use_sconv"):
-            notes["convolution_cache"] = (
-                "Inkling convolution state uses BF16 packed K/V and output streams; "
-                f"pinned runtime layout: {_INKLING_CACHE_SOURCE}"
-            )
+    notes.update(_layout_notes(raw, decoder_architecture, runtime_layout))
     names = {_text(document[key], key) for key in ("_name_or_path", "name_or_path") if document.get(key)}
     if len(names) > 1:
         raise ValueError("conflicting _name_or_path and name_or_path identity hints")
@@ -790,36 +868,32 @@ def _precision_facts(config: ModelConfig) -> dict[str, tuple[str, str]]:
     return result
 
 
-def _geometry(config: ModelConfig, architecture: str | None, request: SupportRequest | None) -> dict[str, int]:
-    runtime = bool(_runtime_layout(config.raw, architecture))
+def _geometry(
+    config: ModelConfig, architecture: str | None, runtime: tuple[str, ...], request: SupportRequest | None
+) -> dict[str, int]:
     dimensions = {
         key: value
         for key in _INT_ALIASES
-        if (value := _aliased_int(config.raw, key, runtime_resolved=runtime)) is not None
+        if (value := _aliased_int(config.raw, key, runtime_resolved=bool(runtime))) is not None
     }
-    if runtime:
-        # Rank-local KV heads and a derived head_dim are cache geometry, which the runtime probe measures.
-        # A declared 0 means the layout has no such attention dimension, so it is not a size to compute with.
-        heads = dimensions.get("num_attention_heads")
-        if request is not None and heads and heads % request.search.tensor_parallel:
-            raise ProfileRequestError(
-                "tensor_parallel", "num_attention_heads must divide into the selected TP attention heads"
-            )
-        return {key: value for key, value in dimensions.items() if value or key not in _ATTENTION_INT_ALIASES}
-    if architecture not in _FULL_ATTENTION and not _uses_grouped_cache(config.raw, architecture):
+    if not runtime and architecture not in _FULL_ATTENTION and not _uses_grouped_cache(config.raw, architecture):
         return dimensions
     heads = dimensions.get("num_attention_heads")
     hidden = dimensions.get("hidden_size")
-    if "head_dim" not in dimensions and heads and hidden:
+    if not runtime and "head_dim" not in dimensions and heads and hidden:
         if hidden % heads:
             raise ValueError("hidden_size must divide into attention heads when head_dim is absent")
         dimensions["head_dim"] = hidden // heads
+    if request is not None and heads and heads % request.search.tensor_parallel:
+        raise ProfileRequestError(
+            "tensor_parallel", "num_attention_heads must divide into the selected TP attention heads"
+        )
+    if runtime:
+        # Rank-local KV heads and a derived head_dim are cache geometry, which the runtime probe measures.
+        # A declared 0 means the layout has no such attention dimension, so it is not a size to compute with.
+        return {key: value for key, value in dimensions.items() if value or key not in _ATTENTION_INT_ALIASES}
     if request is not None and heads:
         tp = request.search.tensor_parallel
-        if heads % tp:
-            raise ProfileRequestError(
-                "tensor_parallel", "num_attention_heads must divide into the selected TP attention heads"
-            )
         kv = dimensions.get("num_key_value_heads")
         if kv and ((kv >= tp and kv % tp) or (kv < tp and tp % kv)):
             raise ProfileRequestError(
@@ -1157,14 +1231,31 @@ def _hardware_estimates(request: SupportRequest | None) -> dict[str, tuple[int, 
     return result
 
 
-def _declared_architecture(config: ModelConfig, overrides: Mapping[str, Any] | None) -> str | None:
-    """The decoder architecture layout checks run against: the config's own, else an override's."""
+def _declared_architecture(config: ModelConfig, overrides: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
+    """The decoder architecture layout checks run against, and the architecture that names the decoder.
+
+    Both are the config's own, else an override's. A multimodal wrapper names a decoder whose text config
+    names no architecture, but layout checks never run against the wrapper. Intake and observation import
+    both use this function, so they classify a layout the same way.
+    """
     if "architecture" in config.suggestions:
-        return config.decoder_architecture
+        return config.decoder_architecture, config.decoder_architecture or config.suggestions["architecture"]
     declared = overrides.get("architecture") if isinstance(overrides, Mapping) else None
     if isinstance(declared, str) and declared.strip():
-        return declared.strip()
-    return None
+        return declared.strip(), declared.strip()
+    return None, None
+
+
+def _config_notes(config: ModelConfig, architecture: str | None, runtime: tuple[str, ...]) -> dict[str, str]:
+    """config.notes, with the cache-layout notes for this classification. An architecture override can change them."""
+    notes = dict(config.notes)
+    layout = _layout_notes(config.raw, architecture, runtime)
+    for key in ("cache_layout", "convolution_cache"):
+        if key in layout:
+            notes[key] = layout[key]
+        else:
+            notes.pop(key, None)
+    return notes
 
 
 def derive_profile(
@@ -1176,15 +1267,17 @@ def derive_profile(
     supports validating overrides and previewing config facts before collecting
     deployment identity; it can never produce a complete deployment profile.
     A runtime-resolved layout has no profile either: ``pending_runtime`` names the
-    cache geometry only the runtime probe can measure, and overrides cannot state it.
+    cache geometry only the runtime probe can measure. Typed geometry overrides are
+    recorded as claims that observation import checks; they never complete a profile.
     """
-    architecture = _declared_architecture(config, overrides)
-    runtime = _runtime_layout(config.raw, architecture)
+    architecture, named = _declared_architecture(config, overrides)
+    runtime = _runtime_layout(config.raw, architecture, named)
     # Refuse by key, before any value is validated, so the refusal wins whatever the value is.
-    if runtime and isinstance(overrides, Mapping) and (stated := _GEOMETRY_OVERRIDES & overrides.keys()):
+    if runtime and isinstance(overrides, Mapping) and "cache_block_sizes" in overrides:
         raise ValueError(
-            f"cache geometry for this layout is measured by onboard probe-runtime ({', '.join(runtime)}); "
-            f"remove {sorted(stated)} from resource overrides"
+            "cache_block_sizes names config-derived cache groups, and this layout has none "
+            f"({', '.join(runtime)}); onboard probe-runtime reports the runtime cache groups with their block sizes. "
+            "Remove cache_block_sizes from the resource overrides."
         )
     supplied = validate_overrides(overrides)
     values = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
@@ -1216,9 +1309,14 @@ def derive_profile(
         values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
         if key == "comm_quant_mode" and value != "half":
             sources[key] += "; current collector supports half and will reject this identity for new collection"
-    _validate_layout(config.raw, architecture, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
+        if runtime and key in _CHECKED_GEOMETRY:
+            sources[key] = (
+                "user override; onboard import-observations checks it against the runtime probe's measurement"
+            )
+    _validate_layout(config.raw, architecture, named, inkling=values.get("architecture") == _INKLING_ARCHITECTURE)
     _validate_architecture(config.raw, architecture, values.get("num_experts"))
-    geometry = _geometry(config, architecture, request)
+    geometry = _geometry(config, architecture, runtime, request)
+    notes = _config_notes(config, architecture, runtime)
     if request:
         if "num_experts" in values:
             experts = values["num_experts"]
@@ -1253,7 +1351,9 @@ def derive_profile(
         ),
         "kv_bytes_per_token": (
             "provide rank-local bytes per cached token for all persistent cache tensors; "
-            "MLA/DSA and unknown layouts need explicit accounting"
+            # An unrecognized architecture is pending the runtime probe instead; with none named, the layout is unknown.
+            + ("MLA/DSA" if architecture in _MLA_ARCHITECTURES else "MLA/DSA and unknown")
+            + " layouts need explicit accounting"
         ),
     }
     grouped_cache = (
@@ -1320,11 +1420,12 @@ def derive_profile(
     if runtime:
         pending = (
             f"measured from the selected runtime, not derived from config.json ({', '.join(runtime)}): "
-            "run onboard probe-runtime for this runtime and topology, then onboard import-observations"
+            "onboard probe-runtime measures it for this runtime and topology, and onboard import-observations "
+            "imports the measurement"
         )
-        return ProfileDraft(None, values, missing, sources, {"cache_geometry": pending})
+        return ProfileDraft(None, values, missing, sources, {"cache_geometry": pending}, notes=notes)
     if missing or request is None:
-        return ProfileDraft(None, values, missing, sources)
+        return ProfileDraft(None, values, missing, sources, notes=notes)
     declared_memory = supplied.keys() >= _NON_KV_FIELDS
     provenance = json.dumps(
         {
@@ -1337,7 +1438,7 @@ def derive_profile(
                 for key in sorted(_NON_KV_FIELDS & values.keys())
                 if key not in supplied
             },
-            "config_notes": config.notes,
+            "config_notes": notes,
             "fields": {key: {"value": values[key], "source": sources[key]} for key in sorted(values)},
             "deployment_identity": request.identity.model_dump(mode="json"),
             "parallelism": request.parallelism(),
@@ -1376,7 +1477,28 @@ def derive_profile(
             ],
         }
     )
-    return ProfileDraft(profile, values, {}, sources)
+    return ProfileDraft(profile, values, {}, sources, notes=notes)
+
+
+def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) -> str:
+    """Why a typed resource override disagrees with what the runtime probe measured."""
+
+    def compact(value: Any) -> str:
+        return (
+            json.dumps(value, sort_keys=True, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value)
+        )
+
+    remedy = "Correct or remove the override; if the runtime changed, run a fresh onboard probe-runtime."
+    if resources.get(key) is None:
+        layout = f" for its {resources['cache_layout']} cache_layout" if resources.get("cache_layout") else ""
+        return (
+            f"resource_overrides.{key}={compact(typed)}, but the runtime probe measured no {key}{layout}; "
+            f"the measurement is authoritative. {remedy}"
+        )
+    return (
+        f"resource_overrides.{key}={compact(typed)} differs from the runtime probe's measured "
+        f"{key}={compact(resources[key])}; the measurement is authoritative. {remedy}"
+    )
 
 
 def profile_from_observations(
@@ -1389,7 +1511,8 @@ def profile_from_observations(
     """Combine validated model metadata with independently observed cache groups.
 
     Runtime grouping need not match config-derived planning groups. No estimated
-    geometry or non-KV byte declaration is substituted for the observation.
+    geometry or non-KV byte declaration is substituted for the observation. Typed
+    geometry and scheduler overrides must match it; the measurement is authoritative.
     """
     supplied = validate_overrides(overrides)
     metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
@@ -1403,21 +1526,24 @@ def profile_from_observations(
     missing = set(_MODEL_FIELDS) - metadata.keys()
     if missing:
         raise ValueError("model metadata remains unresolved: " + ", ".join(sorted(missing)))
-    _validate_layout(
-        config.raw,
-        config.decoder_architecture or metadata["architecture"],
-        inkling=metadata["architecture"] == _INKLING_ARCHITECTURE,
+    architecture, named = _declared_architecture(config, supplied)
+    runtime = _validate_layout(
+        config.raw, architecture, named, inkling=metadata["architecture"] == _INKLING_ARCHITECTURE
     )
-    _validate_architecture(config.raw, config.decoder_architecture or metadata["architecture"], metadata["num_experts"])
-    _geometry(config, config.decoder_architecture or metadata["architecture"], request)
-    for key in ("cache_layout", "cache_groups", "kv_bytes_per_token", "max_num_tokens", "max_batch_size"):
+    _validate_architecture(config.raw, architecture, metadata["num_experts"])
+    _geometry(config, architecture, runtime, request)
+    for key in (*_CHECKED_GEOMETRY, "max_num_tokens", "max_batch_size"):
         if key in supplied and supplied[key] != resources.get(key):
-            raise ValueError(
-                f"resource_overrides.{key} differs from observed runtime; a compatible fresh probe is required"
-            )
+            raise ValueError(_observation_mismatch(key, supplied[key], resources))
     for key in _DEPLOYMENT_FIELDS:
         if key in supplied and supplied[key] != precision.get(key):
             raise ValueError(f"resource_overrides.{key} differs from observed precision")
+    notes = _config_notes(config, architecture, runtime)
+    if runtime:
+        notes["cache_layout"] = (
+            f"cache layout measured by the runtime probe ({', '.join(runtime)}). config.json does not establish "
+            "cache or state geometry; these resources are onboard probe-runtime observations."
+        )
     parallel = request.parallelism()
     return FpmModelProfile.model_validate(
         {
@@ -1430,9 +1556,17 @@ def profile_from_observations(
                     "method": "validated runtime resources with local model configuration metadata",
                     "config_sha256": config.sha256,
                     **({"config_source_files": config.source_files} if config.source_files else {}),
-                    "config_notes": config.notes,
+                    "config_notes": notes,
                     "user_overrides": {
-                        key: {"value": value, "source": "user assumption"} for key, value in supplied.items()
+                        key: {
+                            "value": value,
+                            "source": (
+                                "user override; checked against the runtime probe's measurement"
+                                if key in _CHECKED_GEOMETRY
+                                else "user assumption"
+                            ),
+                        }
+                        for key, value in supplied.items()
                     },
                     "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
                 },
