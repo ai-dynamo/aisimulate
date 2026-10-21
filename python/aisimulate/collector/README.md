@@ -206,11 +206,11 @@ that contract in-pod without a Collector-side text patch. Formal
 `collector_attempt_id`, `runtime_run_id`, `runtime_grid_digest`, and
 `kv_seed_regime` on every row. The seed regime is `real_kv`, `fake_fallback`,
 an approved `skip:<reason>`, `legacy`, or `n/a`; non-benign warm-up skips
-remain `fake_fallback` rather than acceptable evidence. A cache layout that
-`config.json` cannot describe needs real seeding. Planning refuses
-`DYN_BENCH_PREFILL_REAL_SEED` or `DYN_BENCH_KV_WARMUP` set to `off`, `0` or
-`false`. Publication refuses a cached prefill without the native `real_prefix`
-regime and a decode point without `real_kv` or an approved skip. Republishing the same
+remain `fake_fallback` rather than acceptable evidence. For a cache layout that
+`config.json` cannot describe, a cached prefill needs real prefix seeding.
+Planning refuses `DYN_BENCH_PREFILL_REAL_SEED` set to `off`, `0` or `false`, and
+publication refuses a cached prefill without the native `real_prefix` regime.
+Decode rows keep the classification above. Republishing the same
 attempt is idempotent. If a cell already exists under a different attempt or
 runtime identity, first publisher wins: that entire cell is skipped while
 non-overlapping cells in the same publication still land.
