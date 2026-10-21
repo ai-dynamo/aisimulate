@@ -1053,8 +1053,14 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         if worker is None or worker.kv_cache.state_cache is None:
             continue
         roles.append(role)
-        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
-            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
+        if (
+            worker.kv_cache.prefix_match_unit is not None
+            and worker.kv_cache.prefix_match_unit != worker.kv_cache.block_size
+            and (engine.speculation is not None or engine.nextn > 0)
+        ):
+            raise ValueError(
+                "sub-block prefix_match_unit does not support speculative decoding (speculation or nextn > 0)"
+            )
         supported = role == "aggregated" if engine.mode == "aggregated" else engine.mode == "disaggregated"
         if engine.backend != "vllm" or not supported:
             raise ValueError("state_cache requires backend=vllm and mode=aggregated or disaggregated (G1 only)")

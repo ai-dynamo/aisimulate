@@ -4164,6 +4164,34 @@ mod state_cache_tests {
     }
 
     #[test]
+    fn full_block_alignment_retains_state_with_mtp() {
+        for rates in ["0,0,0", "1,1,1", "1,0.57,0.5"] {
+            let mut config = args(64, true, Some(3));
+            config.prefix_match_unit = Some(4);
+            config.aic_nextn_accept_rates = Some(rates.to_owned());
+            let mut core = VllmCore::new(config);
+            submit(&mut core, 93_032, 17, 16);
+            for _ in 0..32 {
+                if core.state.requests.is_empty() {
+                    break;
+                }
+                step(&mut core);
+            }
+            assert!(core.state.requests.is_empty());
+            let second = submit(&mut core, 93_033, 17, 1);
+            let pass = step(&mut core);
+            assert_eq!(
+                pass.admissions
+                    .iter()
+                    .find(|admission| admission.uuid == second)
+                    .unwrap()
+                    .reused_input_tokens,
+                16
+            );
+        }
+    }
+
+    #[test]
     fn empty_native_prompts_are_rejected_before_state_or_speculative_generation() {
         for nextn in [None, Some(3)] {
             let mut core = VllmCore::new(args(16, true, nextn));

@@ -1936,8 +1936,12 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
-    if rank.get("prefix_match_unit") is not None and rank.get("aic_nextn") is not None:
-        raise ValueError("prefix_match_unit does not support speculative decoding")
+    if (
+        rank.get("prefix_match_unit") is not None
+        and rank["prefix_match_unit"] != rank.get("block_size")
+        and rank.get("aic_nextn") is not None
+    ):
+        raise ValueError("sub-block prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role not in ("aggregated", "prefill", "decode"):
         raise ValueError("state_cache requires backend=vllm and an aggregated, prefill or decode G1 worker")
     if rank.get("native_host_offload") is not None:

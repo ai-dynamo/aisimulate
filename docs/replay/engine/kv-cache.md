@@ -306,7 +306,10 @@ transfers the state for the whole prompt and does not model the recompute.
 
 Supported: aggregated and P/D vLLM, fixed `capacity`, `predict --stack engine`;
 inferred geometry for Kimi K3 and DeepSeek V4 at PP=1.
-Rejected: `recommend`, G2/G3 offload, and speculative decoding with
+Speculative decoding supports `prefix_match_unit` equal to `block_size`.
+Sub-block matching with speculation remains unsupported.
+
+Rejected: `recommend`, G2/G3 offload, and speculative decoding with sub-block
 `prefix_match_unit`.
 
 ## Other cache modes

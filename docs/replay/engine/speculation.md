@@ -105,7 +105,7 @@ follow the [cost-model contract](../../perf-model/configuration.md#speculative-d
 an explicit FPM request with `fallback_policy: deny` fails, while an allowed
 fallback can select OP without discarding the scheme.
 
-Grouped caches, G2/G3 offload, state-cache `prefix_match_unit`, AFD/EPD,
+Grouped caches, G2/G3 offload, sub-block state-cache `prefix_match_unit`, AFD/EPD,
 TensorRT-LLM, and optional Dynamo-stack execution are outside this generic
 replay path. Functional replay does not establish AgentX prediction accuracy,
 model quality, or measured hardware speedup; see [feature support](../features.md).
@@ -204,7 +204,8 @@ HBM-only agentic MTP/EAGLE replay is supported by the offline engine stack,
 including aggregated and P/D configurations supported by the selected backend.
 This is functional replay, not a claim of AgentX hardware accuracy.
 Rejected with MTP: grouped caches, G2/G3 offload, and state-cache prefix matching
-with `prefix_match_unit`. Combinations accepted by the
+with `prefix_match_unit` smaller than `block_size`. Full-block alignment is supported.
+Combinations accepted by the
 timing model are not necessarily supported by Replay; see
 [feature support](../features.md).
 

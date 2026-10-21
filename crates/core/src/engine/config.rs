@@ -804,8 +804,10 @@ impl EngineConfig {
                 "state_cache does not support g3_offload in the G1-only implementation"
             );
             ensure!(
-                self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
-                "prefix_match_unit does not support speculative decoding"
+                self.prefix_match_unit.is_none()
+                    || self.prefix_match_unit == Some(self.block_size)
+                    || self.aic_nextn.is_none(),
+                "sub-block prefix_match_unit does not support speculative decoding"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -1129,11 +1131,16 @@ mod tests {
         );
         input["aic_nextn"] = serde_json::json!(1);
         assert!(
-            serde_json::from_value::<EngineConfig>(input)
+            serde_json::from_value::<EngineConfig>(input.clone())
                 .unwrap_err()
                 .to_string()
                 .contains("speculative")
         );
+        input["prefix_match_unit"] = serde_json::json!(64);
+        serde_json::from_value::<EngineConfig>(input)
+            .unwrap()
+            .validate()
+            .unwrap();
     }
 
     #[test]
