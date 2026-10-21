@@ -159,9 +159,19 @@ impl ExecutionProfileSelection {
         spec.engine.systems_path = None;
         profile.basis.engine.systems_path = None;
         if spec != profile.basis {
-            return Err(invalid(
-                "compiled baseline identity or operations changed; requalify the profile",
-            ));
+            let at = first_difference(
+                &serde_json::to_value(&spec).map_err(invalid)?,
+                &serde_json::to_value(&profile.basis).map_err(invalid)?,
+            );
+            let at = if at.is_empty() {
+                "an unserialized field".to_string()
+            } else {
+                at
+            };
+            return Err(invalid(format!(
+                "compiled baseline differs from the profile basis at {at}; compile the basis \
+                 against the retained inventory (the files in retained_files) or requalify the profile"
+            )));
         }
         if spec.engine.database_mode != DatabaseMode::Silicon
             || spec.engine.enable_shared_layer != Some(false)
@@ -256,6 +266,49 @@ impl ExecutionProfileSelection {
     }
 }
 
+/// Path of the first field where the actual compiled spec differs from the
+/// pinned basis, so authors see what to requalify. A frequent case is an
+/// attention `lane_order` compiled against a different table inventory.
+fn first_difference(actual: &serde_json::Value, pinned: &serde_json::Value) -> String {
+    use serde_json::Value::{Array, Object};
+    fn join(head: &str, tail: &str) -> String {
+        match tail.chars().next() {
+            None => head.to_string(),
+            Some('[') => format!("{head}{tail}"),
+            Some('(') => format!("{head} {tail}"),
+            _ => format!("{head}.{tail}"),
+        }
+    }
+    fn clip(value: &serde_json::Value) -> String {
+        let text = value.to_string();
+        if text.chars().count() > 120 {
+            format!("{}...", text.chars().take(120).collect::<String>())
+        } else {
+            text
+        }
+    }
+    match (actual, pinned) {
+        (Object(x), Object(y)) => {
+            let Some(key) = x
+                .keys()
+                .chain(y.keys())
+                .find(|key| x.get(*key) != y.get(*key))
+            else {
+                return String::new();
+            };
+            match (x.get(key), y.get(key)) {
+                (Some(v), Some(w)) => join(key, &first_difference(v, w)),
+                _ => format!("{key} (present on one side only)"),
+            }
+        }
+        (Array(x), Array(y)) => match x.iter().zip(y).position(|(v, w)| v != w) {
+            Some(i) => join(&format!("[{i}]"), &first_difference(&x[i], &y[i])),
+            None => format!("(compiled length {}, profile length {})", x.len(), y.len()),
+        },
+        _ => format!("(compiled {}, profile {})", clip(actual), clip(pinned)),
+    }
+}
+
 fn validate_ops(ops: &[Op], spec: &EngineSpec, context: bool) -> Result<(), AicError> {
     let mut names = BTreeSet::new();
     for op in ops {
@@ -292,4 +345,38 @@ fn validate_ops(ops: &[Op], spec: &EngineSpec, context: bool) -> Result<(), AicE
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::first_difference;
+
+    #[test]
+    fn first_difference_names_the_path_and_both_values() {
+        assert_eq!(
+            first_difference(
+                &json!({"engine": {"tp_size": 1}}),
+                &json!({"engine": {"tp_size": 2}})
+            ),
+            "engine.tp_size (compiled 1, profile 2)"
+        );
+        assert_eq!(
+            first_difference(
+                &json!({"context_ops": [{"Gemm": {"lane_order": ["fa3", "fla"]}}]}),
+                &json!({"context_ops": [{"Gemm": {"lane_order": ["x", "fa3", "fla"]}}]}),
+            ),
+            "context_ops[0].Gemm.lane_order[0] (compiled \"fa3\", profile \"x\")"
+        );
+        assert_eq!(
+            first_difference(&json!({"ops": [1, 2]}), &json!({"ops": [1]})),
+            "ops (compiled length 2, profile length 1)"
+        );
+        assert_eq!(
+            first_difference(&json!({"extra": {}}), &json!({"extra": {"foo": "bar"}})),
+            "extra.foo (present on one side only)"
+        );
+        assert_eq!(first_difference(&json!({"a": 1}), &json!({"a": 1})), "");
+    }
 }

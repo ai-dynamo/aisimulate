@@ -449,3 +449,27 @@ def test_paths_are_canonical():
             Artifact(
                 artifact_id="a", path=value, role="test", format="json", schema="test/v1", sha256="a" * 64, bytes=0
             )
+
+
+def test_preparation_names_the_basis_field_that_differs(dataset):
+    """A basis compiled against a fuller table inventory carries a longer
+    attention lane order; admission must name that field, not blame the compiler."""
+    root, path, manifest = dataset
+    profile = json.loads((root / "metadata/profile.json").read_bytes())
+    config = json.loads((root / "metadata/config.json").read_bytes())
+    attention = next(op["ContextAttention"] for op in profile["basis"]["context_ops"] if "ContextAttention" in op)
+    attention["lane_order"] = ["synthetic_lane", *attention["lane_order"]]
+    write(root, "metadata/profile.json", profile)
+    record = next(a for a in manifest["artifacts"] if a["role"] == "execution-profile")
+    record.update(artifact(root, record["path"], record["role"]))
+    config["estimator_config"]["op_level"]["execution_profile"]["sha256"] = record["sha256"]
+    write(root, "metadata/config.json", config)
+    record = next(a for a in manifest["artifacts"] if a["role"] == "predictor-config")
+    record.update(artifact(root, record["path"], record["role"]))
+    write(root, path, manifest)
+    output = root.parent / "rejected"
+    with pytest.raises(
+        ValueError, match=r"ContextAttention\.lane_order\[0\] \(compiled \"[a-z0-9_]+\", profile \"synthetic_lane\"\)"
+    ):
+        prepare_execution_profile(root, path, output)
+    assert not output.exists()

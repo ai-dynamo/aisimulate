@@ -66,8 +66,14 @@ The version-1 profile JSON has these required fields:
 
 Profile authors can inspect an ordinary `compile_engine` result using the
 internal `_native.engine_spec_json_from_bincode(bytes)` helper. This is an
-authoring aid, not a separate prediction constructor. Compiler/schema changes
-that alter the basis require requalification and a new profile pin.
+authoring aid, not a separate prediction constructor. Compile that basis
+against the retained inventory: a systems root that holds exactly the files
+listed in `retained_files`. The compiler reads the tables present in its root
+(for example, attention `lane_order` grows with the kernel sources it
+discovers), so a basis compiled from a fuller collection root does not match
+the consumer's compile from the prepared root, and admission fails naming the
+first differing field. Compiler/schema changes that alter the basis require
+requalification and a new profile pin.
 
 `MeasuredComposite` is an exact, latency-only operation with `name`, `system`,
 `backend`, `version`, `is_context`, `weight_bytes`, `scale_factor`, and `cells`.
@@ -160,7 +166,8 @@ then calls the canonical constructor to compare the compiled baseline and valida
 runtime inputs before returning the configuration with absolute local data paths.
 Malformed profiles and incomplete required inputs fail preparation and remove
 the partial output. Tables used only by replaced baseline operations are not
-required. Shape coverage remains a query-time check.
+required, provided the basis was compiled without them (see above). Shape
+coverage remains a query-time check.
 
 Preparation requires a bundled model ID or an existing local model directory;
 unbundled remote IDs fail with an instruction to provide local model metadata.

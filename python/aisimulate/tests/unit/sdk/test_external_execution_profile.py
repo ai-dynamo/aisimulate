@@ -483,3 +483,11 @@ def test_native_ad_hoc_queries_enforce_profile_phase(profile, phase):
     assert handle.evaluate_ops_sol_json("[]", qualified, 1, 4) == []
     if qualified:
         assert handle.evaluate_context_attention_kernels_json("[]", 1, 4) == []
+
+
+def test_basis_mismatch_names_the_differing_field(profile):
+    config, payload, publish, _, _ = profile
+    payload["basis"]["engine"]["tp_size"] = 2
+    publish()
+    with pytest.raises(ValueError, match=r"profile basis at engine\.tp_size \(compiled 1, profile 2\)"):
+        RustForwardPassPerfModel.best_available(config)
