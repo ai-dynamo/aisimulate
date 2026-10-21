@@ -30,7 +30,6 @@ from .capabilities import (
     resolve_model_capability,
 )
 from .config import (
-    FPM_KV_WARMUP_DEFAULTS,
     FPM_MAX_PREFILL_ISL,
     PARALLEL_AXES,
     VLLM_AUTO_FIT_MAX_MODEL_LEN,
@@ -693,16 +692,22 @@ def _cell_id(
     return f"fpm-{_canonical_hash(payload)[:16]}"
 
 
-def _require_real_seeding(capability: ModelCapabilityProfile, generator_overrides: dict[str, Any] | None) -> None:
-    """The native runtime measures a cache layout config.json cannot describe only from real KV state."""
+def _require_real_prefix_seeding(
+    capability: ModelCapabilityProfile, generator_overrides: dict[str, Any] | None
+) -> None:
+    """Cached prefill of a cache layout config.json cannot describe is measured only after real prefix seeding.
+
+    The formal table labels prefill n/a, so nothing else separates a fake prefix. Decode keeps the existing
+    classification, which already labels points without real KV state.
+    """
 
     reasons = ", ".join(cache_layout_markers(capability.model_config.effective_payload, capability.architecture))
     for item in with_kv_warmup_defaults(generator_overrides or {})["K8sConfig"]["extra_env"]:
         name, value = item["name"], item.get("value")
-        if name in FPM_KV_WARMUP_DEFAULTS and value.lower() in {"off", "0", "false"}:
+        if name == "DYN_BENCH_PREFILL_REAL_SEED" and value.lower() in {"off", "0", "false"}:
             raise ValueError(
                 f"{name}={value} is not allowed for this cache layout ({reasons}). "
-                "It needs real prefix seeding and real decode warm-up. Remove the override."
+                "Its cached prefill needs real prefix seeding. Remove the override."
             )
 
 
@@ -783,7 +788,7 @@ def build_collection_plan(
         checkpoint_native_dtypes=profile is not None or backend_version is not None,
     )
     if capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID:
-        _require_real_seeding(capability, generator_overrides)
+        _require_real_prefix_seeding(capability, generator_overrides)
     options = options.resolve_model_execution(capability.architecture)
     execution = execution_identity(
         capability.model_config.payload,

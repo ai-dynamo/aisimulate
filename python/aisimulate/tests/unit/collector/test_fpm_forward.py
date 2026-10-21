@@ -1204,16 +1204,24 @@ def test_packaged_recurrent_state_configs_get_no_attention_template(
     _assert_native_runtime(capability, reasons, is_moe=is_moe)
 
 
+_ENTRY_ERROR = "layer_types entries must be nonempty strings"
+
+
 @pytest.mark.parametrize(
-    "declared_layers,layer_count,error",
-    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
-    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+    "declared_layers,layer_types,error",
+    [(4, ["linear_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["linear_attention"] * 4, "num_hidden_layers must be a positive integer")
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    # A marker does not excuse an entry that is not a nonempty string.
+    + [(4, ["linear_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
 )
 @pytest.mark.parametrize("native", [False, True])
-def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_count, error, native):
+def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_types, error, native):
     config = _unknown_fp8_moe_config()
-    config.update(num_hidden_layers=declared_layers, layer_types=["linear_attention"] * layer_count)
-    if not layer_count:
+    config.update(num_hidden_layers=declared_layers, layer_types=layer_types)
+    if not layer_types:
         config["ssm_state_size"] = 16  # An empty layer list declares no marker; recurrent state still does.
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
@@ -1222,8 +1230,18 @@ def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_lay
 
 
 # Captured with resolve_model_capability(...).to_dict() at 4cb2b7d6, before the collector checked cache layout
-# markers. These configs have none, so their capabilities, and the plan hashes, stay unchanged.
+# markers. These configs have none, so their template selection and precision stay unchanged. The native path
+# loads no AIC timing tables, so a table update does not change these fields.
 _GOLDEN_CAPABILITIES = Path(__file__).parent / "fixtures/fpm_capability_golden.json"
+_GOLDEN_FIELDS = (
+    "attention_source",
+    "attention_kind",
+    "support_level",
+    "template_id",
+    "support_reason",
+    "allow_pure_tp",
+    "dtype",
+)
 
 
 @pytest.mark.parametrize(
@@ -1237,8 +1255,7 @@ _GOLDEN_CAPABILITIES = Path(__file__).parent / "fixtures/fpm_capability_golden.j
         "openai/gpt-oss-20b",
     ],
 )
-@pytest.mark.parametrize("native", [False, True])
-def test_capability_without_cache_layout_markers_is_unchanged(model, native):
+def test_capability_without_cache_layout_markers_is_unchanged(model):
     capability = resolve_model_capability(
         backend="vllm",
         model_path=model,
@@ -1248,13 +1265,11 @@ def test_capability_without_cache_layout_markers_is_unchanged(model, native):
         system="b200_sxm",
         requested_weight_quantizations=(),
         requested_kv_cache_dtypes=("auto",),
-        database_version="0.27.0" if native else "0.24.0",
-        checkpoint_native_dtypes=native,
+        database_version="0.27.0",
+        checkpoint_native_dtypes=True,
     ).to_dict()
-    golden = json.loads(_GOLDEN_CAPABILITIES.read_text())["capabilities"][f"{model}|{'native' if native else 'tables'}"]
-    # The fixture omits the config payload; model_config.sha256 is its hash and is compared.
-    del capability["model_config"]["payload"]
-    assert capability == golden
+    golden = json.loads(_GOLDEN_CAPABILITIES.read_text())["capabilities"][model]
+    assert {field: capability[field] for field in _GOLDEN_FIELDS} == golden
 
 
 def test_collector_cache_layout_markers_match_config_intake_for_packaged_configs():
@@ -1293,6 +1308,68 @@ def test_collector_cache_layout_markers_match_config_intake_for_packaged_configs
     assert {"Qwen--Qwen3-VL-8B-Instruct", "XiaomiMiMo--MiMo-7B-Base", "MiniMaxAI--MiniMax-M3"} <= unrecognized_only
 
 
+def _packaged_config(name):
+    return json.loads((_MODEL_CONFIGS / f"{name}_config.json").read_text())
+
+
+def _unnamed_dsa_config():
+    config = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    del config["architectures"]  # model_type glm_moe_dsa still names the decoder for intake.
+    return config
+
+
+def _dsa_text_config_under_a_wrapper():
+    glm = _packaged_config("nvidia--GLM-5.3-NVFP4")
+    text = {key: value for key, value in glm.items() if key not in ("architectures", "quantization_config")}
+    return {
+        "architectures": ["GlmMoeDsaVisionForConditionalGeneration"],
+        "model_type": "glm_moe_dsa_vision",
+        "text_config": text,
+    }
+
+
+def _llama_under_a_mamba_wrapper():
+    llama = _packaged_config("meta-llama--Meta-Llama-3.1-8B")
+    text = {key: value for key, value in llama.items() if key != "architectures"}
+    return {"architectures": ["LlavaMambaForConditionalGeneration"], "model_type": "llava_mamba", "text_config": text}
+
+
+_DSA_LAYERS = f"layer_types deepseek_sparse_attention x{len(_packaged_config('nvidia--GLM-5.3-NVFP4')['layer_types'])}"
+
+
+@pytest.mark.parametrize(
+    "build,reason",
+    [
+        (_unnamed_dsa_config, _DSA_LAYERS),
+        (_dsa_text_config_under_a_wrapper, _DSA_LAYERS),
+        (_llama_under_a_mamba_wrapper, "recurrent architecture LlavaMambaForConditionalGeneration"),
+    ],
+    ids=["unnamed-dsa-config", "dsa-text-config-under-a-wrapper", "llama-under-a-mamba-wrapper"],
+)
+def test_collector_checks_cache_layout_markers_with_its_own_architecture(tmp_path, build, reason):
+    """Intake checks the decoder architecture, which model_type can name. The collector checks the config's
+    architectures entry, which can name a wrapper, or --model-architecture. In these shapes the collector is
+    stricter."""
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(build()))
+    assert load_intake_config(path).runtime_layout == ()
+    capability = _layout_capability(path, native=True)
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reason}). The native runtime measures every cell."
+    )
+
+
+def test_model_architecture_names_an_unnamed_config_as_intake_does(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(_unnamed_dsa_config()))
+    # Onboarding passes the decoder architecture with --model-architecture, so the DSA layers are recognized.
+    capability = _layout_capability(path, "GlmMoeDsaForCausalLM", native=True)
+    assert capability.template_id == "aic_family:deepseekv32:moe_dsa"
+
+
 def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
     config = _unknown_fp8_moe_config()
     config["layer_types"] = ["linear_attention", "full_attention"] * 2
@@ -1315,15 +1392,14 @@ def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
     )
 
 
-@pytest.mark.parametrize("name", ["DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED"])
 @pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "False"])
-def test_detected_layout_refuses_disabled_seeding_at_plan_time(tmp_path, monkeypatch, name, value):
-    overrides = {"K8sConfig": {"extra_env": [{"name": name, "value": value}]}}
+def test_detected_layout_refuses_disabled_prefix_seeding_at_plan_time(tmp_path, monkeypatch, value):
+    overrides = {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": value}]}}
     with pytest.raises(ValueError) as error:
         _detected_layout_plan(tmp_path, monkeypatch, overrides)
     assert str(error.value) == (
-        f"{name}={value} is not allowed for this cache layout (layer_types linear_attention x2). "
-        "It needs real prefix seeding and real decode warm-up. Remove the override."
+        f"DYN_BENCH_PREFILL_REAL_SEED={value} is not allowed for this cache layout (layer_types linear_attention x2). "
+        "Its cached prefill needs real prefix seeding. Remove the override."
     )
 
 
@@ -1339,23 +1415,29 @@ def test_detected_layout_refuses_disabled_seeding_at_plan_time(tmp_path, monkeyp
                 ]
             }
         },
+        # Decode keeps the existing classification, so decode warm-up may be off.
+        {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_KV_WARMUP", "value": "off"}]}},
     ],
 )
-def test_detected_layout_plans_with_real_seeding(tmp_path, monkeypatch, overrides):
+def test_detected_layout_plans_with_real_prefix_seeding(tmp_path, monkeypatch, overrides):
     plan = _detected_layout_plan(tmp_path, monkeypatch, overrides)
     assert plan.capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
     assert plan.cells
 
 
 @pytest.mark.parametrize(
-    "declared_layers,layer_count,error",
-    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
-    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+    "declared_layers,layer_types,error",
+    [(4, ["full_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [
+        (value, ["full_attention"] * 4, "num_hidden_layers must be a positive integer")
+        for value in (4.5, 4.0, "4", True, 0, -1, None)
+    ]
+    + [(4, ["full_attention", entry, "full_attention", "full_attention"], _ENTRY_ERROR) for entry in (1, "")],
 )
-def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_count, error):
+def test_invalid_layer_declarations_cannot_select_a_generic_template(tmp_path, declared_layers, layer_types, error):
     config = _unknown_fp8_moe_config()
     config["num_hidden_layers"] = declared_layers
-    config["layer_types"] = ["full_attention"] * layer_count
+    config["layer_types"] = layer_types
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     with pytest.raises(ValueError, match=error):
@@ -2179,26 +2261,7 @@ def test_detected_layout_publishes_real_prefix_and_uncached_prefill(tmp_path, re
 
 
 _WARM_ELIGIBLE = {"enabled": True, "warm_eligible": True, "skip_reason": None}
-
-
-@pytest.mark.parametrize(
-    "kvwarm,marker,strategy,regime",
-    [(_WARM_ELIGIBLE, "kvwarm_fake_fallback", "tep", "fake_fallback"), (None, None, "tp", "legacy")],
-)
-def test_detected_layout_refuses_fake_fallback_and_legacy_decode(tmp_path, kvwarm, marker, strategy, regime):
-    plan, cell, cell_dir = _synthetic_decode_cell(
-        tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
-    )
-    # Other models keep their classification and publish the row.
-    assert {row["kv_seed_regime"] for row in aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")} == {
-        regime
-    }
-    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
-    with pytest.raises(ValueError) as error:
-        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
-    assert (
-        str(error.value) == f"decode for this cache layout requires real_kv seeding or an approved skip, got {regime}"
-    )
+_DENSE_LABEL = {"enabled": True, "warm_eligible": False, "skip_reason": "dense_model_content_insensitive"}
 
 
 @pytest.mark.parametrize(
@@ -2211,13 +2274,20 @@ def test_detected_layout_refuses_fake_fallback_and_legacy_decode(tmp_path, kvwar
             "tp",
             "skip:moe_tp_balanced_by_construction",
         ),
+        # Dynamo labels every dense model content-insensitive before it considers recurrent state. For this
+        # capability the label is fake_fallback, and the row publishes with it.
+        (_DENSE_LABEL, "kvwarm_fake_fallback", "tp", "fake_fallback"),
+        (_WARM_ELIGIBLE, "kvwarm_fake_fallback", "tep", "fake_fallback"),
+        (None, None, "tp", "legacy"),
     ],
 )
-def test_detected_layout_publishes_real_kv_and_approved_skip_decode(tmp_path, kvwarm, marker, strategy, regime):
+def test_detected_layout_decode_keeps_the_existing_classification(tmp_path, kvwarm, marker, strategy, regime):
     plan, cell, cell_dir = _synthetic_decode_cell(
         tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
     )
     plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    plan.capability.attention_source = "native_runtime"
+    plan.capability.is_moe = False
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
     assert {row["kv_seed_regime"] for row in rows} == {regime}
 

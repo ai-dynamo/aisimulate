@@ -1738,6 +1738,10 @@ _AUTOMATIC_ARGS = [*_GLM_IDENTITY, *_GLM_LIMITS]
 # Illustrative precision choices for the test only, not a claim about GLM's runtime precision.
 _GLM_PRECISION = {"fmha_quant_mode": "fp8", "kv_cache_dtype": "fp8"}
 _GEOMETRY_KEYS = ("kv_bytes_per_token", "cache_groups", "cache_block_sizes")
+# The runtime probe needs all five precision values in the checkpoint, also those that Profile inputs does not show.
+_PRECISION_STEP = (
+    "the five precision values (gemm_quant_mode, moe_quant_mode, fmha_quant_mode, comm_quant_mode and kv_cache_dtype)"
+)
 
 
 def _glm_precision(tmp_path):
@@ -1774,6 +1778,8 @@ def test_issue_475_exact_command_lists_user_owned_inputs_and_pending_geometry(tm
     # The unresolved precision is part of the error itself, not only of the stdout transcript.
     assert "fmha_quant_mode" in stderr and "kv_cache_dtype" in stderr
     assert "onboard probe-runtime" in stderr
+    # Profile inputs shows only the three resolved precision values; the next step names all five.
+    assert _PRECISION_STEP in stderr
 
 
 def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, capsys):
@@ -1790,15 +1796,15 @@ def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, ca
     assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
     assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
     assert stderr.count("run onboard probe-runtime") == 1
-    # The probe needs all five precision values, and the stop prints each of them under Profile inputs.
-    assert "the five precision values printed under Profile inputs" in stderr
+    # The probe needs all five precision values. With the precision supplied, Profile inputs shows each of them.
+    assert _PRECISION_STEP in stderr
     inputs = stdout.split("Profile inputs", 1)[1]
     for name in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype"):
         assert f"\n  {name}: " in inputs, name
     # No cache geometry override was given, so there is nothing for the import to check.
     assert "cache geometry override" not in stderr
     # No user-owned input is left, and geometry is never a user input.
-    assert "fmha_quant_mode" not in stderr and "Unresolved profile fields" not in stderr
+    assert "fmha_quant_mode: resolve" not in stderr and "Unresolved profile fields" not in stderr
     assert "--resource-overrides" not in stderr
     assert not [key for key in _GEOMETRY_KEYS if key in stderr]
 
@@ -1917,7 +1923,7 @@ def test_runtime_resolved_interactive_never_prompts_for_geometry(tmp_path, monke
     _, stderr = _stops_with_guidance([*command, "--interactive", "--output", str(out)], capsys)
     assert [prompt.split(" ", 1)[0] for prompt in prompts] == ["fmha_quant_mode", "kv_cache_dtype"]
     assert not [prompt for prompt in prompts if "cache_layout" in prompt or "kv_bytes_per_token" in prompt]
-    assert "onboard probe-runtime" in stderr and "fmha_quant_mode" not in stderr
+    assert "onboard probe-runtime" in stderr and "fmha_quant_mode: resolve" not in stderr
     assert explicit_topology or "explicit topology" in stderr
     assert not out.exists()
 

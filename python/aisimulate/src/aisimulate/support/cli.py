@@ -911,9 +911,9 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
     if shortlist is not None:
         lines.append(shortlist)
     lines.append(
-        "Next step: record the deployment, the model config path and the five precision values printed under "
-        "Profile inputs in the onboarding checkpoint (onboard checkpoint), then run onboard probe-runtime "
-        "--checkpoint PATH --output-dir DIR "
+        "Next step: record the deployment, the model config path and the five precision values (gemm_quant_mode, "
+        "moe_quant_mode, fmha_quant_mode, comm_quant_mode and kv_cache_dtype) in the onboarding checkpoint "
+        "(onboard checkpoint), then run onboard probe-runtime --checkpoint PATH --output-dir DIR "
         f"(guide: {_PROBE_GUIDE})."
     )
     if shortlist is not None:

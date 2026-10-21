@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from aisimulate.fpm_cache_layout import cache_layout_markers, recognized_layer_types
+from aisimulate.fpm_cache_layout import cache_layout_markers
 from aisimulate.sdk import common
 from aisimulate.sdk.models.helpers import _infer_quant_modes_from_raw_config
 from aisimulate.sdk.perf_database import (
@@ -42,6 +42,7 @@ def _is_moe(config: dict[str, object]) -> bool:
 
 
 def _check_layer_declarations(config: dict[str, object]) -> None:
+    """Config intake's layer structure checks. A cache layout marker never excuses a malformed declaration."""
     layer_types = config.get("layer_types")
     layers = config.get("num_hidden_layers")
     if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
@@ -50,6 +51,8 @@ def _check_layer_declarations(config: dict[str, object]) -> None:
         not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
     ):
         raise ValueError("layer_types must have one entry per num_hidden_layers")
+    if isinstance(layer_types, list) and any(not isinstance(value, str) or not value.strip() for value in layer_types):
+        raise ValueError("layer_types entries must be nonempty strings")
 
 
 def _attention_template(
@@ -68,17 +71,8 @@ def _attention_template(
         # MiniMax-M3's MSA op has no standalone silicon table. AIC transfers
         # utilization from DSA at the same (batch, suffix, prefix) coordinate.
         return "dsa_module", "moe_msa"
+    # An unrecognized layer type name is a cache layout marker and never reaches this point.
     _check_layer_declarations(config)
-    layer_types = config.get("layer_types")
-    allowed_layers = recognized_layer_types(architecture)
-    if layer_types is not None and any(
-        not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types
-    ):
-        raise ValueError(
-            f"unsupported mixed or recurrent attention layout in layer_types for {architecture!r}; "
-            "FPM attention templates cannot represent linear-attention/recurrent state. "
-            "Use a qualified model-specific collection adapter and verified cache profile."
-        )
     if "dsa" in lowered or model_family == "DEEPSEEKV32":
         return "dsa_module", "moe_dsa"
     if any(config.get(key) is not None for key in ("kv_lora_rank", "q_lora_rank")) or model_family in {
