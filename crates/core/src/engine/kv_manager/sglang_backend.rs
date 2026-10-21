@@ -5,7 +5,7 @@
 //! operations and KV event publishing.
 
 use crate::engine::belady::BeladyOracle;
-use crate::engine::cache::radix_cache::{KvPageId, NodeId, RadixCache};
+use crate::engine::cache::radix_cache::{KvPageId, NodeId, PrefixMatchHint, RadixCache};
 use crate::engine::common::hashing::{
     LocalBlockHash, SequenceHash, compute_block_hash_for_seq, compute_next_seq_hash,
 };
@@ -30,6 +30,9 @@ pub(crate) struct RadixRequestLease {
     /// `cached_tokens`, this never grows with the request's own chunks or outputs.
     admission_reused_tokens: usize,
     page_hashes: Vec<LocalBlockHash>,
+    /// Resume point of this request's last admission match. A KV-blocked queue head repeats the
+    /// same whole-prompt match on every pass.
+    admission_match_hint: Option<PrefixMatchHint>,
     last_node: Option<NodeId>,
     pub(crate) session_id: Option<String>,
 }
@@ -84,6 +87,11 @@ impl RadixRequestLease {
         ));
     }
 
+    /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
+    pub(crate) fn truncate_page_hashes(&mut self, complete_pages: usize) {
+        self.page_hashes.truncate(complete_pages);
+    }
+
     fn page_hashes_through(&self, token_count: usize, page_size: usize) -> &[LocalBlockHash] {
         &self.page_hashes[..token_count / page_size]
     }
@@ -110,6 +118,7 @@ impl RadixRequestLease {
             cached_tokens,
             admission_reused_tokens: cached_tokens,
             page_hashes: Vec::new(),
+            admission_match_hint: None,
             last_node: Some(last_node),
             session_id: None,
         }
@@ -296,6 +305,21 @@ impl SglangKvManager {
 
     pub fn cache(&self) -> &RadixCache {
         &self.cache
+    }
+
+    /// Read-only match of a waiting request's first `pages` page hashes
+    /// (`Req.init_next_round_input`), resumed from the lease's previous match.
+    pub(crate) fn admission_prefix_match(
+        &self,
+        lease: &mut RadixRequestLease,
+        pages: usize,
+    ) -> usize {
+        let page_keys = &lease.page_hashes[..pages];
+        let matched = self
+            .cache
+            .prefix_match_hashes_len_hinted(page_keys, &mut lease.admission_match_hint);
+        debug_assert_eq!(matched, self.cache.prefix_match_hashes_len(page_keys));
+        matched
     }
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {

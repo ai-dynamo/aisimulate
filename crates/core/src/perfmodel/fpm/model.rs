@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::perfmodel::engine::Engine;
+use crate::perfmodel::engine::spec::EncoderImageShape;
+use crate::perfmodel::engine::{Engine, PerOpValue};
 use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
@@ -22,7 +23,9 @@ use super::coverage::{FpmCoverageState, FpmQueryCoverage};
 use super::estimator::{RegressionFitConfig, RegressionSamplingConfig};
 use super::learned::{IterationFeatureVector, LearnedForwardPassModel, load_learned};
 use super::metrics::validate_forward_pass_metrics;
-use super::options::{ForwardPassPerfOptions, validate_options, validate_regression_options};
+use super::options::{
+    CorrectionMode, ForwardPassPerfOptions, validate_options, validate_regression_options,
+};
 use super::regression::{ForwardPassSplineDiagnostics, RegressionStore};
 use super::samples::{AxisRange, StoreStats, WithOptions};
 
@@ -42,12 +45,17 @@ pub struct ForwardPassPerfDiagnostics {
     /// See `regression_store_diagnostics` for individual readiness.
     pub readiness: ForwardPassPerfReadiness,
     /// Number of retained tuning observations. This is the total across the
-    /// inferred workload kinds for Native and Learned (their correction grids
-    /// share the same layout) and across all logical stores for Regression.
+    /// inferred workload kinds for Native and Learned and across all logical
+    /// stores for Regression. Dynamic calibration counts distinct retained
+    /// observations, not duplicated local/recent slots.
+    /// Hybrid sums its independent fixed and dynamic histories, counting an
+    /// observation retained by both policies once in each history.
     pub retained_observations: usize,
     /// Number of populated correction regions (Native and Learned) whose
     /// workload kind has at least `min_observations` total retained samples.
-    /// Always 0 for Regression.
+    /// Excludes the recent-global fallback. Always 0 for Regression.
+    /// Hybrid sums both grids, including overlapping regions; this describes
+    /// retained calibration state, not the number of regions selected by queries.
     pub correction_ready_buckets: usize,
     /// Fallback reason when `best_available` had to use regression instead of native AIC.
     pub last_warning: Option<String>,
@@ -253,13 +261,17 @@ impl RegressionStores {
 /// Regression retention buckets use `log1p` coordinates, but fitting and
 /// prediction use standardized raw feature values.
 ///
-/// Native correction grids use fixed constructor-time ranges from
+/// By default, native correction grids use fixed constructor-time ranges from
 /// `ForwardPassPerfOptions`: `max_num_tokens` bounds `sum_prefill_tokens`,
 /// `max_batch_size` bounds `num_decode_requests`, and `max_kv_tokens` bounds
 /// `sum_decode_kv_tokens`. `min_faster_correction_factor` and
 /// `max_slower_correction_factor` place independent absolute bounds on learned
 /// native correction factors in each direction, defaulting to `0.5` and `2.0`.
-/// Callers may explicitly disable either bound.
+/// Callers may explicitly disable either bound. Learned models default to
+/// hybrid calibration with a fixed grid inside configured limits and dynamic
+/// local calibration outside them, with expanding log-space bounds, balanced local
+/// retention, and a recent-global fallback. `correction_mode` can explicitly
+/// select any policy for Native or Learned.
 ///
 /// Queued request fields are accepted for FPM schema parity but ignored by this
 /// forward-pass-level model. `estimate_forward_pass_time_ms` treats FPM as a
@@ -332,16 +344,20 @@ impl ForwardPassPerfModel {
     /// `source` is either a filesystem path or the artifact JSON text itself
     /// (detected by a leading `{`). The artifact binds the worker type and the
     /// ordered feature ABI. Estimation is the learned prediction multiplied by
-    /// the native-style online correction factor learned through
+    /// a hybrid correction factor learned through
     /// `tune_with_fpms`; iterations whose regression workload kind has no
     /// trained store return `Ok(None)`.
     pub fn from_learned(source: &str, options: ForwardPassPerfOptions) -> Result<Self, AicError> {
         validate_options(&options)?;
         let learned = load_learned(source)?;
+        let mut correction_options = options.clone();
+        if correction_options.correction_mode == CorrectionMode::Auto {
+            correction_options.correction_mode = CorrectionMode::Hybrid;
+        }
         Ok(Self {
             mode: ForwardPassPerfMode::Learned {
                 learned,
-                corrections: WorkloadStores::with_options(&options),
+                corrections: WorkloadStores::with_options(&correction_options),
             },
             options,
             last_warning: None,
@@ -461,6 +477,15 @@ impl ForwardPassPerfModel {
                     continue;
                 }
             }
+            // Only the native engine compiles a vision tower; the whole-forward
+            // paths would record the layout in provenance and never price it.
+            if config.encoder_parallel.is_some() && mode != EstimationMode::OpLevel {
+                let error =
+                    AicError::UnsupportedModel("encoder_parallel requires op_level timing".into());
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if mode == EstimationMode::FpmRegression {
                 let options = config.estimator_config.regression_options();
                 let mut model = Self::from_regression_config(
@@ -544,11 +569,12 @@ impl ForwardPassPerfModel {
     /// for estimation.
     ///
     /// Native models return an AIC estimate immediately, multiplied by the
-    /// correction factor for the matching workload region. Correction factors
+    /// correction factor for the matching workload region. Fixed correction factors
     /// default to `1.0` for inferred workload kinds with fewer than
     /// `min_observations` total samples, empty regions, and queries outside the
     /// configured correction-grid workload ranges in
-    /// `ForwardPassPerfOptions`. Regression models return `Ok(None)` until
+    /// `ForwardPassPerfOptions`. Dynamic calibration uses recent global feedback
+    /// for empty regions and out-of-domain queries. Regression models return `Ok(None)` until
     /// the selected logical store has a ready linear fit. Spline predictions
     /// also require an available linear prediction for the query; otherwise
     /// they return `Ok(None)` even inside retained bounds. Empty scheduled work
@@ -680,9 +706,11 @@ impl ForwardPassPerfModel {
     /// bounded by `min_faster_correction_factor` and
     /// `max_slower_correction_factor` when configured. Regions are used only
     /// after their inferred workload kind has `min_observations` total samples;
-    /// empty regions keep the default factor `1.0`. Observations outside the
-    /// configured correction-grid workload ranges are ignored by native
-    /// correction models. Regression models validate compatibility with their
+    /// in fixed mode, empty regions keep factor `1.0` and observations outside
+    /// configured ranges are ignored. Dynamic mode admits valid nonnegative
+    /// coordinates, expands log-space bounds, and blends local medians with
+    /// recent global feedback. Ratios use the uncorrected base estimate.
+    /// Regression models validate compatibility with their
     /// fixed worker type and update the selected logical store's
     /// configured regression fit.
     ///
@@ -774,7 +802,7 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Native { corrections, .. } => {
                 let ready_buckets = corrections.ready_bucket_count();
                 ForwardPassPerfDiagnostics {
-                    source: if ready_buckets > 0 {
+                    source: if corrections.any_ready() {
                         ForwardPassPerfSource::AicWithCorrection
                     } else {
                         ForwardPassPerfSource::Aic
@@ -806,7 +834,7 @@ impl ForwardPassPerfModel {
             ForwardPassPerfMode::Learned { corrections, .. } => {
                 let ready_buckets = corrections.ready_bucket_count();
                 ForwardPassPerfDiagnostics {
-                    source: if ready_buckets > 0 {
+                    source: if corrections.any_ready() {
                         ForwardPassPerfSource::LearnedWithCorrection
                     } else {
                         ForwardPassPerfSource::Learned
@@ -904,7 +932,11 @@ impl ForwardPassPerfModel {
     /// `model.avg_correction_factor() -> Option<f64>`
     ///
     /// Description: return the arithmetic mean of ready correction factors
-    /// across all workload kinds (Native and Learned models alike).
+    /// across all workload kinds (Native and Learned models alike). Dynamic
+    /// calibration includes each ready recent-global fallback once, in addition
+    /// to its populated local bucket factors.
+    /// Hybrid includes both grids (including overlapping regions) and the
+    /// dynamic fallback; this is a state summary, not a query-weighted average.
     ///
     /// Returns `None` before any correction workload kind has enough samples.
     /// Regression-only models have no correction grid and always return `None`.
@@ -1059,6 +1091,31 @@ impl ForwardPassPerfModel {
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
     }
 
+    /// Native operation values of one vision-encoder call over `shapes`, name
+    /// folded like the other per-op walks. Requires a native estimator compiled
+    /// with `encoder_parallel` for a model that has a vision tower.
+    pub fn vision_operations(
+        &self,
+        shapes: &[EncoderImageShape],
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        self.native_engine()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "vision encoder timing requires a native estimator".into(),
+                )
+            })?
+            .evaluate_vision(shapes)
+    }
+
+    /// Latency of one vision-encoder call over `shapes`, in milliseconds.
+    pub fn predict_vision_ms(&self, shapes: &[EncoderImageShape]) -> Result<f64, AicError> {
+        Ok(self
+            .vision_operations(shapes)?
+            .iter()
+            .map(|(_, latency_ms, _, _)| latency_ms)
+            .sum())
+    }
+
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
@@ -1111,7 +1168,10 @@ fn build_native_candidate(
             "FPM interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides".into(),
         ));
     }
-    if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
+    if config.estimation_mode == EstimationMode::FpmInterpolation
+        && config.nextn != 0
+        && config.validate_fpm_execution()?.is_none()
+    {
         return Err(AicError::UnsupportedModel(
             "FPM interpolation does not support MTP".into(),
         ));
@@ -1494,6 +1554,10 @@ impl<T: WithOptions> WorkloadStores<T> {
 }
 
 impl<T: StoreStats> WorkloadStores<T> {
+    fn any_ready(&self) -> bool {
+        self.prefill.is_ready() || self.decode.is_ready() || self.mixed.is_ready()
+    }
+
     fn observation_count(&self) -> usize {
         self.prefill.observation_count()
             + self.decode.observation_count()

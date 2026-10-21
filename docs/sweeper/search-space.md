@@ -447,6 +447,15 @@ which always enforces them. Goodput objectives, a goodput rate floor,
 capture are unsupported. EPD cannot combine with AFD. See
 [Replay's analytical boundaries](../replay/engine/analytical.md) and the
 [existing EPD example](../../examples/cli/epd-recommend.yaml).
+`engine.workers.encoder.mode: native` lifts the fixed-concurrency,
+variable-load, aggregate-SLA, goodput, per-request and op-level restrictions; see
+[native encoder pools](../replay/engine/analytical.md#native-encoder-pools).
+
+An encoder pool may be searched over
+`mode: {choices: [aggregated, disaggregated]}` in one run; a host-aware worker
+(`host_loop`, `frontend` or `host_profile`) requires a concrete `mode`. Encoding
+on the worker is exclusive with an encoder pool, so comparing the two takes
+separate runs.
 
 <a id="removed-kvbm-fields"></a>
 

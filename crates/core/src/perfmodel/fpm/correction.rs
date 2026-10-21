@@ -1,17 +1,19 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Online native-correction grid for the forward-pass perf model.
+//! Online correction policies for the forward-pass perf model.
 //!
 //! Buckets observed `(workload feature, observed_ms / native_ms)` correction
-//! samples into a fixed-bound grid and applies the local median ratio on top of
-//! the native AIC estimate.
+//! samples into the legacy fixed grid or an expanding local calibrator. Hybrid
+//! keeps independent full-budget stores and selects fixed correction inside the
+//! configured grid, including empty/cold cells, and dynamic correction outside.
 
-use super::options::ForwardPassPerfOptions;
+use super::dynamic_correction::DynamicCorrection;
+use super::options::{CorrectionMode, ForwardPassPerfOptions};
 use super::samples::{AxisRange, BucketedSamples, StoreStats, WithOptions, median_ratio};
 
 #[derive(Clone, Debug)]
-pub(crate) struct CorrectionBuckets {
+pub(crate) struct FixedCorrectionBuckets {
     samples: BucketedSamples<CorrectionObservation>,
     min_observations: usize,
     min_faster_correction_factor: Option<f64>,
@@ -23,7 +25,7 @@ struct CorrectionObservation {
     correction_factor: f64,
 }
 
-impl WithOptions for CorrectionBuckets {
+impl WithOptions for FixedCorrectionBuckets {
     fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
         Self {
             samples: BucketedSamples::new_fixed(options, axis_ranges),
@@ -34,7 +36,7 @@ impl WithOptions for CorrectionBuckets {
     }
 }
 
-impl StoreStats for CorrectionBuckets {
+impl StoreStats for FixedCorrectionBuckets {
     fn observation_count(&self) -> usize {
         self.samples.total_observations
     }
@@ -48,7 +50,7 @@ impl StoreStats for CorrectionBuckets {
     }
 }
 
-impl CorrectionBuckets {
+impl FixedCorrectionBuckets {
     pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, native_ms: f64) {
         if native_ms.is_finite() && native_ms > 0.0 && observed_ms.is_finite() && observed_ms > 0.0
         {
@@ -120,5 +122,193 @@ impl CorrectionBuckets {
                 )
             })
             .collect()
+    }
+}
+
+/// Dispatch keeps native fixed calibration unchanged while allowing learned
+/// forests to retain and calibrate observations beyond the old grid limits.
+#[derive(Clone, Debug)]
+pub(crate) enum CorrectionBuckets {
+    Fixed(FixedCorrectionBuckets),
+    Dynamic(DynamicCorrection),
+    Hybrid(Box<HybridCorrection>),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct HybridCorrection {
+    fixed: FixedCorrectionBuckets,
+    dynamic: DynamicCorrection,
+}
+
+impl WithOptions for CorrectionBuckets {
+    fn with_options(options: &ForwardPassPerfOptions, axis_ranges: &[AxisRange]) -> Self {
+        match options.correction_mode {
+            CorrectionMode::Hybrid => Self::Hybrid(Box::new(HybridCorrection {
+                fixed: FixedCorrectionBuckets::with_options(options, axis_ranges),
+                dynamic: DynamicCorrection::new(options, axis_ranges.len()),
+            })),
+            CorrectionMode::DynamicLocal => {
+                Self::Dynamic(DynamicCorrection::new(options, axis_ranges.len()))
+            }
+            CorrectionMode::Auto | CorrectionMode::Fixed => {
+                Self::Fixed(FixedCorrectionBuckets::with_options(options, axis_ranges))
+            }
+        }
+    }
+}
+
+impl StoreStats for CorrectionBuckets {
+    fn observation_count(&self) -> usize {
+        match self {
+            Self::Fixed(value) => value.observation_count(),
+            Self::Dynamic(value) => value.observation_count(),
+            Self::Hybrid(value) => {
+                value.fixed.observation_count() + value.dynamic.observation_count()
+            }
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        match self {
+            Self::Fixed(value) => value.is_ready(),
+            Self::Dynamic(value) => value.is_ready(),
+            Self::Hybrid(value) => value.fixed.is_ready() || value.dynamic.is_ready(),
+        }
+    }
+}
+
+impl CorrectionBuckets {
+    pub(crate) fn add_observation(&mut self, x: Vec<f64>, observed_ms: f64, base_ms: f64) {
+        match self {
+            Self::Fixed(value) => value.add_observation(x, observed_ms, base_ms),
+            Self::Dynamic(value) => value.add_observation(x, observed_ms, base_ms),
+            Self::Hybrid(value) => {
+                // Preserve the fixed sampler's admission and eviction behavior.
+                // Dynamic must also see in-grid feedback for its global fallback.
+                value.fixed.add_observation(x.clone(), observed_ms, base_ms);
+                value.dynamic.add_observation(x, observed_ms, base_ms);
+            }
+        }
+    }
+
+    pub(crate) fn correction_factor_for(&self, x: &[f64]) -> f64 {
+        match self {
+            Self::Fixed(value) => value.correction_factor_for(x),
+            Self::Dynamic(value) => value.correction_factor_for(x),
+            Self::Hybrid(value) => {
+                // Geometry alone selects the policy: readiness and empty cells
+                // must not divert an in-grid query to the dynamic fallback.
+                if value.fixed.samples.is_in_bounds(x) {
+                    value.fixed.correction_factor_for(x)
+                } else {
+                    value.dynamic.correction_factor_for(x)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn ready_bucket_count(&self) -> usize {
+        match self {
+            Self::Fixed(value) => value.ready_bucket_count(),
+            Self::Dynamic(value) => value.ready_bucket_count(),
+            Self::Hybrid(value) => {
+                value.fixed.ready_bucket_count() + value.dynamic.ready_bucket_count()
+            }
+        }
+    }
+
+    pub(crate) fn correction_factors(&self) -> Vec<f64> {
+        match self {
+            Self::Fixed(value) => value.correction_factors(),
+            Self::Dynamic(value) => value.correction_factors(),
+            Self::Hybrid(value) => {
+                let mut factors = value.fixed.correction_factors();
+                factors.extend(value.dynamic.correction_factors());
+                factors
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hybrid_uses_fixed_geometry_even_for_cold_and_empty_cells() {
+        for ndim in [1, 2] {
+            let options = ForwardPassPerfOptions {
+                correction_mode: CorrectionMode::Hybrid,
+                ..Default::default()
+            };
+            let ranges = vec![AxisRange::from_zero_to(100); ndim];
+            let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
+            for _ in 0..5 {
+                hybrid.add_observation(vec![200.0; ndim], 20.0, 10.0);
+            }
+            // Dynamic is ready but fixed has no evidence. The inclusive upper
+            // boundary and all cold in-grid cells must still use fixed's 1.0.
+            assert_eq!(hybrid.correction_factor_for(&vec![100.0; ndim]), 1.0);
+            assert_eq!(hybrid.correction_factor_for(&vec![25.0; ndim]), 1.0);
+            for axis in 0..ndim {
+                let mut outside = vec![100.0; ndim];
+                outside[axis] = 101.0;
+                assert_eq!(hybrid.correction_factor_for(&outside), 2.0);
+            }
+
+            for _ in 0..5 {
+                hybrid.add_observation(vec![100.0; ndim], 5.0, 10.0);
+            }
+            assert_eq!(hybrid.correction_factor_for(&vec![100.0; ndim]), 0.5);
+            assert_eq!(hybrid.correction_factor_for(&vec![0.0; ndim]), 1.0);
+            // Dynamic receives in-grid feedback too: the recent median of five
+            // ratios 2 and five ratios 0.5 is 1.25, used beyond observed bounds.
+            assert_eq!(hybrid.correction_factor_for(&vec![300.0; ndim]), 1.25);
+        }
+    }
+
+    #[test]
+    fn hybrid_preserves_both_full_histories_through_eviction() {
+        for ndim in [1, 2] {
+            let options = ForwardPassPerfOptions {
+                correction_mode: CorrectionMode::Hybrid,
+                max_observations: 10,
+                min_observations: 5,
+                ..Default::default()
+            };
+            let ranges = vec![AxisRange::from_zero_to(100); ndim];
+            let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
+            let CorrectionBuckets::Hybrid(stores) = &hybrid else {
+                panic!("hybrid must construct both stores");
+            };
+            // Clone the sampler seed to avoid pre-existing fixed eviction tie
+            // nondeterminism obscuring a change in history or policy selection.
+            let mut fixed = stores.fixed.clone();
+            let mut dynamic = DynamicCorrection::new(&options, ndim);
+            for i in 0..80 {
+                let x = vec![[0.0, 25.0, 100.0, 200.0][i % 4]; ndim];
+                let observed = [5.0, 10.0, 15.0][i % 3];
+                hybrid.add_observation(x.clone(), observed, 10.0);
+                fixed.add_observation(x.clone(), observed, 10.0);
+                dynamic.add_observation(x, observed, 10.0);
+                for coordinate in [0.0, 25.0, 50.0, 100.0, 101.0, 200.0, 300.0] {
+                    let query = vec![coordinate; ndim];
+                    let expected = if coordinate <= 100.0 {
+                        fixed.correction_factor_for(&query)
+                    } else {
+                        dynamic.correction_factor_for(&query)
+                    };
+                    assert_eq!(
+                        hybrid.correction_factor_for(&query).to_bits(),
+                        expected.to_bits()
+                    );
+                }
+            }
+            let CorrectionBuckets::Hybrid(stores) = hybrid else {
+                unreachable!()
+            };
+            assert_eq!(stores.fixed.observation_count(), 10);
+            assert_eq!(stores.dynamic, dynamic);
+        }
     }
 }

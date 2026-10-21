@@ -22,6 +22,7 @@ from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
     InvalidRunnerError,
+    _materialize_engine_role,
 )
 from aisimulate.sweeper import (
     AdapterReplaySpec,
@@ -33,6 +34,7 @@ from aisimulate.sweeper import (
 )
 from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+from scripts.e2e_accuracy.source.replay import engine_args
 
 pytestmark = [
     pytest.mark.unit,
@@ -313,6 +315,51 @@ def test_native_canonical_speculation_rejects_trtllm_without_restricting_legacy(
     legacy = json.loads(_runtime.run_replay_json(json.dumps(execution)))
     assert legacy["completed_requests"] == 1
     assert legacy["total_output_tokens"] == 16
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+def test_native_replay_rejects_unsupported_images_without_restricting_text(backend):
+    from aisimulate import _runtime
+
+    payload = {
+        "spec": {
+            "version": 1,
+            "topology": {"kind": "aggregated", "workers": {"initial_workers": 1}},
+            "engine": {
+                "rank": {
+                    "backend": backend,
+                    "block_size": 4,
+                    "num_gpu_blocks": 128,
+                    "timing_model": {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0},
+                }
+            },
+            "requests": [],
+        },
+        "traffic": {
+            "source_type": "synthetic",
+            "load_type": "concurrency",
+            "concurrency": 1,
+            "request_count": 1,
+            "isl": 4,
+            "osl": 1,
+        },
+    }
+    text_report = json.loads(_runtime.run_replay_json(json.dumps(payload)))
+    assert text_report["completed_requests"] == 1
+    assert text_report["total_input_tokens"] == 4
+    assert text_report["mean_ttft_ms"] == 1.0
+
+    payload["traffic"].update(
+        image_count=1,
+        image_visual_tokens=4,
+        image_sequences=1,
+        image_patch_tokens=16,
+        image_transformer_tokens=16,
+        image_output_tokens=4,
+        image_embedding_bytes=128,
+    )
+    with pytest.raises(RuntimeError, match="images require the SGLang backend"):
+        _runtime.run_replay_json(json.dumps(payload))
 
 
 @pytest.mark.parametrize("failure", ["download", "validation"])
@@ -2221,9 +2268,38 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
 @pytest.mark.parametrize("warmup", [False, True])
-def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(trace_format: str, warmup: bool) -> None:
+@pytest.mark.parametrize("imported", [False, True])
+def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(
+    trace_format: str, warmup: bool, imported: bool
+) -> None:
     evidence = [{"seed": 2**64 - 1, "lane_id": "lane:0", "t_star_ms": 50.0}]
     phases = {"schema": "aisimulate.agentic.phases.v1", "phase": "profile"}
+    snapshot = {"seed": 2**64 - 1}
+    if imported:
+        snapshot.update(
+            initial_selections=[{"source_play_id": "reference-play", "t_star_ms": 40.56078627883167}],
+            corpus_cursor=3,
+        )
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "context_length": 1024,
+                "workers": {"aggregated": {}},
+            },
+            "traffic": {
+                "source": {"type": "trace", "format": trace_format, "paths": ["corpus"]},
+                "load": {
+                    "type": "trace_timestamps",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": snapshot,
+                    "agentic_warmup": warmup,
+                },
+            },
+        }
+    )
+    compiled = prediction_to_replay_spec(config)
 
     class SnapshotRuntime(RecordingRuntime):
         def run_replay_json(self, execution_spec_json):
@@ -2231,26 +2307,10 @@ def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(tra
             return json.dumps(report | {"agentic_snapshots": evidence} | ({"agentic_phases": phases} if warmup else {}))
 
     runtime = SnapshotRuntime()
-    report = (
-        EngineReplayRunnerFactory(runtime=runtime)
-        .create(0)
-        .run(
-            _spec(
-                workload={
-                    "source_type": "trace",
-                    "load_type": "trace_timestamps",
-                    "trace_path": "corpus",
-                    "trace_format": trace_format,
-                    "agentic_lanes": 1,
-                    "agentic_snapshot": {"seed": 2**64 - 1},
-                    "agentic_warmup": warmup,
-                }
-            )
-        )
-    )
-    assert runtime.execution_spec["traffic"]["agentic_snapshot"] == {"seed": 2**64 - 1}
+    report = EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=compiled.workload))
+    assert runtime.execution_spec["traffic"]["agentic_snapshot"] == snapshot
     assert report.metadata["agentic_snapshots"] == evidence
-    assert runtime.execution_spec["traffic"]["agentic_warmup"] is warmup
+    assert runtime.execution_spec["traffic"].get("agentic_warmup", False) is warmup
     assert report.metadata.get("agentic_phases") == (phases if warmup else None)
     assert "native_report" not in report.metadata
 
@@ -2392,6 +2452,27 @@ def test_agentic_profile_capability_is_explicit() -> None:
                 }
             )
         )
+
+
+def test_live_agentic_warmup_requires_explicit_runner_capability_and_reaches_native():
+    workload = {
+        "source_type": "trace",
+        "load_type": "trace_timestamps",
+        "trace_path": "corpus",
+        "trace_format": "weka",
+        "agentic_lanes": 1,
+        "agentic_snapshot": {"seed": 42},
+        "agentic_warmup": True,
+        "agentic_profile": {},
+        "agentic_warmup_policy": "live_trajectory_v1",
+    }
+    capabilities = EngineReplayRunnerFactory().capabilities()
+    assert capabilities.supports_agentic_live_warmup
+    with pytest.raises(ValueError, match="does not support live agentic warmup"):
+        replace(capabilities, supports_agentic_live_warmup=False).require_compatible(_spec(workload=workload))
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload=workload))
+    assert runtime.execution_spec["traffic"]["agentic_warmup_policy"] == "live_trajectory_v1"
 
 
 @pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
@@ -2890,3 +2971,27 @@ def test_canonical_replay_spec_json_omits_unset_tokenization() -> None:
     tokenization = {"workers": 1, "base_ms": 1.0, "per_input_token_ms": 0.0}
     configured = json.loads(canonical_json(_spec(deployment=_tokenization_deployment(tokenization))))
     assert configured["backend_deployment"]["tokenization"] == tokenization
+
+
+@pytest.mark.parametrize("accepted,rates", [(0.25, "0.25,0"), (1.25, "1,0.25")])
+def test_gym_mtp_acceptance_reaches_runner_scheduler_and_timing(accepted, rates):
+    deployment = dict(
+        backend="sglang",
+        system="h200_sxm",
+        model_path="test/model",
+        roles={
+            "aggregated": dict(
+                topology=dict(tp=1, pp=1, attention_dp=1, moe_tp=1, moe_ep=1),
+                quantization=dict(gemm="bf16", moe="bf16"),
+                args=dict(kv_cache_dtype="bf16"),
+                mtp=dict(depth=2, accepted_draft_tokens=accepted),
+            )
+        },
+    )
+    args = engine_args(deployment, "aggregated", "0.5.14")
+    args["num_gpu_blocks"] = 16  # Explicit capacity avoids a model download.
+    rank = _materialize_engine_role("sglang", "0.5.14", {}, args, "aggregated")["rank"]
+    assert rank["aic_nextn_accept_rates"] == rates
+    assert rank["aic_nextn"] == 2
+    assert rank["timing_model"]["config"]["nextn"] == 2
+    assert rank["timing_model"]["config"]["forward_model"] == "op_level"

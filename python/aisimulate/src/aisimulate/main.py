@@ -157,6 +157,8 @@ def _compile_prediction_adapters(
 def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     core_raw, adapter_raw = split_config_sections(raw, command="predict")
     config = CorePredictionConfig.model_validate(core_raw)
+    if config.traffic.load.agentic_warmup_policy == "live_trajectory_v1" and (args.stack != "engine" or args.online):
+        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
     if (
         config.engine.speculation is not None
         and config.engine.speculation.kind == "ngram"
@@ -171,9 +173,12 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 
     checkpoint("resource_plan", plan)
     factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
-    epd = config.engine.workers.encoder is not None
-    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
-        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
+    encoder = config.engine.workers.encoder
+    if encoder is not None and (args.stack != "engine" or args.online or adapter_raw):
+        raise ValueError("encoder pools require offline --stack engine without adapters")
+    analytical_epd = encoder is not None and encoder.mode == "analytical"
+    if analytical_epd and args.capture_per_request:
+        raise ValueError("analytical EPD cannot capture per-request records")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     factory = _PredictionCliRunnerFactory(
         factory,
@@ -190,7 +195,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         providers=adapters,
         execution_mode="online" if args.online else "offline",
         output_requirements=ReplayOutputRequirements(
-            include_raw_report=not epd,
+            include_raw_report=not analytical_epd,
             capture_per_request=args.capture_per_request,
             capture_memory_diagnostics="memory" in args.detail,
             capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
@@ -286,6 +291,12 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     output_adapters = resolve_output_adapters(output_configs)
     core_raw, adapter_raw = split_config_sections(raw, command="recommend")
     config = CoreRecommendationConfig.model_validate(core_raw)
+    if (
+        config.traffic is not None
+        and config.traffic.load.agentic_warmup_policy == "live_trajectory_v1"
+        and args.stack != "engine"
+    ):
+        raise ValueError("live_trajectory_v1 CLI requires offline --stack engine")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     result = run_recommendation(
         config,

@@ -38,14 +38,15 @@ pub(crate) mod operators;
 pub(crate) mod perf_database;
 pub(crate) mod session;
 
-pub use common::{AicError, enums::DatabaseMode};
+pub use common::{AicError, enums::DatabaseMode, enums::EncoderParallel};
+pub use engine::spec::{EncoderImageShape, VisionSpec};
 // Forward-pass perf model (PR #1152): a forward-pass latency model with online
 // correction, regression fallback, diagnostics, and readiness, built on the
 // compiled [`engine::Engine`]. Re-exported so Rust embedders (the Dynamo
 // planner / Mocker) can use it natively; also exposed to Python via the
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
-    CorrectionConfig, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
+    CorrectionConfig, CorrectionMode, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
     ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
@@ -69,6 +70,10 @@ pub use fpm::{
 // `crate::ForwardPassMetrics` / `crate::FPM_VERSION` references (in `py.rs`,
 // `engine/runtime.rs`) keep resolving after the types moved into `fpm`.
 pub(crate) use fpm::validate_forward_pass_metrics;
+pub use fpm::{
+    FPM_SPECULATIVE_ROUND_PREFIX, FpmExecutionBinding, FpmExecutionKind, FpmExecutionProfile,
+    FpmSpeculativeMethod, FpmTimingScope,
+};
 pub use fpm::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 // KV-cache memory API. Top-level surface, not a method on
 // `AicEngine`: estimation runs once at startup, separate from the latency path.
