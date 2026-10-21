@@ -195,6 +195,7 @@ OPERATIONS_DEF_INVENTORY = {
     ),
     "elementwise.py": frozenset(),
     "embedding.py": frozenset(),
+    "fastafd.py": frozenset(),
     "fpm_forward.py": frozenset(
         {
             "FPMForwardOp.__init__",

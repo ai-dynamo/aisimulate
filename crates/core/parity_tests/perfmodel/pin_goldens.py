@@ -240,18 +240,18 @@ def _compile_scenario_references() -> dict[str, float]:
     gb200_ctx, gb200_gen, _ = gb200_sglang_handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
     references["wideep_sglang_gb200::static_ctx"] = float(gb200_ctx)
     references["wideep_sglang_gb200::static_gen"] = float(gb200_gen)
-    references["wideep_sglang_gb200::mixed_step"] = float(
-        gb200_sglang_handle.mixed_step_latency(1024, 2, 1024, 4, 0)
-    )
-    references["wideep_sglang_gb200::decode_step"] = float(
-        gb200_sglang_handle.decode_step_latency(2, 1024, 4)
-    )
+    references["wideep_sglang_gb200::mixed_step"] = float(gb200_sglang_handle.mixed_step_latency(1024, 2, 1024, 4, 0))
+    references["wideep_sglang_gb200::decode_step"] = float(gb200_sglang_handle.decode_step_latency(2, 1024, 4))
 
     _m, _b, _d, trtllm_spec = compile_parity._build_wideep_trtllm()
     trtllm_handle = compile_parity._handle_from_spec_json(trtllm_spec)
     wt_ctx, wt_gen, _ = trtllm_handle.run_static(batch_size=1, isl=1024, osl=4, prefix=0, stride=1)
     references["wideep_trtllm::static_ctx"] = float(wt_ctx)
     references["wideep_trtllm::static_gen"] = float(wt_gen)
+
+    fastafd_handle = compile_parity._build_fastafd_stage_handle()
+    references["fastafd_stage::decode_8"] = float(fastafd_handle.decode_step_latency(8, 1024, 2))
+    references["fastafd_stage::decode_16"] = float(fastafd_handle.decode_step_latency(16, 1024, 2))
 
     missing = [key for key in _SCENARIO_KEYS if key not in references]
     assert not missing, f"scenario compute drifted from _SCENARIO_KEYS: {missing}"
@@ -313,6 +313,8 @@ _SCENARIO_KEYS = (
     "wideep_sglang_gb200::decode_step",
     "wideep_trtllm::static_ctx",
     "wideep_trtllm::static_gen",
+    "fastafd_stage::decode_8",
+    "fastafd_stage::decode_16",
 )
 
 

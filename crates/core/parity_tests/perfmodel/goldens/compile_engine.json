@@ -26,6 +26,14 @@
       "engine": "rust",
       "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
     },
+    "fastafd_stage::decode_16": {
+      "engine": "rust",
+      "git_head": "e5d185da1bfd720d6079363960f38d4362cc3575"
+    },
+    "fastafd_stage::decode_8": {
+      "engine": "rust",
+      "git_head": "e5d185da1bfd720d6079363960f38d4362cc3575"
+    },
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": {
       "engine": "rust",
       "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
@@ -231,6 +239,8 @@
     "chunked_prefill::ctx300_gen7_isl1000_osl64_prefix100::mixed_step": 16.081171352808852,
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix0::mixed_step": 17.664446149246828,
     "chunked_prefill::ctx512_gen4_isl4096_osl128_prefix256::mixed_step": 17.662495086777085,
+    "fastafd_stage::decode_16": 6.75,
+    "fastafd_stage::decode_8": 5.25,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::decode_step": 2.213361158220323,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::mixed_step": 11.539696083103436,
     "gpt-oss-20b-b200-trtllm-isl1024-osl2::static_ctx": 11.215364152344467,

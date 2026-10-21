@@ -168,10 +168,10 @@ mod tests {
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
         Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
-        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
-        GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-        MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
-        WideEpContextMlaOp, WideEpGenerationMlaOp,
+        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp, FastAfdMoeStagePoint,
+        GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp,
+        MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp,
+        P2POp, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{
@@ -833,6 +833,15 @@ mod tests {
                 children: vec![],
                 measured: vec![],
             }),
+            OpSpec::FastAfdMoeStage(FastAfdMoeStageOp {
+                name: "generation_fastafd_moe_stage".into(),
+                points: vec![FastAfdMoeStagePoint {
+                    num_tokens: 8,
+                    latency_ms: 2.5,
+                }],
+                profile_sha256: "a".repeat(64),
+                weight_bytes: 1024.0,
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -884,7 +893,8 @@ mod tests {
                 | OpSpec::Glm53Ffn(_)
                 | OpSpec::Glm53Primitive(_)
                 | OpSpec::Dsv41Linear(_)
-                | OpSpec::TokenScale(_) => {}
+                | OpSpec::TokenScale(_)
+                | OpSpec::FastAfdMoeStage(_) => {}
             }
         }
         ops
@@ -992,14 +1002,22 @@ mod tests {
             "V41 appended indices moved"
         );
         // GLM-5.3-Flash variants append after the V41 variants.
-        let glm_appended: Vec<_> = all_op_variants().iter().skip(41).map(index_of).collect();
+        let glm_appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(41)
+            .take(5)
+            .map(index_of)
+            .collect();
         assert_eq!(
             glm_appended,
             vec![41, 42, 43, 44, 45],
             "GLM appended indices moved"
         );
+        // FastAfdMoeStage appends after the GLM-5.3-Flash variants.
+        let fastafd_appended: Vec<_> = all_op_variants().iter().skip(46).map(index_of).collect();
+        assert_eq!(fastafd_appended, vec![46], "FastAfdMoeStage index moved");
         assert_eq!(
-            46,
+            47,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

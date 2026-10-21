@@ -41,6 +41,7 @@ from aisimulate_core.sdk.operations.dsv4 import (
 )
 from aisimulate_core.sdk.operations.elementwise import ElementWise
 from aisimulate_core.sdk.operations.embedding import Embedding
+from aisimulate_core.sdk.operations.fastafd import FastAfdMoeStage
 from aisimulate_core.sdk.operations.fpm_forward import FPMForwardOp
 from aisimulate_core.sdk.operations.gemm import GEMM
 from aisimulate_core.sdk.operations.mamba import GDNKernel, KDAKernel, Mamba2Kernel
@@ -83,6 +84,7 @@ __all__ = [
     "EncoderAttention",
     "FPMForwardOp",
     "FallbackOp",
+    "FastAfdMoeStage",
     "GDNKernel",
     "GenerationAttention",
     "GenerationDSAModule",

@@ -445,6 +445,46 @@ impl ForwardPassPerfModelConfig {
         if self.nextn > 5 {
             return Err(invalid_config("nextn must be in 0..=5"));
         }
+        let op_level = &self.estimator_config.op_level;
+        if op_level.fastafd_profile_path.is_some() != op_level.fastafd_moe_backend.is_some() {
+            return Err(invalid_config(
+                "op_level.fastafd_profile_path and op_level.fastafd_moe_backend must be configured together",
+            ));
+        }
+        if let Some(path) = &op_level.fastafd_profile_path {
+            if path.as_os_str().is_empty() {
+                return Err(invalid_config("fastafd_profile_path cannot be empty"));
+            }
+            if self.estimation_mode != EstimationMode::OpLevel {
+                return Err(invalid_config(
+                    "FastAFD MoE profiles require estimation_mode='op_level'",
+                ));
+            }
+            if self.worker_type != ForwardPassWorkerType::Aggregated {
+                return Err(invalid_config(
+                    "FastAFD AGG profiles require worker_type='aggregated'",
+                ));
+            }
+            if self.backend != BackendKind::Sglang {
+                return Err(invalid_config(
+                    "FastAFD MoE profiles require backend=sglang",
+                ));
+            }
+            if self.pp != 1 {
+                return Err(invalid_config("FastAFD MoE profiles require pp=1"));
+            }
+            if self.moe_tp_size != Some(1) {
+                return Err(invalid_config("FastAFD MoE profiles require moe_tp_size=1"));
+            }
+            if !matches!(
+                op_level.fastafd_moe_backend.as_deref(),
+                Some("megamoe" | "deepep_deepgemm")
+            ) {
+                return Err(invalid_config(
+                    "fastafd_moe_backend must be megamoe or deepep_deepgemm",
+                ));
+            }
+        }
         if let Some(speculation) = &self.speculation {
             if self.nextn != 0 {
                 return Err(invalid_config("speculation cannot be combined with nextn"));
@@ -825,6 +865,62 @@ mod tests {
                 error.to_string(),
                 "invalid engine config: invalid forward pass perf model config: moe_kernel_source cannot be empty"
             );
+        }
+    }
+
+    #[test]
+    fn fastafd_profile_controls_live_in_op_level_estimator_config() {
+        let profile = serde_json::json!({
+            "fastafd_profile_path": "/data/profile.json",
+            "fastafd_moe_backend": "megamoe"
+        });
+        let shape = serde_json::json!({
+            "attention_dp": 8,
+            "moe_tp_size": 1,
+            "moe_ep_size": 8,
+            "estimator_config": {"op_level": profile},
+        });
+        let with = |overrides: serde_json::Value| {
+            let mut value = shape.clone();
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(overrides.as_object().unwrap().clone());
+            config(value)
+        };
+
+        let cfg = with(serde_json::json!({"backend": "sglang", "estimation_mode": "op_level"}));
+        cfg.validate().unwrap();
+        assert_eq!(
+            cfg.estimator_config.op_level.fastafd_moe_backend.as_deref(),
+            Some("megamoe")
+        );
+
+        let error = with(serde_json::json!({
+            "backend": "sglang",
+            "estimation_mode": "op_level",
+            "estimator_config": {"op_level": {"fastafd_profile_path": "/data/profile.json"}},
+        }))
+        .validate()
+        .unwrap_err();
+        assert!(error.to_string().contains("configured together"));
+
+        for (overrides, message) in [
+            (
+                serde_json::json!({"backend": "sglang"}),
+                "estimation_mode='op_level'",
+            ),
+            (
+                serde_json::json!({"backend": "sglang", "estimation_mode": "op_level", "worker_type": "decode"}),
+                "worker_type='aggregated'",
+            ),
+            (
+                serde_json::json!({"estimation_mode": "op_level"}),
+                "backend=sglang",
+            ),
+        ] {
+            let error = with(overrides).validate().unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
         }
     }
 
