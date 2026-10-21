@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "scope": "Host runtime attribution for a Weka replay. No modeled GPU timing change.",
   "base_commit": "a0a35e70937a1f680bbb30ca7404cc9cb9b65e4e",
   "setup": "Linux x86_64 CPU replay. Model, trace, scheduler configuration, and other experimental patches remain fixed across all stages.",
@@ -16,21 +16,36 @@
         "command_wall_seconds": 85.5251647150144,
         "native_replay_seconds": 17.149158742,
         "outside_native_replay_seconds": 68.3760059730144,
-        "peak_observed_rss_bytes": 479133696
+        "peak_observed_rss_bytes": 479133696,
+        "supervised_wall_seconds": 84.83880973234773,
+        "peak_observed_rss_mib": 456.9375,
+        "disk_space_effect": "No change to snapshot or canonical-row contents. Logical payload comparison is a separate macOS probe."
       },
       {
         "stage": "buffered_rows",
         "command_wall_seconds": 42.85685073770583,
         "native_replay_seconds": 16.835226633,
         "outside_native_replay_seconds": 26.021624104705825,
-        "peak_observed_rss_bytes": 471212032
+        "peak_observed_rss_bytes": 471212032,
+        "supervised_wall_seconds": 42.55109171103686,
+        "peak_observed_rss_mib": 449.3828125,
+        "incremental_wall_saving_seconds": 42.66831397730857,
+        "incremental_speedup": 1.9956007789384445,
+        "incremental_observed_rss_delta_bytes": -7921664,
+        "disk_space_effect": "No change to snapshot or canonical-row contents. Logical payload comparison is a separate macOS probe."
       },
       {
         "stage": "buffered_rows_hash_reuse_row_reader_and_admission_cache",
         "command_wall_seconds": 28.016899468377233,
         "native_replay_seconds": 17.183029523,
         "outside_native_replay_seconds": 10.833869945377234,
-        "peak_observed_rss_bytes": 466042880
+        "peak_observed_rss_bytes": 466042880,
+        "supervised_wall_seconds": 27.708967065438628,
+        "peak_observed_rss_mib": 444.453125,
+        "incremental_wall_saving_seconds": 14.839951269328594,
+        "incremental_speedup": 1.529678570823959,
+        "incremental_observed_rss_delta_bytes": -5169152,
+        "disk_space_effect": "No change to snapshot or canonical-row contents. Logical payload comparison is a separate macOS probe."
       }
     ],
     "speedup_from_unbuffered": 3.0526277474617394,
@@ -41,7 +56,15 @@
       "lifecycle_digest",
       "sim_seconds",
       "tok_s_gpu"
-    ]
+    ],
+    "command_id": "predict",
+    "rss_scope": "Peak sampled sum of RSS for the supervised process tree. This excludes the outer coordinator and is not whole-command peak memory.",
+    "rss_units": "MiB uses 1048576 bytes. RSS is resident set size, the process memory resident in RAM.",
+    "total_wall_saving_seconds": 57.508265246637166,
+    "total_wall_reduction_pct": 67.24133819357765,
+    "attribution_limit": "The final stage combines hash reuse, the row reader, the streaming hash parser, and the metadata cache. Their individual E2E contributions were not measured.",
+    "rss_limit": "One sampled peak per stage does not establish a RAM reduction. Native import separately shows higher memory.",
+    "configuration_json_identical": true
   },
   "native_import": {
     "host": "macOS arm64",
@@ -52,7 +75,30 @@
     "candidate_median_seconds": 3.38606725,
     "baseline_median_peak_rss_bytes": 207142912,
     "candidate_median_peak_rss_bytes": 219971584,
-    "unchanged": "Canonical row bytes, source digest, graph digest, play count, and request count."
+    "unchanged": "Canonical row bytes, source digest, graph digest, play count, and request count.",
+    "command_id": "native_import_probe",
+    "speedup": 2.343133813127899,
+    "peak_rss_delta_bytes": 12828672,
+    "rss_scope": "Median of three whole-process OS peak RSS values per variant, including the later digest pass. Not a phase-specific memory measurement.",
+    "phase_medians_seconds": {
+      "open_seconds": {
+        "baseline": 6.447004667,
+        "candidate": 2.372132333
+      },
+      "rows_to_builder_seconds": {
+        "baseline": 0.8621421250000001,
+        "candidate": 0.39146508299999994
+      },
+      "finish_seconds": {
+        "baseline": 0.612883708,
+        "candidate": 0.6291829579999999
+      }
+    },
+    "phase_limit": "The two variants contain both native changes. Phase medians are not an isolated cumulative ablation and do not sum to the total median.",
+    "canonical_rows_blake3": "7632e296094ca83d54af1c3611e373d78b4d54c907552e8932ad6ecc438f6d55",
+    "largest_play_unique_source_hashes": 65904,
+    "total_source_hash_references": 12528195,
+    "sum_of_unique_source_hashes_per_play": 262561
   },
   "metadata_admission": {
     "host": "macOS arm64",
@@ -60,13 +106,187 @@
     "cold_seconds": 63.555758250004146,
     "warm_seconds": 5.0749993533827364e-05,
     "peak_estimate_bytes": 28434349072,
-    "low_live_headroom": "Still rejects admission on a cache hit."
+    "low_live_headroom": "Still rejects admission on a cache hit.",
+    "command_id": "metadata_inspection",
+    "parser_measurements": [
+      {
+        "source": "sample",
+        "source_bytes": 64882247,
+        "version": "before",
+        "seconds": 5.449015958991367,
+        "process_peak_rss_bytes": 50692096
+      },
+      {
+        "source": "sample",
+        "source_bytes": 64882247,
+        "version": "after",
+        "seconds": 2.3486015000089537,
+        "process_peak_rss_bytes": 50692096
+      },
+      {
+        "source": "full",
+        "source_bytes": 1847151435,
+        "version": "before",
+        "seconds": 131.687304209001,
+        "process_peak_rss_bytes": 50724864
+      },
+      {
+        "source": "full",
+        "source_bytes": 1847151435,
+        "version": "after",
+        "seconds": 63.582959749997826,
+        "process_peak_rss_bytes": 50724864
+      }
+    ],
+    "cache_measurements": [
+      {
+        "source": "sample",
+        "phase": "cold",
+        "seconds": 2.3725494170066668,
+        "process_peak_rss_bytes": 46628864
+      },
+      {
+        "source": "sample",
+        "phase": "warm",
+        "seconds": 5.51670091226697e-05,
+        "process_peak_rss_bytes": 46628864
+      },
+      {
+        "source": "full",
+        "phase": "cold",
+        "seconds": 63.555758250004146,
+        "process_peak_rss_bytes": 47906816
+      },
+      {
+        "source": "full",
+        "phase": "warm",
+        "seconds": 5.0749993533827364e-05,
+        "process_peak_rss_bytes": 47906816
+      }
+    ],
+    "rss_limit": "Parser before/after calls share one process. ru_maxrss is a cumulative high-water mark, not per-call peak RAM. Cache measurements use a separate process.",
+    "disk_effect": "No persistent files are added. A cache hit avoids another complete metadata parse of the source and keeps file-identity comparisons.",
+    "cache_storage": "At most 16 in-process ResourceEstimate entries plus their per-file identity keys. Exact retained heap bytes were not measured.",
+    "same_estimates": true,
+    "samples_per_component_case": 1
   },
   "limits": [
     "The complete model configuration and source trace are not included. These observations are not a reproducible standalone benchmark.",
     "One end-to-end timing sample per stage does not establish timing variance or a general speedup guarantee.",
     "The fixed experimental model and scheduler patches are outside this PR. Only host-runtime changes vary between stages.",
     "The sample does not establish full-corpus replay cost.",
-    "The per-play hash memo raises native-import memory. Source validation, collision checks, and both resource guards remain active."
+    "The per-play hash memo raises native-import memory. Source validation, collision checks, and both resource guards remain active.",
+    "Per-change component timings use macOS arm64. The E2E ladder uses Linux x86_64. Do not add or subtract their timings across hosts.",
+    "No separate E2E ablation exists for each of the four changes in the final stage.",
+    "The full-source Python inspection benchmark is not a full-corpus simulation. Earlier full-corpus baselines did not complete, so no full-corpus E2E ratio is claimed.",
+    "A lower observed replay RSS does not cancel the higher measured native-import RSS. Their phases, hosts, and measurement boundaries differ."
+  ],
+  "runtime_code_commit": "cd84034e7bab39854203c3b2f2bacbfb8319b204",
+  "commands": {
+    "predict": {
+      "argv_with_path_placeholders": "python3 -m aisimulate predict --stack engine --config \"$CONFIG\" --output-dir \"$OUTPUT\" --capture-per-request",
+      "measured_end_to_end": true,
+      "boundary": "Monotonic elapsed time around subprocess.run, including Python startup and command exit.",
+      "operands": "CONFIG and OUTPUT replace private absolute paths. The installed interpreter came from the experiment virtual environment.",
+      "configuration": {
+        "trace_format": "weka",
+        "trace_block_size": 64,
+        "agentic_lanes": 16,
+        "snapshot_seed": 42,
+        "agentic_warmup": true,
+        "profile_duration_seconds": 3600,
+        "replicas": 1,
+        "memory_limit_gb": 6,
+        "cpu_limit": 4,
+        "initialization_timeout_seconds": 600
+      },
+      "scope": "One public command was measured end to end. No speedup claim for other CLI commands."
+    },
+    "native_import_probe": {
+      "baseline_argv_with_path_placeholders": "./weka-import-baseline \"$TRACE\"",
+      "candidate_argv_with_path_placeholders": "./weka-import-optimized \"$TRACE\"",
+      "build": "cargo build -p aisimulate-core --release --example weka_import_probe -j 1",
+      "measured_end_to_end": false,
+      "boundary": "Probe timer covers WekaImporter::open, for_each_row into AgenticGraphBuilder, and builder.finish. It excludes the later row-digest pass and process startup.",
+      "scope": "Temporary diagnostic probe, not a public AISimulate CLI command. Probe binaries and source trace are not included."
+    },
+    "metadata_inspection": {
+      "measured_end_to_end": false,
+      "boundary": "perf_counter around the estimator call. Parser comparison uses _estimate_weka_trace. Cache comparison uses estimate_workload.",
+      "scope": "Component measurements inside Python, not complete command timings."
+    }
+  },
+  "temporary_disk": {
+    "scope": "Separate macOS import probes, buffered baseline versus both native changes. No replay or prediction outputs were written.",
+    "source_snapshot_bytes": 64882247,
+    "canonical_row_spool_bytes_per_variant": {
+      "baseline": 258529550,
+      "optimized": 258529550
+    },
+    "logical_snapshot_plus_spool_bytes_per_variant": {
+      "baseline": 323411797,
+      "optimized": 323411797
+    },
+    "logical_payload_delta_bytes": 0,
+    "method": "A 5 ms directory sampler observed the complete spool while the importer read it. Source snapshots remain alive until open returns, so source bytes plus final spool bytes give the overlapping logical file payload.",
+    "observed_samples": [
+      {
+        "variant": "baseline",
+        "largest_file_bytes": 258529550,
+        "observed_peak_temporary_logical_bytes": 316532719,
+        "observed_peak_temporary_allocated_bytes": 316612608,
+        "logical_snapshot_plus_spool_bytes": 323411797,
+        "samples": 1642,
+        "temporary_files_after_exit": 0
+      },
+      {
+        "variant": "optimized",
+        "largest_file_bytes": 258529550,
+        "observed_peak_temporary_logical_bytes": 319871366,
+        "observed_peak_temporary_allocated_bytes": 328335360,
+        "logical_snapshot_plus_spool_bytes": 323411797,
+        "samples": 613,
+        "temporary_files_after_exit": 0
+      }
+    ],
+    "limits": [
+      "The directory sampler missed the exact allocation peak. Observed filesystem blocks are lower bounds, not comparable capacity guarantees.",
+      "The logical total excludes original input, output reports, filesystem metadata, and unrelated temporary files.",
+      "No disk allocation peak was measured during the Linux E2E commands.",
+      "The unbuffered variant uses the same serialization format but was not rerun for this disk probe.",
+      "A large enough TMPDIR remains necessary. This PR does not compress or remove the canonical spool."
+    ]
+  },
+  "per_change": [
+    {
+      "change": "Buffer canonical row writes",
+      "time_evidence": "Measured E2E: 85.5251647150144 to 42.85685073770583 seconds.",
+      "disk": "Same serialized bytes. Fewer small writes, no space reduction.",
+      "ram": "Adds a bounded writer buffer. Isolated buffer overhead not measured."
+    },
+    {
+      "change": "Reuse normalized source hashes within a play",
+      "time_evidence": "Import open/preflight/lowering median: 6.447004667 to 2.372132333 seconds in the paired native builds.",
+      "disk": "Identical canonical rows. No persistent cache.",
+      "ram": "One hash map per play. Native changes together raise median process peak by 12828672 bytes. Individual share not measured."
+    },
+    {
+      "change": "Read rows through a reusable byte buffer",
+      "time_evidence": "Row parse and builder median: 0.862142125 to 0.391465083 seconds in the paired native builds.",
+      "disk": "Same canonical spool and full row read.",
+      "ram": "Retains capacity for the largest row. Individual share of the native peak increase not measured."
+    },
+    {
+      "change": "Consume hash arrays in a streaming inner loop",
+      "time_evidence": "One metadata scan: sample 5.449015958991367 to 2.3486015000089537 seconds; full source 131.687304209001 to 63.582959749997826 seconds.",
+      "disk": "One complete source scan remains. No new files.",
+      "ram": "No increase in the recorded cumulative process peak: 50692096 bytes for sample calls, 50724864 bytes for full-source calls."
+    },
+    {
+      "change": "Cache completed metadata estimates",
+      "time_evidence": "Full-source cold call 63.555758250004146 seconds; next call 0.000050749993533827364 seconds in the same process.",
+      "disk": "Avoids the next full metadata scan of 1847151435 source bytes. This is logical read volume, not freed disk capacity or measured physical I/O.",
+      "ram": "At most 16 estimates and per-file keys. Cache process cumulative peak 47906816 bytes for full-source calls; incremental cache allocation not measured."
+    }
   ]
 }
