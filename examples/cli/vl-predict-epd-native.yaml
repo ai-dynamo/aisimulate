@@ -24,6 +24,7 @@ engine:
       tensor: 1
       replicas: 1
       batch_size: 8   # SGLANG_ENCODER_MAX_BATCH_SIZE
+      # hardware: l40s   # the pool may run on another GPU type; measure its host table on that host
       # host table of SGLang's CPU image-processor path; launch the server with --image-processor-backend pil to match it
       host_profile: {path: ./host-costs.json, frontend: python}
       transfer: {bandwidth_gb_per_second: 25}

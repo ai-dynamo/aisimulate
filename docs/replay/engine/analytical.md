@@ -123,7 +123,7 @@ A disaggregated variant is in
 
 | Knob | Default | Recommend | Rules |
 |---|---|---|---|
-| `engine.workers.encoder.hardware` | `engine.hardware` | fixed | Encoder system identifier. |
+| `engine.workers.encoder.hardware` | `engine.hardware` | fixed | Encoder system identifier; may differ from the language workers' `engine.hardware`. |
 | `engine.workers.encoder.backend_version` | Resolved | fixed | Encoder performance data. The backend follows `engine.backend`. |
 | `engine.workers.encoder.tensor` | `1` | Scalar or `choices` | Positive. |
 | `engine.workers.encoder.replicas` | `1` | Scalar or `choices` | Positive. |

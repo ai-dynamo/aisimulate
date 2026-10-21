@@ -57,7 +57,9 @@ A saved recommendation carries the resolved frontend stages, so the last
 `collect` runs from an interpreter with aisimulate installed (Python 3.11 to
 3.13) on the serving host and launches the measurement in the serving venv
 named by `--sglang-python`; the two are separate environments whenever the
-serving venv's Python is older than aisimulate supports.
+serving venv's Python is older than aisimulate supports. A relative
+`host_profile.path` is resolved against the working directory `collect` and
+`predict` run in, so the examples assume one directory for both.
 
 The field tables are on [Workers](workers.md#sglang-host-loop-frontend-and-vision)
 (`host_loop`, `frontend`, `host_profile`, `vision`),
@@ -117,8 +119,8 @@ candidate runs with carry the measurement they came from
 model, image shape or transport with stale constants, and the row's content
 digest travels in the prediction metadata. Explicit `frontend.stages` remain
 available for hand-written tables and tests. Text length is recorded with the
-row but not part of its key; its effect on the frontend stages was negligible
-on the measured grid.
+row as provenance and is not part of its key: the stages price the image work
+of a request.
 
 Lower-level Runner specifications set `rank.sglang.host_loop: true`,
 `rank.sglang.vlm_cache_bytes`, `rank.frontend`, and `rank.vision: true`; Rust
@@ -236,7 +238,10 @@ encoder servers (`--encoder-only`) runs one serial loop, as `EncoderScheduler`
 does: it takes the queued requests up to `batch_size` (the loop's cap,
 `SGLANG_ENCODER_MAX_BATCH_SIZE`, default 8), runs the image processor and one
 encoder forward over the batch, then pushes each part's embeddings to the
-language rank. Encoder servers are modeled at `--dp-size 1`; extra `replicas`
+language rank. The pool runs on `encoder.hardware`, which may differ from the
+language worker's `engine.hardware`, with that system's performance data; its
+host table is measured on the encoder host. Encoder servers are modeled at
+`--dp-size 1`; extra `replicas`
 approximate DP ranks only for single-image requests, since SGLang routes a
 server's whole part to one least-pending rank. The language side splits a
 request's images evenly over the encoder servers before sending
