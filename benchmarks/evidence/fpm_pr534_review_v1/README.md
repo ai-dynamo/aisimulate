@@ -61,3 +61,26 @@ implementation. The combined regression tests exercise its frozen-prefix cache.
 These are local macOS correctness and compatibility checks. They do not establish
 fresh serving-workload accuracy or a combined-model speedup. Historical selector
 accuracy and cost results retain the limitations stated in their original receipts.
+
+## Diagnostic and export contract follow-up
+
+Implementation `437a0777` addresses CodeRabbit's later export comment and
+Cross-Layer Contract warning. The canonical reference now documents all seven
+serialized `diagnostics().source` values. The learned-model guide and SDK
+docstrings clarify that exporting a frozen forest excludes admitted calibration
+feedback and correction stores; an online forest export excludes fitting state
+and pending rows.
+
+The [follow-up validation receipt](review-followup-validation.json) records
+189 passing Python SDK/API tests and 283 passing Rust FPM tests. Added assertions
+exercise `learned_online` through fitting and checkpoint continuation, and
+`learned_causal_selector` through real expert switches and configuration reload.
+The frozen export regression verifies a 10 ms seed, a 20 ms calibrated prediction,
+and a 10 ms exported/reloaded prediction with empty correction state, while the
+original model remains calibrated. Disabled calibration is covered as well.
+
+The tests use the release extension built from merged revision `747458b0`.
+The follow-up changes documentation, SDK docstrings, and tests only; Rust source
+and dependencies are unchanged, and the SDK's executable Python AST is unchanged.
+The receipt pins the extension and source hashes. This evidence is separate from
+the earlier review and compatibility receipts above.
