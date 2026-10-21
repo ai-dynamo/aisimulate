@@ -1787,8 +1787,8 @@ def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, ca
     assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
     assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
     assert stderr.count("run onboard probe-runtime") == 1
-    # No geometry was typed, so there is nothing for the import to check.
-    assert "supplied cache geometry" not in stderr
+    # No cache geometry override was given, so there is nothing for the import to check.
+    assert "cache geometry override" not in stderr
     # No user-owned input is left, and geometry is never a user input.
     assert "fmha_quant_mode" not in stderr and "Unresolved profile fields" not in stderr
     assert "--resource-overrides" not in stderr
@@ -1920,7 +1920,7 @@ def test_issue_475_typed_geometry_is_a_claim_the_import_checks(tmp_path, capsys)
     typed.write_text(yaml.safe_dump({**_GLM_PRECISION, "cache_layout": "linear", "kv_bytes_per_token": 6000}))
     command = [*_ISSUE_ARGS, "--model-config", str(_GLM), "--resource-overrides", str(typed), "--output", str(out)]
     stdout, stderr = _stops_with_guidance(command, capsys)
-    assert "onboard import-observations checks the supplied cache geometry against the probe's measurement" in stderr
+    assert "onboard import-observations checks each cache geometry override against the probe's measurement" in stderr
     # The profile inputs echo the user's own typed values; the guidance itself never asks for geometry.
     assert "kv_bytes_per_token: 6000 (source: user override; onboard import-observations checks it" in stdout
     assert not [key for key in _GEOMETRY_KEYS if key in stderr]

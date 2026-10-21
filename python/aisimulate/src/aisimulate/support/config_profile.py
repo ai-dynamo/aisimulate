@@ -15,7 +15,7 @@ implementations sharing their field names. Runtime reservations and activation
 estimates are not measurements or a guarantee that a deployment fits. A layout the
 config cannot establish (unrecognized layer types, recurrent state, an architecture
 intake does not recognize) is runtime-resolved: the runtime probe measures its cache
-geometry. Intake never derives it, and a typed geometry override is a claim that
+geometry. Intake never derives it, and a cache geometry override is a claim that
 observation import checks against the measurement.
 """
 
@@ -28,6 +28,7 @@ import re
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -74,11 +75,18 @@ _NONNEGATIVE_FIELDS = frozenset(
 _BYTE_FIELDS = frozenset(field for field in INTEGER_FIELDS if "bytes" in field)
 _NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
 _CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
-# Overrides that state cache geometry. For a runtime-resolved layout, intake never asks for them, and typed
-# cache_layout, kv_bytes_per_token and cache_groups are claims that observation import checks against the probe.
+# Overrides that state cache geometry. For a runtime-resolved layout, intake never asks for them, and
+# cache_layout, kv_bytes_per_token and cache_groups overrides are claims that observation import checks.
 _GEOMETRY_OVERRIDES = frozenset(("cache_layout", "kv_bytes_per_token", "cache_groups", "cache_block_sizes"))
-# Typed geometry that observation import compares with the runtime probe's resources.
-_CHECKED_GEOMETRY = ("cache_layout", "cache_groups", "kv_bytes_per_token")
+# Cache geometry overrides that observation import checks against the runtime probe's resources.
+CHECKED_GEOMETRY = ("cache_layout", "cache_groups", "kv_bytes_per_token")
+# Resource overrides that observation import compares with the measured resources.
+_OBSERVED_FIELDS = (*CHECKED_GEOMETRY, "max_num_tokens", "max_batch_size")
+# Provenance sources for overrides at observation import.
+_CHECKED_SOURCE = "user override; checked against the runtime probe's measurement"
+_UNUSED_BLOCK_SIZES_SOURCE = "user override; not used, because the runtime probe measured the cache block sizes"
+# Config notes that depend on how the cache layout is classified.
+LAYOUT_NOTES = ("cache_layout", "convolution_cache")
 # Fields intake reads before or without an integer, string or boolean check. Those checks reject any float, so a
 # JSON Infinity or NaN in another read field already fails with that field's name; these are checked explicitly.
 # Intake reads every other field through those checks or only for its presence, so JSON Infinity or NaN elsewhere,
@@ -210,6 +218,10 @@ class ProfileRequestError(ValueError):
     def __init__(self, field: str, message: str):
         super().__init__(message)
         self.field = field
+
+
+class _UnderivableWindowSchedule(ValueError):
+    """A sliding window whose layers only a schedule field selects, which intake cannot derive."""
 
 
 def _integer(value: Any, field: str, *, minimum: int = 1, maximum: int | None = None) -> int:
@@ -384,8 +396,8 @@ def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str
     values never hide declared state. ``architecture`` is the decoder architecture layout checks run
     against; ``named`` is the architecture the config or an override names, which is a multimodal
     wrapper's when the text config names none. Without a marker, an architecture that intake does not
-    recognize is pending too, unless the config's own fields declare a grouped cache. Every caller
-    classifies through this function, and typed geometry overrides never reach it.
+    recognize is pending too, unless intake derives a grouped cache from the config's own fields. Every caller
+    classifies through this function, and cache geometry overrides never reach it.
     """
     reasons = []
     layer_types = raw.get("layer_types")
@@ -407,7 +419,7 @@ def _runtime_layout(raw: Mapping[str, Any], architecture: str | None, named: str
         not reasons
         and named
         and named not in _FULL_ATTENTION | _MLA_ARCHITECTURES
-        and not _grouped_cache_fields(raw, architecture)
+        and not _derives_grouped_cache(raw, architecture)
     ):
         reasons.append(f"unrecognized architecture {named}")
     return tuple(sorted(reasons))
@@ -445,7 +457,9 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
         return ()
     if local is None and window:
         if any(raw.get(key) for key in ("max_window_layers", "sliding_window_pattern")):
-            raise ValueError("unsupported implicit sliding-window schedule; provide explicit layer_types")
+            raise _UnderivableWindowSchedule(
+                "unsupported implicit sliding-window schedule; provide explicit layer_types"
+            )
         local = tuple(range(layers or 0))
     if local and not window:
         raise ValueError("sliding attention layers require a positive sliding_window or sliding_window_size")
@@ -466,9 +480,21 @@ def _grouped_cache_fields(raw: Mapping[str, Any], architecture: str | None) -> b
     )
 
 
+def _derives_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
+    """Whether intake derives a grouped cache from the config's own fields.
+
+    A window schedule that intake cannot derive is not one: for an unrecognized architecture, the runtime
+    probe resolves it, as for a marker layout. Every other error in the declarations still fails.
+    """
+    try:
+        return _grouped_cache_fields(raw, architecture)
+    except _UnderivableWindowSchedule:
+        return False
+
+
 def _uses_grouped_cache(raw: Mapping[str, Any], architecture: str | None) -> bool:
-    # Markers win over grouped fields. An unrecognized architecture is pending only without grouped fields,
-    # so checking markers alone gives the same answer.
+    # Markers win over grouped fields. Callers ask only about layouts that are not pending the runtime probe,
+    # and an unrecognized architecture is pending only without grouped fields, so checking markers suffices.
     return not _runtime_layout(raw, architecture, None) and _grouped_cache_fields(raw, architecture)
 
 
@@ -723,7 +749,7 @@ def load_model_config(path: str | Path) -> ModelConfig:
             if key in quant
         }
         notes["quantization"] = (
-            f"config quantization={json.dumps(summary, sort_keys=True)}; "
+            f"config quantization={json.dumps(summary, sort_keys=True, allow_nan=False)}; "
             "tensor scales/exclusions require explicit weight bytes"
         )
     for key in ("num_nextn_predict_layers", "num_mtp_modules", "mtp_transformer_layers", "use_mtp"):
@@ -1038,7 +1064,9 @@ def _derive_cache_groups(
             raise ValueError(
                 "cache_groups must preserve the config's attention/convolution layer counts and retention windows"
             )
-        sources["cache_groups"] += f"; config geometry reference: {json.dumps(geometry_notes, sort_keys=True)}"
+        sources["cache_groups"] += (
+            f"; config geometry reference: {json.dumps(geometry_notes, sort_keys=True, allow_nan=False)}"
+        )
         return
     block_sizes = values.get("cache_block_sizes", {})
     if set(block_sizes) - {group["name"] for group, _ in groups}:
@@ -1075,7 +1103,8 @@ def _derive_cache_groups(
         "config tensor geometry and selected attention TP; minimum packed rank-local page bytes summed over each "
         "group's layers. Runtime allocation padding is not known from config; review/edit cache_groups against "
         "runtime metadata. Attention DP does not divide a rank's cache. Convolution block sizes default to the "
-        f"pinned kernel width unless overridden. Geometry: {json.dumps(geometry_notes, sort_keys=True)}"
+        "pinned kernel width unless overridden. Geometry: "
+        + json.dumps(geometry_notes, sort_keys=True, allow_nan=False)
     )
 
 
@@ -1250,12 +1279,21 @@ def _config_notes(config: ModelConfig, architecture: str | None, runtime: tuple[
     """config.notes, with the cache-layout notes for this classification. An architecture override can change them."""
     notes = dict(config.notes)
     layout = _layout_notes(config.raw, architecture, runtime)
-    for key in ("cache_layout", "convolution_cache"):
+    for key in LAYOUT_NOTES:
         if key in layout:
             notes[key] = layout[key]
         else:
             notes.pop(key, None)
     return notes
+
+
+def _cache_block_sizes_refusal(runtime: tuple[str, ...]) -> str:
+    """Why a layout pending the runtime probe takes no cache_block_sizes, at intake and at import."""
+    return (
+        "cache_block_sizes names config-derived cache groups, and this layout has none "
+        f"({', '.join(runtime)}); onboard probe-runtime reports the runtime cache groups with their block sizes. "
+        "Remove cache_block_sizes from the resource overrides."
+    )
 
 
 def derive_profile(
@@ -1267,18 +1305,14 @@ def derive_profile(
     supports validating overrides and previewing config facts before collecting
     deployment identity; it can never produce a complete deployment profile.
     A runtime-resolved layout has no profile either: ``pending_runtime`` names the
-    cache geometry only the runtime probe can measure. Typed geometry overrides are
+    cache geometry only the runtime probe can measure. Cache geometry overrides are
     recorded as claims that observation import checks; they never complete a profile.
     """
     architecture, named = _declared_architecture(config, overrides)
     runtime = _runtime_layout(config.raw, architecture, named)
     # Refuse by key, before any value is validated, so the refusal wins whatever the value is.
     if runtime and isinstance(overrides, Mapping) and "cache_block_sizes" in overrides:
-        raise ValueError(
-            "cache_block_sizes names config-derived cache groups, and this layout has none "
-            f"({', '.join(runtime)}); onboard probe-runtime reports the runtime cache groups with their block sizes. "
-            "Remove cache_block_sizes from the resource overrides."
-        )
+        raise ValueError(_cache_block_sizes_refusal(runtime))
     supplied = validate_overrides(overrides)
     values = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
     sources = {key: config.notes[key] for key in values}
@@ -1309,7 +1343,7 @@ def derive_profile(
         values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
         if key == "comm_quant_mode" and value != "half":
             sources[key] += "; current collector supports half and will reject this identity for new collection"
-        if runtime and key in _CHECKED_GEOMETRY:
+        if runtime and key in CHECKED_GEOMETRY:
             sources[key] = (
                 "user override; onboard import-observations checks it against the runtime probe's measurement"
             )
@@ -1356,15 +1390,14 @@ def derive_profile(
             + " layouts need explicit accounting"
         ),
     }
-    grouped_cache = (
-        _uses_grouped_cache(config.raw, architecture)
-        or "cache_groups" in values
-        or values.get("cache_layout") == "grouped"
-    )
     if runtime:
         # The runtime probe measures cache geometry: none is derived here, and none is asked of the user.
         missing = {key: value for key, value in missing.items() if key not in _GEOMETRY_OVERRIDES}
-    elif grouped_cache:
+    elif (
+        _uses_grouped_cache(config.raw, architecture)
+        or "cache_groups" in values
+        or values.get("cache_layout") == "grouped"
+    ):
         _derive_cache_groups(config, architecture, request, geometry, values, sources, missing)
     elif "cache_block_sizes" in values:
         raise ValueError("cache_block_sizes requires a grouped cache layout")
@@ -1445,6 +1478,7 @@ def derive_profile(
             **({"worker_type": request.worker_type} if request.worker_type is not None else {}),
         },
         sort_keys=True,
+        allow_nan=False,
     )
     parallel = request.parallelism()
     profile = FpmModelProfile.model_validate(
@@ -1480,25 +1514,79 @@ def derive_profile(
     return ProfileDraft(profile, values, {}, sources, notes=notes)
 
 
+def _cache_group_shapes(groups: list[Any]) -> Counter[str]:
+    """Cache groups as a multiset of their geometry. Names and order carry none, and the probe chooses both."""
+    shapes: Counter[str] = Counter()
+    for group in groups:
+        shape = FpmCacheGroup.model_validate(group).model_dump(mode="json")
+        del shape["name"]
+        shapes[json.dumps(shape, sort_keys=True)] += 1
+    return shapes
+
+
+def _measured_groups(resources: Mapping[str, Any]) -> list[FpmCacheGroup]:
+    return [FpmCacheGroup.model_validate(group) for group in resources.get("cache_groups") or []]
+
+
+def _windowed_group(groups: list[FpmCacheGroup]) -> FpmCacheGroup | None:
+    """The first group that a linear cache cannot describe: one with a window or convolution state."""
+    return next((group for group in groups if group.kind != "attention" or group.sliding_window is not None), None)
+
+
+def _measured_kv_bytes(resources: Mapping[str, Any]) -> Fraction | None:
+    """The measurement's rank-local bytes per cached token, when a linear cache describes it."""
+    if resources.get("cache_layout") == "linear":
+        return None if resources.get("kv_bytes_per_token") is None else Fraction(resources["kv_bytes_per_token"])
+    groups = _measured_groups(resources)
+    if not groups or _windowed_group(groups) is not None:
+        return None
+    # A group's page holds block_size_tokens tokens for every layer of the group on one rank.
+    return sum((Fraction(group.page_size_bytes, group.block_size_tokens) for group in groups), Fraction(0))
+
+
+def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> bool:
+    """Whether a resource override agrees with what the runtime probe measured."""
+    if key == "cache_groups":
+        measured = resources.get(key)
+        return measured is not None and _cache_group_shapes(typed) == _cache_group_shapes(measured)
+    if key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear"):
+        # The vLLM probe reports a grouped cache; full-attention groups without a window have a linear equivalent.
+        measured = _measured_kv_bytes(resources)
+        return measured is not None and (key == "cache_layout" or measured == typed)
+    return typed == resources.get(key)
+
+
 def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) -> str:
-    """Why a typed resource override disagrees with what the runtime probe measured."""
+    """Why a resource override disagrees with what the runtime probe measured."""
 
     def compact(value: Any) -> str:
         return (
             json.dumps(value, sort_keys=True, separators=(",", ":")) if isinstance(value, (dict, list)) else str(value)
         )
 
-    remedy = "Correct or remove the override; if the runtime changed, run a fresh onboard probe-runtime."
+    claim = f"resource_overrides.{key}={compact(typed)}"
+    remedy = (
+        "the measurement is authoritative. Correct or remove the override; if the runtime changed, "
+        "run onboard probe-runtime again."
+    )
+    linear_claim = key == "kv_bytes_per_token" or (key == "cache_layout" and typed == "linear")
+    if linear_claim and resources.get("cache_layout") != "linear":
+        measured = _measured_kv_bytes(resources)
+        if measured is not None:
+            return (
+                f"{claim} differs from the runtime probe's measured linear equivalent kv_bytes_per_token={measured} "
+                f"(page_size_bytes / block_size_tokens summed over its cache groups); {remedy}"
+            )
+        group = _windowed_group(_measured_groups(resources))
+        if group is not None:
+            return (
+                f"{claim}, but the runtime probe measured no linear equivalent: its cache group {group.name} has "
+                f"kind={group.kind} and sliding_window={group.sliding_window}; {remedy}"
+            )
     if resources.get(key) is None:
         layout = f" for its {resources['cache_layout']} cache_layout" if resources.get("cache_layout") else ""
-        return (
-            f"resource_overrides.{key}={compact(typed)}, but the runtime probe measured no {key}{layout}; "
-            f"the measurement is authoritative. {remedy}"
-        )
-    return (
-        f"resource_overrides.{key}={compact(typed)} differs from the runtime probe's measured "
-        f"{key}={compact(resources[key])}; the measurement is authoritative. {remedy}"
-    )
+        return f"{claim}, but the runtime probe measured no {key}{layout}; {remedy}"
+    return f"{claim} differs from the runtime probe's measured {key}={compact(resources[key])}; {remedy}"
 
 
 def profile_from_observations(
@@ -1511,8 +1599,10 @@ def profile_from_observations(
     """Combine validated model metadata with independently observed cache groups.
 
     Runtime grouping need not match config-derived planning groups. No estimated
-    geometry or non-KV byte declaration is substituted for the observation. Typed
-    geometry and scheduler overrides must match it; the measurement is authoritative.
+    geometry or non-KV byte declaration is substituted for the observation. Cache
+    geometry, scheduler and precision overrides must agree with it, and the
+    measurement is authoritative: cache groups compare without names or order,
+    and a linear claim compares with the measured groups' linear equivalent.
     """
     supplied = validate_overrides(overrides)
     metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
@@ -1530,14 +1620,18 @@ def profile_from_observations(
     runtime = _validate_layout(
         config.raw, architecture, named, inkling=metadata["architecture"] == _INKLING_ARCHITECTURE
     )
+    # The checkpoint's overrides reach import without intake, so the same refusal applies here.
+    if runtime and "cache_block_sizes" in supplied:
+        raise ValueError(_cache_block_sizes_refusal(runtime))
     _validate_architecture(config.raw, architecture, metadata["num_experts"])
     _geometry(config, architecture, runtime, request)
-    for key in (*_CHECKED_GEOMETRY, "max_num_tokens", "max_batch_size"):
-        if key in supplied and supplied[key] != resources.get(key):
+    for key in _OBSERVED_FIELDS:
+        if key in supplied and not _matches_observation(key, supplied[key], resources):
             raise ValueError(_observation_mismatch(key, supplied[key], resources))
     for key in _DEPLOYMENT_FIELDS:
         if key in supplied and supplied[key] != precision.get(key):
             raise ValueError(f"resource_overrides.{key} differs from observed precision")
+    checked = {*_OBSERVED_FIELDS, *_DEPLOYMENT_FIELDS}
     notes = _config_notes(config, architecture, runtime)
     if runtime:
         notes["cache_layout"] = (
@@ -1561,8 +1655,10 @@ def profile_from_observations(
                         key: {
                             "value": value,
                             "source": (
-                                "user override; checked against the runtime probe's measurement"
-                                if key in _CHECKED_GEOMETRY
+                                _CHECKED_SOURCE
+                                if key in checked
+                                else _UNUSED_BLOCK_SIZES_SOURCE
+                                if key == "cache_block_sizes"
                                 else "user assumption"
                             ),
                         }
@@ -1571,6 +1667,7 @@ def profile_from_observations(
                     "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
                 },
                 sort_keys=True,
+                allow_nan=False,
             ),
             "deployments": [
                 {

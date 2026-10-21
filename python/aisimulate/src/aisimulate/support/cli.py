@@ -23,8 +23,10 @@ from pydantic import ValidationError
 from aisimulate.config.common import load_yaml
 
 from .config_profile import (
+    CHECKED_GEOMETRY,
     FIELD_CHOICES,
     INTEGER_FIELDS,
+    LAYOUT_NOTES,
     OVERRIDE_FIELDS,
     ModelConfig,
     ProfileDraft,
@@ -71,8 +73,8 @@ def add_support_parser(subparsers: Any) -> None:
             "--model, --model-revision, --model-kind, --gpu, and --interconnect. "
             "Cache layouts that config.json cannot establish, such as linear-attention or recurrent state, or that "
             "belong to an architecture intake does not recognize, are resolved by onboard probe-runtime: setup stops "
-            "with guidance and writes nothing. onboard import-observations checks typed cache geometry for such a "
-            "layout against the probe's measurement. "
+            "with guidance and writes nothing. onboard import-observations checks a cache geometry override for such "
+            "a layout against the probe's measurement. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
             "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
             "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
@@ -785,8 +787,6 @@ def _review_config_profile(
 
 
 _TOPOLOGY_OPTIONS = ("tensor_parallel", "attention_data_parallel", "moe_tensor_parallel", "moe_expert_parallel")
-# Config notes that depend on the decoder architecture, which an interactive answer can still supply.
-_LAYOUT_NOTES = ("cache_layout", "convolution_cache")
 
 
 def _explicit_topology(args: argparse.Namespace) -> bool:
@@ -800,7 +800,7 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
     if not args.suggest_parallel:
         print(f"Model config source: {Path(args.model_config).expanduser()} (SHA-256 {config.sha256}).")
         for name, note in preview.notes.items():
-            if name not in _LAYOUT_NOTES:
+            if name not in LAYOUT_NOTES:
                 print(f"Config {name}: {note}")
         for name in ("architecture", "context_length", "num_experts"):
             if name in preview.resolved:
@@ -812,7 +812,7 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
                 overrides, preview = _prompt_profile_value(config, None, overrides, preview, name)
     if not args.suggest_parallel:
         # Printed after any architecture answer, so they describe the classification derive_profile now uses.
-        for name in _LAYOUT_NOTES:
+        for name in LAYOUT_NOTES:
             if name in preview.notes:
                 print(f"Config {name}: {preview.notes[name]}")
     if args.model is None:
@@ -887,8 +887,6 @@ def _print_profile_inputs(draft: ProfileDraft, *, skip: tuple[str, ...] = ()) ->
 
 
 _PROBE_GUIDE = "docs/perf-model/fpm-self-service/implementation.md#cache-geometry-pending-the-runtime-probe"
-# Typed geometry a pending draft can carry; nothing derives it for such a layout.
-_TYPED_GEOMETRY = ("cache_layout", "kv_bytes_per_token", "cache_groups")
 
 
 def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starting_points: bool = True) -> str:
@@ -904,9 +902,10 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
             "Supply them in --resource-overrides PATH (JSON/YAML), or use --interactive.",
         ]
     lines += ["Cache geometry: pending runtime probe", f"  {draft.pending_runtime['cache_geometry']}"]
-    if any(name in draft.resolved for name in _TYPED_GEOMETRY):
+    # A pending draft holds cache geometry only from overrides; nothing derives it for such a layout.
+    if any(name in draft.resolved for name in CHECKED_GEOMETRY):
         lines.append(
-            "  onboard import-observations checks the supplied cache geometry against the probe's measurement."
+            "  onboard import-observations checks each cache geometry override against the probe's measurement."
         )
     if shortlist is not None:
         lines.append(shortlist)

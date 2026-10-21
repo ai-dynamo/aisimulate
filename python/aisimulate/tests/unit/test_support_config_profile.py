@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from aisimulate.support import config_profile
 from aisimulate.support.config_profile import (
     _ATTENTION_DIMENSIONS,
     ProfileRequestError,
@@ -330,6 +331,24 @@ def test_unrecognized_architecture_reason(raw, architecture, named, expected):
     assert _runtime_layout(raw, architecture, named) == expected
 
 
+def test_unrecognized_architecture_with_an_underivable_window_schedule_is_pending(tmp_path):
+    # A window with sliding_window_pattern but no explicit layer list: intake cannot derive which layers slide.
+    schedule = {"sliding_window": 512, "sliding_window_pattern": 6}
+    config = _config(tmp_path, architectures=["Gemma3ForCausalLM"], model_type="gemma3_text", **schedule)
+    assert config.runtime_layout == ("unrecognized architecture Gemma3ForCausalLM",)
+    draft = derive_profile(config, _request(), _runtime())
+    assert draft.profile is None
+    assert "unrecognized architecture Gemma3ForCausalLM" in draft.pending_runtime["cache_geometry"]
+    # Contradictory window fields still fail, as they do for a marker layout.
+    with pytest.raises(ValueError, match="conflicting sliding-window fields"):
+        _config(
+            tmp_path, architectures=["Gemma3ForCausalLM"], model_type="gemma3_text", sliding_window_size=256, **schedule
+        )
+    # A recognized architecture keeps rejecting the schedule intake cannot derive.
+    with pytest.raises(ValueError, match="unsupported implicit sliding-window schedule"):
+        _config(tmp_path, **schedule)
+
+
 def test_attention_dimensions_are_listed_explicitly():
     expected = {
         "kv_lora_rank",
@@ -449,26 +468,26 @@ _GLM_PRECISION = {
     "comm_quant_mode": "half",
     "kv_cache_dtype": "bfloat16",
 }
-# The group list stands in for the runtime report, which always states each group's sliding_window. A real GLM
-# probe also reports state groups. The spec guard in collector/fpm_forward/runtime_memory.py keeps that probe
-# incomplete until state groups are supported.
+# The groups stand in for the runtime report, which always reports a grouped layout, names its groups
+# runtime_group_<i> and states each group's sliding_window. A real GLM probe also reports state groups. The spec
+# guard in collector/fpm_forward/runtime_memory.py keeps that probe incomplete until state groups are supported.
+_RUNTIME_GROUP = {
+    "name": "runtime_group_0",
+    "kind": "attention",
+    "num_layers": 11,
+    "block_size_tokens": 64,
+    "page_size_bytes": 4096,
+    "sliding_window": None,
+}
+_WINDOWED_GROUP = {**_RUNTIME_GROUP, "name": "runtime_group_1", "num_layers": 3, "sliding_window": 128}
 _GROUPED_OBSERVATION = {
     "cache_layout": "grouped",
-    "cache_groups": [
-        {
-            "name": "full_attention",
-            "kind": "attention",
-            "num_layers": 11,
-            "block_size_tokens": 64,
-            "page_size_bytes": 4096,
-            "sliding_window": None,
-        }
-    ],
+    "cache_groups": [_RUNTIME_GROUP],
     "max_num_tokens": 8192,
     "max_batch_size": 256,
     "provenance": "observed runtime resources",
 }
-# A linear observation exercises the typed kv_bytes_per_token check; it is not a claim about GLM's runtime.
+# Import also accepts a linear observation, which the vLLM probe never reports; it is not a claim about GLM.
 _LINEAR_OBSERVATION = {
     "cache_layout": "linear",
     "kv_bytes_per_token": 6000,
@@ -476,10 +495,16 @@ _LINEAR_OBSERVATION = {
     "max_batch_size": 256,
     "provenance": "observed runtime resources",
 }
+_CHECKED = "user override; checked against the runtime probe's measurement"
+_LLAMA_PRECISION = {"gemm_quant_mode": "bfloat16", "moe_quant_mode": "bfloat16", **_runtime()}
 
 
 def _import(resources, overrides=None):
     return profile_from_observations(load_model_config(GLM), _glm_request(), _GLM_PRECISION, resources, overrides)
+
+
+def _sources(profile):
+    return {key: entry["source"] for key, entry in json.loads(profile.provenance)["user_overrides"].items()}
 
 
 def test_runtime_resolved_config_accepts_observed_cache_geometry():
@@ -515,10 +540,7 @@ def test_typed_geometry_that_matches_the_probe_builds_the_profile(typed, resourc
     recorded = json.loads(profile.provenance)["user_overrides"]
     assert recorded.keys() == typed.keys()
     for key, value in validate_overrides(typed).items():
-        assert recorded[key] == {
-            "value": value,
-            "source": "user override; checked against the runtime probe's measurement",
-        }
+        assert recorded[key] == {"value": value, "source": _CHECKED}
 
 
 def test_typed_kv_bytes_that_differ_from_the_probe_name_both_values():
@@ -528,15 +550,166 @@ def test_typed_kv_bytes_that_differ_from_the_probe_name_both_values():
     assert "resource_overrides.kv_bytes_per_token=5000" in message
     assert "measured kv_bytes_per_token=6000" in message
     assert "the measurement is authoritative" in message
-    assert "Correct or remove the override" in message and "fresh onboard probe-runtime" in message
+    assert "Correct or remove the override; if the runtime changed, run onboard probe-runtime again." in message
 
 
-def test_typed_kv_bytes_against_a_grouped_probe_names_the_measured_layout():
+def test_claim_without_a_measured_counterpart_names_the_measured_layout():
     with pytest.raises(ValueError) as error:
-        _import(_GROUPED_OBSERVATION, {"kv_bytes_per_token": 6000})
+        _import(_LINEAR_OBSERVATION, {"cache_groups": [_RUNTIME_GROUP]})
     message = str(error.value)
-    assert "resource_overrides.kv_bytes_per_token=6000" in message
-    assert "the runtime probe measured no kv_bytes_per_token for its grouped cache_layout" in message
+    assert "resource_overrides.cache_groups=[" in message
+    assert "the runtime probe measured no cache_groups for its linear cache_layout" in message
+
+
+def test_cache_group_claims_match_without_names_or_order():
+    # The user names a group; the probe names it runtime_group_<i>. A full-history group may omit sliding_window.
+    named = {**_RUNTIME_GROUP, "name": "full_attention"}
+    unwindowed = {key: value for key, value in named.items() if key != "sliding_window"}
+    for claim in ([named], [unwindowed]):
+        _import(_GROUPED_OBSERVATION, {"cache_layout": "grouped", "cache_groups": claim})
+    bare = {key: value for key, value in _RUNTIME_GROUP.items() if key != "sliding_window"}
+    _import({**_GROUPED_OBSERVATION, "cache_groups": [bare]}, {"cache_groups": [named]})
+    # Order carries no geometry either, and the profile keeps the measured groups as reported.
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]}
+    profile = _import(observed, {"cache_groups": [{**_WINDOWED_GROUP, "name": "sliding"}, named]})
+    measured = profile.deployments[0].resources.cache_groups
+    assert [group.name for group in measured] == ["runtime_group_0", "runtime_group_1"]
+    assert _sources(profile) == {"cache_groups": _CHECKED}
+
+
+def test_cache_group_claim_with_another_page_size_shows_both_lists():
+    claim = [{**_RUNTIME_GROUP, "name": "full_attention", "page_size_bytes": 8192}]
+    with pytest.raises(ValueError) as error:
+        _import(_GROUPED_OBSERVATION, {"cache_groups": claim})
+    message = str(error.value)
+    assert (
+        'resource_overrides.cache_groups=[{"block_size_tokens":64,"kind":"attention","name":"full_attention",'
+        '"num_layers":11,"page_size_bytes":8192,"sliding_window":null}] differs'
+    ) in message
+    assert (
+        'measured cache_groups=[{"block_size_tokens":64,"kind":"attention","name":"runtime_group_0",'
+        '"num_layers":11,"page_size_bytes":4096,"sliding_window":null}]'
+    ) in message
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        # One full-attention group: 512 bytes per 16-token block is 32 bytes per token.
+        [(512, 16)],
+        # Synthetic groups whose bytes per token are not whole numbers: 0.2 + 27.9 + 3.9 is exactly 32, which a
+        # floating-point sum misses.
+        [(2, 10), (279, 10), (39, 10)],
+    ],
+)
+def test_linear_claims_match_the_measured_full_attention_groups(tmp_path, pages):
+    config = _config(tmp_path)
+    request = _request(tensor_parallel=2)
+    # Intake's exact per-rank value at TP2: 2 K/V * 2 layers * 1 rank-local KV head * head_dim 4 * 2 bytes.
+    claim = derive_profile(config, request, _runtime()).resolved["kv_bytes_per_token"]
+    assert claim == 32
+    groups = [
+        {**_RUNTIME_GROUP, "name": f"runtime_group_{index}", "page_size_bytes": page, "block_size_tokens": block}
+        for index, (page, block) in enumerate(pages)
+    ]
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": groups}
+    profile = profile_from_observations(
+        config, request, _LLAMA_PRECISION, observed, {"cache_layout": "linear", "kv_bytes_per_token": claim}
+    )
+    # The measurement is authoritative: the profile keeps the measured groups, not the linear claim.
+    resources = profile.deployments[0].resources
+    assert resources.cache_layout == "grouped" and resources.kv_bytes_per_token is None
+    assert _sources(profile) == {"cache_layout": _CHECKED, "kv_bytes_per_token": _CHECKED}
+
+
+def test_linear_kv_claim_one_byte_off_shows_both_values():
+    # 4096 bytes per 64-token block is 64 bytes per token.
+    with pytest.raises(ValueError) as error:
+        _import(_GROUPED_OBSERVATION, {"cache_layout": "linear", "kv_bytes_per_token": 65})
+    message = str(error.value)
+    assert (
+        "resource_overrides.kv_bytes_per_token=65 differs from the runtime probe's measured linear equivalent "
+        "kv_bytes_per_token=64"
+    ) in message
+    assert "the measurement is authoritative" in message
+
+
+@pytest.mark.parametrize("claim", [{"cache_layout": "linear"}, {"kv_bytes_per_token": 64}])
+def test_linear_claim_against_a_windowed_group_names_that_group(claim):
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]}
+    with pytest.raises(ValueError) as error:
+        _import(observed, claim)
+    message = str(error.value)
+    ((key, value),) = claim.items()
+    assert f"resource_overrides.{key}={value}, but the runtime probe measured no linear equivalent" in message
+    assert "its cache group runtime_group_1 has kind=attention and sliding_window=128" in message
+
+
+def test_import_labels_every_compared_override_that_matches():
+    overrides = {
+        "cache_layout": "grouped",
+        "max_num_tokens": 8192,
+        "max_batch_size": 256,
+        "kv_cache_dtype": "bfloat16",
+        "weights_bytes": 1024,
+    }
+    # Import does not compare weights_bytes with the probe, so it stays the user's assumption.
+    assert _sources(_import(_GROUPED_OBSERVATION, overrides)) == {
+        **dict.fromkeys(("cache_layout", "max_num_tokens", "max_batch_size", "kv_cache_dtype"), _CHECKED),
+        "weights_bytes": "user assumption",
+    }
+
+
+def test_import_refuses_cache_block_sizes_for_a_pending_layout():
+    overrides = {"cache_block_sizes": {"full_attention": 16}}
+    with pytest.raises(ValueError) as intake:
+        derive_profile(load_model_config(GLM), _glm_request(), overrides)
+    with pytest.raises(ValueError) as imported:
+        _import(_GROUPED_OBSERVATION, overrides)
+    assert str(imported.value) == str(intake.value)
+    assert "cache_block_sizes names config-derived cache groups, and this layout has none" in str(imported.value)
+
+
+def test_import_records_unused_cache_block_sizes_for_a_derivable_layout(tmp_path):
+    config = _config(tmp_path, sliding_window=128)
+    assert config.runtime_layout == ()
+    observed = {
+        **_GROUPED_OBSERVATION,
+        "cache_groups": [{**_WINDOWED_GROUP, "name": "runtime_group_0", "num_layers": 2}],
+    }
+    profile = profile_from_observations(
+        config, _request(), _LLAMA_PRECISION, observed, {"cache_block_sizes": {"sliding_attention": 16}}
+    )
+    assert _sources(profile) == {
+        "cache_block_sizes": "user override; not used, because the runtime probe measured the cache block sizes"
+    }
+    assert profile.deployments[0].resources.cache_groups[0].block_size_tokens == 64
+
+
+def test_unrecognized_architecture_imports_the_measured_groups():
+    config = load_model_config(GLM.parent / "XiaomiMiMo--MiMo-7B-Base_config.json")
+    assert config.runtime_layout == ("unrecognized architecture MiMoForCausalLM",)
+    # At TP2: 2 K/V * 36 layers * 4 rank-local KV heads * head_dim 128 * 2 bytes = 73728 bytes per token.
+    group = {**_RUNTIME_GROUP, "num_layers": 36, "block_size_tokens": 16, "page_size_bytes": 16 * 73728}
+    overrides = {"num_experts": 0, "cache_layout": "linear", "kv_bytes_per_token": 73728}
+    profile = profile_from_observations(
+        config,
+        _request(tensor_parallel=2),
+        _LLAMA_PRECISION,
+        {**_GROUPED_OBSERVATION, "cache_groups": [group]},
+        overrides,
+    )
+    assert profile.architecture == "MiMoForCausalLM"
+    assert profile.deployments[0].resources.cache_groups[0].num_layers == 36
+    notes = json.loads(profile.provenance)["config_notes"]
+    assert notes["cache_layout"].startswith(
+        "cache layout measured by the runtime probe (unrecognized architecture MiMoForCausalLM)"
+    )
+    assert _sources(profile) == {
+        "num_experts": "user assumption",
+        "cache_layout": _CHECKED,
+        "kv_bytes_per_token": _CHECKED,
+    }
 
 
 @pytest.mark.parametrize(
@@ -547,7 +720,7 @@ def test_typed_kv_bytes_against_a_grouped_probe_names_the_measured_layout():
                 "cache_layout": "grouped",
                 "cache_groups": [{**_GROUPED_OBSERVATION["cache_groups"][0], "num_layers": 12}],
             },
-            'resource_overrides.cache_groups=[{"block_size_tokens":64,"kind":"attention","name":"full_attention",'
+            'resource_overrides.cache_groups=[{"block_size_tokens":64,"kind":"attention","name":"runtime_group_0",'
             '"num_layers":12,"page_size_bytes":4096,"sliding_window":null}] differs',
         ),
         ({"max_num_tokens": 4096}, "resource_overrides.max_num_tokens=4096 differs"),
@@ -1177,6 +1350,24 @@ def test_unknown_architecture_is_pending_and_still_asks_for_user_owned_inputs(tm
     assert explicit.sources["kv_bytes_per_token"] == _CHECKED_BY_IMPORT
 
 
+def test_missing_fields_are_complete_and_mla_layout_can_use_explicit_resources(tmp_path):
+    # The MLA/DSA families keep explicit cache accounting, so explicit resources still complete their profile.
+    config = _config(tmp_path, architectures=["DeepseekV3ForCausalLM"], model_type="deepseek_v3")
+    assert "num_experts" not in config.suggestions and config.runtime_layout == ()
+    draft = derive_profile(config, _request("moe"))
+    assert {"num_experts", "kv_bytes_per_token", "cache_layout"} <= set(draft.missing)
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
+    complete = derive_profile(
+        config,
+        _request("moe"),
+        _runtime(
+            num_experts=4, weights_bytes=1000, activations_bytes=2000, kv_bytes_per_token=32, cache_layout="linear"
+        ),
+    )
+    assert complete.profile is not None
+    assert "user override" in complete.sources["weights_bytes"]
+
+
 @pytest.mark.parametrize(
     "updates,match",
     [
@@ -1260,6 +1451,16 @@ def test_non_finite_numbers_in_the_read_sidecar_section_name_the_field(tmp_path,
     _sidecar(tmp_path, quantization={"quant_algo": "FP8", "group_size": value})
     with pytest.raises(ValueError, match=r"hf_quant_config\.json quantization\.group_size"):
         _config(tmp_path)
+
+
+def test_an_unlisted_non_finite_read_fails_closed(tmp_path, monkeypatch):
+    # If a future read is missing from _UNTYPED_READ_FIELDS, intake's JSON output refuses the value instead of
+    # writing NaN into a note.
+    unlisted = tuple(field for field in config_profile._UNTYPED_READ_FIELDS if field != "quantization_config")
+    monkeypatch.setattr(config_profile, "_UNTYPED_READ_FIELDS", unlisted)
+    scheme = {"num_bits": 8, "type": "float", "group_size": math.nan}
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        _config(tmp_path, quantization_config={"quant_method": "fp8", "kv_cache_scheme": scheme})
 
 
 def test_unread_infinity_never_reaches_profile_provenance(tmp_path):

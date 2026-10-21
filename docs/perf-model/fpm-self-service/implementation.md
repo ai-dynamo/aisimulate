@@ -644,7 +644,7 @@ Derivation is deliberately limited. Unambiguous architecture, context, expert co
 | Runtime overhead | The selected packaged hardware specification's per-rank `misc.other_mem` estimate when present. It excludes the separate CUDA graph reservation. |
 | Communication overhead | The exact `misc.nccl_mem` TP entry for a pure-TP worker when present. DEP and TEP estimates remain unavailable; total GPU count does not establish their communication storage. These estimates are optional. |
 
-Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. MLA/DSA layouts and configs that name no architecture must supply the remaining supported semantics explicitly. `config.json` cannot establish the cache geometry of some layouts, such as linear-attention, recurrent state or an architecture that intake does not recognize. Such a layout leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). For that layout, a typed geometry override is a claim that observation import checks against the probe's measurement. Other known incompatible layouts are rejected.
+Source notes identify assumptions and packaged hardware hashes. Weight precision does not establish runtime FMHA or KV precision. Config intake proposes the current collector communication identity `half` with its source. Other schema-valid communication overrides remain recorded for review, with a warning that the current collector rejects them for new collection. Recognized quantization declarations can establish checkpoint/FPM precision identities or an explicit KV dtype independently of the unknown quantized storage size; a checkpoint label does not mean every tensor has that dtype. Configs may supply useful identity facts while weight or activation estimates remain unavailable. Only unsupported cache semantics require additional geometry; non-KV estimates never become required questions. These estimates do not certify runtime memory fit. MLA/DSA layouts and configs that name no architecture must supply the remaining supported semantics explicitly. `config.json` cannot establish the cache geometry of some layouts, such as linear-attention, recurrent state or an architecture that intake does not recognize. Such a layout leaves that geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe). For that layout, a cache geometry override is a claim that observation import checks against the probe's measurement. Other known incompatible layouts are rejected.
 
 The saved request embeds the complete profile and its provenance. The original model config and override file are no longer needed by `onboard plan`, generated prediction and recommendation configs, or request replay. You can inspect or supply the complete profile directly as described next.
 
@@ -680,18 +680,20 @@ This rule has limits:
 - It does not apply to the MLA/DSA families `DeepseekV3ForCausalLM`,
   `DeepseekV32ForCausalLM` and `GlmMoeDsaForCausalLM`. Intake asks for their
   `cache_layout` and `kv_bytes_per_token`.
-- If the config's own fields declare sliding windows or convolution state, it
-  does not apply. Intake derives the cache groups of these layouts, such as
-  gpt-oss, Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse Glimmer, DeepSeek V4
-  and Inkling.
-- A config that names no architecture, such as a ModelOpt
-  `hf_quant_config.json` sidecar, still asks for its cache layout.
-- Typed geometry overrides never change the classification.
+- If the config's own fields declare sliding-window layers in use or
+  convolution state, it does not apply. Intake derives the cache groups of
+  these layouts, such as gpt-oss, Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse
+  Glimmer, DeepSeek V4 and Inkling. If only a schedule field, such as
+  `sliding_window_pattern`, selects the sliding-window layers, intake cannot
+  derive them. Then the rule still applies.
+- A config that names no architecture still asks for its cache layout.
+- Cache geometry overrides never change the classification.
 
 Packaged configs that are pending include GLM-5.3-Flash (KDA and
 sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
-NemotronH hybrids such as Nemotron-3 Nano. The architecture rule adds the
-Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and Llama-3.3-Nemotron-Super configs.
+NemotronH hybrids such as Nemotron-3 Nano. The rule for unrecognized
+architectures adds the Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and
+Llama-3.3-Nemotron-Super configs.
 For these layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not
 rejected.
 
@@ -720,15 +722,40 @@ For these layouts, `--resource-overrides` can state `cache_layout`,
 `kv_bytes_per_token` or `cache_groups` only as a claim. Intake checks the value
 like any other override and records it with its source. The claim never
 completes a profile, and declaring every non-KV memory field does not change
-that. The guidance then says that `onboard import-observations` checks the
-claim against the probe's measurement. For that check, keep the claim in the
-configuration's `resource_overrides` in the checkpoint. The measurement is
-authoritative. If they differ, import names both values and stops that
-configuration. Correct or remove the override. If the runtime changed, run a
-fresh probe. A `cache_block_sizes` override is an error: it names cache groups
-that intake derives from `config.json`, and these layouts have none.
-`onboard probe-runtime` reports the runtime cache groups with their block sizes.
-Precision and the other overrides are still accepted.
+that. The guidance then says that `onboard import-observations` checks each
+cache geometry override against the probe's measurement. For that check, keep
+the claim in the configuration's `resource_overrides` in the checkpoint.
+
+The vLLM probe always reports a grouped cache. Import checks each kind of claim
+against the measured groups:
+
+- A `cache_groups` claim must have the same groups as the measurement: the same
+  kinds, layer counts, block sizes, page sizes and windows. Import does not
+  compare group names or order. A group without a `sliding_window` has a null
+  window.
+- A `cache_layout: grouped` claim matches the grouped measurement.
+- A `cache_layout: linear` claim needs every measured group to be an attention
+  group without a window.
+- A `kv_bytes_per_token` claim also needs only attention groups without a
+  window, and it must equal the sum of `page_size_bytes / block_size_tokens`
+  over the measured groups. Both values are per rank, and a group's page size
+  covers all of its layers.
+
+The measurement is authoritative, and the profile keeps it unchanged. If a
+claim does not match, import names both values and stops that configuration.
+For a linear claim, import gives the measured linear equivalent. If there is
+none, it names the first measured group that has a window or convolution
+state. Correct or remove the override. If the runtime changed, run
+`onboard probe-runtime` again. Import also compares the scheduler limits and
+the precision with the probe's values. Provenance records each override that
+matches as checked against the probe.
+
+A `cache_block_sizes` override is an error for these layouts, at intake and at
+import. It names cache groups that intake derives from `config.json`, and these
+layouts have none. `onboard probe-runtime` reports the runtime cache groups with
+their block sizes. For other layouts, import accepts the override but does not
+use it, because the probe measured the block sizes. Provenance records it that
+way. Precision and the other overrides are still accepted.
 
 Malformed declarations still fail for every layout. An explicit `layer_types`
 list must have one entry per declared model layer, and an `attn_type_list` must
