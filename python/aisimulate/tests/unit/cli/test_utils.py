@@ -629,6 +629,107 @@ def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, 
     assert chosen == agg_key
 
 
+def test_default_without_load_target_still_chooses_throughput(monkeypatch):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode, throughput in (("agg", 100.0), ("disagg", 200.0)):
+        for backend in range(2):
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(
+                {
+                    "parallel": ["shared"],
+                    "(d)parallel": ["shared"],
+                    "tpot": [25.0],
+                    "tokens/s/user": [40.0],
+                    "tokens/s/gpu": [throughput - backend * 5.0],
+                    "num_total_gpus": [2],
+                }
+            )
+            tasks[f"{mode}_{backend}"] = task
+
+    chosen, _, _, scores, _, _ = cli_main._execute_tasks(tasks, mode="default", top_n=1)
+
+    assert scores == {"agg": 100.0, "disagg": 200.0}
+    assert chosen == "disagg"
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("multiple_backends", [False, True])
+@pytest.mark.parametrize(
+    "scenario, expected_chosen, expected_scores",
+    [
+        ("full_agg", "agg", {"agg": 0.5, "disagg": 75.0}),
+        ("full_disagg", "disagg", {"agg": 75.0, "disagg": 0.5}),
+        ("all_capped", "agg", {"agg": 100.0, "disagg": 75.0}),
+        ("empty_agg", "disagg", {"agg": 0.0, "disagg": 75.0}),
+        ("all_empty", "none", {"agg": 0.0, "disagg": 0.0}),
+    ],
+)
+def test_load_match_cross_mode_prefers_full_target(
+    monkeypatch, load_target, multiple_backends, scenario, expected_chosen, expected_scores
+):
+    from aisimulate.legacy_cli import main as cli_main
+
+    if scenario != "all_empty":
+        monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode in ("agg", "disagg"):
+        for backend in range(2 if multiple_backends else 1):
+            full_target = scenario == f"full_{mode}"
+            gpus = 2 if full_target or (scenario == "all_capped" and mode == "agg") else 3
+            capacity = 1.0 if full_target else 0.1
+            if backend and full_target:
+                # A capped backend gives the merged full-target row a null
+                # load_served_pct column; null still means no fallback.
+                gpus, capacity = 3, 0.1
+            columns = {
+                "parallel": ["shared"],
+                "(d)parallel": ["shared"],
+                "tpot": [25.0],
+                "tokens/s/user": [40.0],
+                "tokens/s/gpu": [100.0 - backend * 10.0],
+                "seq/s": [capacity],
+                "concurrency": [capacity],
+                "num_total_gpus": [gpus],
+            }
+            if scenario == "all_empty" or (scenario == "empty_agg" and mode == "agg"):
+                # A successful sweep can still have no load-match candidate.
+                del columns["seq/s" if load_target == "target_request_rate" else "concurrency"]
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(columns)
+            name = f"{mode}_{backend}" if multiple_backends else mode
+            tasks[name] = task
+
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=4, **{load_target: 1.0}
+    )
+
+    # Scores retain their documented units; a full-target 0.5 must beat a
+    # capped 75, while all-capped modes compare throughput (100 beats 75).
+    assert scores == expected_scores
+    if scenario == "all_empty":
+        assert all(frame.empty for frame in configs.values())
+    elif scenario == "empty_agg":
+        assert configs["agg"].empty
+    assert chosen == expected_chosen
+
+
 @pytest.mark.parametrize("mode", ["agg", "disagg", "afd"])
 @pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
 @pytest.mark.parametrize(

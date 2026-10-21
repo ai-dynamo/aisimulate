@@ -49,8 +49,8 @@ def process_experiment_result(
     Returns:
         tuple:
             - best_config_df: Best configuration dataframe.
-            - best_throughput: Best throughput (or 1/total_gpus_needed for
-              load-match mode so that ``max()`` picks fewest GPUs).
+            - best_throughput: Comparison score: throughput, or inverse GPU
+              count for a full-target load match; capped fallback uses throughput.
             - pareto_frontier_df: Pareto frontier dataframe.
             - x_axis_col: X-axis column name.
             - best_latencies: Dict with ``ttft``, ``tpot``, ``request_latency``

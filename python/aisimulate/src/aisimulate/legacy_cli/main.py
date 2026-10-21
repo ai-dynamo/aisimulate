@@ -2265,7 +2265,8 @@ def _execute_tasks(
 
     Returns:
         tuple:
-            - The experiment name with the highest comparison score ("chosen experiment").
+            - The chosen experiment: prefer a full-target load match, then its
+              comparison score; use capped throughput only if no full-target result exists.
             - Dictionary of best config DataFrames per experiment (or per serving mode if merged).
             - Dictionary of Pareto frontier DataFrames per experiment (or mode).
             - Dictionary of comparison scores per experiment (or mode): throughput
@@ -2385,7 +2386,21 @@ def _execute_tasks(
             max_total_gpus=max_total_gpus,
         )
 
-    chosen_exp = max(best_throughputs, key=best_throughputs.get) if best_throughputs else "none"
+    eligible_scores = best_throughputs
+    if target_request_rate is not None or target_concurrency is not None:
+        nonempty_scores = {name: score for name, score in best_throughputs.items() if not best_configs[name].empty}
+        full_target_scores = {
+            name: score
+            for name, score in nonempty_scores.items()
+            if "load_served_pct" not in best_configs[name].columns
+            or pd.isna(best_configs[name].iloc[0]["load_served_pct"])
+        }
+        # Inverse-GPU scores and capped-throughput scores have different units.
+        eligible_scores = full_target_scores or nonempty_scores
+    if not eligible_scores:
+        logger.warning("No nonempty configuration found for the target load.")
+        return "none", best_configs, pareto_fronts, best_throughputs, best_latencies, outcomes
+    chosen_exp = max(eligible_scores, key=eligible_scores.get)
 
     log_final_summary(
         chosen_exp=chosen_exp,  # for summary
