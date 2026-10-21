@@ -1416,6 +1416,16 @@ def _materialize_engine_role(
     if isinstance(requested_rank, Mapping):
         timing = requested_rank.get("timing_model")
         timing_config = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+        parallel_prefix = "" if role == "aggregated" else f"{role}_"
+        pipeline_sizes = (
+            parallel_config.get(f"{parallel_prefix}pp", 1),
+            role_config.get("aic_pp_size", 1),
+            requested_rank.get("aic_pp_size", 1),
+            timing_config.get("pp", 1) if isinstance(timing_config, Mapping) else 1,
+            timing_config.get("pp_size", 1) if isinstance(timing_config, Mapping) else 1,
+        )
+        if any(size is not None and size != 1 for size in pipeline_sizes):
+            raise ValueError(f"engine replay does not support pipeline parallelism for {role}; use pipeline=1")
         canonical = timing_config.get("speculation") if isinstance(timing_config, Mapping) else None
         selections = (requested_rank.get("speculation"), canonical)
         for spec in selections:

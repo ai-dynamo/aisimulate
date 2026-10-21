@@ -36,7 +36,7 @@ engine:
 | `workers.<role>.parallelism.preset` | Not applicable | `default` | Recommend only. `default` searches the generated parallelism space; a list pins candidate shapes; `false` or `{}` disables presets so the individual fields below define the space. See [search space](../../sweeper/search-space.md). |
 | `workers.<role>.parallelism.replicas` | `1` | Searched | Number of workers in this role. |
 | `workers.<role>.parallelism.tensor` | `1` | Searched | Attention tensor parallelism. |
-| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. |
+| `workers.<role>.parallelism.pipeline` | `1` | Searched | Pipeline stages. Engine replay requires `1`. |
 | `workers.<role>.parallelism.attention_data` | `1` | Searched | Attention data-parallel ranks per worker. |
 | `workers.<role>.parallelism.moe_tensor` | `1` | Searched | MoE tensor parallelism. Repartitions the worker's GPUs and does not add GPUs. |
 | `workers.<role>.parallelism.moe_expert` | `1` | Searched | MoE expert parallelism. Repartitions the worker's GPUs and does not add GPUs. |
@@ -86,9 +86,9 @@ differently and do not add more. A deployment's GPU count is the sum over its
 roles. In `recommend`, `optimization.constraints` bounds this sum.
 
 Engine replay reports each role's GPUs per worker as
-`tensor × attention_data × prefill_context` (pipeline parallelism is not supported
-by engine replay). GPU-hours sum each role's worker-seconds times this count,
-divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
+`tensor × attention_data × prefill_context`. Engine replay rejects pipeline
+parallelism greater than one before capacity estimation. GPU-hours sum each
+role's worker-seconds times this count, divided by 3600. Aggregated workers use the `decode_gpus_per_worker` and
 `decode_worker_seconds` report fields. Neither DCP nor MoE EP adds another
 multiplier.
 
