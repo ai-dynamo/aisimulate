@@ -100,7 +100,7 @@ class CLIResult:
     """Result from running CLI default or exp mode."""
 
     chosen_exp: str
-    """Name of the experiment with the best throughput."""
+    """Name of the experiment with the highest comparison score in best_throughputs."""
 
     best_configs: dict[str, pd.DataFrame]
     """Best configurations per experiment, filtered by latency constraints."""
@@ -109,7 +109,13 @@ class CLIResult:
     """Pareto frontier data per experiment."""
 
     best_throughputs: dict[str, float]
-    """Best throughput (tokens/s/gpu_cluster) per experiment."""
+    """Comparison score per experiment; higher is better.
+
+    Throughput mode uses ``tokens/s/gpu_cluster``. Load-match mode uses
+    ``1 / total_gpus_needed``; a GPU-capped fallback (a non-null
+    ``load_served_pct`` in the selected row) uses ``tokens/s/gpu_cluster``.
+    Read throughput values from ``best_configs`` when sizing for a load target.
+    """
 
     tasks: dict[str, Task]
     """Task objects used for each experiment."""
@@ -536,7 +542,9 @@ def cli_recommend(
 
     Returns:
         CLIResult with best configs containing ``total_gpus_needed`` and
-        ``replicas_needed`` columns, ranked by fewest GPUs first.
+        ``replicas_needed`` columns, ranked by fewest GPUs first. The
+        ``best_throughputs`` values are inverse-GPU comparison scores, not
+        token throughput; see :class:`CLIResult` for GPU-capped fallback units.
 
     Example:
         >>> result = cli_recommend(
@@ -547,6 +555,8 @@ def cli_recommend(
         ...     tpot=30,
         ... )
         >>> print(result.best_configs)
+        >>> print(result.chosen_exp)  # Highest comparison score
+        >>> print(result.best_throughputs)  # 1 / total_gpus_needed for load matching
     """
     import math
 

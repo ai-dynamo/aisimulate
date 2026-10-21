@@ -436,7 +436,18 @@ result = cli_recommend(
 )
 for mode, df in result.best_configs.items():
     print(f"{mode}: {df[['total_gpus_needed', 'replicas_needed', 'tp', 'tpot']].head()}")
+print(f"Chosen mode: {result.chosen_exp}")
+print(f"Comparison scores: {result.best_throughputs}")
 ```
+
+`CLIResult.chosen_exp` selects the highest `best_throughputs` comparison score.
+Despite the field name, load matching uses `1 / total_gpus_needed`, so a
+2-GPU recommendation scores `0.5` and a 4-GPU recommendation scores `0.25`.
+Throughput mode uses `tokens/s/gpu_cluster`. A GPU-capped load-match fallback
+also uses `tokens/s/gpu_cluster` and marks the selected row with a non-null
+`load_served_pct`. When merging backends, fitting the GPU budget exactly
+remains normal load matching.
+Read the selected dataframe's throughput columns for token rates.
 
 ### Default mode
 This mode is triggered by

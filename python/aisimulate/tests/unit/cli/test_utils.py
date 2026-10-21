@@ -577,7 +577,8 @@ class TestMergeExperimentResultsByMode:
 
 
 @pytest.mark.parametrize("load_target", [{"target_request_rate": 1.0}, {"target_concurrency": 1.0}])
-def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target):
+@pytest.mark.parametrize("gpu_cap", [None, 4])
+def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target, gpu_cap):
     from aisimulate.legacy_cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
@@ -609,28 +610,34 @@ def test_default_load_match_keeps_minimum_gpu_ranking(monkeypatch, load_target):
         )
         tasks[name] = task
 
-    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(tasks, mode="default", top_n=1, **load_target)
+    chosen, configs, _, scores, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=gpu_cap, **load_target
+    )
 
     # Both agg options meet the same load/SLA. One replica needs 2 GPUs versus
     # 8 GPUs, so a faster per-GPU rate cannot justify the more expensive one.
     assert configs["agg"].iloc[0]["total_gpus_needed"] == 2
     assert configs["agg"].iloc[0]["backend"] == "cheap"
     assert scores["agg"] == 0.5
+    # An exact-budget disagg fit must use the same inverse-GPU units as agg.
+    assert scores["disagg"] == 0.25
     assert chosen == "agg"
 
 
 @pytest.mark.parametrize("mode", ["agg", "disagg", "afd"])
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
 @pytest.mark.parametrize(
     "target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score",
     [
         (1.0, None, None, ["cheap", "fast"], [2, 4], 0.5),
         (1.0, 3, None, ["cheap"], [2], 0.5),
+        (1.0, 2, None, ["cheap"], [2], 0.5),
         (10.0, 4, None, ["fast", "cheap"], [4, 4], 120.0),
         (1.0, None, 700.0, ["cheap"], [2], 0.5),
     ],
 )
 def test_merge_load_match_preserves_constraints_and_backend_choices(
-    mode, target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score
+    mode, load_target, target, gpu_cap, request_latency, expected_backends, expected_gpus, expected_score
 ):
     tasks = {}
     best_configs = {}
@@ -654,6 +661,7 @@ def test_merge_load_match_preserves_constraints_and_backend_choices(
                 "request_latency": [latency],
                 "tokens/s/gpu": [throughput],
                 "seq/s": [capacity],
+                "concurrency": [capacity],
                 "num_total_gpus": [gpus],
             }
         )
@@ -664,8 +672,8 @@ def test_merge_load_match_preserves_constraints_and_backend_choices(
         {},
         {},
         top_n=2,
-        target_request_rate=target,
         max_total_gpus=gpu_cap,
+        **{load_target: target},
     )
 
     assert configs[mode]["backend"].tolist() == expected_backends

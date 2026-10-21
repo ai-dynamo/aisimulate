@@ -154,7 +154,8 @@ def _merge_into_top_n(
     best_throughput = 0.0
     if not df_best_configs.empty:
         row = df_best_configs.iloc[0]
-        if load_match and not (max_total_gpus and int(row["total_gpus_needed"]) >= max_total_gpus):
+        gpu_capped = "load_served_pct" in row.index and pd.notna(row["load_served_pct"])
+        if load_match and not gpu_capped:
             gpus = row["total_gpus_needed"]
             best_throughput = 1.0 / gpus if gpus > 0 else 0.0
         else:

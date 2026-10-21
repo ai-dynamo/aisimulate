@@ -2265,10 +2265,11 @@ def _execute_tasks(
 
     Returns:
         tuple:
-            - The experiment name with the overall best throughput ("chosen experiment").
+            - The experiment name with the highest comparison score ("chosen experiment").
             - Dictionary of best config DataFrames per experiment (or per serving mode if merged).
             - Dictionary of Pareto frontier DataFrames per experiment (or mode).
-            - Dictionary of best throughput values per experiment (or mode).
+            - Dictionary of comparison scores per experiment (or mode): throughput
+              for default picking or GPU-capped fallback, inverse GPU count for load matching.
             - Dictionary of estimated latencies per experiment. Each value is a
               dict with keys ``"ttft"``, ``"tpot"``, ``"request_latency"``
               extracted from the rank-1 config.
