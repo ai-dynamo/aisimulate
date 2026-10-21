@@ -532,47 +532,6 @@ def _check_headroom(counters: _TraceCounters, limit: int | None) -> None:
         raise _InspectionStopped(counters)
 
 
-_MOONCAKE_INPUTS = frozenset({"input_length", "input_tokens"})
-_MOONCAKE_OUTPUTS = frozenset({"output_length", "output_tokens"})
-
-
-def _scan_mooncake(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
-    """Count Mooncake, Mooncake-delta and Agentic Mooncake rows by their top-level fields."""
-    # Mooncake loaders size an omitted prompt from its hashes; Agentic Mooncake requires it.
-    block_size = state["omitted_input_block_size"]
-    hashes = authored = 0
-    row = False
-    row_input = None
-    for prefix, event, value in events:
-        if prefix == "hash_ids.item":
-            if event == "number":
-                hashes += 1
-        elif prefix == "hash_ids":
-            row = True
-        elif prefix == "output_token_ids.item":
-            if event == "number":
-                authored += 1
-        elif prefix == "":
-            if event == "start_map":
-                row = False
-                row_input = None
-            elif event == "end_map":
-                length = hashes * block_size if row_input is None else row_input
-                counters.largest_input = max(counters.largest_input, length)
-                counters.total_input += length
-                counters.hashes += hashes
-                counters.authored_outputs += authored
-                hashes = authored = 0
-                counters.requests += int(row)
-                _check_headroom(counters, limit)
-        elif prefix in _MOONCAKE_INPUTS:
-            row_input = _token_length(value)
-            row = True
-        elif prefix in _MOONCAKE_OUTPUTS:
-            counters.outputs += _token_length(value)
-            row = True
-
-
 def _scan_applied_compute(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
     """Count sessions without the synthetic hashes the loader derives from lengths.
 
@@ -597,66 +556,6 @@ def _scan_applied_compute(events: Any, counters: _TraceCounters, state: dict[str
             elif event == "end_map":
                 counters.largest_input = max(counters.largest_input, prompt)
                 _check_headroom(counters, limit)
-
-
-_DYNAMO_HASHES = "request.replay.input_sequence_hashes.item"
-_WRAPPED_DYNAMO_HASHES = "event." + _DYNAMO_HASHES
-_DYNAMO_FIELDS = frozenset({"event_type", "request.output_tokens", "request.replay.input_length"})
-
-
-def _scan_dynamo(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
-    """Count Dynamo request_end events, accepting a direct event or an outer event wrapper.
-
-    The first request event selects standard or agentic mode for every file.
-    Later requests must keep that mode.
-    """
-    agentic = state.get("agentic")
-    direct: dict[str, Any] | None = None
-    wrapper: dict[str, Any] = {}
-    wrapped = False
-    direct_hashes = wrapper_hashes = 0
-    for prefix, event, value in events:
-        if prefix == _DYNAMO_HASHES:
-            if event == "number":
-                direct_hashes += 1
-            continue
-        if prefix == _WRAPPED_DYNAMO_HASHES:
-            if event == "number":
-                wrapper_hashes += 1
-            continue
-        if prefix == "":
-            if event == "start_map":
-                direct, wrapper, wrapped = {}, {}, False
-                direct_hashes = wrapper_hashes = 0
-            elif event == "end_map" and direct is not None:
-                row, row_hashes = (wrapper, wrapper_hashes) if wrapped else (direct, direct_hashes)
-                if row.get("event_type") != "request_end":
-                    continue
-                contextual = row.get("agent_context", False)
-                if agentic is not None and contextual != agentic:
-                    raise ResourceLimitError("Dynamo request trace cannot mix requests with and without agent_context")
-                agentic = state["agentic"] = contextual
-                counters.hashes += row_hashes
-                counters.outputs += _token_length(row.get("request.output_tokens"))
-                counters.largest_input = max(
-                    counters.largest_input, _token_length(row.get("request.replay.input_length"))
-                )
-                counters.requests += 1
-                _check_headroom(counters, limit)
-            continue
-        if prefix == "event":
-            wrapped = True
-            continue
-        if direct is None:
-            continue
-        if prefix.startswith("event."):
-            row, key = wrapper, prefix[6:]
-        else:
-            row, key = direct, prefix
-        if key in _DYNAMO_FIELDS:
-            row[key] = value
-        elif key == "agent_context" and event in {"start_map", "null"}:
-            row[key] = event == "start_map"
 
 
 def _scan_weka(events: Any, counters: _TraceCounters, state: dict[str, Any], limit: int | None) -> None:
@@ -702,13 +601,11 @@ def _weka_block_size(path: Path) -> int:
 
 
 _TRACE_SCANNERS = {
-    "mooncake": _scan_mooncake,
-    "mooncake-delta": _scan_mooncake,
-    "agentic_mooncake": _scan_mooncake,
     "applied_compute_agentic": _scan_applied_compute,
-    "dynamo": _scan_dynamo,
     "weka": _scan_weka,
 }
+# Hash arrays dominate these formats, so one native pass counts them.
+_NATIVE_TRACE_SCANS = frozenset({"mooncake", "mooncake-delta", "agentic_mooncake", "dynamo"})
 
 
 def _trace_files(workload: Mapping[str, Any], format_name: str) -> list[Path] | None:
@@ -733,15 +630,39 @@ def _scan_finite_trace(
         materializes_inputs=format_name == "mooncake-delta",
     )
     limit = None if inspection_budget_bytes is None else inspection_budget_bytes - WORKER_BASELINE_BYTES
+    if format_name in _NATIVE_TRACE_SCANS:
+        # The supervisor imports this module but never loads the native runtime.
+        from ._runtime import scan_trace_counters
+
+        (
+            counters.hashes,
+            counters.authored_outputs,
+            counters.outputs,
+            counters.largest_input,
+            counters.total_input,
+            counters.requests,
+            outcome,
+        ) = scan_trace_counters(
+            format_name,
+            [str(path) for path in files],
+            # Mooncake loaders size an omitted prompt from its hashes; Agentic Mooncake requires it.
+            configured_block_size if format_name in {"mooncake", "mooncake-delta"} else 0,
+            limit,
+            counters.retains_source_hashes,
+            counters.materializes_inputs,
+        )
+        if outcome == "mixed_agent_context":
+            raise ResourceLimitError("Dynamo request trace cannot mix requests with and without agent_context")
+        if outcome == "stopped":
+            raise _InspectionStopped(counters)
+        return counters
     scan = _TRACE_SCANNERS[format_name]
-    state: dict[str, Any] = {
-        "omitted_input_block_size": configured_block_size if format_name in {"mooncake", "mooncake-delta"} else 0
-    }
+    state: dict[str, Any] = {}
     for path in files:
         if format_name == "weka" and "block_size" not in state:
             state["block_size"] = _weka_block_size(path)
         # Streaming holds individual scalars, never request or token arrays.
-        with gzip.open(path, "rb") if format_name == "dynamo" and path.suffix == ".gz" else path.open("rb") as stream:
+        with path.open("rb") as stream:
             scan(ijson.parse(stream, multiple_values=True, buf_size=64 * 1024), counters, state, limit)
     return counters
 

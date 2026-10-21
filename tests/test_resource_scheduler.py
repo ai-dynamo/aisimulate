@@ -229,14 +229,14 @@ def test_unknown_peak_runs_serially_until_a_replay_is_observed(tmp_path, monkeyp
             return future
 
     parses = []
-    original_parse = resources.ijson.parse
+    original_scan = resources._scan_finite_trace
 
-    def parse(*args, **kwargs):
+    def scan(*args, **kwargs):
         parses.append(None)
-        return original_parse(*args, **kwargs)
+        return original_scan(*args, **kwargs)
 
     monkeypatch.setattr(resources, "estimate_workload", estimate)
-    monkeypatch.setattr(resources.ijson, "parse", parse)
+    monkeypatch.setattr(resources, "_scan_finite_trace", scan)
     monkeypatch.setattr(GuardedRunnerFactory, "admit_wave", admit)
     monkeypatch.setattr(scheduler, "ProcessPoolExecutor", Pool)
     monkeypatch.setattr(scheduler, "_peak_rss_bytes", lambda: peak_mib * resources.MIB)

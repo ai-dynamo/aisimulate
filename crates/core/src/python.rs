@@ -34,6 +34,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
 use serde::Deserialize;
 
+mod trace_scan;
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum ExecutionPayload {
@@ -2845,6 +2847,61 @@ fn engine_launch_from_replay_role_json(
     convert().map_err(|error| pyo3::exceptions::PyValueError::new_err(format!("{error:#}")))
 }
 
+/// Count a finite trace's host-memory admission metadata without
+/// materializing its arrays.
+///
+/// Returns `(hashes, authored_outputs, outputs, largest_input, total_input,
+/// requests, outcome)`; `outcome` is `complete`, `stopped` once the lower bound
+/// exceeds `limit`, or `mixed_agent_context`.
+#[pyfunction]
+#[pyo3(signature = (format, paths, omitted_input_block_size, limit, retains_source_hashes, materializes_inputs))]
+fn scan_trace_counters(
+    py: Python<'_>,
+    format: &str,
+    paths: Vec<PathBuf>,
+    omitted_input_block_size: u64,
+    limit: Option<i64>,
+    retains_source_hashes: bool,
+    materializes_inputs: bool,
+) -> PyResult<(u64, u64, u64, u64, u64, u64, &'static str)> {
+    use trace_scan::{Headroom, TraceRows, TraceScanError, TraceScanOutcome, scan_trace};
+
+    let rows = match format {
+        "mooncake" | "mooncake-delta" | "agentic_mooncake" => TraceRows::Mooncake,
+        "dynamo" => TraceRows::Dynamo,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "trace format {format:?} has no native metadata scan"
+            )));
+        }
+    };
+    let headroom = Headroom {
+        limit,
+        retains_source_hashes,
+        materializes_inputs,
+    };
+    let (counters, outcome) = py
+        .allow_threads(|| scan_trace(rows, &paths, omitted_input_block_size, headroom))
+        .map_err(|error| match error {
+            TraceScanError::Open(error) => PyErr::from(error),
+            TraceScanError::Invalid(message) => pyo3::exceptions::PyValueError::new_err(message),
+        })?;
+    let outcome = match outcome {
+        TraceScanOutcome::Complete => "complete",
+        TraceScanOutcome::Stopped => "stopped",
+        TraceScanOutcome::MixedAgentContext => "mixed_agent_context",
+    };
+    Ok((
+        counters.hashes,
+        counters.authored_outputs,
+        counters.outputs,
+        counters.largest_input,
+        counters.total_input,
+        counters.requests,
+        outcome,
+    ))
+}
+
 /// AISimulate native runtime module.
 #[pymodule]
 fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2855,6 +2912,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_timing_config_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
+    module.add_function(wrap_pyfunction!(scan_trace_counters, module)?)?;
     crate::perfmodel::register_python(module)?;
     Ok(())
 }

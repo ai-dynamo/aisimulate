@@ -766,19 +766,13 @@ def test_finite_agentic_arrays_ignore_unloaded_fields(tmp_path, output_length, a
 
 
 @pytest.mark.parametrize(
-    "prefix,lower", [("input_tokens", 4), ("output_tokens", 4), ("hash_ids.item", 8), ("output_token_ids.item", 4)]
+    "field,value,lower",
+    [("input_tokens", 1, 4), ("output_tokens", 1, 4), ("hash_ids", [1], 8), ("output_token_ids", [1], 4)],
 )
-def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, monkeypatch, prefix, lower):
+def test_finite_agentic_inspection_stops_when_storage_cannot_fit(tmp_path, field, value, lower):
     trace = tmp_path / "agentic.jsonl"
-    trace.write_text("{}\n")
-
-    def events(*args, **kwargs):
-        yield "", "start_map", None
-        yield prefix, "number", 1
-        yield "", "end_map", None
-        pytest.fail("must stop at the first row whose lower bound cannot fit")
-
-    monkeypatch.setattr(resources.ijson, "parse", events)
+    # Inspection must stop at the first row whose lower bound cannot fit, before the invalid second row.
+    trace.write_text(json.dumps({field: value}) + "\nnot JSON\n")
     estimate = estimate_workload(
         {"trace_path": str(trace), "trace_format": "agentic_mooncake"},
         stack="engine",
@@ -972,13 +966,13 @@ def test_standard_dynamo_validates_every_later_request(tmp_path, wrapped):
 
 def _count_parses(monkeypatch):
     calls = []
-    original = resources.ijson.parse
+    original = resources._scan_finite_trace
 
-    def parse(*args, **kwargs):
+    def scan(*args, **kwargs):
         calls.append(None)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(resources.ijson, "parse", parse)
+    monkeypatch.setattr(resources, "_scan_finite_trace", scan)
     return calls
 
 
@@ -1003,7 +997,7 @@ def test_trace_scan_is_reused_until_its_files_change(tmp_path, monkeypatch, host
     assert estimate_workload(workload, stack="engine").request_count == 2
     (traces / "c.jsonl").write_text(json.dumps(_dynamo_row("c", contextual=False)) + "\n")
     assert estimate_workload(workload, stack="engine").request_count == 3
-    assert len(parses) == 1 + 1 + 2
+    assert len(parses) == 3  # Each change rescans the trace once.
 
 
 def test_trace_scan_never_reuses_partial_or_failed_inspections(tmp_path, monkeypatch):
