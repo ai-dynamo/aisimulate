@@ -84,3 +84,21 @@ The follow-up changes documentation, SDK docstrings, and tests only; Rust source
 and dependencies are unchanged, and the SDK's executable Python AST is unchanged.
 The receipt pins the extension and source hashes. This evidence is separate from
 the earlier review and compatibility receipts above.
+
+## Replay schema and shared documentation follow-up
+
+Implementation `126ba627` addresses the remaining Cross-Layer Contract warning
+from merged PR533. Replay's global and worker timing schemas and Sweeper's
+search schema now advertise only their four supported estimator modes. A
+before-validator retains the explicit learned-mode capability error. Shared
+configuration and support references document learned source requirements,
+explicit selection, and the standalone full-iteration API boundary.
+
+The [Replay contract receipt](replay-contract-validation.json) records 904
+passing caller tests and 189 passing SDK/API tests. Coverage includes validation
+and serialization schemas, all supported modes through configuration round trips
+and compiler serialization, normalized role controls, and learned rejection at
+public and raw Replay boundaries. The standalone learned-model tests still pass.
+The receipt includes generated schema excerpts, source hashes, and the unchanged
+native extension hash. Caller tests include mocked paths; this is local contract
+validation, with no new serving-accuracy, performance, or parity claim.
