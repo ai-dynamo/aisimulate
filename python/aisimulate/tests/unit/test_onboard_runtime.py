@@ -735,6 +735,23 @@ def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, ca
         save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
 
 
+@pytest.mark.parametrize("claim", [False, True])
+def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, claim):
+    _, _, request, files = _imported(
+        tmp_path, capsys, capacity_multiplier=10, resource_overrides=_LINEAR_CLAIM if claim else None
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prerequisite = json.loads((root / "support-plan.json").read_text())["prerequisites"][0]
+    # A linear profile has no cache groups. The grouped text stays as it was, so grouped outputs do not change.
+    geometry = "cache geometry" if claim else "grouped geometry"
+    assert prerequisite["status"] == "runtime_memory_resolved"
+    assert prerequisite["detail"] == (
+        f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
+    )
+
+
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
     from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
 

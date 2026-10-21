@@ -369,11 +369,11 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "Selected deployment uses observed cache capacity for the exact recorded runtime settings. "
                 "Timing coverage and silicon accuracy require separate validation."
             )
+            # A linear profile has no cache groups. The text for a grouped profile is unchanged.
+            geometry = "grouped geometry" if deployment.resources.cache_layout == "grouped" else "cache geometry"
             plan["prerequisites"][0].update(
                 status="runtime_memory_resolved",
-                detail=(
-                    "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
-                ),
+                detail=f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope.",
             )
         plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
     role_only = request.worker_type in {"prefill", "decode"}
