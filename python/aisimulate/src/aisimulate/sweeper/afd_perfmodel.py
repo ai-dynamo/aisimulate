@@ -220,6 +220,7 @@ class AICAFDPerformanceModel:
                     f"AIC estimate omitted the {phase.value!r} AFD layer measurement",
                     provenance={"provider": "aic", "available_phases": sorted(payload)},
                 )
+            components = item.get("components")
             try:
                 measurements.append(
                     AFDLayerTimes(
@@ -241,6 +242,13 @@ class AICAFDPerformanceModel:
                             "backend_version": request.backend_version,
                             "input_length": request.input_length,
                             "output_length": request.output_length,
+                            # Per-layer boundary components (A compute, A-side combine,
+                            # router, F compute, F collectives) for composite providers.
+                            **(
+                                {"components": {name: float(value) for name, value in components.items()}}
+                                if isinstance(components, Mapping)
+                                else {}
+                            ),
                         },
                     )
                 )

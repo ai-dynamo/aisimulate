@@ -48,6 +48,8 @@ engine:
 | `engine.afd.pipeline_model` | `optimistic` | `{choices: [optimistic, conservative]}` | `optimistic`, `conservative` or `serial`. |
 | `engine.afd.comm_overhead_factor` | `1.0` | fixed | Positive factor on A/F communication. |
 | `engine.afd.boundary_on_attn` | `true` | fixed | A/F boundary convention. |
+| `engine.afd.fastafd_profile_path` | `null` | Prediction only | Measured FastAFD split MoE stage; see [below](#measured-fastafd-moe-stage). Requires `phase: decode`, `tp_a: 1`, `f_moe_ep_size` equal to the F GPU count, and `boundary_on_attn: true`. |
+| `engine.afd.fastafd_moe_backend` | `null` | Prediction only | Required with `fastafd_profile_path`; `megamoe` or `deepep_deepgemm`. |
 | `engine.afd.max_af_ratio`, `max_candidates` | `4.0`, `10000` | Recommend only | Bounds on the generated topology space. |
 
 Workers:
@@ -68,6 +70,25 @@ The pass time is built from measured per-layer A, F, A→F and F→A times:
 A pass adds pipeline fill to the cadence of every microbatch and layer. Queueing
 contributes to TTFT and E2E latency. TPOT is
 `(E2E − TTFT) / (OSL − 1)`, or zero for one-token outputs.
+
+<a id="measured-fastafd-moe-stage"></a>
+
+### Measured FastAFD MoE stage
+
+`engine.afd.fastafd_profile_path` with `fastafd_moe_backend` takes the decode F
+time from an AISimulate [FastAFD MoE stage profile](../../perf-model/schemas/fastafd-moe-stage-profile.md)
+instead of the operation model. The profile's `afd` entry must match the model,
+hardware, `<A GPUs>A<F GPUs>F` topology, `a_batch_size`, MTP degree and
+`num_microbatches` exactly; nothing is interpolated or projected. Its stage latency
+covers dispatch, experts, return and the A-side combine for every MoE layer of one
+decode step, so it is spread evenly over `moe_layers × num_microbatches` pipeline
+units as F, and A→F and F→A are zero. A keeps the attention provider's
+A-side compute without its own combine term and adds the router, which FastAFD
+runs on the A side outside the measured stage. The attention provider must report
+these per-layer components; the built-in estimator does. When several entries
+differ only in `moe_precision`, `engine.moe_quant_mode` selects one. The profile
+entry, its producer and the attention composition are recorded in the
+measurement provenance. FastAFD is not a runtime dependency.
 
 Requirements: fixed synthetic input and output lengths and no trace.
 `kv_capacity_fraction` load is rejected because the A/F pools have no
