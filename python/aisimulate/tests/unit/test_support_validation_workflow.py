@@ -1143,7 +1143,7 @@ def test_linear_claim_stays_linear_from_import_through_validation(tmp_path, caps
     )
     readiness = collection_readiness.assess_readiness(request, root, root / "fpm-checkpoint")
     assert readiness["ready_for_full_collection"], readiness["blockers"]
-    # Finalization keeps the accepted form, and the finalized check verifies it against the collection.
+    # Finalization keeps the accepted layout, and the finalized check verifies it against the collection.
     target = tmp_path / "resolved"
     finalize(request, root, target)
     resolved = SupportRequest.from_yaml(target / "request.yaml")

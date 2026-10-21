@@ -22,7 +22,7 @@ from aisimulate.support.config_profile import (
     _ATTENTION_DIMENSIONS,
     ProfileRequestError,
     _geometry,
-    _linear_form_gap,
+    _linear_layout_gap,
     _runtime_layout,
     derive_profile,
     linear_runtime_resources,
@@ -651,8 +651,8 @@ _RUNTIME_MEMORY = {
     "max_model_len": 2048,
     "provenance": "observed runtime capacity",
 }
-_LINEAR_FORM = (
-    "linear: import wrote the linear form because the supplied {claimed} matched the measured full-attention groups"
+_LINEAR_REASON = (
+    "linear: import wrote the linear layout because the supplied {claimed} matched the measured full-attention groups"
 )
 
 
@@ -712,10 +712,10 @@ def test_linear_runtime_resources_sums_full_attention_groups(pages, expected):
     ],
     ids=["sliding-window-group", "convolution-group", "fractional-sum", "linear-input"],
 )
-def test_linear_runtime_resources_has_no_linear_form_for_other_measurements(resources, reason):
+def test_linear_runtime_resources_has_no_linear_layout_for_other_measurements(resources, reason):
     assert linear_runtime_resources(resources) is None
     # Finalization gives this reason when it refuses a linear profile.
-    assert _linear_form_gap(resources) == reason
+    assert _linear_layout_gap(resources) == reason
 
 
 @pytest.mark.parametrize(
@@ -746,7 +746,7 @@ def test_matching_linear_claims_give_a_linear_profile(tmp_path, pages, layout):
     # The measured groups stay in the provenance for audit, with their block sizes.
     assert provenance["measured_cache_groups"] == observed["cache_groups"]
     claimed = "cache_layout and kv_bytes_per_token" if layout else "kv_bytes_per_token"
-    assert provenance["cache_form"] == _LINEAR_FORM.format(claimed=claimed)
+    assert provenance["cache_layout_reason"] == _LINEAR_REASON.format(claimed=claimed)
     assert _sources(profile) == dict.fromkeys(claims, _CHECKED)
 
 
@@ -757,10 +757,10 @@ def test_linear_layout_claim_alone_uses_the_measured_whole_number(tmp_path):
     )
     resources = profile.deployments[0].resources
     assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 32
-    assert json.loads(profile.provenance)["cache_form"] == _LINEAR_FORM.format(claimed="cache_layout")
+    assert json.loads(profile.provenance)["cache_layout_reason"] == _LINEAR_REASON.format(claimed="cache_layout")
 
 
-def test_linear_layout_claim_with_a_fractional_measurement_keeps_the_grouped_form(tmp_path):
+def test_linear_layout_claim_with_a_fractional_measurement_keeps_the_grouped_layout(tmp_path):
     # 25 bytes per 4-token block is 25/4 bytes per token; a linear profile needs a whole number.
     groups = [{**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}]
     observed = {**_GROUPED_OBSERVATION, "cache_groups": groups}
@@ -769,7 +769,7 @@ def test_linear_layout_claim_with_a_fractional_measurement_keeps_the_grouped_for
     )
     assert profile.deployments[0].resources.cache_layout == "grouped"
     provenance = json.loads(profile.provenance)
-    assert provenance["cache_form"] == (
+    assert provenance["cache_layout_reason"] == (
         "grouped: the supplied cache_layout matched the measured full-attention groups, but the measured bytes per "
         "token, 25/4, are not a whole number"
     )
@@ -788,7 +788,7 @@ def test_without_a_linear_claim_the_profile_stays_grouped(tmp_path, claims):
     )
     assert profile.deployments[0].resources.cache_layout == "grouped"
     provenance = json.loads(profile.provenance)
-    assert "cache_form" not in provenance and "measured_cache_groups" not in provenance
+    assert "cache_layout_reason" not in provenance and "measured_cache_groups" not in provenance
 
 
 def test_linear_and_grouped_profiles_of_one_measurement_differ_by_less_than_a_block(tmp_path, monkeypatch):

@@ -467,8 +467,8 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     actual = _resource_values(selected.resources.model_dump(mode="json"))
     observed_capacity = expected["runtime_memory"].pop("kv_cache_bytes")
     actual_capacity = actual["runtime_memory"].pop("kv_cache_bytes")
-    # The draft holds the grouped evidence, or its linear form after a matching linear claim. Only the evidence
-    # decides which forms exist.
+    # The draft holds the grouped evidence, or the same evidence in the linear layout. Only the evidence decides
+    # which layouts exist.
     if actual != expected and actual != linear_runtime_resources(expected):
         raise ValueError("runtime cache geometry or settings changed; a compatible fresh probe is required")
     overrides = (

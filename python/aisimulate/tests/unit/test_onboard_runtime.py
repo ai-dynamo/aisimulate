@@ -946,7 +946,7 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
     return checkpoint, request, files, root
 
 
-def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linear_form(tmp_path, capsys, monkeypatch):
+def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linear_layout(tmp_path, capsys, monkeypatch):
     from aisimulate.support import finalization
 
     _, request, _, root = _completed_runtime_collection(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
@@ -963,7 +963,7 @@ def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linea
     with pytest.raises(ValueError) as error:
         finalization.finalize(request, root, target)
     assert str(error.value) == (
-        "the accepted profile is linear, but the collection's measured cache groups have no linear form: "
+        "the accepted profile is linear, but the collection's measured cache groups have no linear layout: "
         "cache group runtime_group_1 has sliding_window=128"
     )
     assert not target.exists()

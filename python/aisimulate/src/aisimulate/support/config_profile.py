@@ -1540,8 +1540,8 @@ def _measured_kv_bytes(resources: Mapping[str, Any]) -> Fraction | None:
     return sum((Fraction(group.page_size_bytes, group.block_size_tokens) for group in groups), Fraction(0))
 
 
-def _linear_form_gap(resources: Mapping[str, Any]) -> str | None:
-    """Why measured resources have no linear form; None when they have one."""
+def _linear_layout_gap(resources: Mapping[str, Any]) -> str | None:
+    """Why a linear layout cannot describe measured resources; None when it can."""
     if resources.get("cache_layout") != "grouped":
         return f"the measurement's cache_layout is {resources.get('cache_layout')}, not grouped"
     group = _windowed_group(_measured_groups(resources))
@@ -1556,13 +1556,13 @@ def _linear_form_gap(resources: Mapping[str, Any]) -> str | None:
 
 
 def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The linear form of measured grouped resources; None when a linear cache does not describe them exactly.
+    """Measured grouped resources in the linear layout; None when a linear cache does not describe them exactly.
 
     Every group must be an attention group without a window, and the exact sum of page_size_bytes /
     block_size_tokens must be a whole number of bytes per token. Every other field, such as runtime_memory and
     the resource provenance, is kept. Import, acceptance, finalization and validation all use this function.
     """
-    if _linear_form_gap(resources) is not None:
+    if _linear_layout_gap(resources) is not None:
         return None
     linear = {key: deepcopy(value) for key, value in resources.items() if key != "cache_groups"}
     linear.update(cache_layout="linear", kv_bytes_per_token=int(_measured_kv_bytes(resources)))
@@ -1671,9 +1671,9 @@ def profile_from_observations(
             f"cache layout measured by the runtime probe ({', '.join(runtime)}). config.json does not establish "
             "cache or state geometry; these resources are onboard probe-runtime observations."
         )
-    # A matching linear claim gives back the linear form of the measured full-attention groups. A grouped claim,
+    # A matching linear claim gives back the measured full-attention groups in the linear layout. A grouped claim,
     # or no linear claim, keeps the measured groups.
-    measured, form = dict(resources), {}
+    measured, layout_provenance = dict(resources), {}
     claimed = " and ".join(key for key in ("cache_layout", "kv_bytes_per_token") if key in supplied)
     layout_claim = supplied.get("cache_layout")
     if resources.get("cache_layout") == "grouped" and (
@@ -1682,17 +1682,17 @@ def profile_from_observations(
         linear = linear_runtime_resources(resources)
         if linear is None:
             # Only a cache_layout claim without kv_bytes_per_token can match a sum that is not a whole number.
-            form["cache_form"] = (
+            layout_provenance["cache_layout_reason"] = (
                 f"grouped: the supplied {claimed} matched the measured full-attention groups, but "
-                f"{_linear_form_gap(resources)}"
+                f"{_linear_layout_gap(resources)}"
             )
         else:
             measured = linear
-            form["cache_form"] = (
-                f"linear: import wrote the linear form because the supplied {claimed} matched the measured "
+            layout_provenance["cache_layout_reason"] = (
+                f"linear: import wrote the linear layout because the supplied {claimed} matched the measured "
                 "full-attention groups"
             )
-            form["measured_cache_groups"] = resources["cache_groups"]
+            layout_provenance["measured_cache_groups"] = resources["cache_groups"]
     parallel = request.parallelism()
     return FpmModelProfile.model_validate(
         {
@@ -1720,7 +1720,7 @@ def profile_from_observations(
                         for key, value in supplied.items()
                     },
                     "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
-                    **form,
+                    **layout_provenance,
                 },
                 sort_keys=True,
                 allow_nan=False,

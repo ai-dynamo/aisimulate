@@ -16,7 +16,7 @@ from typing import Any
 
 from aisimulate.fpm_profile import FpmResourceProfile
 
-from .config_profile import _linear_form_gap, linear_runtime_resources
+from .config_profile import _linear_layout_gap, linear_runtime_resources
 from .plan import _plan_documents, check_plan, plan_lock, request_id
 from .schema import FPMDeployment, SupportRequest
 
@@ -282,8 +282,8 @@ def _finalized_resources(
     linear = linear_runtime_resources(merged)
     if linear is None:
         raise ValueError(
-            "the accepted profile is linear, but the collection's measured cache groups have no linear form: "
-            f"{_linear_form_gap(merged)}"
+            "the accepted profile is linear, but the collection's measured cache groups have no linear layout: "
+            f"{_linear_layout_gap(merged)}"
         )
     return linear, merged
 
@@ -585,7 +585,7 @@ def finalize(
                 "source_collection_plan_sha256": manifest["source_collection_plan_sha256"],
                 "source_profile_provenance": request.fpm_profile.provenance,
                 "collection_quality": manifest["collection_quality"],
-                # The linear form keeps the measured groups for audit.
+                # A linear profile keeps the measured groups for audit.
                 **(
                     {"measured_cache_groups": measured["cache_groups"]} if resources["cache_layout"] == "linear" else {}
                 ),
