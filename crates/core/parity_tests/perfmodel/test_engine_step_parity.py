@@ -1095,6 +1095,19 @@ def _surface_metrics(
 ) -> dict[str, float | _ErrorSentinel]:
     """LIVE compiled-engine metrics for a (case, surface) pair.
 
+    Shared by the parity tests and ``pin_goldens.py``; a case pinned to an
+    unlisted version is admitted for both through `_unlisted_version_scope`.
+    """
+    with _unlisted_version_scope(case):
+        return _unscoped_surface_metrics(case, surface)
+
+
+def _unscoped_surface_metrics(
+    case: EngineStepParityCase,
+    surface: str,
+) -> dict[str, float | _ErrorSentinel]:
+    """Surface dispatch for `_surface_metrics`.
+
     There is no engine selector anymore: the helpers pin
     ``engine_step_backend="rust"`` internally (passing "python" would be a
     silent rust-vs-rust self-comparison via the deprecation no-op — exactly
@@ -1164,8 +1177,7 @@ def _comparison_metrics(
     surface: str,
 ) -> dict[str, tuple[float | _ErrorSentinel, float | _ErrorSentinel]]:
     """(python-golden, live-rust) pairs for every metric of the surface."""
-    with _unlisted_version_scope(case):
-        rust_metrics = _surface_metrics(case, surface)
+    rust_metrics = _surface_metrics(case, surface)
     python_metrics = _golden_python_metrics(case, surface, rust_metrics)
     return {name: (python_metrics[name], rust_metrics[name]) for name in rust_metrics}
 

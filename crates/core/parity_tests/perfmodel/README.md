@@ -101,11 +101,12 @@ comparison itself still bites.
 
 Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0
 the derived fleet `next` versions. The two Kimi-K3 B300 cases follow `next`,
-so they now read the B300 SGLang 0.5.20 `gemm_perf` and
-`custom_allreduce_perf` tables collected for GLM; other families still fill
-backward from older versions. With only the GEMM table present, static
-context and generation change by +1.819 and -0.607 ms; with only the
-all-reduce table, by -0.913 and -0.213 ms. Only the failing static and
+so they now read the B300 SGLang 0.5.20 tables collected for GLM. The
+change comes from `gemm_perf` and `custom_allreduce_perf`: with only the
+GEMM table present, static context and generation change by +1.819 and
+-0.607 ms; with only the all-reduce table, by -0.913 and -0.213 ms. With
+only the 0.5.20 KDA, MoE, mHC or GLM attention table present, the records
+are unchanged. Only the failing static and
 disaggregated records were refreshed, from
 `9a08d1557462c02a6cc8552360afee89538a0540` with a matching native build:
 
@@ -121,7 +122,9 @@ disaggregated records were refreshed, from
 The aggregate references pass unchanged and the mixed records keep their
 `PerfDataNotAvailableError`. The four Qwen3.8-Max GB300 cases pin SGLang
 0.5.17 and vLLM 0.27.1, which are no longer queryable versions. They set
-`allow_unlisted_version=True` and keep their references unchanged.
+`allow_unlisted_version=True` and keep their references unchanged; the
+parity tests and `pin_goldens.py` both admit that version through
+`_surface_metrics`.
 
 ```bash
 python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
