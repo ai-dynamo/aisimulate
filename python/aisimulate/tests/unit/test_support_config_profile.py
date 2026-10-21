@@ -22,6 +22,7 @@ from aisimulate.support.config_profile import (
     _ATTENTION_DIMENSIONS,
     ProfileRequestError,
     _geometry,
+    _linear_form_gap,
     _runtime_layout,
     derive_profile,
     linear_runtime_resources,
@@ -686,21 +687,35 @@ def test_linear_runtime_resources_sums_full_attention_groups(pages, expected):
 
 
 @pytest.mark.parametrize(
-    "resources",
+    "resources,reason",
     [
-        {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]},
-        {
-            **_GROUPED_OBSERVATION,
-            "cache_groups": [_RUNTIME_GROUP, {**_WINDOWED_GROUP, "kind": "convolution", "sliding_window": 4}],
-        },
+        (
+            {**_GROUPED_OBSERVATION, "cache_groups": [_RUNTIME_GROUP, _WINDOWED_GROUP]},
+            "cache group runtime_group_1 has sliding_window=128",
+        ),
+        (
+            {
+                **_GROUPED_OBSERVATION,
+                "cache_groups": [_RUNTIME_GROUP, {**_WINDOWED_GROUP, "kind": "convolution", "sliding_window": 4}],
+            },
+            "cache group runtime_group_1 has kind=convolution",
+        ),
         # 25 bytes per 4-token block is 25/4 bytes per token.
-        {**_GROUPED_OBSERVATION, "cache_groups": [{**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}]},
-        _LINEAR_OBSERVATION,
+        (
+            {
+                **_GROUPED_OBSERVATION,
+                "cache_groups": [{**_RUNTIME_GROUP, "block_size_tokens": 4, "page_size_bytes": 25}],
+            },
+            "the measured bytes per token, 25/4, are not a whole number",
+        ),
+        (_LINEAR_OBSERVATION, "the measurement's cache_layout is linear, not grouped"),
     ],
     ids=["sliding-window-group", "convolution-group", "fractional-sum", "linear-input"],
 )
-def test_linear_runtime_resources_has_no_linear_form_for_other_measurements(resources):
+def test_linear_runtime_resources_has_no_linear_form_for_other_measurements(resources, reason):
     assert linear_runtime_resources(resources) is None
+    # Finalization gives this reason when it refuses a linear profile.
+    assert _linear_form_gap(resources) == reason
 
 
 @pytest.mark.parametrize(

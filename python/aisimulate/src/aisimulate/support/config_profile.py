@@ -1523,6 +1523,12 @@ def _windowed_group(groups: list[FpmCacheGroup]) -> FpmCacheGroup | None:
     return next((group for group in groups if group.kind != "attention" or group.sliding_window is not None), None)
 
 
+def _windowed_group_reason(group: FpmCacheGroup) -> str:
+    """Why a linear cache cannot describe this group: it has a window or convolution state."""
+    field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
+    return f"cache group {group.name} has {field}"
+
+
 def _measured_kv_bytes(resources: Mapping[str, Any]) -> Fraction | None:
     """The measurement's rank-local bytes per cached token, when a linear cache describes it."""
     if resources.get("cache_layout") == "linear":
@@ -1540,8 +1546,7 @@ def _linear_form_gap(resources: Mapping[str, Any]) -> str | None:
         return f"the measurement's cache_layout is {resources.get('cache_layout')}, not grouped"
     group = _windowed_group(_measured_groups(resources))
     if group is not None:
-        field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
-        return f"cache group {group.name} has {field}"
+        return _windowed_group_reason(group)
     measured = _measured_kv_bytes(resources)
     if measured is None:
         return "the measurement has no cache groups"
@@ -1604,10 +1609,9 @@ def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) ->
             )
         group = _windowed_group(_measured_groups(resources))
         if group is not None:
-            field = "kind=convolution" if group.kind == "convolution" else f"sliding_window={group.sliding_window}"
             return (
-                f"{claim}, but the runtime probe measured no per-token cache size: its cache group {group.name} "
-                f"has {field}; {remedy}"
+                f"{claim}, but the runtime probe measured no per-token cache size: its "
+                f"{_windowed_group_reason(group)}; {remedy}"
             )
     # A linear observation states its per-token size only in kv_bytes_per_token.
     measured_key = "kv_bytes_per_token" if per_token_claim and resources.get("cache_layout") == "linear" else key
