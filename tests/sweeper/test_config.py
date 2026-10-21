@@ -43,6 +43,40 @@ def test_search_space_rejects_learned_timing_before_loading_source(role):
         SearchSpace(**_search_space(**overrides))
 
 
+@pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
+def test_search_space_schema_advertises_supported_replay_modes(schema_mode):
+    field = SearchSpace.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    assert set(field["enum"]) == supported
+    assert field["type"] == "string"
+    assert field["default"] == "auto"
+    for mode in supported:
+        space = SearchSpace(**_search_space(estimation_mode=mode))
+        assert SearchSpace.model_validate_json(space.model_dump_json()).estimation_mode == mode
+    with pytest.raises(ValidationError, match="estimation_mode"):
+        SearchSpace(**_search_space(estimation_mode=None))
+
+
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+def test_search_space_preserves_normalized_role_estimator_controls_on_reload(role):
+    space = SearchSpace(
+        **_search_space(
+            role_estimator_controls={
+                role: {
+                    "estimation_mode": "fpm_interpolation",
+                    "fallback_policy": "deny",
+                    "database_mode": "silicon",
+                }
+            }
+        )
+    )
+    expected = {"estimation_mode": "fpm_interpolation", "fallback_policy": "deny", "database_mode": "SILICON"}
+    assert space.role_estimator_controls == {role: expected}
+    restored = SearchSpace.model_validate_json(space.model_dump_json())
+    assert restored.role_estimator_controls == {role: expected}
+    assert restored.estimation_mode == "auto"
+
+
 def test_min_gpus_requires_sla_and_rejects_pareto_use():
     with pytest.raises(ValidationError, match="SLA bound"):
         OptimizationGoal(target="min_gpus")

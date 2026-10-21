@@ -68,15 +68,28 @@ simulator workload assumption, supplied separately by the unified CLI as
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
 Auto always searches `op_level`, `fpm_interpolation`, then `fpm_regression`,
-including when fallback is denied. For an explicit mode, deny permits only
-that estimator; allow tries the requested estimator first, then the remaining
-estimators in the same global priority order. Each native mode tries the
-ordered `systems_paths` before moving to another estimator. Omitted roots preserve
-configured SDK discovery (or the systems-path environment override when the SDK
-uses its packaged default); an explicit `default` entry selects the packaged root.
+including when fallback is denied. For an explicit choice of one of those three
+modes, deny permits only that estimator; allow tries the requested estimator
+first, then the remaining estimators in the same global priority order. Each
+native mode tries the ordered `systems_paths` before moving to another estimator.
+Omitted roots preserve configured SDK discovery (or the systems-path environment
+override when the SDK uses its packaged default); an explicit `default` entry
+selects the packaged root.
 The resolved paths are shared by preflight, construction and capacity estimation.
 Selection occurs
 at construction; queries do not silently switch estimators on a data-domain error.
+
+`fpm_learned` requires explicit selection and `fallback_policy: deny`; it is
+never an automatic or fallback candidate. Supply exactly one of
+`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
+adaptation accepts either source, online adaptation requires a training or
+runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
+Learned models support the standalone canonical API with complete per-iteration
+`ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
+and recommendation, and Sweeper timing use phase aggregates that cannot supply
+these features, so they reject learned mode before loading its source. See
+[learned configuration](fpm_ml/configuration.md#selection-and-supported-execution)
+for source identity checks, adaptation controls and correction requirements.
 
 Invalid caller configuration does not trigger fallback. A constructed regression
 may be unready: nonempty queries return `None` until their selected workload
@@ -192,9 +205,10 @@ cost-model support does not imply broader scheduler support.
 
 ### Estimator controls
 
-`estimator_config` is passed intact through the Python facade, CLI, Sweeper,
-and Replay, then parsed and validated in Rust. Unknown fields report their
-nested paths. The supported namespaces are:
+For supported execution paths, `estimator_config` is passed intact through the
+Python facade, CLI, Sweeper, and Replay, then parsed and validated in Rust.
+Learned mode remains limited to the standalone API described above. Unknown
+fields report their nested paths. The supported namespaces are:
 
 - `op_level.execution_profile`: optional pinned external operation graph, with
   an absolute `path` and lowercase `sha256`. See
@@ -213,6 +227,11 @@ nested paths. The supported namespaces are:
   fit only when retrying a singular equation. `rebuild_interval` defaults to JSON `null` / Python
   `None`, disabling periodic rebuilding. A positive integer opts into
   rebuilding after that many retained-sample mutations.
+- `fpm_learned`: explicit forest or checkpoint source, adaptation mode, and
+  online fitting controls for standalone learned models. See the
+  [learned configuration field tables](fpm_ml/configuration.md).
+- `selector`: expert selection controls for learned
+  `adaptation: causal_selector`, documented on the same learned configuration page.
 - `correction`: `enabled` (true), `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
@@ -348,14 +367,20 @@ concrete-only.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
+| `engine.estimation_mode` | `auto` | `x` | `-` | `auto`, `op_level`, `fpm_interpolation`, or `fpm_regression`. `fpm_learned` is rejected by prediction and recommendation configuration validation. |
+| `engine.workers.<role>.timing.estimation_mode` | `null` | `x` | `-` | Optional role override using the same four modes; omission inherits the global selection. `fpm_learned` is rejected here too. |
 | `engine.workers.<role>.timing.type` | `default` | `x` | `-` | `default`, `fixed`, or `polynomial`. |
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
 
-The canonical `estimation_mode`, `fallback_policy`, `estimator_config`, and
+The supported `estimation_mode`, `fallback_policy`, `estimator_config`, and
 `fpm_profile` controls pass through the CLI into the same native constructor.
+The CLI and Sweeper reject `fpm_learned` because their phase timing interface
+lacks complete iteration features; the same restriction applies to global and
+role-specific settings. The generated configuration schemas advertise only the
+four supported modes above.
 A role's `timing.estimator_config` replaces the global dictionary for that role;
 include all required controls in that override. Legacy `timing.forward_model: fpm`
 and `timing.fpm_parquet_path` normalize to FPM interpolation and its external pair.

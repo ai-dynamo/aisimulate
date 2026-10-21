@@ -76,10 +76,11 @@ domains instead of the single values above; see
 | `engine.workers.{aggregated,prefill}.{host_loop, frontend, host_profile, vision}` | [Workers](workers.md#sglang-host-loop-frontend-and-vision); design on [SGLang VL host loop](sglang-vl-host-loop.md) |
 | `engine.workers.<role>.timing`, `estimation_mode`, `database_mode`, quantization and kernel selectors | [Performance-model configuration](../../perf-model/configuration.md) |
 
-Engine prediction and recommendation reject `fpm_learned` for both global and
-worker timing selection during configuration validation. Native replay also
-rejects it before loading artifacts: phase timing cannot provide the complete
-iteration features required by the
+Engine prediction and recommendation accept `auto`, `op_level`,
+`fpm_interpolation`, and `fpm_regression` in their global and worker timing
+selection schemas. They reject `fpm_learned` during configuration validation.
+Native replay also rejects it before loading artifacts: phase timing cannot
+provide the complete iteration features required by the
 [learned estimate/tune API](../../perf-model/fpm_ml/configuration.md).
 
 Field tables on these pages use the following columns:

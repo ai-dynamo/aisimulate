@@ -36,7 +36,7 @@ from ..config.common import (
     is_active_engine_model_control,
     requested_backend_version,
 )
-from ..config.engine import NgramSpeculationConfig, _validate_replay_estimation_mode
+from ..config.engine import NgramSpeculationConfig, ReplayEstimationMode, _validate_replay_estimation_mode
 
 
 class OptimizationTarget(str, Enum):
@@ -586,7 +586,7 @@ class SearchSpace(BaseModel):
     transfer_policy: str | list[str] | None = None
     systems_paths: list[SystemsRoot] | None = Field(default=None, min_length=1)
     systems_path: SystemsPath | None = Field(default=None, exclude=True)
-    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression", "fpm_learned"] = "auto"
+    estimation_mode: ReplayEstimationMode = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
     role_estimator_controls: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -724,7 +724,6 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
-        _validate_replay_estimation_mode(self.estimation_mode)
         for controls in self.role_estimator_controls.values():
             _validate_replay_estimation_mode(controls.get("estimation_mode"))
         if self.fpm_profile is not None:
