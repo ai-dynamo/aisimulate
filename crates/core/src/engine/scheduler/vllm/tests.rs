@@ -716,6 +716,144 @@ mod speculative_scheduling {
     }
 }
 
+mod prefill_timing_totals {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Records each prefill query at the whole-forward FPM coordinates
+    /// `(batch, total prefill tokens, total KV read tokens)`. A mean-based
+    /// call is mapped as the FPM provider maps it: `batch * (isl - prefix)`
+    /// and `batch * prefix`.
+    #[derive(Default)]
+    struct FpmCoordinateProbe {
+        prefill: Mutex<Vec<(usize, usize, usize)>>,
+        decode: Mutex<Vec<usize>>,
+    }
+
+    impl crate::engine::TimingModel for FpmCoordinateProbe {
+        fn predict_prefill_ms(
+            &self,
+            batch: usize,
+            mean_isl: usize,
+            mean_prefix: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill.lock().unwrap().push((
+                batch,
+                batch * (mean_isl - mean_prefix),
+                batch * mean_prefix,
+            ));
+            Ok(1.0)
+        }
+
+        fn predict_prefill_totals_ms(
+            &self,
+            batch: usize,
+            new_tokens: usize,
+            prefix_tokens: usize,
+        ) -> anyhow::Result<f64> {
+            self.prefill
+                .lock()
+                .unwrap()
+                .push((batch, new_tokens, prefix_tokens));
+            Ok(1.0)
+        }
+
+        fn predict_decode_ms(
+            &self,
+            batch: usize,
+            _: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<f64> {
+            self.decode.lock().unwrap().push(batch);
+            Ok(1.0)
+        }
+    }
+
+    #[test]
+    fn prefill_timing_queries_scheduled_totals_for_cached_and_partial_blocks() {
+        const BUDGET: usize = 16;
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(BUDGET))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(true)
+                .speedup_ratio(1.0)
+                .build()
+                .unwrap(),
+        );
+        let timing = Arc::new(FpmCoordinateProbe::default());
+        core.args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: timing.clone(),
+        }
+        .into();
+        let cached: Vec<u32> = (0..8).collect();
+        let arrivals = [
+            // Caches two full blocks and finishes in its first pass.
+            vec![(1, cached.clone(), 1)],
+            // Q hits all 8 cached tokens of its 9-token prompt and computes one;
+            // R ends in a partial block; T is chunked at the budget.
+            vec![
+                (2, [cached.clone(), vec![100]].concat(), 2),
+                (3, (200..207).collect(), 2),
+                (4, (300..312).collect(), 2),
+            ],
+            // F's prompt is fully cached, so vLLM recomputes its last block.
+            vec![(5, cached, 2)],
+            vec![],
+        ];
+        // Hand-derived (batch, prefill tokens, KV read tokens) and decode
+        // batches. In the second pass, integer means (24 / 3, 8 / 3) would
+        // have queried (3, 18, 6): two tokens beyond the budget.
+        let expected = [
+            (Some((1, 8, 0)), None),
+            (Some((3, 16, 8)), None),
+            // T resumes after its 8-token chunk beside F and two decodes.
+            (Some((2, 8, 12)), Some(2)),
+            (None, Some(2)),
+        ];
+
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let mut now_ms = 0.0;
+        for (arrivals, (prefill, decode)) in arrivals.into_iter().zip(expected) {
+            for (id, tokens, max_output_tokens) in arrivals {
+                core.receive(DirectRequest {
+                    tokens,
+                    max_output_tokens,
+                    uuid: Some(Uuid::from_u128(id)),
+                    ..Default::default()
+                });
+            }
+            let pass = core.execute_pass(&mut collector, now_ms);
+            now_ms = pass.end_ms;
+            let fpm = pass.fpm.expect("each pass reports forward-pass metrics");
+            assert_eq!(
+                std::mem::take(&mut *timing.prefill.lock().unwrap()),
+                Vec::from_iter(prefill)
+            );
+            assert_eq!(
+                std::mem::take(&mut *timing.decode.lock().unwrap()),
+                Vec::from_iter(decode)
+            );
+            let (batch, prefill_tokens, kv_tokens) = prefill.unwrap_or_default();
+            assert_eq!(
+                (
+                    fpm.num_prefill_requests as usize,
+                    fpm.sum_prefill_tokens as usize,
+                    fpm.sum_prefill_kv_tokens as usize,
+                ),
+                (batch, prefill_tokens, kv_tokens),
+                "timing must price the work this pass scheduled"
+            );
+            assert!(prefill_tokens + decode.unwrap_or_default() <= BUDGET);
+        }
+        assert!(core.is_empty());
+    }
+}
+
 mod source_holds {
     use super::*;
 

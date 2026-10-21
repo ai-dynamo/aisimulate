@@ -273,6 +273,27 @@ fn strip_per_op_metadata(entries: Vec<PerOpValueWithMetadata>) -> Vec<PerOpValue
         .collect()
 }
 
+/// One-rank estimate of a static prefill step and its direct FPM queries.
+fn static_prefill_estimate(
+    prefill_ms: f64,
+    queries: Vec<crate::DirectFpmQueryEvidence>,
+) -> crate::ForwardPassEstimate {
+    let latency_ms = prefill_ms + 0.0; // same context + generation sum as run_static
+    crate::ForwardPassEstimate {
+        latency_ms: Some(latency_ms),
+        native_latency_ms: Some(latency_ms),
+        correction_factor: Some(1.0),
+        max_rank: (latency_ms > 0.0).then_some(0),
+        ranks: vec![crate::FpmRankEstimate {
+            rank: 0,
+            latency_ms,
+            prefill_ms: Some(prefill_ms),
+            queries,
+            ..Default::default()
+        }],
+    }
+}
+
 /// Name-folding accumulator for [`PerOpSolValue`] streams (fold semantics of
 /// [`PerOpFold`]: first-encounter order, `+=` accumulation, linear scan).
 #[derive(Default)]
@@ -1126,20 +1147,122 @@ impl Engine {
         let prefill_ms = self.run_context_phase_with(&runtime, coverage, |_, result| {
             queries.extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
         })?;
-        let latency_ms = prefill_ms + 0.0; // same context + generation sum as run_static
-        Ok(crate::ForwardPassEstimate {
-            latency_ms: Some(latency_ms),
-            native_latency_ms: Some(latency_ms),
-            correction_factor: Some(1.0),
-            max_rank: (latency_ms > 0.0).then_some(0),
-            ranks: vec![crate::FpmRankEstimate {
-                rank: 0,
-                latency_ms,
-                prefill_ms: Some(prefill_ms),
-                queries,
-                ..Default::default()
-            }],
-        })
+        Ok(static_prefill_estimate(prefill_ms, queries))
+    }
+
+    /// Prefill-step latency at exact per-rank iteration totals: the tokens the
+    /// step computes and the cached or earlier-chunk KV its requests read.
+    /// A whole-model FPM context phase queries these native coordinates
+    /// directly. Other graphs price per-request shapes and keep the integer
+    /// means of [`Self::predict_prefill_latency`].
+    pub fn predict_prefill_latency_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> Result<f64, AicError> {
+        self.predict_prefill_latency_total_with_coverage(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            None,
+        )
+    }
+
+    pub(crate) fn predict_prefill_latency_total_with_coverage(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<f64, AicError> {
+        self.run_context_phase_totals_with(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage,
+            |_, _| {},
+        )
+    }
+
+    /// [`Self::predict_prefill_detailed`] at exact iteration totals.
+    pub(crate) fn predict_prefill_detailed_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let mut queries = Vec::new();
+        let prefill_ms = self.run_context_phase_totals_with(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage,
+            |_, result| {
+                queries.extend(result.fpm_queries.into_iter().flat_map(|queries| *queries));
+            },
+        )?;
+        Ok(static_prefill_estimate(prefill_ms, queries))
+    }
+
+    fn run_context_phase_totals_with(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+        coverage: Option<&mut FpmQueryCoverage>,
+        mut on_op: impl FnMut(&Op, PerformanceResult),
+    ) -> Result<f64, AicError> {
+        self.check_profile_phase(true)?;
+        if total_prefill_tokens == 0 {
+            return Ok(0.0);
+        }
+        if total_prefill_tokens < batch_size || batch_size == 0 {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "each prefill request must compute a token, but got batch_size={batch_size} \
+                 and total_prefill_tokens={total_prefill_tokens}"
+            )));
+        }
+        // The same single-query FPM shape that `run_context_phase_with` covers.
+        match self.fpm_split() {
+            Some((prefill, _, [], []))
+                if self.nextn == 0 || self.fpm_execution_profile.is_some() =>
+            {
+                let coords = [
+                    f64::from(batch_size),
+                    f64::from(total_prefill_tokens),
+                    f64::from(total_kv_read_tokens),
+                ];
+                let result = prefill.query_totals_with_coverage(&self.db, &coords, coverage)?;
+                let latency_ms = result.latency_ms;
+                on_op(&self.context_ops[0], result);
+                Ok(latency_ms)
+            }
+            _ => {
+                if self.profile_phase.is_some()
+                    && (total_prefill_tokens % batch_size != 0
+                        || total_kv_read_tokens % batch_size != 0)
+                {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "prefill profile requires a homogeneous batch",
+                    ));
+                }
+                let total_isl = total_prefill_tokens
+                    .checked_add(total_kv_read_tokens)
+                    .ok_or_else(|| {
+                        AicError::InvalidEngineConfig("prefill input totals exceed u32".into())
+                    })?;
+                let runtime = RuntimeConfig {
+                    batch_size,
+                    isl: total_isl / batch_size,
+                    prefix: total_kv_read_tokens / batch_size,
+                    osl: 1,
+                    ..Default::default()
+                };
+                self.run_context_phase_with(&runtime, coverage, on_op)
+            }
+        }
     }
 
     /// Mocker H2: decode-step latency in ms. Pure-Rust inherent method (no
@@ -2782,7 +2905,7 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -3112,6 +3235,21 @@ mod tests {
                     0.0
                 );
             }
+        }
+    }
+
+    #[test]
+    fn execution_profile_prefill_totals_require_a_homogeneous_batch() {
+        let engine = measured_profile_engine(true, true);
+        // Two 5-token prompts match the first measured cell, executed 3 times.
+        assert_eq!(engine.predict_prefill_latency_total(2, 10, 0).unwrap(), 6.0);
+        // Integer means would price these ragged totals at a measured shape
+        // that is not the scheduled work.
+        for (prefill, kv) in [(11, 0), (10, 1)] {
+            let error = engine
+                .predict_prefill_latency_total(2, prefill, kv)
+                .unwrap_err();
+            assert!(error.to_string().contains("homogeneous"), "{error}");
         }
     }
 
@@ -4738,7 +4876,7 @@ mod tests {
 
     /// FPM engine over CUSTOM rows (cliff pair + chunk coordinates); same
     /// wiring as [`build_fpm_engine`].
-    fn build_fpm_engine_with_rows(
+    pub(crate) fn build_fpm_engine_with_rows(
         tmp: &std::path::Path,
         rows: &[crate::perf_database::fpm_forward::tests::RowSpec],
     ) -> Result<Engine, AicError> {
@@ -4771,6 +4909,46 @@ mod tests {
             vec![fpm_op(FpmPhase::Decode)],
         );
         Engine::build(spec, Arc::new(db))
+    }
+
+    #[test]
+    fn prefill_totals_query_the_scheduled_iteration_without_mean_rounding() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let row =
+            |workload_kind, batch_size, total_prefill_tokens, total_kv_read_tokens, latency_ms| {
+                RowSpec {
+                    workload_kind,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                    latency_ms,
+                    ..RowSpec::default()
+                }
+            };
+        let rows = [
+            row("prefill", 1, 1, 0, 2.0),
+            row("prefill", 3, 16, 8, 5.0),
+            row("decode", 1, 0, 8, 3.0),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = build_fpm_engine_with_rows(tmp.path(), &rows).unwrap();
+        // Three requests computed 16 tokens after reading 8 cached tokens.
+        assert_eq!(engine.predict_prefill_latency_total(3, 16, 8).unwrap(), 5.0);
+        let estimate = engine
+            .predict_prefill_detailed_total(3, 16, 8, None)
+            .unwrap();
+        assert_eq!(estimate.latency_ms, Some(5.0));
+        assert_eq!(estimate.ranks[0].prefill_ms, Some(5.0));
+        // Their integer means (24 / 3, 8 / 3) reconstruct (3, 18, 6), which
+        // lies outside the collected 16-token prefill domain.
+        let error = engine.predict_prefill_latency(3, 8, 2).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("total_prefill_tokens=18 is outside the collected domain [1, 16]"),
+            "{error}"
+        );
+        assert_eq!(engine.predict_prefill_latency_total(3, 0, 8).unwrap(), 0.0);
     }
 
     fn fpm_replay_guard_probe(tmp: &std::path::Path, replay: bool) -> Engine {

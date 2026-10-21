@@ -29,7 +29,12 @@ composition. Construction validates the spec and composition. Running consumes
 the Replayer so ownership, virtual time and caches remain within one execution.
 `ReplayEngineFactory::default()` uses engine timing from the descriptor;
 `with_timing_model` or `with_optional_role_timing_models` supplies explicit
-`Arc<dyn TimingModel>` providers. `TimingModel::predict_vision_ms(&[VisionShape])`
+`Arc<dyn TimingModel>` providers. Schedulers price each prefill batch with
+`TimingModel::predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)`:
+the tokens the batch computes and the cached or earlier-chunk KV its requests
+read. The default reduces these totals to the integer per-request means of
+`predict_prefill_ms`; providers indexed by iteration totals override it.
+`TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The AIC
 provider answers from the `EngineSpec` `vision` section compiled under

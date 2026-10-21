@@ -2981,6 +2981,94 @@ fn prefill_provider_validation_receives_actual_chunk_geometry() {
     );
 }
 
+/// Records each prefill query at the whole-forward FPM coordinates
+/// `(batch, total prefill tokens, total KV read tokens)`. A mean-based call is
+/// mapped as the FPM provider maps it.
+#[derive(Default)]
+struct FpmCoordinates(std::sync::Mutex<Vec<(usize, usize, usize)>>);
+
+impl crate::engine::TimingModel for FpmCoordinates {
+    fn predict_prefill_ms(&self, batch: usize, isl: usize, prefix: usize) -> anyhow::Result<f64> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((batch, batch * (isl - prefix), batch * prefix));
+        Ok(1.0)
+    }
+    fn predict_prefill_totals_ms(
+        &self,
+        batch: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
+    ) -> anyhow::Result<f64> {
+        self.0
+            .lock()
+            .unwrap()
+            .push((batch, new_tokens, prefix_tokens));
+        Ok(1.0)
+    }
+    fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+        Ok(1.0)
+    }
+}
+
+fn fpm_coordinate_core(
+    chunked_prefill_size: usize,
+) -> (SglangCore, std::sync::Arc<FpmCoordinates>) {
+    let timing = std::sync::Arc::new(FpmCoordinates::default());
+    let mut args = test_args(128, 1, chunked_prefill_size);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: timing.clone(),
+    }
+    .into();
+    (SglangCore::new(args), timing)
+}
+
+#[test]
+fn prefill_timing_queries_scheduled_totals_after_a_chunk() {
+    let (mut core, timing) = fpm_coordinate_core(8);
+    core.receive(direct_request((0..12).collect(), 1));
+    core.receive(direct_request((100..102).collect(), 1));
+    core.receive(direct_request((200..202).collect(), 1));
+    let first = core.try_execute_pass_internal(None, 0.0).unwrap();
+    let second = core.try_execute_pass_internal(None, first.end_ms).unwrap();
+    // The continuation reads its 8-token chunk beside two 2-token prompts.
+    // Integer means (16 / 3, 8 / 3) would have queried (3, 9, 6), one token
+    // beyond the chunk budget.
+    assert_eq!(*timing.0.lock().unwrap(), vec![(1, 8, 0), (3, 8, 8)]);
+    let fpm = second.fpm.unwrap();
+    assert_eq!(
+        (
+            fpm.num_prefill_requests,
+            fpm.sum_prefill_tokens,
+            fpm.sum_prefill_kv_tokens
+        ),
+        (3, 8, 8)
+    );
+}
+
+#[test]
+fn prefill_timing_excludes_cached_zero_output_members() {
+    let (mut core, timing) = fpm_coordinate_core(64);
+    core.receive(direct_request((0..8).collect(), 1));
+    let first = core.try_execute_pass_internal(None, 0.0).unwrap();
+    // The zero-output request reuses all 8 cached tokens and computes nothing
+    // beside a 4-token prompt.
+    core.receive(direct_request((0..8).collect(), 0));
+    core.receive(direct_request((100..104).collect(), 1));
+    let second = core.try_execute_pass_internal(None, first.end_ms).unwrap();
+    assert_eq!(*timing.0.lock().unwrap(), vec![(1, 8, 0), (1, 4, 0)]);
+    let fpm = second.fpm.unwrap();
+    assert_eq!(
+        (
+            fpm.num_prefill_requests,
+            fpm.sum_prefill_tokens,
+            fpm.sum_prefill_kv_tokens
+        ),
+        (1, 4, 0)
+    );
+}
+
 #[test]
 fn indexed_ids_follow_chunk_cancel_completion_and_reuse() {
     let mut core = SglangCore::new(test_args(128, 4, 4));

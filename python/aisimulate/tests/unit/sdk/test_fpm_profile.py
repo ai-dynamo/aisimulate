@@ -1985,11 +1985,17 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
             1, 1 + prefix, prefix
         )
         assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+        assert (
+            covered.predict_prefill_latency_total(1, 1, prefix)
+            == original.predict_prefill_latency_total(1, 1, prefix)
+            == latency
+        )
+    assert covered.predict_prefill_latency_total(0, 0, 0) == original.predict_prefill_latency_total(0, 0, 0) == 0.0
     assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
     assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
     assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
     report = covered.fpm_query_coverage()
-    assert report["queries"] == {"measured": 5, "interpolated": 0, "unsupported": 0}
+    assert report["queries"] == {"measured": 7, "interpolated": 0, "unsupported": 0}
 
 
 @pytest.mark.parametrize("fallback", ["deny", "allow"])

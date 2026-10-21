@@ -1214,6 +1214,29 @@ impl ForwardPassPerfModel {
         )
     }
 
+    /// Uncorrected prefill latency using exact iteration totals: tokens the
+    /// step computes and cached or earlier-chunk KV its requests read. Direct
+    /// whole-model FPM queries these totals without per-request mean rounding.
+    pub fn predict_prefill_latency_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> Result<f64, AicError> {
+        let engine = self.require_native_engine()?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_latency_total_with_coverage(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage.as_deref_mut(),
+        )
+    }
+
     /// Uncorrected decode latency using exact past-KV totals, excluding the
     /// current input token per request. Shares the existing engine contract.
     pub fn predict_decode_latency_total(
@@ -1293,6 +1316,29 @@ impl ForwardPassPerfModel {
             .map(FpmCoverageState::lock)
             .transpose()?;
         engine.predict_prefill_detailed(batch_size, input_tokens, prefix, coverage.as_deref_mut())
+    }
+
+    /// [`Self::static_prefill_detailed`] at exact iteration totals.
+    pub(crate) fn static_prefill_detailed_total(
+        &self,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> Result<crate::ForwardPassEstimate, AicError> {
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static prefill requires a native estimator".into())
+        })?;
+        let mut coverage = self
+            .query_coverage
+            .as_ref()
+            .map(FpmCoverageState::lock)
+            .transpose()?;
+        engine.predict_prefill_detailed_total(
+            batch_size,
+            total_prefill_tokens,
+            total_kv_read_tokens,
+            coverage.as_deref_mut(),
+        )
     }
 
     /// Native operation evidence for one static prefill or decode step. Values

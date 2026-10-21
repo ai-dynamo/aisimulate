@@ -598,6 +598,12 @@ class RustForwardPassPerfModel:
         """
         return json.loads(self._inner.fpm_query_coverage())
 
+    def predict_prefill_latency_total(
+        self, batch_size: int, total_prefill_tokens: int, total_kv_read_tokens: int
+    ) -> float:
+        """Uncorrected native prefill timing at the exact computed and KV-read batch totals."""
+        return self._inner.predict_prefill_latency_total(batch_size, total_prefill_tokens, total_kv_read_tokens)
+
     def predict_decode_latency_total(self, batch_size: int, total_past_kv_tokens: int) -> float:
         """Uncorrected native decode timing at the exact past-KV batch total."""
         return self._inner.predict_decode_latency_total(batch_size, total_past_kv_tokens)

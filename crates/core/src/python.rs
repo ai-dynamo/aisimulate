@@ -978,6 +978,52 @@ impl TimingModel for AicTimingModel {
         .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
     }
 
+    fn predict_prefill_totals_ms(
+        &self,
+        batch_size: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
+    ) -> Result<f64> {
+        if !self.use_fpm_decode_totals {
+            // Operation graphs price per-request shapes.
+            let (mean_isl, mean_prefix) =
+                crate::engine::mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
+            return self.predict_prefill_ms(batch_size, mean_isl, mean_prefix);
+        }
+        let batch_size = checked_u32(batch_size, "prefill batch size")?;
+        let total_prefill_tokens = checked_u32(new_tokens, "total prefill tokens")?;
+        let total_kv_read_tokens = checked_u32(prefix_tokens, "total prefill KV tokens")?;
+        if let Some(model) = &self.diagnostic_model {
+            return self.record_fpm_estimate(
+                (true, batch_size, total_prefill_tokens, total_kv_read_tokens),
+                model.static_prefill_detailed_total(
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                )?,
+            );
+        }
+        if let Some(model) = &self.fpm_model {
+            return model
+                .predict_prefill_latency_total(
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                )
+                .context("AIC prefill prediction failed");
+        }
+        Python::with_gil(|py| {
+            self.engine
+                .bind(py)
+                .call_method1(
+                    "predict_prefill_latency_total",
+                    (batch_size, total_prefill_tokens, total_kv_read_tokens),
+                )?
+                .extract::<f64>()
+        })
+        .map_err(|error| anyhow!("AIC prefill prediction failed: {error}"))
+    }
+
     fn predict_decode_ms(
         &self,
         batch_size: usize,
@@ -3998,6 +4044,49 @@ mod tests {
         }
     }
 
+    /// Encodes each prefill query's coordinates as `a * 10^6 + b * 10^3 + c`.
+    #[pyclass]
+    struct PrefillCoordinateProbe;
+
+    #[pymethods]
+    impl PrefillCoordinateProbe {
+        /// The FPM engine's mean API queries `(bs, bs * (isl - prefix), bs * prefix)`.
+        fn predict_prefill_latency(&self, bs: u64, isl: u64, prefix: u64) -> u64 {
+            bs * 1_000_000 + bs * (isl - prefix) * 1_000 + bs * prefix
+        }
+
+        fn predict_prefill_latency_total(
+            &self,
+            batch_size: u64,
+            total_prefill_tokens: u64,
+            total_kv_read_tokens: u64,
+        ) -> u64 {
+            batch_size * 1_000_000 + total_prefill_tokens * 1_000 + total_kv_read_tokens
+        }
+
+        /// Op-level context evidence at the requested per-request shape.
+        #[allow(clippy::too_many_arguments)]
+        #[allow(unused_variables)]
+        fn run_static_per_op(
+            &self,
+            batch_size: u32,
+            beam_width: u32,
+            isl: u32,
+            osl: u32,
+            prefix: u32,
+            seq_imbalance_correction_scale: f64,
+            gen_seq_imbalance_correction_scale: f64,
+            mode: &str,
+            stride: u32,
+        ) -> (Vec<TestPerOpEvidence>, Vec<TestPerOpEvidence>) {
+            let latency_ms = f64::from(batch_size) * 1e6 + f64::from(isl) * 1e3 + f64::from(prefix);
+            (
+                vec![("gemm".into(), latency_ms, 0.0, "silicon".into())],
+                Vec::new(),
+            )
+        }
+    }
+
     #[pyclass]
     #[derive(Default)]
     struct PerOpEvidenceProbe {
@@ -5285,6 +5374,71 @@ mod tests {
             timing.predict_decode_ms(35, kv, 15_602, 1_000_000).unwrap();
         }
         assert!(timing.fpm_evidence.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prefill_totals_reach_fpm_exactly_and_op_level_as_means() {
+        pyo3::prepare_freethreaded_python();
+        let engine =
+            || Python::with_gil(|py| Py::new(py, PrefillCoordinateProbe).unwrap().into_any());
+        // Three requests computed 16 tokens after reading 8; the integer means
+        // are (24 / 3, 8 / 3) = (8, 2).
+        let fpm = python_timing_model(engine(), true);
+        assert_eq!(
+            fpm.predict_prefill_totals_ms(3, 16, 8).unwrap(),
+            3_016_008.0
+        );
+        let op_level = python_timing_model(engine(), false);
+        assert_eq!(
+            op_level.predict_prefill_totals_ms(3, 16, 8).unwrap(),
+            3_008_002.0
+        );
+    }
+
+    #[test]
+    fn native_fpm_prefill_queries_exact_totals_with_and_without_capture() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        use crate::perfmodel::engine::runtime::tests::build_fpm_engine_with_rows;
+        use crate::perfmodel::fpm::ForwardPassPerfOptions;
+        pyo3::prepare_freethreaded_python();
+        let row =
+            |workload_kind, batch_size, total_prefill_tokens, total_kv_read_tokens, latency_ms| {
+                RowSpec {
+                    workload_kind,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                    latency_ms,
+                    ..RowSpec::default()
+                }
+            };
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            row("prefill", 1, 1, 0, 2.0),
+            row("prefill", 3, 16, 8, 5.0),
+            row("decode", 1, 0, 8, 3.0),
+        ];
+        let model = Arc::new(ForwardPassPerfModel::from_engine(
+            Arc::new(build_fpm_engine_with_rows(tmp.path(), &rows).unwrap()),
+            ForwardPassPerfOptions::default(),
+        ));
+        let engine = Python::with_gil(|py| Py::new(py, PrefillCoordinateProbe).unwrap().into_any());
+        let mut timing = python_timing_model(engine, true);
+        timing.fpm_model = Some(Arc::clone(&model));
+        assert_eq!(timing.predict_prefill_totals_ms(3, 16, 8).unwrap(), 5.0);
+        timing.diagnostic_model = Some(model);
+        assert_eq!(timing.predict_prefill_totals_ms(3, 16, 8).unwrap(), 5.0);
+        assert_eq!(
+            timing.fpm_evidence_summary().unwrap().prefill.latency_ms,
+            5.0
+        );
+        // The integer means of the same batch query (3, 18, 6), outside the
+        // collected 16-token domain.
+        let error = timing.predict_prefill_ms(3, 8, 2).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("total_prefill_tokens=18"),
+            "{error:#}"
+        );
     }
 
     #[test]

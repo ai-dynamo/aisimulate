@@ -3393,11 +3393,13 @@ fn predict_prefill_duration(
         return Ok(Duration::ZERO);
     }
 
-    let mean_isl = batch_total_isl / batch_count;
-    let mean_prefix = batch_total_prefix / batch_count;
-    let prefill_ms = args
-        .perf_model
-        .predict_prefill_time(batch_count, mean_isl, mean_prefix)?;
+    // Price the scheduled totals: integer per-request means can reconstruct
+    // more prefill tokens than the budget admitted.
+    let prefill_ms = args.perf_model.predict_prefill_time(
+        batch_count,
+        batch_total_isl - batch_total_prefix,
+        batch_total_prefix,
+    )?;
     let modeled_ms = modeled_duration_ms(prefill_ms, args.speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
 }

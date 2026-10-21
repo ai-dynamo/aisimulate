@@ -89,6 +89,10 @@ pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_prefill_latency(1, 128, 0)
 }
 
+pub fn covered_prefill_total(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency_total(1, 128, 0)
+}
+
 pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_decode_latency_total(1, 128)
 }

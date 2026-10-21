@@ -44,7 +44,7 @@ use super::decode::{
 use super::frontend::FrontendRuntime;
 use super::host_loop::{ForwardOutputs, HostLoop};
 use super::policy::apply_schedule_policy;
-use super::prefill::get_new_batch_prefill;
+use super::prefill::{PrefillFpmItem, get_new_batch_prefill};
 use super::request::{SglangRequest, WaitingQueue};
 use super::vision::VisionCache;
 use crate::engine::scheduler::{
@@ -1022,8 +1022,6 @@ impl SglangCore {
         };
 
         let batch_size = admit.can_run.len();
-        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
-        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
         self.config.perf_model.validate_prefill_batch(
             &admit
                 .prefill_fpm
@@ -1058,8 +1056,7 @@ impl SglangCore {
             self.config.perf_model.predict_vision_time(&vision_misses)?,
             self.config.speedup_ratio,
         )?;
-        let prefill_time =
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
+        let prefill_time = simulate_prefill_duration(&admit.prefill_fpm, &self.config, true)?;
         self.vision_cache.store(&vision_misses);
 
         // Ghost members still form a batch: `filter_batch` has not seen them finish.
@@ -1434,20 +1431,31 @@ fn validate_image_spans(request: &DirectRequest) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Price the members that compute prefill tokens. A fully cached, zero-output
+/// request joins the batch without forward work, as in its FPM snapshot.
 fn simulate_prefill_duration(
-    batch_size: usize,
-    mean_isl: usize,
-    mean_prefix: usize,
+    prefill: &[PrefillFpmItem],
     config: &SglangConfig,
     apply_speedup: bool,
 ) -> anyhow::Result<Duration> {
-    if batch_size == 0 || config.worker_type == WorkerType::Decode {
+    if config.worker_type == WorkerType::Decode {
         return Ok(Duration::ZERO);
     }
 
-    let prefill_time = config
-        .perf_model
-        .predict_prefill_time(batch_size, mean_isl, mean_prefix)?;
+    let (batch_size, new_tokens, prefix_tokens) = prefill
+        .iter()
+        .filter(|item| item.tokens_computed > 0)
+        .fold((0, 0, 0), |(batch, new, prefix), item| {
+            (
+                batch + 1,
+                new + item.tokens_computed,
+                prefix + item.prefix_tokens,
+            )
+        });
+    let prefill_time =
+        config
+            .perf_model
+            .predict_prefill_time(batch_size, new_tokens, prefix_tokens)?;
     let speedup_ratio = if apply_speedup {
         config.speedup_ratio
     } else {

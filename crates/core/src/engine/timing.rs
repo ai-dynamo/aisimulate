@@ -769,6 +769,21 @@ pub trait TimingModel: Send + Sync {
         mean_prefix: usize,
     ) -> Result<f64>;
 
+    /// Predict one prefill batch from its exact totals: `new_tokens` computed
+    /// by the batch and `prefix_tokens` of cached or earlier-chunk KV that its
+    /// requests read. Integer means cannot represent every heterogeneous
+    /// batch, so providers indexed by these totals override this method. The
+    /// default keeps the per-request means of [`Self::predict_prefill_ms`].
+    fn predict_prefill_totals_ms(
+        &self,
+        batch_size: usize,
+        new_tokens: usize,
+        prefix_tokens: usize,
+    ) -> Result<f64> {
+        let (mean_isl, mean_prefix) = mean_prefill_shape(batch_size, new_tokens, prefix_tokens);
+        self.predict_prefill_ms(batch_size, mean_isl, mean_prefix)
+    }
+
     /// Predict one decode batch's latency in milliseconds.
     fn predict_decode_ms(
         &self,
@@ -805,6 +820,16 @@ pub trait TimingModel: Send + Sync {
         );
         Ok(())
     }
+}
+
+/// Per-request integer means `(isl, prefix)` of a prefill batch's totals.
+pub(crate) fn mean_prefill_shape(
+    batch_size: usize,
+    new_tokens: usize,
+    prefix_tokens: usize,
+) -> (usize, usize) {
+    let mean = |tokens: usize| tokens.checked_div(batch_size).unwrap_or(0);
+    (mean(new_tokens + prefix_tokens), mean(prefix_tokens))
 }
 
 struct PolynomialTimingModel;
@@ -1050,6 +1075,25 @@ mod tests {
     fn polynomial_model_accepts_heterogeneous_prefill_batches() {
         let model = built_in_timing_model(&TimingModelConfig::Polynomial).unwrap();
         model.validate_prefill_batch(&[(4, 0), (12, 8)]).unwrap();
+    }
+
+    #[test]
+    fn mean_only_providers_keep_receiving_per_request_means() {
+        struct MeanProbe(std::sync::Mutex<Vec<(usize, usize, usize)>>);
+        impl TimingModel for MeanProbe {
+            fn predict_prefill_ms(&self, batch: usize, isl: usize, prefix: usize) -> Result<f64> {
+                self.0.lock().unwrap().push((batch, isl, prefix));
+                Ok(1.0)
+            }
+            fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> Result<f64> {
+                Ok(1.0)
+            }
+        }
+        let probe = MeanProbe(Default::default());
+        // Three requests computing 16 tokens after reading 8: means (24 / 3, 8 / 3).
+        probe.predict_prefill_totals_ms(3, 16, 8).unwrap();
+        probe.predict_prefill_totals_ms(0, 0, 0).unwrap();
+        assert_eq!(*probe.0.lock().unwrap(), vec![(3, 8, 2), (0, 0, 0)]);
     }
 
     #[test]

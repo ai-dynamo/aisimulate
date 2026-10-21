@@ -359,6 +359,26 @@ impl AicEngine {
             .map_err(aic_to_py)
     }
 
+    /// One prefill-step latency at the exact
+    /// `(batch_size, total_prefill_tokens, total_kv_read_tokens)` totals.
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        self.inner.reset_provenance();
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
+    }
+
     /// One FPM decode-step latency at the collector's exact
     /// `(batch_size, total_past_kv_tokens)` coordinate.
     fn predict_decode_latency_total(
@@ -2404,6 +2424,23 @@ impl PyForwardPassPerfModel {
         let coverage = self.inner.fpm_query_coverage().map_err(aic_to_py)?;
         serde_json::to_string(&coverage)
             .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
+    }
+
+    fn predict_prefill_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_prefill_tokens: u32,
+        total_kv_read_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner.predict_prefill_latency_total(
+                batch_size,
+                total_prefill_tokens,
+                total_kv_read_tokens,
+            )
+        })
+        .map_err(aic_to_py)
     }
 
     fn predict_decode_latency_total(
