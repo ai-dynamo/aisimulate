@@ -233,8 +233,7 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
         kv_manager,
         0,
         0,
-        0,
-        0,
+        || 0,
         raw_prefill_cost,
     )
 }
@@ -244,8 +243,9 @@ pub(super) fn decide_waiting_admission<'a, S: PolicySequence + 'a>(
 /// A framework-native host tier probes after the authoritative G1 lookup but
 /// before G1 allocation. Passing that observed cost through this boundary
 /// avoids a second lookup changing recency or hiding a lifecycle divergence.
-/// Held and activated-waiting block counts describe completion headroom
-/// already promised to decode destinations. Policy decides whether it counts.
+/// `handoff_reserved_blocks` yields the completion tails already promised to
+/// non-running decode destinations. Only TRT-LLM no-evict evaluates it; vLLM
+/// stays optimistic/preemptible.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
     config: WaitingAdmissionConfig,
@@ -255,8 +255,7 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
     kv_manager: &G1Manager,
     reserved_request_blocks: usize,
     inflight_prefill_reserved_blocks: usize,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
+    handoff_reserved_blocks: impl FnOnce() -> usize,
     raw_prefill_cost: PrefillCost,
 ) -> AdmissionDecision {
     let WaitingAdmissionConfig {
@@ -290,18 +289,13 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
         !generation_complete(sequence, None),
         raw_prefill_cost,
     );
-    let handoff_reserved_blocks = handoff_completion_headroom(
-        policy,
-        held_completion_blocks,
-        activated_waiting_completion_blocks,
-    );
     let available = match policy {
         SchedulingPolicy::Vllm => num_gpu_blocks
             .saturating_sub(kv_manager.num_active_blocks())
             .saturating_sub(inflight_prefill_reserved_blocks),
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
             available_blocks(running, num_gpu_blocks, block_size, kv_manager)
-                .saturating_sub(handoff_reserved_blocks)
+                .saturating_sub(handoff_reserved_blocks())
         }
     };
     let needed = match policy {
@@ -330,62 +324,34 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
 /// vLLM keeps its optimistic/preemptible destination path and may reuse a
 /// resident decode prefix. TRT-LLM `GUARANTEED_NO_EVICT` generation-init
 /// requests receive no prefix credit: the candidate needs its full
-/// to-completion footprint, while prompt blocks and completion tails already
-/// promised to other handoffs remain unavailable.
+/// to-completion footprint, while prompt blocks and the completion tails that
+/// `handoff_reserved_blocks` yields for other handoffs remain unavailable.
 pub(super) fn decide_destination_admission<'a, S: PolicySequence + 'a>(
     config: DestinationAdmissionConfig,
-    sequence: &S,
+    to_completion_blocks: usize,
     running: impl Iterator<Item = &'a S>,
     kv_manager: &G1Manager,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
+    handoff_reserved_blocks: impl FnOnce() -> usize,
 ) -> DestinationAdmissionDecision {
     match config.policy {
         SchedulingPolicy::Vllm => DestinationAdmissionDecision::Reserve {
             mode: DestinationReservationMode::ReuseResidentPrefix,
         },
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
-            let handoff_reserved_blocks = handoff_completion_headroom(
-                config.policy,
-                held_completion_blocks,
-                activated_waiting_completion_blocks,
-            );
             let available = available_blocks(
                 running,
                 config.num_gpu_blocks,
                 config.block_size,
                 kv_manager,
             )
-            .saturating_sub(handoff_reserved_blocks);
-            if sequence.to_completion_blocks() > available {
+            .saturating_sub(handoff_reserved_blocks());
+            if to_completion_blocks > available {
                 DestinationAdmissionDecision::Wait
             } else {
                 DestinationAdmissionDecision::Reserve {
                     mode: DestinationReservationMode::FreshOnly,
                 }
             }
-        }
-    }
-}
-
-/// Whether admission under `policy` reads the handoff completion tails, so
-/// callers can skip computing them when it does not.
-pub(super) fn reserves_handoff_completion_headroom(policy: SchedulingPolicy) -> bool {
-    matches!(policy, SchedulingPolicy::TrtllmGuaranteedNoEvict)
-}
-
-/// Completion tail already promised to non-running destination handoffs.
-/// vLLM remains optimistic/preemptible; TRT-LLM no-evict admission must keep
-/// both held and activated-waiting tails unavailable.
-fn handoff_completion_headroom(
-    policy: SchedulingPolicy,
-    held_completion_blocks: usize,
-    activated_waiting_completion_blocks: usize,
-) -> usize {
-    match policy {
-        SchedulingPolicy::Vllm => 0,
-        SchedulingPolicy::TrtllmGuaranteedNoEvict => {
-            held_completion_blocks.saturating_add(activated_waiting_completion_blocks)
         }
     }
 }

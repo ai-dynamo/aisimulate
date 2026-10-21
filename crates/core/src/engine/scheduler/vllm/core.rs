@@ -477,7 +477,6 @@ impl SchedulerState {
         self.connector_waiting_selections
     }
 
-    #[cfg(test)]
     fn waiting_request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.waiting_members
             .iter()
@@ -1183,15 +1182,11 @@ impl VllmCore {
             return Vec::new();
         }
 
-        if self.pending_destinations.front_due(generation).is_none() {
-            return Vec::new();
-        }
-        let (held_completion_blocks, activated_waiting_completion_blocks) =
-            self.destination_handoff_completion_headroom(None);
         let reservation_mode = {
             let Some((_, _, request)) = self.pending_destinations.front_due(generation) else {
                 return Vec::new();
             };
+            let to_completion_blocks = request.sequence.to_completion_blocks();
             let running = self
                 .state
                 .running
@@ -1204,11 +1199,10 @@ impl VllmCore {
                     num_gpu_blocks: self.args.num_gpu_blocks,
                     block_size: self.args.block_size,
                 },
-                &request.sequence,
+                to_completion_blocks,
                 running,
                 &self.kv_manager,
-                held_completion_blocks,
-                activated_waiting_completion_blocks,
+                || self.destination_handoff_completion_headroom(None),
             ) {
                 policy::DestinationAdmissionDecision::Reserve { mode } => mode,
                 policy::DestinationAdmissionDecision::Wait => {
@@ -1268,34 +1262,28 @@ impl VllmCore {
         }]
     }
 
-    fn destination_handoff_completion_headroom(
-        &self,
-        exclude_request: Option<Uuid>,
-    ) -> (usize, usize) {
-        // Skip the scan when admission ignores its result: on a decode worker
-        // every activated handoff stays tracked until it finishes, so the scan
-        // below walks every resident request.
-        if !policy::reserves_handoff_completion_headroom(self.args.scheduling_policy()) {
-            return (0, 0);
-        }
+    /// Completion tails already promised to destination handoffs that are not
+    /// running: held reservations plus activated requests still waiting.
+    fn destination_handoff_completion_headroom(&self, exclude_request: Option<Uuid>) -> usize {
         let held = self
             .destination_holds
             .payloads()
             .map(ReservedVllmDecode::unallocated_completion_blocks)
             .fold(0usize, usize::saturating_add);
         if self.active_destination_handoffs.is_empty() {
-            return (held, 0);
+            return held;
         }
+        // An activated handoff stays tracked until it finishes, so scan only
+        // the waiting queues rather than every resident request.
         let activated_waiting = self
             .state
-            .requests
-            .iter()
-            .filter(|(uuid, _)| {
-                Some(**uuid) != exclude_request
-                    && self.active_destination_handoffs.contains_request(**uuid)
-                    && !self.state.running_members.contains(*uuid)
+            .waiting_request_ids()
+            .filter(|uuid| {
+                Some(*uuid) != exclude_request
+                    && self.active_destination_handoffs.contains_request(*uuid)
             })
-            .map(|(_, request)| {
+            .filter_map(|uuid| self.state.requests.get(&uuid))
+            .map(|request| {
                 policy::blocks_needed_to_finish(
                     &request.sequence,
                     self.args.block_size,
@@ -1304,7 +1292,7 @@ impl VllmCore {
                 )
             })
             .fold(0usize, usize::saturating_add);
-        (held, activated_waiting)
+        held.saturating_add(activated_waiting)
     }
 
     fn validate_request_id(&self, uuid: Uuid) -> anyhow::Result<()> {
@@ -2033,8 +2021,6 @@ impl VllmCore {
             };
 
             let decision = {
-                let (held_completion_blocks, activated_waiting_completion_blocks) =
-                    self.destination_handoff_completion_headroom(Some(uuid));
                 let request = self
                     .state
                     .requests
@@ -2097,8 +2083,7 @@ impl VllmCore {
                                     &self.kv_manager,
                                     reserved_request_blocks,
                                     inflight_prefill_reserved_blocks,
-                                    held_completion_blocks,
-                                    activated_waiting_completion_blocks,
+                                    || self.destination_handoff_completion_headroom(Some(uuid)),
                                     raw_prefill_cost
                                         .expect("fresh admission must retain its G1 lookup"),
                                 )
