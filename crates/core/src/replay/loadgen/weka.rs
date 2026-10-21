@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -208,6 +208,7 @@ impl WekaImporter {
         let file_count = snapshots.len();
         let mut canonical_rows =
             tempfile::NamedTempFile::new().context("creating Weka row spool")?;
+        let mut row_writer = BufWriter::new(canonical_rows.as_file_mut());
         for snapshot in &snapshots {
             for_each_source_trace(
                 File::open(&snapshot.file).context("reopening Weka source snapshot")?,
@@ -229,10 +230,9 @@ impl WekaImporter {
                     raw_zero_outputs += lowered.raw_zero_outputs;
                     requests += lowered.rows.len();
                     for row in lowered.rows {
-                        serde_json::to_writer(canonical_rows.as_file_mut(), &row)
+                        serde_json::to_writer(&mut row_writer, &row)
                             .context("writing preflighted Weka row spool")?;
-                        canonical_rows
-                            .as_file_mut()
+                        row_writer
                             .write_all(b"\n")
                             .context("writing preflighted Weka row delimiter")?;
                     }
@@ -241,10 +241,10 @@ impl WekaImporter {
                 },
             )?;
         }
-        canonical_rows
-            .as_file_mut()
+        row_writer
             .flush()
             .context("flushing preflighted Weka row spool")?;
+        drop(row_writer);
         canonical_rows
             .as_file_mut()
             .seek(SeekFrom::Start(0))
@@ -2397,6 +2397,32 @@ mod tests {
             .err()
             .expect("mixed blocks");
         assert!(error.to_string().contains("mixes block sizes"), "{error:#}");
+    }
+
+    #[test]
+    fn row_spool_preserves_large_rows_and_the_final_partial_buffer() {
+        let directory = tempdir().unwrap();
+        let hashes: Vec<u64> = (0..4096).collect();
+        write_trace(
+            &directory.path().join("a.json"),
+            serde_json::json!([request(0.0, 16384, 1, &hashes)]),
+        );
+        write_trace(
+            &directory.path().join("z.json"),
+            serde_json::json!([request(0.0, 4, 2, &[9])]),
+        );
+
+        let importer = WekaImporter::open(directory.path()).unwrap();
+        let (summary, rows) = importer.collect_rows().unwrap();
+        assert_eq!(summary.requests, 2);
+        assert_eq!(rows[0].hash_ids.as_ref().unwrap().len(), 4096);
+        assert_eq!(rows[1].hash_ids.as_ref().unwrap().len(), 1);
+        assert_eq!(rows[1].output_length, Some(2));
+        let (_, repeated) = importer.collect_rows().unwrap();
+        assert_eq!(
+            serde_json::to_value(rows).unwrap(),
+            serde_json::to_value(repeated).unwrap()
+        );
     }
 
     #[test]
