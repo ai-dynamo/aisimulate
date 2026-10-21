@@ -1334,15 +1334,21 @@ def _llama_under_a_mamba_wrapper():
     return {"architectures": ["LlavaMambaForConditionalGeneration"], "model_type": "llava_mamba", "text_config": text}
 
 
-_DSA_LAYERS = f"layer_types deepseek_sparse_attention x{len(_packaged_config('nvidia--GLM-5.3-NVFP4')['layer_types'])}"
+def _dsa_layers(config):
+    layer_types = config.get("text_config", config)["layer_types"]
+    return f"layer_types deepseek_sparse_attention x{layer_types.count('deepseek_sparse_attention')}"
+
+
+def _mamba_wrapper(_config):
+    return "recurrent architecture LlavaMambaForConditionalGeneration"
 
 
 @pytest.mark.parametrize(
     "build,reason",
     [
-        (_unnamed_dsa_config, _DSA_LAYERS),
-        (_dsa_text_config_under_a_wrapper, _DSA_LAYERS),
-        (_llama_under_a_mamba_wrapper, "recurrent architecture LlavaMambaForConditionalGeneration"),
+        (_unnamed_dsa_config, _dsa_layers),
+        (_dsa_text_config_under_a_wrapper, _dsa_layers),
+        (_llama_under_a_mamba_wrapper, _mamba_wrapper),
     ],
     ids=["unnamed-dsa-config", "dsa-text-config-under-a-wrapper", "llama-under-a-mamba-wrapper"],
 )
@@ -1352,13 +1358,15 @@ def test_collector_checks_cache_layout_markers_with_its_own_architecture(tmp_pat
     stricter."""
     from aisimulate.support.config_profile import load_model_config as load_intake_config
 
+    # The packaged config is read here, so a missing file fails only the tests that use it.
+    config = build()
     path = tmp_path / "config.json"
-    path.write_text(json.dumps(build()))
+    path.write_text(json.dumps(config))
     assert load_intake_config(path).runtime_layout == ()
     capability = _layout_capability(path, native=True)
     assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
     assert capability.support_reason == (
-        f"config.json cannot describe this cache layout ({reason}). The native runtime measures every cell."
+        f"config.json cannot describe this cache layout ({reason(config)}). The native runtime measures every cell."
     )
 
 
