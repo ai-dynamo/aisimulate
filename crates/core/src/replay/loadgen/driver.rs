@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Live warmup is a modified native re-implementation of NVIDIA AIPerf's
+// Apache-2.0 agentic_replay.py at SemiAnalysisAI/aiperf commit
+// 754356e9a39acc6cc6afb242d123bb57c3fb6f75; see THIRD_PARTY_NOTICES.md.
+
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
@@ -12,7 +16,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::phase::{AgenticPhaseEvidence, AgenticPreparation, AgenticPreparationTransition};
+use super::phase::{
+    AgenticPhaseEvidence, AgenticPreparation, AgenticPreparationTransition, AgenticWarmupPolicy,
+};
 use super::profile::{
     AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport, AgenticProfileState,
 };
@@ -140,6 +146,7 @@ struct ConcurrencyState {
 
 #[derive(Debug)]
 struct AgenticState {
+    compressed_warmup_timing: bool,
     identities: Vec<AgenticRuntimeIdentity>,
     node_states: Vec<AgenticNodeState>,
     remaining_dependencies: Vec<usize>,
@@ -177,6 +184,7 @@ struct AgenticDependentEdge {
 
 #[derive(Debug)]
 struct AgenticPlayState {
+    preparation_only: bool,
     play_id: String,
     nodes: Vec<usize>,
     root_nodes: Vec<usize>,
@@ -197,6 +205,7 @@ struct AgenticPlayState {
 impl AgenticPlayState {
     fn new(play_id: String, nodes: Vec<usize>, root_nodes: Vec<usize>) -> Self {
         Self {
+            preparation_only: false,
             play_id,
             nodes,
             root_nodes,
@@ -247,6 +256,15 @@ struct TurnResolution {
     session_index: usize,
     outcome: TurnOutcome,
     session_ended: bool,
+}
+
+struct PreparedAgenticProfilePlay {
+    appended: WorkloadDriver,
+    lane: usize,
+    retired_play: usize,
+    next_cursor: u64,
+    next_ordinal: u64,
+    replacements: usize,
 }
 
 #[derive(Debug)]
@@ -532,6 +550,7 @@ impl AgenticState {
             sessions,
             ready_sessions,
             now_ms,
+            self.compressed_warmup_timing,
         );
     }
 
@@ -550,6 +569,7 @@ impl AgenticState {
             sessions,
             ready_sessions,
             now_ms,
+            self.compressed_warmup_timing,
         );
     }
 
@@ -562,6 +582,7 @@ impl AgenticState {
         sessions: &mut [SessionRuntime],
         ready_sessions: &mut BinaryHeap<ReadySession>,
         now_ms: f64,
+        compressed_warmup_timing: bool,
     ) {
         for edge in edges {
             let target = edge.target_node;
@@ -571,7 +592,11 @@ impl AgenticState {
             remaining_dependencies[target] = remaining_dependencies[target]
                 .checked_sub(1)
                 .expect("compiled agentic dependency must fire exactly once");
-            ready_after_ms[target] = ready_after_ms[target].max(now_ms + edge.delay_ms);
+            ready_after_ms[target] = if compressed_warmup_timing {
+                now_ms
+            } else {
+                ready_after_ms[target].max(now_ms + edge.delay_ms)
+            };
             if remaining_dependencies[target] != 0 {
                 continue;
             }
@@ -796,7 +821,7 @@ impl AgenticState {
     fn trajectory_snapshot(&self) -> AgenticTrajectorySnapshot {
         let mut e2e_latencies_ms = Vec::new();
         for play in &self.plays {
-            if play.failed || play.completed_nodes != play.nodes.len() {
+            if play.preparation_only || play.failed || play.completed_nodes != play.nodes.len() {
                 continue;
             }
             let (Some(root_dispatch_ms), Some(max_terminal_ms)) =
@@ -807,7 +832,11 @@ impl AgenticState {
             e2e_latencies_ms.push(max_terminal_ms - root_dispatch_ms);
         }
         AgenticTrajectorySnapshot {
-            total_trajectories: self.plays.len(),
+            total_trajectories: self
+                .plays
+                .iter()
+                .filter(|play| !play.preparation_only)
+                .count(),
             completed_trajectories: e2e_latencies_ms.len(),
             e2e_latencies_ms,
         }
@@ -816,6 +845,7 @@ impl AgenticState {
     fn play_outcomes(&self, sessions: &[SessionRuntime]) -> Vec<AgenticPlayOutcome> {
         self.plays
             .iter()
+            .filter(|play| !play.preparation_only)
             .map(|play| {
                 let status = if !play.quiescent || play.censored {
                     AgenticPlayStatus::Incomplete
@@ -905,7 +935,7 @@ impl WorkloadDriver {
             start_ms: None,
             last_advanced_ms: 0.0,
             cutoff: false,
-            cursor: u64::try_from(snapshots.len())?,
+            cursor: context.initial_corpus_cursor(),
             active_plays,
             next_ordinals,
             replacements_at_ms: (None, 0),
@@ -937,6 +967,9 @@ impl WorkloadDriver {
             bail!("agentic profile deadline overflow at activation");
         }
         profile.start_ms = Some(now_ms);
+        // Warmup has a finite admission bound; the formal profile starts its
+        // own same-time progress window after measurement reset succeeds.
+        profile.replacements_at_ms = (None, 0);
         profile.last_advanced_ms = now_ms;
         profile.global_idle_since_ms = Some(now_ms);
         profile.tree_idle_since_ms.fill(Some(now_ms));
@@ -951,7 +984,7 @@ impl WorkloadDriver {
     /// queues and P/D handoffs. Preparation traffic and server-only cleanup are
     /// deliberately excluded.
     pub fn agentic_profile_pending_request_ids(&self) -> Vec<Uuid> {
-        if self.agentic_profile.is_none() {
+        if self.agentic_profile.is_none() || self.is_agentic_preparing() {
             return Vec::new();
         }
         let mut entries = self.in_flight.iter().collect::<Vec<_>>();
@@ -968,6 +1001,9 @@ impl WorkloadDriver {
     /// Apply client control events at a runtime-owned timestamp. The runtime
     /// must deliver existing responses first, then call this before admission.
     pub fn advance_agentic_profile(&mut self, now_ms: f64) -> Result<bool> {
+        if self.live_warmup_active() {
+            return self.advance_live_warmup(now_ms);
+        }
         let Some(profile) = &self.agentic_profile else {
             return Ok(false);
         };
@@ -1048,26 +1084,52 @@ impl WorkloadDriver {
     }
 
     fn append_agentic_profile_play(&mut self, lane: usize, now_ms: f64) -> Result<()> {
+        let prepared = self.prepare_agentic_profile_play(lane, now_ms, 0)?;
+        self.commit_agentic_profile_play(prepared, now_ms);
+        Ok(())
+    }
+
+    fn prepare_agentic_profile_play(
+        &self,
+        lane: usize,
+        now_ms: f64,
+        pending: usize,
+    ) -> Result<PreparedAgenticProfilePlay> {
         let context = self.agentic_replay_context.as_ref().unwrap();
         let profile = self.agentic_profile.as_ref().unwrap();
-        let cursor = profile.cursor;
+        let cursor = profile
+            .cursor
+            .checked_add(u64::try_from(pending)?)
+            .context("agentic corpus cursor overflow")?;
         let ordinal = profile.next_ordinals[lane];
         let (last_replacement_ms, replacements) = profile.replacements_at_ms;
         let replacements = if last_replacement_ms == Some(now_ms) {
             replacements
-                .checked_add(1)
+                .checked_add(
+                    pending
+                        .checked_add(1)
+                        .context("same-time replacement count overflow")?,
+                )
                 .context("same-time replacement count overflow")?
         } else {
-            1
+            pending
+                .checked_add(1)
+                .context("same-time replacement count overflow")?
         };
         // Source selection is shared across lanes: another lane may consume
         // the positive-duration source while this lane draws a zero-duration
         // source repeatedly. Each full corpus cycle can occupy one more lane
         // with future work, so allow a full cycle for every configured lane.
-        let same_time_budget = context
-            .source_play_count()
-            .checked_mul(context.lane_count())
-            .context("same-time replacement budget overflow")?;
+        let same_time_budget = if self.live_warmup_active() {
+            // Unlike an unbounded profile, warmup is bounded by ten admissions
+            // per lane plus one fresh handoff frontier. Zero-time one-token
+            // passes are therefore finite even when full requests take time.
+            super::AGENTIC_WARMUP_REQUESTS_PER_LANE + 1
+        } else {
+            context.source_play_count()
+        }
+        .checked_mul(context.lane_count())
+        .context("same-time replacement budget overflow")?;
         if replacements > same_time_budget {
             bail!(
                 "agentic profile repeated a corpus cycle for every lane without virtual-time progress at {now_ms} ms"
@@ -1087,6 +1149,28 @@ impl WorkloadDriver {
             self.include_replay_hashes,
             self.agentic_speedup,
         )?;
+        if self.live_warmup_active() {
+            appended.compress_live_warmup_timers(0.0);
+        }
+        Ok(PreparedAgenticProfilePlay {
+            appended,
+            lane,
+            retired_play,
+            next_cursor,
+            next_ordinal,
+            replacements,
+        })
+    }
+
+    fn commit_agentic_profile_play(&mut self, prepared: PreparedAgenticProfilePlay, now_ms: f64) {
+        let PreparedAgenticProfilePlay {
+            mut appended,
+            lane,
+            retired_play,
+            next_cursor,
+            next_ordinal,
+            replacements,
+        } = prepared;
         let SchedulingPolicy::Agentic(mut added) = appended.policy else {
             unreachable!()
         };
@@ -1165,7 +1249,6 @@ impl WorkloadDriver {
         profile.replacements_at_ms = (Some(now_ms), replacements);
         profile.active_plays[lane] = play_index;
         profile.tree_idle_since_ms.push(Some(now_ms));
-        Ok(())
     }
 
     fn shift_agentic_timers(&mut self, only_play: Option<usize>, now_ms: f64) -> bool {
@@ -1232,14 +1315,22 @@ impl WorkloadDriver {
             finished_at_ms: None,
             cancel_drain_timed_out: false,
             unsettled_server_requests: self.in_flight.len() + self.agentic_settling.len(),
-            plays_started: state.plays.len(),
+            plays_started: state.plays.iter().filter(|p| !p.preparation_only).count(),
             client_completed_plays: state
                 .plays
                 .iter()
-                .filter(|p| p.client_finished && !p.censored)
+                .filter(|p| !p.preparation_only && p.client_finished && !p.censored)
                 .count(),
-            retired_plays: state.plays.iter().filter(|p| p.client_finished).count(),
-            server_quiescent_plays: state.plays.iter().filter(|p| p.quiescent).count(),
+            retired_plays: state
+                .plays
+                .iter()
+                .filter(|p| !p.preparation_only && p.client_finished)
+                .count(),
+            server_quiescent_plays: state
+                .plays
+                .iter()
+                .filter(|p| !p.preparation_only && p.quiescent)
+                .count(),
             issued_requests: profile.issued_requests,
             successful_responses: profile.successful_responses,
             canceled_requests: profile.canceled_requests,
@@ -1259,6 +1350,21 @@ impl WorkloadDriver {
 
     fn agentic_profile_next_control_ms(&self) -> Option<f64> {
         let profile = self.agentic_profile.as_ref()?;
+        if self.live_warmup_active() {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
+                return None;
+            };
+            let preparation = self.agentic_preparation.as_ref()?;
+            return profile
+                .active_plays
+                .iter()
+                .enumerate()
+                .filter(|(lane, play)| {
+                    preparation.lane_has_budget(*lane) && state.plays[**play].client_finished
+                })
+                .filter_map(|(_, play)| state.plays[*play].max_terminal_ms)
+                .min_by(f64::total_cmp);
+        }
         let (cutoff, _, _) = profile.deadlines()?;
         if profile.cutoff {
             return None;
@@ -1321,11 +1427,43 @@ impl WorkloadDriver {
         include_replay_hashes: bool,
         speedup: f64,
     ) -> Result<Self> {
-        let preparation = AgenticPreparation::new(
-            &prepared,
-            u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
+        Self::new_agentic_warmup_with_policy(
+            prepared,
+            engine_block_size,
             include_replay_hashes,
-        )?;
+            speedup,
+            AgenticWarmupPolicy::RepeatedPrefixes,
+            10_000.0,
+        )
+    }
+
+    pub fn new_agentic_warmup_with_policy(
+        prepared: PreparedAgenticSnapshots,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+        policy: AgenticWarmupPolicy,
+        primer_idle_cap_ms: f64,
+    ) -> Result<Self> {
+        if !primer_idle_cap_ms.is_finite() || primer_idle_cap_ms < 0.0 {
+            bail!("warmup primer idle cap must be finite and nonnegative");
+        }
+        let preparation = if policy == AgenticWarmupPolicy::RepeatedPrefixes {
+            AgenticPreparation::new(
+                &prepared,
+                u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
+                include_replay_hashes,
+            )?
+        } else {
+            AgenticPreparation::with_policy(
+                &prepared,
+                u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
+                include_replay_hashes,
+                policy,
+                primer_idle_cap_ms,
+                speedup,
+            )?
+        };
         let mut driver = Self::new_agentic_snapshots(
             prepared,
             engine_block_size,
@@ -1334,6 +1472,157 @@ impl WorkloadDriver {
         )?;
         driver.agentic_preparation = Some(preparation);
         Ok(driver)
+    }
+
+    fn live_warmup_active(&self) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(AgenticPreparation::live_active)
+    }
+
+    fn is_live_preparation_request(&self, uuid: Uuid) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(|phase| phase.is_live_request(uuid))
+    }
+
+    fn compress_live_warmup_timers(&mut self, now_ms: f64) {
+        let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+            return;
+        };
+        state.compressed_warmup_timing = true;
+        state.ready_after_ms.fill(now_ms);
+        for session in &mut self.sessions {
+            if let Some(at) = &mut session.next_ready_at_ms {
+                *at = now_ms;
+            }
+        }
+        self.ready_sessions = std::mem::take(&mut self.ready_sessions)
+            .into_iter()
+            .map(|mut ready| {
+                ready.ready_at_ms = now_ms;
+                ready
+            })
+            .collect();
+    }
+
+    fn advance_live_warmup(&mut self, now_ms: f64) -> Result<bool> {
+        let profile = self
+            .agentic_profile
+            .as_ref()
+            .context("live warmup requires agentic_profile")?;
+        if !now_ms.is_finite() || now_ms < profile.last_advanced_ms {
+            bail!("live warmup clock must be finite and nondecreasing");
+        }
+        let active = profile.active_plays.clone();
+        let mut changed = false;
+        for (lane, play) in active.into_iter().enumerate() {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
+                unreachable!()
+            };
+            if self
+                .agentic_preparation
+                .as_ref()
+                .is_some_and(|phase| phase.lane_has_budget(lane))
+                && state.plays[play].client_finished
+            {
+                self.append_agentic_profile_play(lane, now_ms)?;
+                changed = true;
+            }
+        }
+        self.agentic_profile.as_mut().unwrap().last_advanced_ms = now_ms;
+        Ok(changed)
+    }
+
+    // Reconstruct source-clock offsets, not warmup wall time. This is computed
+    // before reset_measurements so any error leaves the phase retryable.
+    fn live_handoff_times(&self, now_ms: f64, fresh_origin: bool) -> Result<Vec<(usize, f64)>> {
+        let SchedulingPolicy::Agentic(state) = &self.policy else {
+            unreachable!()
+        };
+        let context = self
+            .agentic_replay_context
+            .as_ref()
+            .context("missing live replay context")?;
+        let snapshots = self
+            .agentic_snapshots
+            .as_ref()
+            .context("missing live snapshots")?;
+        let states_by_request: FxHashMap<_, _> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| {
+                Ok((
+                    (
+                        state.node_to_play[index],
+                        session.turns[0]
+                            .request_id
+                            .as_deref()
+                            .context("live warmup requires source request IDs")?,
+                    ),
+                    state.node_states[index],
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let mut offsets = Vec::new();
+        let mut first = if fresh_origin { 0.0 } else { f64::INFINITY };
+        for (index, node) in state.node_states.iter().enumerate() {
+            if !matches!(node, AgenticNodeState::Ready | AgenticNodeState::Blocked) {
+                continue;
+            }
+            let PromptTokens::Snapshot { source_index, .. } =
+                self.sessions[index].turns[0].prompt_tokens
+            else {
+                bail!("live warmup requires immutable snapshot prompts");
+            };
+            // Only the immediate conversation frontier carries a source-clock
+            // deadline across handoff. A pending join/barrier retains its gate,
+            // but future continuations and unspawned children must create their
+            // timers from actual dependency events, including after idle caps.
+            if *node == AgenticNodeState::Blocked
+                && context.graph.nodes[source_index]
+                    .dependencies
+                    .iter()
+                    .filter(|edge| {
+                        matches!(
+                            edge.relation,
+                            AgenticDependencyRelation::Sequence | AgenticDependencyRelation::Spawn
+                        )
+                    })
+                    .any(|edge| {
+                        states_by_request
+                            .get(&(state.node_to_play[index], edge.request_id.as_str()))
+                            .is_some_and(|source| {
+                                matches!(
+                                    source,
+                                    AgenticNodeState::Blocked | AgenticNodeState::Ready
+                                ) || (edge.trigger == AgenticDependencyTrigger::Completion
+                                    && *source == AgenticNodeState::Emitted)
+                            })
+                    })
+            {
+                continue;
+            }
+            let offset = (context.recorded_start_ms(source_index)
+                - snapshots[state.node_to_play[index]].t_star_ms)
+                .max(0.0)
+                / self.agentic_speedup;
+            if *node == AgenticNodeState::Ready {
+                first = first.min(offset);
+            }
+            offsets.push((index, offset));
+        }
+        if !first.is_finite() {
+            first = 0.0;
+        }
+        for (_, at) in &mut offsets {
+            *at = now_ms + (*at - first).max(0.0);
+            if !at.is_finite() {
+                bail!("live warmup handoff timer overflow");
+            }
+        }
+        Ok(offsets)
     }
 
     pub fn is_agentic_preparing(&self) -> bool {
@@ -1375,7 +1664,8 @@ impl WorkloadDriver {
 
     /// Open profiling only after all preparation requests succeed and settle,
     /// or finish an aborted preparation after its submitted server work drains.
-    /// This does not change the saved graph's frontier or dependency delays.
+    /// The default keeps the saved frontier; live warmup retains its advanced
+    /// dependency state and restores source-clock delays at the barrier.
     pub fn finish_agentic_preparation(
         &mut self,
         now_ms: f64,
@@ -1390,12 +1680,74 @@ impl WorkloadDriver {
         now_ms: f64,
         reset_measurements: impl FnOnce() -> Result<()>,
     ) -> Result<Option<AgenticPreparationTransition>> {
+        let pending_transition = self
+            .agentic_preparation
+            .as_ref()
+            .map(|phase| phase.ready_transition(now_ms))
+            .transpose()?
+            .flatten();
+        let mut handoff_plays = Vec::new();
+        if self.live_warmup_active()
+            && pending_transition == Some(AgenticPreparationTransition::OpenProfile)
+        {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
+                unreachable!()
+            };
+            for (lane, &play) in self
+                .agentic_profile
+                .as_ref()
+                .unwrap()
+                .active_plays
+                .iter()
+                .enumerate()
+            {
+                if state.plays[play].client_finished {
+                    handoff_plays.push(self.prepare_agentic_profile_play(
+                        lane,
+                        now_ms,
+                        handoff_plays.len(),
+                    )?);
+                }
+            }
+        }
         let Some(preparation) = &self.agentic_preparation else {
             return Ok(None);
         };
+        if preparation.ready_to_start_live() {
+            if self.agentic_profile.is_none() {
+                bail!("live warmup requires agentic_profile");
+            }
+            preparation.validate_boundary_time(now_ms)?;
+            self.compress_live_warmup_timers(now_ms);
+            self.agentic_preparation
+                .as_mut()
+                .unwrap()
+                .start_live(now_ms);
+            return Ok(None);
+        }
         let Some(transition) = preparation.ready_transition(now_ms)? else {
             return Ok(None);
         };
+        let mut handoff_times = (transition == AgenticPreparationTransition::OpenProfile
+            && preparation.live_active())
+        .then(|| self.live_handoff_times(now_ms, !handoff_plays.is_empty()))
+        .transpose()?;
+        if let Some(times) = &mut handoff_times {
+            let mut node_offset = self.sessions.len();
+            for plan in &handoff_plays {
+                for (index, at) in plan.appended.live_handoff_times(now_ms, true)? {
+                    times.push((
+                        node_offset
+                            .checked_add(index)
+                            .context("live handoff node index overflow")?,
+                        at,
+                    ));
+                }
+                node_offset = node_offset
+                    .checked_add(plan.appended.sessions.len())
+                    .context("live handoff node index overflow")?;
+            }
+        }
         if let SchedulingPolicy::Agentic(state) = &self.policy
             && state
                 .last_runtime_feedback_at_ms
@@ -1403,7 +1755,7 @@ impl WorkloadDriver {
         {
             bail!("agentic preparation boundary precedes runtime feedback");
         }
-        if transition == AgenticPreparationTransition::OpenProfile {
+        if transition == AgenticPreparationTransition::OpenProfile && handoff_times.is_none() {
             let SchedulingPolicy::Agentic(state) = &self.policy else {
                 unreachable!()
             };
@@ -1437,7 +1789,55 @@ impl WorkloadDriver {
             bail!("agentic profile deadline overflow at activation");
         }
         reset_measurements()?;
-        if transition == AgenticPreparationTransition::OpenProfile {
+        for plan in handoff_plays {
+            self.commit_agentic_profile_play(plan, now_ms);
+        }
+        if transition == AgenticPreparationTransition::Aborted
+            && self
+                .agentic_preparation
+                .as_ref()
+                .is_some_and(AgenticPreparation::uses_live_policy)
+        {
+            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+                unreachable!()
+            };
+            for play in &mut state.plays {
+                play.preparation_only = true;
+            }
+            state.lifecycle.clear();
+            state.next_lifecycle_ordinal = 0;
+        }
+        if let Some(times) = handoff_times {
+            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+                unreachable!()
+            };
+            state.compressed_warmup_timing = false;
+            // Formal metrics describe only the post-barrier cohort. Keep the
+            // compact old plays for dependency/identity audit, but not outcome
+            // latency samples. Preparation requests remain in the phase ledger.
+            for play in &mut state.plays {
+                if play.client_finished {
+                    play.preparation_only = true;
+                } else {
+                    play.root_dispatch_ms = Some(now_ms);
+                    play.max_terminal_ms = None;
+                }
+            }
+            state.lifecycle.clear();
+            state.next_lifecycle_ordinal = 0;
+            self.ready_sessions.clear();
+            for (index, at) in times {
+                state.ready_after_ms[index] = at;
+                if state.node_states[index] == AgenticNodeState::Ready {
+                    self.sessions[index].next_ready_at_ms = Some(at);
+                    self.ready_sessions.push(ReadySession {
+                        ready_at_ms: at,
+                        session_index: index,
+                        turn_index: 0,
+                    });
+                }
+            }
+        } else if transition == AgenticPreparationTransition::OpenProfile {
             let SchedulingPolicy::Agentic(state) = &mut self.policy else {
                 unreachable!()
             };
@@ -1626,6 +2026,7 @@ impl WorkloadDriver {
             agentic_plays.push(play);
         }
         let mut state = AgenticState {
+            compressed_warmup_timing: false,
             identities,
             node_states: vec![AgenticNodeState::Blocked; sessions.len()],
             remaining_dependencies,
@@ -1964,6 +2365,7 @@ impl WorkloadDriver {
         }
 
         let mut state = AgenticState {
+            compressed_warmup_timing: false,
             identities,
             node_states: vec![AgenticNodeState::Blocked; sessions.len()],
             remaining_dependencies,
@@ -2284,9 +2686,13 @@ impl WorkloadDriver {
 
     #[doc(hidden)]
     pub fn pop_ready_compact(&mut self, now_ms: f64, limit: usize) -> Vec<CompactReadyTurn> {
+        let live_warmup = self.live_warmup_active();
         if let Some(preparation) = &mut self.agentic_preparation {
             match preparation.transition() {
-                None => return preparation.pop_ready(now_ms, limit, self.emit_session_metadata),
+                None if !live_warmup => {
+                    return preparation.pop_ready(now_ms, limit, self.emit_session_metadata);
+                }
+                None => {}
                 Some(AgenticPreparationTransition::Aborted) => return Vec::new(),
                 Some(AgenticPreparationTransition::OpenProfile) => {}
             }
@@ -2304,6 +2710,7 @@ impl WorkloadDriver {
         }
 
         let mut emitted = Vec::new();
+        let mut quota_deferred = Vec::new();
         while emitted.len() < effective_limit {
             let Some(ready_session) = self.ready_sessions.pop() else {
                 break;
@@ -2314,6 +2721,26 @@ impl WorkloadDriver {
             }
 
             let session_index = ready_session.session_index;
+            let lane = if live_warmup {
+                let SchedulingPolicy::Agentic(state) = &self.policy else {
+                    unreachable!()
+                };
+                let lane = self.agentic_snapshots.as_ref().unwrap()
+                    [state.node_to_play[session_index]]
+                    .lane_id;
+                if !self
+                    .agentic_preparation
+                    .as_ref()
+                    .unwrap()
+                    .lane_has_budget(lane)
+                {
+                    quota_deferred.push(ready_session);
+                    continue;
+                }
+                Some(lane)
+            } else {
+                None
+            };
             let Some((turn_index, scheduled_ready_at_ms)) = self
                 .sessions
                 .get(session_index)
@@ -2348,7 +2775,11 @@ impl WorkloadDriver {
                     authored_id: request_id.clone(),
                     session_id: (!turn.synthetic_session_id).then(|| session.session_id.clone()),
                     turn_index: None,
-                    metadata: serde_json::Value::Null,
+                    metadata: if live_warmup {
+                        serde_json::json!({"agentic_phase": "warmup"})
+                    } else {
+                        serde_json::Value::Null
+                    },
                     prompt_token_source: ReplayPromptTokenSource::Materialized,
                     agentic: agentic_identity,
                 })
@@ -2378,7 +2809,13 @@ impl WorkloadDriver {
                             (
                                 input_length,
                                 context.token_ids(slot, source_index),
-                                Some(context.outputs[source_index].clone()),
+                                Some(if live_warmup {
+                                    vec![
+                                        context.outputs[source_index].first().copied().unwrap_or(0),
+                                    ]
+                                } else {
+                                    context.outputs[source_index].clone()
+                                }),
                             )
                         } else {
                             let (input_length, hash_ids) = turn.prompt_tokens.take_deferred();
@@ -2386,7 +2823,11 @@ impl WorkloadDriver {
                         };
                     let request_metadata = DirectRequest {
                         tokens: Vec::new(),
-                        max_output_tokens: turn.max_output_tokens,
+                        max_output_tokens: if live_warmup {
+                            1
+                        } else {
+                            turn.max_output_tokens
+                        },
                         output_token_ids,
                         uuid: Some(request_uuid),
                         dp_rank: 0,
@@ -2441,7 +2882,7 @@ impl WorkloadDriver {
                     emitted_output_tokens: 0,
                 },
             );
-            emitted.push(CompactReadyTurn {
+            let ready = CompactReadyTurn {
                 request_uuid,
                 authored_request_id: turn.request_id.clone(),
                 play_id: turn.play_id.clone(),
@@ -2454,10 +2895,29 @@ impl WorkloadDriver {
                 emit_session_metadata: self.emit_session_metadata,
                 synthetic_session_id: turn.synthetic_session_id,
                 request,
-            });
+            };
+            if let Some(lane) = lane {
+                let input_length = ready.request.input_length();
+                let identity = ready
+                    .request
+                    .metadata()
+                    .replay_context
+                    .as_ref()
+                    .unwrap()
+                    .agentic
+                    .clone()
+                    .unwrap();
+                self.agentic_preparation
+                    .as_mut()
+                    .unwrap()
+                    .record_live_dispatch(&ready, lane, input_length, identity);
+            }
+            emitted.push(ready);
             if let SchedulingPolicy::Agentic(state) = &mut self.policy {
                 state.on_node_emitted(session_index, now_ms);
-                if let Some(profile) = &mut self.agentic_profile {
+                if let Some(profile) = &mut self.agentic_profile
+                    && profile.start_ms.is_some()
+                {
                     profile.issued_requests += 1;
                     profile.first_request_ms.get_or_insert(now_ms);
                     profile.global_idle_since_ms = None;
@@ -2471,6 +2931,7 @@ impl WorkloadDriver {
                 );
             }
         }
+        self.ready_sessions.extend(quota_deferred);
         emitted
     }
 
@@ -2524,11 +2985,13 @@ impl WorkloadDriver {
     }
 
     fn agentic_node_ordinal(&self, request_uuid: Uuid) -> Result<usize> {
-        if let Some(ordinal) = self
-            .agentic_preparation
-            .as_ref()
-            .and_then(|phase| phase.ordinal(request_uuid))
-        {
+        if let Some(ordinal) = self.agentic_preparation.as_ref().and_then(|phase| {
+            if phase.is_live_request(request_uuid) {
+                None
+            } else {
+                phase.ordinal(request_uuid)
+            }
+        }) {
             return self
                 .sessions
                 .len()
@@ -2633,7 +3096,9 @@ impl WorkloadDriver {
         debug_assert_eq!(self.prompt_mode, PromptMode::Full);
         let mut becoming_terminal = FxHashSet::default();
         for terminal in &feedback.causal_terminals {
-            if self.knows_preparation_request(terminal.request_uuid) {
+            if self.knows_preparation_request(terminal.request_uuid)
+                && !self.is_live_preparation_request(terminal.request_uuid)
+            {
                 continue;
             }
             let outcome = match terminal.status {
@@ -2655,7 +3120,9 @@ impl WorkloadDriver {
             becoming_terminal.insert(terminal.request_uuid);
         }
         for request_uuid in &feedback.quiescent_requests {
-            if self.knows_preparation_request(*request_uuid) {
+            if self.knows_preparation_request(*request_uuid)
+                && !self.is_live_preparation_request(*request_uuid)
+            {
                 continue;
             }
             if !self.agentic_settling.contains_key(request_uuid)
@@ -2712,11 +3179,13 @@ impl WorkloadDriver {
         status: ReplayTerminalStatus,
     ) -> Result<()> {
         if self.knows_preparation_request(request_uuid) {
-            return self.agentic_preparation.as_mut().unwrap().on_terminal(
-                request_uuid,
-                now_ms,
-                status,
-            );
+            self.agentic_preparation
+                .as_mut()
+                .unwrap()
+                .on_terminal(request_uuid, now_ms, status)?;
+            if !self.is_live_preparation_request(request_uuid) {
+                return Ok(());
+            }
         }
         let outcome = match status {
             ReplayTerminalStatus::Completed => TurnOutcome::Completed,
@@ -2757,10 +3226,10 @@ impl WorkloadDriver {
             if self.in_flight.is_empty() {
                 profile.global_idle_since_ms = Some(now_ms);
             }
-            if status == ReplayTerminalStatus::Completed {
+            if profile.start_ms.is_some() && status == ReplayTerminalStatus::Completed {
                 profile.successful_responses += 1;
                 profile.last_successful_response_ms = Some(now_ms);
-            } else if status == ReplayTerminalStatus::Canceled {
+            } else if profile.start_ms.is_some() && status == ReplayTerminalStatus::Canceled {
                 profile.canceled_requests += 1;
             }
         }
@@ -2770,11 +3239,13 @@ impl WorkloadDriver {
     /// Mark an already-terminal agentic request free of runtime-owned state.
     pub fn on_quiescent(&mut self, request_uuid: Uuid, now_ms: f64) -> Result<()> {
         if self.knows_preparation_request(request_uuid) {
-            return self
-                .agentic_preparation
+            self.agentic_preparation
                 .as_mut()
                 .unwrap()
-                .on_quiescent(request_uuid, now_ms);
+                .on_quiescent(request_uuid, now_ms)?;
+            if !self.is_live_preparation_request(request_uuid) {
+                return Ok(());
+            }
         }
         let SchedulingPolicy::Agentic(state) = &mut self.policy else {
             return Ok(());
@@ -2927,9 +3398,11 @@ impl WorkloadDriver {
     }
 
     pub fn next_ready_time_ms(&mut self) -> Option<f64> {
+        let live_warmup = self.live_warmup_active();
         if let Some(preparation) = &self.agentic_preparation {
             match preparation.transition() {
-                None => return preparation.next_ready_time_ms(),
+                None if !live_warmup => return preparation.next_ready_time_ms(),
+                None => {}
                 Some(AgenticPreparationTransition::Aborted) => return None,
                 Some(AgenticPreparationTransition::OpenProfile) => {}
             }
@@ -2938,6 +3411,28 @@ impl WorkloadDriver {
             return None;
         }
         let control_ms = self.agentic_profile_next_control_ms();
+        if live_warmup {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
+                unreachable!()
+            };
+            let preparation = self.agentic_preparation.as_ref().unwrap();
+            return self
+                .ready_sessions
+                .iter()
+                .filter(|ready| {
+                    let session = &self.sessions[ready.session_index];
+                    let lane = self.agentic_snapshots.as_ref().unwrap()
+                        [state.node_to_play[ready.session_index]]
+                        .lane_id;
+                    preparation.lane_has_budget(lane)
+                        && session.in_flight.is_none()
+                        && session.next_ready_at_ms == Some(ready.ready_at_ms)
+                        && session.next_turn_index == ready.turn_index
+                })
+                .map(|ready| ready.ready_at_ms)
+                .chain(control_ms)
+                .min_by(f64::total_cmp);
+        }
         loop {
             let Some(ready_session) = self.ready_sessions.peek().copied() else {
                 return control_ms;
@@ -4968,7 +5463,7 @@ mod tests {
         )
         .unwrap();
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         // Tests start at the source origin, independently of initial cut sampling.
         let plays = (0..lanes)

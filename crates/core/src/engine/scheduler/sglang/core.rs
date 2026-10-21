@@ -814,8 +814,7 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
-        // Keep rejected requests alive until the pass succeeds so a provider
-        // failure can restore both their queue position and terminal bookkeeping.
+        // Overlength requests leave the queue now and report rejection after this pass's tokens.
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len
             && self
@@ -824,51 +823,15 @@ impl SglangCore {
                 .maximum_length()
                 .is_some_and(|length| length >= limit as u64)
         {
-            for index in 0..self.waiting.len() {
+            for _ in 0..self.waiting.len() {
                 let request = self.waiting.pop_front().expect("waiting request retained");
                 if request.prompt_len() < limit {
                     self.waiting.push_back(request);
                 } else {
-                    rejected.push((index, request));
+                    rejected.push(request);
                 }
             }
         }
-        // Preserve admission around validation, prediction and duration conversion.
-        // The built-in polynomial remains infallible; external providers may fail
-        // after accepting geometry. Lease checkpoints are not independent owners.
-        let admission_checkpoint = (!self.waiting.is_empty()
-            && self.config.perf_model.prefill_pass_can_fail())
-        .then(|| {
-            // FIFO admission only touches an admitted prefix and possibly its
-            // first blocked request. LPM may reorder the small queue it scores;
-            // keep the complete rollback image in that bounded case.
-            let checkpoint_len = if self.config.schedule_policy
-                == super::config::SchedulePolicy::Lpm
-                && self.waiting.len() <= super::config::LPM_FALLBACK_THRESHOLD
-            {
-                self.waiting.len()
-            } else {
-                self.config
-                    .max_running_requests
-                    .saturating_sub(self.running.len())
-                    .saturating_add(1)
-            };
-            let waiting = self
-                .waiting
-                .iter()
-                .take(checkpoint_len)
-                .map(|request| {
-                    (
-                        request.uuid,
-                        request.materialized_tokens,
-                        request.allocated_tokens,
-                        request.kv_lease.admission_checkpoint(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            (self.kv_manager.begin_admission(), waiting)
-        });
-        let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
@@ -892,70 +855,15 @@ impl SglangCore {
         let batch_size = admit.can_run.len();
         let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
         let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
-        let prefill_time = (|| {
-            self.config.perf_model.validate_prefill_batch(
-                &admit
-                    .prefill_fpm
-                    .iter()
-                    .map(|item| (item.tokens_computed, item.prefix_tokens))
-                    .collect::<Vec<_>>(),
-            )?;
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)
-        })();
-        let prefill_time = match prefill_time {
-            Ok(duration) => {
-                if let Some((checkpoint, _)) = admission_checkpoint {
-                    self.kv_manager.commit_admission(checkpoint);
-                }
-                duration
-            }
-            Err(error) => {
-                // A retry is still part of the caller's prepared group round;
-                // it must not consume the prefill interval a second time.
-                self.group_pass_prepared = grouped;
-                if let Some((checkpoint, waiting)) = admission_checkpoint {
-                    self.kv_manager.rollback_admission(checkpoint);
-                    let checkpoint_ids: FxHashSet<_> =
-                        waiting.iter().map(|entry| entry.0).collect();
-                    let mut requests = rustc_hash::FxHashMap::default();
-                    let mut untouched = Vec::new();
-                    for request in self.waiting.drain(..).chain(admit.can_run) {
-                        if checkpoint_ids.contains(&request.uuid) {
-                            requests.insert(request.uuid, request);
-                        } else {
-                            untouched.push(request);
-                        }
-                    }
-                    for (uuid, materialized, allocated, lease) in waiting {
-                        let mut request =
-                            requests.remove(&uuid).expect("admission request retained");
-                        request.kv_lease.restore_admission(lease);
-                        request.materialized_tokens = materialized;
-                        request.allocated_tokens = allocated;
-                        request.debug_assert_invariants(self.config.block_size);
-                        self.waiting.push_back(request);
-                    }
-                    debug_assert!(requests.is_empty());
-                    for request in untouched {
-                        self.waiting.push_back(request);
-                    }
-                }
-                for request in self.running.drain(running_before_admission..).rev() {
-                    self.prebuilt_ready.push_front(request);
-                }
-                for (index, request) in rejected {
-                    self.waiting.insert(index.min(self.waiting.len()), request);
-                }
-                self.active_request_ids = self
-                    .waiting
-                    .iter()
-                    .chain(&self.prebuilt_ready)
-                    .chain(&self.running)
-                    .map(|request| request.uuid)
-                    .collect();
-                return Err(error);
-            }
-        };
+        self.config.perf_model.validate_prefill_batch(
+            &admit
+                .prefill_fpm
+                .iter()
+                .map(|item| (item.tokens_computed, item.prefix_tokens))
+                .collect::<Vec<_>>(),
+        )?;
+        let prefill_time =
+            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
@@ -1022,7 +930,7 @@ impl SglangCore {
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let decode = if prefill_pass {
+        let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
                 &mut self.kv_manager,
@@ -1038,23 +946,7 @@ impl SglangCore {
                 decode_start_ms,
                 true,
             )
-        };
-        let mut decode = match decode {
-            Ok(decode) => decode,
-            Err(error) => {
-                for (index, request) in rejected {
-                    self.waiting.insert(index.min(self.waiting.len()), request);
-                }
-                self.active_request_ids = self
-                    .waiting
-                    .iter()
-                    .chain(&self.prebuilt_ready)
-                    .chain(&self.running)
-                    .map(|request| request.uuid)
-                    .collect();
-                return Err(error);
-            }
-        };
+        }?;
         if !prefill_pass {
             // The decode step can retract requests before executing the batch.
             committed_requests.extend(
@@ -1079,9 +971,9 @@ impl SglangCore {
             self.complete_source(request);
         }
         if let Some(oracle) = &self.belady {
-            oracle.retire_requests(rejected.iter().map(|(_, request)| request.uuid));
+            oracle.retire_requests(rejected.iter().map(|request| request.uuid));
         }
-        for (_, request) in rejected {
+        for request in rejected {
             self.active_request_ids.remove(&request.uuid);
             self.source_holds.remove_request(request.uuid);
             decode.output_signals.push(OutputSignal {

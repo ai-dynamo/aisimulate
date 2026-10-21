@@ -741,22 +741,6 @@ pub enum TimingModelConfig {
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
-    /// Whether `validate_prefill_batch` may reject geometry. A false return
-    /// guarantees only that validation accepts every batch, not that prediction
-    /// or duration conversion is infallible. Admission must still protect those
-    /// later operations for external providers.
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        true
-    }
-
-    /// Whether `predict_prefill_ms` may fail or return a non-finite duration
-    /// for a batch that validation accepted. Only a false return from both this
-    /// and `prefill_batch_validation_can_fail` lets admission skip its rollback
-    /// checkpoint, so injected providers keep this conservative default.
-    fn prefill_prediction_can_fail(&self) -> bool {
-        true
-    }
-
     /// Validate actual (new tokens, cached prefix) pairs before a scheduler
     /// reduces them to means. Providers with nonlinear per-request execution
     /// policies may reject batches that their aggregate API cannot represent.
@@ -813,14 +797,6 @@ pub trait TimingModel: Send + Sync {
 struct PolynomialTimingModel;
 
 impl TimingModel for PolynomialTimingModel {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        false
-    }
-
-    fn prefill_prediction_can_fail(&self) -> bool {
-        false
-    }
-
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -853,14 +829,6 @@ struct FixedTimingModel {
 }
 
 impl TimingModel for FixedTimingModel {
-    fn prefill_batch_validation_can_fail(&self) -> bool {
-        false
-    }
-
-    fn prefill_prediction_can_fail(&self) -> bool {
-        false
-    }
-
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -1059,7 +1027,6 @@ mod tests {
             decode_ms: 3.0,
         })
         .unwrap();
-        assert!(!model.prefill_batch_validation_can_fail());
         assert_eq!(model.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
         assert_eq!(model.predict_decode_ms(0, 128, 64, 1024).unwrap(), 0.0);
         assert_eq!(model.predict_prefill_ms(2, 128, 0).unwrap(), 7.0);
@@ -1067,9 +1034,8 @@ mod tests {
     }
 
     #[test]
-    fn polynomial_model_does_not_need_admission_checkpoint() {
+    fn polynomial_model_accepts_heterogeneous_prefill_batches() {
         let model = built_in_timing_model(&TimingModelConfig::Polynomial).unwrap();
-        assert!(!model.prefill_batch_validation_can_fail());
         model.validate_prefill_batch(&[(4, 0), (12, 8)]).unwrap();
     }
 

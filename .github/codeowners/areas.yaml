@@ -72,6 +72,8 @@ areas:
       - tests/test_g3_offload_cli.py
       - tests/test_shared_g2_cli.py
       - tests/test_agentx_g2.py
+      - tests/test_agentx_snapshot_export.py
+      - tests/test_agentx_live_warmup.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -105,6 +107,7 @@ areas:
       - tests/test_fpm_accuracy_workflow.mjs
       - tests/test_e2e_accuracy_ui.mjs
       - tests/test_e2e_accuracy_nightly.py
+      - tests/test_e2e_hf_measurements.py
       - tests/test_e2e_accuracy_workflow.mjs
       - tests/test_source_compliance.py
 
@@ -170,6 +173,8 @@ shared:
   - glob: tests/test_e2e_accuracy_ui.mjs
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/test_e2e_accuracy_nightly.py
+    owners: [forward-pass-engine, replay, infra, maintainers]
+  - glob: tests/test_e2e_hf_measurements.py
     owners: [forward-pass-engine, replay, infra, maintainers]
   - glob: tests/e2e_accuracy_source/
     owners: [forward-pass-engine, replay, infra, maintainers]
@@ -270,6 +275,10 @@ shared:
   - glob: tests/test_shared_g2_cli.py
     owners: [replay, maintainers]
   - glob: tests/test_agentx_g2.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_snapshot_export.py
+    owners: [replay, maintainers]
+  - glob: tests/test_agentx_live_warmup.py
     owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]

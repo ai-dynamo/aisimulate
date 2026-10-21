@@ -161,8 +161,11 @@ the canonical ForwardPassMetrics query API.
 
 Acceptance assumptions and scheduler seeds belong to the prediction/Replay
 layer, not this cost configuration. The returned model continues to estimate
-iteration latency; its constructor and query signatures are unchanged. This
-configuration extension does not enable additional schemes in Replay or AgentX.
+iteration latency; its constructor and query signatures are unchanged. For
+prediction and AgentX, the [registered-scheme Replay input](../replay/engine/speculation.md#registered-schemes)
+adds acceptance and a seed while retaining this cost identity. That path uses
+the existing linear 1–5-token executor and requires fixed KV capacity; broader
+cost-model support does not imply broader scheduler support.
 
 ### Estimator controls
 

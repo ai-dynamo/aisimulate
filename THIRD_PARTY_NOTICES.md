@@ -13,6 +13,37 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## AIPerf AgentX snapshot oracle
+
+The reference sampling vectors and recycling contract in repository-root
+`crates/core/src/replay/loadgen/snapshot_tests.rs` and
+`docs/replay/workloads.md`, plus the invocation contract in
+`scripts/prediction_regression/export_agentx_snapshots.py`, are derived from
+`src/aiperf/timing/trajectory_source.py` and
+`src/aiperf/timing/strategies/agentic_replay.py` in SemiAnalysisAI/aiperf at
+commit `754356e9a39acc6cc6afb242d123bb57c3fb6f75`:
+https://github.com/SemiAnalysisAI/aiperf/tree/754356e9a39acc6cc6afb242d123bb57c3fb6f75
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0. The upstream license is at
+https://github.com/SemiAnalysisAI/aiperf/blob/754356e9a39acc6cc6afb242d123bb57c3fb6f75/LICENSE
+and the full license is included in this repository as `LICENSE`.
+Modified by NVIDIA: executed the pinned sampler on a small synthetic corpus
+to freeze expected cuts, and documented its sequential recycling behavior.
+No upstream implementation is vendored; AISimulate consumes explicit cuts.
+
+The live warmup policy in repository-root
+`crates/core/src/replay/loadgen/phase.rs` and
+`crates/core/src/replay/loadgen/driver.rs`, its regression tests in those files,
+and `docs/replay/agentic/warmup.md`, `docs/replay/agentic/continuous-profiles.md`
+and `docs/replay/workloads.md` are modified re-implementations of the same
+pinned `agentic_replay.py` behavior: globally aligned primers, per-lane
+admission quotas, compressed dependency waits, shared-cursor recycling, and
+source-clock frontier handoff. NVIDIA modified these algorithms to use the
+native deterministic dependency executor and its transactional server-settlement
+barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
+upstream serving implementation is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
@@ -1098,6 +1129,35 @@ Copyright 2018- The Hugging Face team. All rights reserved.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+## Published FPM dataset pin manifests
+
+The `hf_dataset.json` manifests and adjacent attribution README files under
+`python/aisimulate/src/aisimulate_core/systems/profiles/` in
+`minimax_m27_fpm/`, `dsv4pro_fpm/`, `dsv4flash_fpm/`, `glm52_fpm/`,
+`kimi_k3_fpm/` and `inkling_fpm/` adapt published NVIDIA collection metadata
+into hash-pinned download indexes (modified). No external timing tables,
+model weights or collection implementation are bundled in these directories.
+
+- Source: https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/tree/dbfcdd9eb62ea733efbc3f0cbd78277f2960061a
+- Immutable revision: `dbfcdd9eb62ea733efbc3f0cbd78277f2960061a`.
+- Original paths: configuration `manifest.json` files and `fpm/*.metadata.json`
+  under `data/MiniMaxAI--MiniMax-M2.7/`, `data/deepseek-ai--DeepSeek-V4-Pro/`,
+  `data/deepseek-ai--DeepSeek-V4-Flash-0731/`, `data/nvidia--GLM-5.2-NVFP4/`,
+  `data/moonshotai--Kimi-K3/` and `data/thinkingmachines--Inkling-NVFP4/`.
+  Each derived pin records the exact artifact paths and SHA-256 values.
+- Copyright: NVIDIA CORPORATION & AFFILIATES.
+- License: Apache-2.0, as declared in the dataset card at the pinned revision;
+  the Apache-2.0 terms are reproduced in this repository's `LICENSE`.
+- Modifications: separate deployment roots, explicit development/diagnostic
+  admission, canonical loader targets and explicit references to installed
+  AISimulate hardware configurations. Source artifact bytes are unchanged when
+  downloaded.
+
+The dataset's root `THIRD_PARTY_NOTICES.md` is explicitly scoped to separate
+DeepSeek V4.1 source archives; it is not a license grant for these six models.
+This attribution relies on the dataset card for the indexed collection metadata
+and does not relicense model weights, producer code or their upstream projects.
 
 ## AISim FPM Gym
 

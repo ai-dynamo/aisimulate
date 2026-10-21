@@ -356,7 +356,7 @@ fn legacy_snapshot_preserves_recorded_starts_without_adding_execution_gates() {
         assert!(cold.is_drained());
 
         let prepared = graph
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 0 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(0))
             .unwrap();
         let snapshot = &prepared.snapshots()[0];
         assert!((1250.0..1750.0).contains(&snapshot.t_star_ms));
@@ -419,7 +419,7 @@ fn legacy_snapshot_retains_missing_times_and_rejects_invalid_recorded_starts() {
             cold.on_complete(ready.request_uuid, now_ms + 10.0).unwrap();
         }
         assert!(cold.is_drained());
-        let prepared = graph.prepare_snapshots(1, AgenticSnapshotOptions { seed: 0 });
+        let prepared = graph.prepare_snapshots(1, AgenticSnapshotOptions::seeded(0));
         if timestamp.is_some() {
             assert!(
                 prepared

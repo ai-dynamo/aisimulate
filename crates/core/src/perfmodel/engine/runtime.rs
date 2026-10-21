@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::FpmQueryCoverage;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
+use crate::fpm::FpmExecutionBinding;
 use crate::operators::RuntimeContext;
 use crate::operators::base::PerformanceResult;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
@@ -344,6 +345,9 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
+    /// Measured target+draft round identity. This is parsed once from the
+    /// existing EngineConfig.extra map, not a new serialized Op field.
+    fpm_execution_profile: Option<FpmExecutionBinding>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -352,6 +356,7 @@ impl std::fmt::Debug for Engine {
             .field("context_ops", &self.context_ops.len())
             .field("generation_ops", &self.generation_ops.len())
             .field("nextn", &self.nextn)
+            .field("fpm_execution_profile", &self.fpm_execution_profile)
             .finish_non_exhaustive()
     }
 }
@@ -363,6 +368,15 @@ impl Engine {
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        let fpm_execution_profile = Self::validate_fpm_spec(&spec)?;
+        Self::build_validated(spec, db, fpm_execution_profile)
+    }
+
+    fn build_validated(
+        spec: EngineSpec,
+        db: Arc<PerfDatabase>,
+        fpm_execution_profile: Option<FpmExecutionBinding>,
+    ) -> Result<Engine, AicError> {
         if spec.engine.quantization.fpm_fmha_dtype.is_some()
             && spec.engine.forward_model.as_deref() != Some("fpm")
         {
@@ -384,7 +398,10 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
-        Self::validate_fpm_spec(&spec)?;
+        super::readiness::validate_glm53_kv(
+            &db,
+            spec.context_ops.iter().chain(&spec.generation_ops),
+        )?;
         super::readiness::validate_glm53_sources(
             &db,
             spec.context_ops.iter().chain(&spec.generation_ops),
@@ -396,10 +413,56 @@ impl Engine {
             generation_ops: spec.generation_ops,
             db,
             nextn,
+            fpm_execution_profile,
         })
     }
 
-    fn validate_fpm_spec(spec: &EngineSpec) -> Result<(), AicError> {
+    fn reject_sd_round_ops(ops: &[Op]) -> Result<(), AicError> {
+        fn contains_sd_round(ops: &[Op]) -> bool {
+            ops.iter().any(|op| match op {
+                Op::FpmForward(op) => {
+                    op.match_identity
+                        .get(16)
+                        .is_some_and(|selector| selector.starts_with("speculative_round"))
+                        || contains_sd_round(&op.sol_ops)
+                }
+                Op::TokenScale(op) => contains_sd_round(std::slice::from_ref(&op.op)),
+                Op::Dsv41Stage(op) => contains_sd_round(&op.children),
+                Op::Overlap(op) => contains_sd_round(&op.group_a) || contains_sd_round(&op.group_b),
+                Op::Fallback(op) => {
+                    contains_sd_round(std::slice::from_ref(&op.primary))
+                        || contains_sd_round(&op.fallback)
+                }
+                _ => false,
+            })
+        }
+        if contains_sd_round(ops) {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM requires an explicitly bound whole-round execution path".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<Option<FpmExecutionBinding>, AicError> {
+        let execution: Option<FpmExecutionBinding> = spec
+            .engine
+            .extra
+            .get("fpm_execution_profile")
+            .map(|value| {
+                serde_json::from_str(value).map_err(|error| {
+                    AicError::InvalidEngineConfig(format!(
+                        "invalid full SD-round FPM execution binding: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if let Some(binding) = &execution {
+            binding.validate()?;
+        } else {
+            Self::reject_sd_round_ops(&spec.context_ops)?;
+            Self::reject_sd_round_ops(&spec.generation_ops)?;
+        }
         let nextn = spec
             .engine
             .speculative
@@ -418,6 +481,7 @@ impl Engine {
             ops.iter().any(|op| match op {
                 Op::FpmForward(_) => true,
                 Op::TokenScale(o) => contains_fpm(std::slice::from_ref(&o.op)),
+                Op::Dsv41Stage(o) => contains_fpm(&o.children),
                 Op::Overlap(o) => contains_fpm(&o.group_a) || contains_fpm(&o.group_b),
                 Op::Fallback(o) => {
                     contains_fpm(std::slice::from_ref(&o.primary)) || contains_fpm(&o.fallback)
@@ -427,6 +491,7 @@ impl Engine {
         }
         let any_fpm = contains_fpm(&spec.context_ops) || contains_fpm(&spec.generation_ops);
         if any_fpm
+            || execution.is_some()
             || spec.engine.fpm_parquet_path.is_some()
             || spec.engine.forward_model.as_deref() == Some("fpm")
         {
@@ -460,6 +525,26 @@ impl Engine {
                 (Some(Op::FpmForward(p)), Some(Op::FpmForward(d))) => (p, d),
                 _ => unreachable!("validated leading FPM operations"),
             };
+            // An execution selector is never enough to enable round semantics:
+            // low-level specs must bind the same typed identity explicitly.
+            for op in [prefill, decode] {
+                let selected = op
+                    .match_identity
+                    .get(16)
+                    .map(|selector| FpmExecutionBinding::parse_selector(selector))
+                    .transpose()?
+                    .flatten();
+                if selected != execution {
+                    return Err(AicError::InvalidEngineConfig(
+                        "full SD-round FPM selector and execution binding must match on both phases"
+                            .into(),
+                    ));
+                }
+            }
+            if let Some(binding) = &execution {
+                Self::validate_full_round_spec(spec, binding, prefill, decode, nextn)?;
+                return Ok(execution);
+            }
             let expected_width = nextn.checked_add(1).ok_or_else(|| {
                 AicError::InvalidEngineConfig("nextn+1 exceeds the u32 verify width".into())
             })?;
@@ -481,6 +566,80 @@ impl Engine {
                     "forward_model='fpm' only supports draft_ operations after FpmForward".into(),
                 ));
             }
+        }
+        Ok(execution)
+    }
+
+    fn validate_full_round_spec(
+        spec: &EngineSpec,
+        binding: &FpmExecutionBinding,
+        prefill: &FpmForwardOp,
+        decode: &FpmForwardOp,
+        nextn: u32,
+    ) -> Result<(), AicError> {
+        let config = &spec.engine;
+        let parallel = &config.parallel;
+        let tp = parallel.tp_size;
+        let moe_tp = parallel.moe_tp_size.unwrap_or(1);
+        let moe_ep = parallel.moe_ep_size.unwrap_or(1);
+        if config.backend != crate::BackendKind::Vllm
+            || config.forward_model.as_deref() != Some("fpm")
+            || config.database_mode != DatabaseMode::Silicon
+            || config.decoder_replay
+            || config.moe_kernel_source.is_some()
+            || tp == 0
+            || parallel.pp_size != 1
+            || parallel.attention_dp_size.unwrap_or(1) != 1
+            || parallel.cp_size.unwrap_or(1) != 1
+            || parallel.dcp_size.unwrap_or(1) != 1
+            || moe_ep != 1
+            || (moe_tp != 1 && moe_tp != tp)
+            || nextn != binding.execution_profile.num_draft_tokens
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM requires matching nextn, SILICON vLLM TP with DP1/PP1/CP1 and no EP/decoder replay"
+                    .into(),
+            ));
+        }
+        let selector = binding.selector()?;
+        let topology = [tp, 1, 1, moe_tp, moe_ep, 1].map(|value| value.to_string());
+        for (op, count) in [
+            (prefill, spec.context_ops.len()),
+            (decode, spec.generation_ops.len()),
+        ] {
+            if count != 1
+                || op.verify_width != 1
+                || op.interpolation != crate::operators::fpm_forward::FpmInterpolation::Direct
+                || !op.sol_ops.is_empty()
+                || op.dcp_size.is_some_and(|value| value != 1)
+                || op.model_path != config.model_name
+                || op.match_identity.len() != 19
+                || op.match_identity[5..11] != topology
+                || op.match_identity[14] != "False"
+                || op.match_identity[13] != "False"
+                || op.match_identity[16] != selector
+                || op.match_identity[17] != "none"
+                || op.match_identity[18] != "text"
+            {
+                return Err(AicError::InvalidEngineConfig(
+                    "full SD-round FPM requires exact bound direct phase selectors, verify_width=1, and no draft or SOL operations"
+                        .into(),
+                ));
+            }
+        }
+        if prefill.match_identity != decode.match_identity {
+            return Err(AicError::InvalidEngineConfig(
+                "full SD-round FPM prefill and decode identities must agree".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn reject_full_round_surface(&self, surface: &str) -> Result<(), AicError> {
+        if self.fpm_execution_profile.is_some() {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "full SD-round FPM does not support {surface}; use pure-prefill or pure-decode ForwardPassMetrics with exact iteration totals"
+            )));
         }
         Ok(())
     }
@@ -518,7 +677,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
-        Self::validate_fpm_spec(&spec)?;
+        let fpm_execution_profile = Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
@@ -564,7 +723,7 @@ impl Engine {
             spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
-        Engine::build(spec, Arc::new(db))
+        Self::build_validated(spec, Arc::new(db), fpm_execution_profile)
     }
 
     fn validate_engine_database_mode(database_mode: DatabaseMode) -> Result<(), AicError> {
@@ -644,6 +803,12 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<StaticResult, AicError> {
+        if runtime.beam_width != 1 {
+            self.reject_full_round_surface("beam-search static phases")?;
+        }
+        if !matches!(mode, StaticMode::Context) {
+            self.reject_full_round_surface("static generation trajectories")?;
+        }
         let context_ms = match mode {
             StaticMode::Context | StaticMode::Both => self.run_context_phase(runtime)?,
             StaticMode::Generation => 0.0,
@@ -687,7 +852,10 @@ impl Engine {
                     "query coverage requires a direct FPM engine".into(),
                 ));
             };
-            if !ctx_tail.is_empty() || !gen_tail.is_empty() || self.nextn > 0 {
+            if !ctx_tail.is_empty()
+                || !gen_tail.is_empty()
+                || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+            {
                 return Err(AicError::InvalidEngineConfig(
                     "query coverage does not support speculative FPM".into(),
                 ));
@@ -754,6 +922,7 @@ impl Engine {
         stride: u32,
         mut on_op: impl FnMut(usize, &Op, PerformanceResult),
     ) -> Result<f64, AicError> {
+        self.reject_full_round_surface("static generation trajectories")?;
         let bs = runtime
             .batch_size
             .saturating_mul(self.nextn.saturating_add(1));
@@ -1028,6 +1197,7 @@ impl Engine {
         gen_seq_imbalance_correction_scale: f64,
         mut on_op: impl FnMut(MixedPass, &Op, PerformanceResult),
     ) -> Result<[f64; 4], AicError> {
+        self.reject_full_round_surface("static mixed-step composition")?;
         if ctx_tokens == 0 && gen_tokens == 0 {
             return Ok([0.0; 4]);
         }
@@ -1351,6 +1521,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<f64, AicError> {
+        self.reject_full_round_surface("mean-context static decode steps")?;
         if gen_tokens == 0 {
             return Ok(0.0);
         }
@@ -1527,6 +1698,7 @@ impl Engine {
         prefix: u32,
         prefill: bool,
     ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        self.reject_full_round_surface("operation diagnostics")?;
         use super::diagnostics::{
             ExecutedFallback, OperationDetails, SolDiagnostics, StaticOperationDiagnostics,
         };
@@ -1718,6 +1890,7 @@ impl Engine {
         mode: StaticMode,
         stride: u32,
     ) -> Result<(Vec<PerOpValueWithMetadata>, Vec<PerOpValueWithMetadata>), AicError> {
+        self.reject_full_round_surface("per-operation static phases")?;
         let mut context = PerOpFold::for_plan("context", &self.context_plan);
         if matches!(mode, StaticMode::Context | StaticMode::Both) {
             if runtime.prefix >= runtime.isl {
@@ -1813,6 +1986,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<MixedStepPerOpValuesWithMetadata, AicError> {
+        self.reject_full_round_surface("per-operation mixed steps")?;
         // Preserve the FPM component contract while reporting the actual target
         // and draft operations independently. The same execution path supplies
         // scalar costs, energy, provenance, and fallback metadata.
@@ -1914,6 +2088,7 @@ impl Engine {
         osl: u32,
         gen_seq_imbalance_correction_scale: f64,
     ) -> Result<Vec<PerOpValueWithMetadata>, AicError> {
+        self.reject_full_round_surface("per-operation decode steps")?;
         let mut out = PerOpFold::new("generation");
         if gen_tokens == 0 {
             return Ok(out.into_values());
@@ -1947,6 +2122,7 @@ impl Engine {
         seq_imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.reject_full_round_surface("per-operation context queries")?;
         let mut out = PerOpFold::new("context");
         for &i in indices {
             let op = self.context_ops.get(i).ok_or_else(|| {
@@ -1981,6 +2157,7 @@ impl Engine {
         prefix: u32,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.reject_full_round_surface("per-operation generation queries")?;
         let mut out = PerOpFold::new("generation");
         for &i in indices {
             let op = self.generation_ops.get(i).ok_or_else(|| {
@@ -2019,9 +2196,11 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.reject_full_round_surface("ad-hoc operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!("evaluate_ops_json: invalid op list JSON: {e}"))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let mut out = PerOpFold::new(if is_context { "context" } else { "generation" });
         for op in &ops {
             let r = if is_context {
@@ -2066,6 +2245,7 @@ impl Engine {
         imbalance_correction_scale: f64,
         visual_block_upper_triangle: bool,
     ) -> Result<Vec<PerOpValue>, AicError> {
+        self.reject_full_round_surface("ad-hoc attention kernel queries")?;
         if visual_block_upper_triangle && prefix != 0 {
             return Err(AicError::InvalidEngineConfig(
                 "visual-block attention kernel evaluation requires prefix=0".into(),
@@ -2120,11 +2300,13 @@ impl Engine {
         imbalance_correction_scale: f64,
         x_override: Option<u32>,
     ) -> Result<Vec<PerOpSolValue>, AicError> {
+        self.reject_full_round_surface("SOL operation queries")?;
         let ops: Vec<Op> = serde_json::from_str(ops_json).map_err(|e| {
             AicError::InvalidEngineConfig(format!(
                 "evaluate_ops_sol_json: invalid op list JSON: {e}"
             ))
         })?;
+        Self::reject_sd_round_ops(&ops)?;
         let sol_db = self.db.sol_full_view();
         let mut out = PerOpSolFold::default();
         for op in &ops {
@@ -2195,6 +2377,11 @@ impl Engine {
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
+            ));
+        }
+        if self.fpm_execution_profile.is_some() && metrics_by_rank.len() != 1 {
+            return Err(AicError::InvalidForwardPassMetrics(
+                "full SD-round FPM requires exactly one attention-DP rank".into(),
             ));
         }
         for metrics in metrics_by_rank {
@@ -2290,7 +2477,15 @@ impl Engine {
         // `_get_fpm_mix_step_latency` at the telemetry counts (already packed,
         // so no `(nextn + 1)` anywhere; speculative FPM is rejected below).
         if let Some((prefill_op, decode_op, ctx_tail, gen_tail)) = self.fpm_split() {
-            if !ctx_tail.is_empty() || !gen_tail.is_empty() || self.nextn > 0 {
+            if self.fpm_execution_profile.is_some() && has_prefill && has_decode {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "full SD-round FPM has no qualified mixed-iteration composition".into(),
+                ));
+            }
+            if !ctx_tail.is_empty()
+                || !gen_tail.is_empty()
+                || (self.nextn > 0 && self.fpm_execution_profile.is_none())
+            {
                 // The telemetry counts are packed AR semantics; the hybrid
                 // speculative shape (draft tails / widened verify) has no
                 // defined mapping here yet.
@@ -3797,6 +3992,345 @@ mod tests {
         );
         let err = Engine::build(spec, Arc::new(db)).unwrap_err();
         assert!(err.to_string().contains("exactly one FpmForward"), "{err}");
+    }
+
+    #[test]
+    fn identity_only_sd_tables_cannot_be_consumed_by_a_public_ar_spec() {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        use crate::perf_database::fpm_forward::tests::{
+            NativeCudaSampleSpec, default_rows, write_pair,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let binding: crate::FpmExecutionBinding = serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40), "execution_profile": {
+                "kind": "speculative_round", "method": "eagle3", "num_draft_tokens": 3,
+                "draft_model": "test/draft", "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap();
+        let selector: &'static str = Box::leak(binding.selector().unwrap().into_boxed_str());
+        let mut spec = build_fpm_spec(tmp.path(), Some(0));
+        spec.engine.model_name = "org/model-a".into();
+        spec.engine.parallel.tp_size = 4;
+        spec.engine.parallel.moe_tp_size = Some(4);
+        spec.engine.parallel.moe_ep_size = Some(1);
+        let rows: Vec<_> = default_rows()
+            .into_iter()
+            .map(|mut row| {
+                row.execution = Some(["", selector, "none", "text"]);
+                row.kv_seed_regime = Some("real_kv");
+                row.native_cuda = Some(NativeCudaSampleSpec {
+                    scope: "model_step_cuda",
+                    reduction: "single_sample",
+                    source_sample_count: 1,
+                });
+                row
+            })
+            .collect();
+        write_pair(tmp.path(), &rows);
+        for op in spec.context_ops.iter_mut().chain(&mut spec.generation_ops) {
+            let Op::FpmForward(op) = op else {
+                unreachable!()
+            };
+            op.match_identity[16] = selector.into();
+            op.interpolation = FpmInterpolation::Direct;
+        }
+        let result = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path());
+        if let Ok(engine) = result {
+            // Independent fixture oracle: this 7ms row is a complete K3 round,
+            // but the forged public spec declares AR (nextn=0, verify_width=1).
+            assert_eq!(engine.predict_decode_latency_total(8, 4096).unwrap(), 7.0);
+            panic!("identity-only PR consumed a measured K3 round through an AR EngineSpec");
+        }
+        let error = result.unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
+        spec.engine.fpm_parquet_path = Some("/missing/identity-only-sd.parquet".into());
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
+    }
+
+    fn full_round_binding() -> FpmExecutionBinding {
+        serde_json::from_value(serde_json::json!({
+            "model_revision": "1".repeat(40),
+            "execution_profile": {
+                "kind": "speculative_round",
+                "method": "eagle3",
+                "num_draft_tokens": 3,
+                "draft_model": "org/draft-model",
+                "draft_revision": "2".repeat(40),
+                "timing_scope": "model_step_cuda"
+            }
+        }))
+        .unwrap()
+    }
+
+    fn full_round_spec(tmp: &std::path::Path) -> EngineSpec {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        use crate::perf_database::fpm_forward::tests::{NativeCudaSampleSpec, RowSpec, write_pair};
+        let binding = full_round_binding();
+        let selector = binding.selector().unwrap();
+        // The existing RowSpec fixture stores static strings. The few small
+        // test selectors live for this test process, not in production state.
+        let selector: &'static str = Box::leak(selector.into_boxed_str());
+        let rows: Vec<_> = [
+            ("prefill", 1, 256, 0, 11.0),
+            ("prefill", 1, 512, 0, 17.0),
+            ("prefill", 1, 256, 128, 13.0),
+            ("prefill", 1, 512, 128, 19.0),
+            ("decode", 1, 0, 4096, 7.0),
+            ("decode", 1, 0, 8192, 9.0),
+            ("decode", 4, 0, 4096, 31.0),
+            ("decode", 4, 0, 8192, 33.0),
+        ]
+        .into_iter()
+        .map(|(kind, batch, prefill, kv, latency)| RowSpec {
+            workload_kind: kind,
+            batch_size: batch,
+            total_prefill_tokens: prefill,
+            total_kv_read_tokens: kv,
+            latency_ms: latency,
+            execution: Some(["", selector, "none", "text"]),
+            kv_seed_regime: (kv > 0).then_some("real_kv"),
+            native_cuda: Some(NativeCudaSampleSpec {
+                scope: "model_step_cuda",
+                reduction: "single_sample",
+                source_sample_count: 1,
+            }),
+            ..RowSpec::default()
+        })
+        .collect();
+        let mut spec = build_fpm_spec(tmp, Some(3));
+        write_pair(tmp, &rows);
+        spec.engine.model_name = "org/model-a".into();
+        spec.engine.parallel.tp_size = 4;
+        spec.engine.parallel.moe_tp_size = Some(4);
+        spec.engine.parallel.moe_ep_size = Some(1);
+        spec.engine.extra.insert(
+            "fpm_execution_profile".into(),
+            serde_json::to_string(&binding).unwrap(),
+        );
+        for op in spec.context_ops.iter_mut().chain(&mut spec.generation_ops) {
+            let Op::FpmForward(op) = op else {
+                unreachable!()
+            };
+            op.interpolation = FpmInterpolation::Direct;
+            op.match_identity[16] = selector.into();
+        }
+        spec
+    }
+
+    fn full_round_engine(tmp: &std::path::Path) -> Engine {
+        let spec = full_round_spec(tmp);
+        Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp).unwrap()
+    }
+
+    #[test]
+    fn full_round_raw_counts_price_one_measured_round_without_draft_recharge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        assert_eq!(
+            engine.nextn, 3,
+            "scheduler identity must retain its real depth"
+        );
+        // Hand-authored measured rows: B1/KV4096 is a COMPLETE 7ms K3 round;
+        // the B4 row is deliberately 31ms. Widening or charging draft again
+        // cannot satisfy these independent table oracles.
+        assert_eq!(engine.predict_decode_latency_total(1, 4096).unwrap(), 7.0);
+        assert_eq!(engine.predict_decode_latency_total(4, 4096).unwrap(), 31.0);
+        let mut coverage = FpmQueryCoverage::default();
+        assert_eq!(
+            engine
+                .predict_decode_latency_total_with_coverage(1, 4096, Some(&mut coverage))
+                .unwrap(),
+            7.0
+        );
+        // Measured SD-prefill rows include their own draft-prefill work.
+        assert_eq!(engine.predict_prefill_latency(1, 256, 0).unwrap(), 11.0);
+        assert_eq!(
+            engine
+                .predict_prefill_detailed(1, 384, 128, Some(&mut coverage))
+                .unwrap()
+                .latency_ms,
+            Some(13.0)
+        );
+        let prefill = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 256,
+                sum_prefill_kv_tokens: 128,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(engine.forward_pass_time_ms(&[prefill]).unwrap(), 13.0);
+        let context = engine
+            .run_static(&runtime(1, 256, 1), StaticMode::Context, 32)
+            .unwrap();
+        assert_eq!(context.total_ms, 11.0);
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(&[ForwardPassMetrics::default()])
+                .unwrap(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn full_round_unsupported_surfaces_fail_before_pricing_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = full_round_engine(tmp.path());
+        for osl in [2, 32] {
+            let err = engine.predict_decode_latency(1, 4096, osl).unwrap_err();
+            assert!(err.to_string().contains("static generation"), "{err}");
+        }
+        assert!(
+            engine
+                .run_static(&runtime(1, 256, 2), StaticMode::Both, 32)
+                .is_err()
+        );
+        assert!(
+            engine
+                .run_static_per_op(&runtime(1, 256, 1), StaticMode::Context, 32)
+                .is_err()
+        );
+        assert!(engine.decode_step_latency(1, 4096, 2, 1.0).is_err());
+        assert!(engine.decode_step_per_op(1, 4096, 2, 1.0).is_err());
+        assert!(
+            engine
+                .mixed_step_latency(256, 1, 256, 2, 0, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .mixed_step_breakdown_per_op(256, 1, 256, 2, 0, 1.0, 1.0)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_generation_ops(&[0], 4, 4096, 1.0, 0, None)
+                .is_err()
+        );
+        assert!(
+            engine
+                .evaluate_ops_json("[]", true, 1, 256, 0, 1.0, None)
+                .is_err()
+        );
+        let mixed = ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 1,
+                sum_prefill_tokens: 256,
+                num_decode_requests: 1,
+                sum_decode_kv_tokens: 4096,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let error = engine.forward_pass_time_ms(&[mixed]).unwrap_err();
+        assert!(error.to_string().contains("mixed-iteration"), "{error}");
+        assert!(
+            engine
+                .forward_pass_time_ms(&[
+                    ForwardPassMetrics::default(),
+                    ForwardPassMetrics::default()
+                ])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn full_round_forged_specs_are_rejected_before_database_loading() {
+        use crate::operators::fpm_forward::FpmInterpolation;
+        for case in 0..15 {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut spec = full_round_spec(tmp.path());
+            match case {
+                0 => {
+                    spec.engine.extra.remove("fpm_execution_profile");
+                }
+                1 => {
+                    spec.engine.speculative.as_mut().unwrap().nextn = Some(2);
+                }
+                2 => {
+                    spec.engine.parallel.attention_dp_size = Some(2);
+                }
+                3 => {
+                    spec.engine.parallel.moe_ep_size = Some(2);
+                }
+                4 => {
+                    spec.engine.database_mode = DatabaseMode::Hybrid;
+                }
+                5 => {
+                    spec.generation_ops.push(context_ops().remove(0));
+                }
+                6 => {
+                    spec.engine.backend = BackendKind::Sglang;
+                }
+                7 => {
+                    spec.engine.parallel.dcp_size = Some(2);
+                }
+                8 => {
+                    spec.engine.parallel.cp_size = Some(2);
+                }
+                _ => {
+                    let Op::FpmForward(op) = &mut spec.generation_ops[0] else {
+                        unreachable!()
+                    };
+                    match case {
+                        9 => op.verify_width = 4,
+                        10 => op.interpolation = FpmInterpolation::Sol,
+                        11 => op.match_identity.truncate(15),
+                        12 => op.sol_ops.push(context_ops().remove(0)),
+                        13 => op.match_identity[16] = "full".into(),
+                        14 => {
+                            let mut other = full_round_binding();
+                            other.model_revision = "3".repeat(40);
+                            op.match_identity[16] = other.selector().unwrap();
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            // A nonexistent path proves validation runs before database IO.
+            spec.engine.fpm_parquet_path = Some("/missing/full-round-test.parquet".into());
+            let error =
+                Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(
+                matches!(error, AicError::InvalidEngineConfig(_)),
+                "case {case}: {error}"
+            );
+            assert!(
+                error.to_string().contains("full SD-round"),
+                "case {case}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn identity_only_sd_selector_in_nested_stage_is_rejected_before_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spec = build_fpm_spec(tmp.path(), None);
+        spec.engine.forward_model = None;
+        spec.engine.fpm_parquet_path = None;
+        for ops in [&mut spec.context_ops, &mut spec.generation_ops] {
+            let Op::FpmForward(op) = &mut ops[0] else {
+                unreachable!()
+            };
+            op.match_identity[16] = "speculative_round_v1:invalid".into();
+            *ops = vec![Op::Dsv41Stage(crate::operators::Dsv41StageOp {
+                name: "nested_fpm".into(),
+                is_context: op.phase == FpmPhase::Prefill,
+                decoder_replay: false,
+                bounded: false,
+                window_size: 128,
+                children: std::mem::take(ops),
+            })];
+        }
+        let error = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+        assert!(matches!(error, AicError::InvalidEngineConfig(_)), "{error}");
+        assert!(error.to_string().contains("SD-round"), "{error}");
     }
 
     /// The marginal-decode mixed composition, exact arithmetic over the

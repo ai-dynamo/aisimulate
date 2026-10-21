@@ -26,12 +26,13 @@ pub use generated::GeneratedRequests;
 pub use phase::{
     AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
     AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
+    AgenticWarmupPolicy,
 };
 pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
 pub use snapshot::{
     AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,
-    PreparedAgenticSnapshots,
+    AgenticSnapshotSelection, PreparedAgenticSnapshots,
 };
 pub use steppable::{EngineEvent, StepOutcome, SteppableAgg, SteppableEngine, SteppableReplay};
 pub use trace::{AgenticGraphBuilder, load_agentic_mooncake, validate_trace_files};

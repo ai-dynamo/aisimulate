@@ -228,7 +228,7 @@ impl Glm53AttentionOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         if !matches!(self.layer_kind.as_str(), "kda" | "sparse_mla")
-            || !matches!(self.tp_size, 1 | 2 | 4)
+            || !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.num_heads == 0
             || self.head_dim == 0
             || self.hidden_size == 0
@@ -251,10 +251,15 @@ impl Glm53AttentionOp {
                 || self.index_topk != 2048
                 || self.kv_lora_rank == 0
                 || self.index_head_dim != 128
-                || self.kv_cache_dtype != KvCacheQuantMode::Fp8)
+                || !matches!(
+                    self.kv_cache_dtype,
+                    KvCacheQuantMode::Fp8 | KvCacheQuantMode::Bfloat16
+                ))
         {
             return Err(AicError::ModelConfig(
-                "GLM-5.3-Flash sparse MLA requires FP8 latent cache and IndexPool4/topk2048".into(),
+                "GLM-5.3-Flash sparse MLA requires an FP8 or BF16 latent cache and \
+                 IndexPool4/topk2048"
+                    .into(),
             ));
         }
         // Only SGLang keeps the FP8 checkpoint's block-quantized main sparse
@@ -278,6 +283,21 @@ impl Glm53AttentionOp {
         }
         validate_measured("attention", &self.measured)
     }
+    /// Bytes per latent KV element: FP8 (1) or BF16 (2). SGLang 0.5.20 sizes
+    /// the DSA latent as `kv_lora_rank + qk_rope_head_dim` elements of the KV
+    /// dtype outside its scaled-FP8 layouts
+    /// (`mem_cache/kv_cache_configurator.py` `calculate_mla_kv_cache_dim`),
+    /// while the IndexPool keys stay FP8 + FP32 scale and the pool tails BF16
+    /// whatever the KV dtype (`mem_cache/index_key_cache.py` `_buffer_shape`,
+    /// `mem_cache/memory_pool.py` `DSATokenToKVPool`). vLLM 0.31.0 sizes the
+    /// sparse-MLA page as `kv_lora_rank + qk_rope_head_dim` (512 for NoPE)
+    /// elements of the KV dtype, and its indexer cache is FP8 + scale
+    /// independently of it; on SM90 stock vLLM serves only BF16 KV (its
+    /// `FLASHINFER_MLA_SPARSE_SM90` hands FP8 as uint8 storage to FlashInfer
+    /// 0.7.0 `plan()`, which rejects it), so BF16 is priced the same way.
+    fn latent_bytes(&self) -> f64 {
+        self.kv_cache_dtype.mapping().memory
+    }
     /// One active sequence's persistent payload; no allocator pages, prefix
     /// snapshots or speculative states. Cache precision is independent of weights.
     pub fn cache_bytes(&self, seq_len: u32) -> Result<f64, AicError> {
@@ -287,12 +307,14 @@ impl Glm53AttentionOp {
             // FP32 D-by-D recurrence; BF16 q/k/v histories of conv_width-1.
             Ok(n * d * d * 4.0 + 3.0 * n * d * f64::from(self.conv_kernel - 1) * 2.0)
         } else {
-            // Replicated FP8 latent KV, FP8 index keys with FP32 block scale,
-            // and two BF16 pool-tail buffers (raw key and compression score).
+            // Replicated FP8/BF16 latent KV, FP8 index keys with FP32 block
+            // scale, and two BF16 pool-tail buffers (raw key and compression score).
             let pooled = seq_len / self.index_pool;
-            Ok(f64::from(seq_len) * f64::from(self.kv_lora_rank)
-                + f64::from(pooled) * f64::from(self.index_head_dim + 4)
-                + f64::from(self.index_pool * self.index_head_dim) * 4.0)
+            Ok(
+                f64::from(seq_len) * f64::from(self.kv_lora_rank) * self.latent_bytes()
+                    + f64::from(pooled) * f64::from(self.index_head_dim + 4)
+                    + f64::from(self.index_pool * self.index_head_dim) * 4.0,
+            )
         }
     }
     pub fn weight_bytes(&self) -> f64 {
@@ -465,16 +487,17 @@ impl Glm53AttentionOp {
                 pooled_pairs * 4.0 + selected_pairs * 4.0,
                 fp32,
             ));
+            let latent = self.latent_bytes();
             result = result.plus(leaf(
                 spec,
                 4.0 * selected_pairs * n * k,
-                selected_pairs * k + 4.0 * x * n * k,
+                selected_pairs * k * latent + 4.0 * x * n * k,
                 bf16,
             ));
             result = result.plus(leaf(
                 spec,
                 x * (5.0 * (q + k) + 12.0 * j + 7.0 * query_width),
-                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k),
+                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k * latent),
                 fp32,
             ));
         }
@@ -606,9 +629,9 @@ impl Glm53MhcOp {
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
-        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
+        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4 | 8) {
             return Err(AicError::ModelConfig(
-                "GLM mHC requires TP1/2/4, multiplier 4 and 20 Sinkhorn iterations".into(),
+                "GLM mHC requires TP1/2/4/8, multiplier 4 and 20 Sinkhorn iterations".into(),
             ));
         }
         if x <= 0.0 {
@@ -807,7 +830,7 @@ pub struct Glm53FfnOp {
 impl Glm53FfnOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.swiglu_limit != 10.0
             || self.scoring_func != "sigmoid"
@@ -941,7 +964,7 @@ pub struct Glm53PrimitiveOp {
 impl Glm53PrimitiveOp {
     pub fn validate_physical(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if !matches!(self.tp_size, 1 | 2 | 4)
+        if !matches!(self.tp_size, 1 | 2 | 4 | 8)
             || self.hidden_size != 4096
             || self.vocab_size != 154880
         {
@@ -1495,43 +1518,144 @@ pub(crate) mod tests {
     }
 
     fn sparse_tree(version: &str) -> tempfile::TempDir {
-        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let root = tempfile::tempdir().unwrap();
+        sparse_table(
+            root.path(),
+            "gb300",
+            "vllm",
+            version,
+            &[attention("sparse_mla")],
+        );
+        root
+    }
+
+    /// External systems root fixture: the packaged system YAML plus one GLM
+    /// attention table with rows (B=2, prefix 0, x 512/4096) per geometry.
+    fn sparse_table(
+        root: &std::path::Path,
+        system: &str,
+        backend: &str,
+        version: &str,
+        ops: &[Glm53AttentionOp],
+    ) {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../python/aisimulate/src/aisimulate_core/systems");
-        std::fs::copy(systems.join("gb300.yaml"), root.path().join("gb300.yaml")).unwrap();
+        let yaml = format!("{system}.yaml");
+        std::fs::copy(systems.join(&yaml), root.join(&yaml)).unwrap();
         let dir = root
-            .path()
-            .join("data/gb300/glm53_attention/vllm")
+            .join(format!("data/{system}/glm53_attention/{backend}"))
             .join(version);
         std::fs::create_dir_all(&dir).unwrap();
-        let geometry: &'static str =
-            crate::perf_database::glm53flash::geometry(&attention("sparse_mla"))
-                .unwrap()
-                .leak();
+        let n = 2 * ops.len();
+        let geometry: Vec<&'static str> = ops
+            .iter()
+            .flat_map(|op| {
+                let g: &'static str = crate::perf_database::glm53flash::geometry(op)
+                    .unwrap()
+                    .leak();
+                [g, g]
+            })
+            .collect();
         let sha: &'static str = "a".repeat(64).leak();
         let digest: &'static str = format!("sha256:{sha}").leak();
         write_parquet(
             &dir.join(crate::perf_database::glm53flash::BASENAME),
             &[
-                Col::Str("component", vec!["attention"; 2]),
-                Col::Str("geometry", vec![geometry; 2]),
-                Col::I64("batch_size", vec![2; 2]),
-                Col::I64("prefix", vec![0; 2]),
-                Col::I64("x", vec![512, 4096]),
-                Col::F64("latency", vec![1.5, 9.0]),
-                Col::Str("kernel_source", vec!["glm53_sparse_mla"; 2]),
-                Col::Str("measurement_scope", vec!["local_compute"; 2]),
-                Col::Str("source_sha256", vec![sha; 2]),
-                Col::Str("config_sha256", vec![sha; 2]),
-                Col::Str("runtime_digest", vec![digest; 2]),
-                Col::Bool("used_cuda_graph", vec![false; 2]),
-                Col::I64("sample_count", vec![5; 2]),
-                Col::Str("kv_seed_regime", vec!["n/a"; 2]),
-                Col::Str("execution_profile", vec!["full"; 2]),
+                Col::Str("component", vec!["attention"; n]),
+                Col::Str("geometry", geometry),
+                Col::I64("batch_size", vec![2; n]),
+                Col::I64("prefix", vec![0; n]),
+                Col::I64("x", [512, 4096].repeat(ops.len())),
+                Col::F64("latency", [1.5, 9.0].repeat(ops.len())),
+                Col::Str("kernel_source", vec!["glm53_sparse_mla"; n]),
+                Col::Str("measurement_scope", vec!["local_compute"; n]),
+                Col::Str("source_sha256", vec![sha; n]),
+                Col::Str("config_sha256", vec![sha; n]),
+                Col::Str("runtime_digest", vec![digest; n]),
+                Col::Bool("used_cuda_graph", vec![false; n]),
+                Col::I64("sample_count", vec![5; n]),
+                Col::Str("kv_seed_regime", vec!["n/a"; n]),
+                Col::Str("execution_profile", vec!["full"; n]),
             ],
         );
-        root
+    }
+
+    #[test]
+    fn multi_system_tp8_rows_resolve_by_exact_kv_identity() {
+        const RUNTIME: &str = "0.5.20";
+        // SGLang FP8 checkpoint TP8 on Hopper (BF16 KV) and Blackwell (FP8 KV).
+        let deployment = |kv: KvCacheQuantMode| {
+            let mut op = attention("sparse_mla");
+            op.backend = "sglang".into();
+            op.checkpoint_format = "fp8".into();
+            op.projection_quant_mode = GemmQuantMode::Fp8Block;
+            op.tp_size = 8;
+            op.num_heads = 8;
+            op.kv_cache_dtype = kv;
+            op
+        };
+        let c = ctx(2, 512, 0, true);
+        for (system, kv, other) in [
+            (
+                "h100_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "h200_sxm",
+                KvCacheQuantMode::Bfloat16,
+                KvCacheQuantMode::Fp8,
+            ),
+            (
+                "b300_sxm",
+                KvCacheQuantMode::Fp8,
+                KvCacheQuantMode::Bfloat16,
+            ),
+            ("gb200", KvCacheQuantMode::Fp8, KvCacheQuantMode::Bfloat16),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            sparse_table(root.path(), system, "sglang", RUNTIME, &[deployment(kv)]);
+            let db = PerfDatabase::load_resolved(
+                root.path(),
+                system,
+                "sglang",
+                RUNTIME,
+                true,
+                false,
+                false,
+            )
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+            let hit = deployment(kv).query(&db, &c).unwrap();
+            assert_eq!(
+                (hit.latency_ms, hit.source),
+                (1.5, Source::Silicon),
+                "{system}"
+            );
+            // The other KV identity is a coverage gap, never a borrowed row.
+            assert!(deployment(other).query(&db, &c).is_err(), "{system}");
+        }
+        // One table never mixes the two KV identities.
+        let root = tempfile::tempdir().unwrap();
+        let ops = [
+            deployment(KvCacheQuantMode::Fp8),
+            deployment(KvCacheQuantMode::Bfloat16),
+        ];
+        sparse_table(root.path(), "h200_sxm", "sglang", RUNTIME, &ops);
+        let db = PerfDatabase::load_resolved(
+            root.path(),
+            "h200_sxm",
+            "sglang",
+            RUNTIME,
+            true,
+            false,
+            false,
+        )
+        .unwrap()
+        .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        let err = ops[1].query(&db, &c).unwrap_err();
+        assert!(err.to_string().contains("mixes FP8 and BF16"), "{err}");
     }
 
     #[test]
@@ -1733,5 +1857,162 @@ pub(crate) mod tests {
             op.query(&load(DatabaseMode::Sol), &c).unwrap().latency_ms,
             op.sol(&silicon.system_spec, 1024.0).unwrap().latency_ms
         );
+    }
+
+    #[test]
+    fn tensor_parallel_gate_accepts_tp8_and_rejects_non_divisors() {
+        use crate::operators::{communication::NcclOp, elementwise::ElementwiseOp, gemm::GemmOp};
+        // 64 attention/KDA heads, 12288 dense and 154880 vocab all divide by
+        // 8; TP8 is the FP8 deployment on 80/141 GiB Hopper GPUs.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (tp, accepted) in [
+            (1u32, true),
+            (2, true),
+            (4, true),
+            (8, true),
+            (3, false),
+            (16, false),
+        ] {
+            let mut kda = attention("kda");
+            kda.tp_size = tp;
+            kda.num_heads = (64 / tp).max(1);
+            assert_eq!(kda.validate().is_ok(), accepted, "attention tp={tp}");
+            let mhc = Glm53MhcOp {
+                name: "mhc_pre_attn_1".into(),
+                role: "pre".into(),
+                backend: "sglang".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: tp,
+                is_context: false,
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            };
+            assert_eq!(mhc.sol(&spec, 8.0).is_ok(), accepted, "mhc tp={tp}");
+            let allreduce: Glm53PrimitiveOp = serde_json::from_value(serde_json::json!({
+                "name": "allreduce_0", "role": "allreduce", "backend": "vllm",
+                "checkpoint_format": "fp8", "tp_size": tp, "is_context": true,
+                "hidden_size": 4096, "vocab_size": 154880, "token_selection": "all_scheduled",
+                "output_dtype": "bfloat16", "collective": "all_reduce",
+                "children": [Op::Nccl(NcclOp::new("ar", 1.0, 4096.0, tp, "all_reduce"))],
+            }))
+            .unwrap();
+            assert_eq!(allreduce.validate().is_ok(), accepted, "primitive tp={tp}");
+            let width = 12288 / tp;
+            let q = GemmQuantMode::Fp8Block;
+            let dense: Glm53FfnOp = serde_json::from_value(serde_json::json!({
+                "name": "ffn_0", "backend": "vllm", "checkpoint_format": "fp8",
+                "is_context": true, "is_dense": true, "hidden_size": 4096,
+                "intermediate_size": 12288, "num_experts": 288, "topk": 8, "tp_size": tp,
+                "n_shared_experts": 1, "swiglu_limit": 10.0, "scoring_func": "sigmoid",
+                "routed_scaling_factor": 2.5, "n_group": 1, "topk_group": 1,
+                "norm_topk_prob": true, "gemm_quant_mode": q,
+                "shared_quant_mode": q, "moe_quant_mode": MoeQuantMode::Fp8Block,
+                "children": [
+                    Op::Gemm(GemmOp::new("up", 2 * width, 4096, q)),
+                    Op::Elementwise(ElementwiseOp::new("act", 6.0 * f64::from(width))),
+                    Op::Gemm(GemmOp::new("down", 4096, width, q)),
+                ],
+            }))
+            .unwrap();
+            assert_eq!(dense.validate().is_ok(), accepted, "ffn tp={tp}");
+        }
+    }
+
+    #[test]
+    fn sglang_bf16_latent_cache_doubles_only_latent_bytes() {
+        // SGLang 0.5.20 BF16 KV: 512 latent elements x 2 bytes per token;
+        // IndexPool keys (128 FP8 + 4-byte scale per 4 tokens) and the two
+        // 4x128 BF16 pool-tail buffers (2048 B) are dtype-independent.
+        let mut fp8 = attention("sparse_mla");
+        fp8.backend = "sglang".into();
+        fp8.checkpoint_format = "nvfp4".into();
+        let mut bf16 = fp8.clone();
+        bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        assert_eq!(bf16.cache_bytes(0).unwrap(), 2048.0);
+        assert_eq!(bf16.cache_bytes(4).unwrap(), 2048.0 + 4.0 * 1024.0 + 132.0);
+        assert_eq!(
+            bf16.cache_bytes(131072).unwrap() - fp8.cache_bytes(131072).unwrap(),
+            131072.0 * 512.0
+        );
+        // The latent read/write grows with the KV width; FP8 is unchanged.
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        for (is_context, s, prefix) in [(false, 65536.0, 0.0), (true, 1024.0, 65536.0)] {
+            let (mut a, mut b) = (fp8.clone(), bf16.clone());
+            a.is_context = is_context;
+            b.is_context = is_context;
+            let sol = |op: &Glm53AttentionOp| op.sol(&spec, 8.0, s, prefix).unwrap().latency_ms;
+            assert!(sol(&b) > sol(&a), "context={is_context}");
+        }
+        // An INT8 latent is not a served layout on either backend.
+        let mut int8 = fp8.clone();
+        int8.kv_cache_dtype = KvCacheQuantMode::Int8;
+        assert!(int8.validate().is_err());
+    }
+
+    #[test]
+    fn vllm_bf16_latent_is_priced_exactly_like_sglang_bf16() {
+        // Stock vLLM 0.31.0 on SM90 serves BF16 KV. The payload and the
+        // latent traffic are backend-independent: the SGLang BF16 values
+        // (512 x 2 B latent per token) apply unchanged.
+        let mut vllm = attention("sparse_mla");
+        vllm.checkpoint_format = "fp8".into();
+        let mut vllm_bf16 = vllm.clone();
+        vllm_bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+        vllm_bf16.validate().unwrap();
+        let mut sglang_bf16 = vllm_bf16.clone();
+        sglang_bf16.backend = "sglang".into();
+        sglang_bf16.projection_quant_mode = GemmQuantMode::Fp8Block;
+        for seq in [0, 3, 4, 4096, 131072] {
+            assert_eq!(
+                vllm_bf16.cache_bytes(seq).unwrap(),
+                sglang_bf16.cache_bytes(seq).unwrap()
+            );
+        }
+        assert_eq!(
+            vllm_bf16.cache_bytes(4).unwrap(),
+            2048.0 + 4.0 * 1024.0 + 132.0
+        );
+        // vLLM FP8 keeps its 512 B/token latent (the pinned FP8 payload).
+        assert_eq!(vllm.cache_bytes(4).unwrap(), 4228.0);
+        let spec = db(DatabaseMode::Sol).system_spec.clone();
+        let fp8_ms = vllm.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        let bf16_ms = vllm_bf16.sol(&spec, 8.0, 65536.0, 0.0).unwrap().latency_ms;
+        assert!(bf16_ms > fp8_ms);
+    }
+
+    #[test]
+    fn bf16_latent_traffic_has_a_hand_calculated_byte_delta() {
+        // BF16 vs FP8 changes exactly two SOL byte terms, each by one extra
+        // byte per latent element (kv_lora_rank 512): the NoPE latent read
+        // over the selected pairs and the KV publication of the x new
+        // tokens. Every FLOP term is unchanged.
+        let mut spec = db(DatabaseMode::Sol).system_spec.clone();
+        spec.gpu.mem_bw = 1e6;
+        for backend in ["vllm", "sglang"] {
+            let mut fp8 = attention("sparse_mla");
+            fp8.backend = backend.into();
+            let mut bf16 = fp8.clone();
+            bf16.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+            // Decode, B=1 at s=4098: sparse_pairs(4097, 4098) selects 2050
+            // pairs, x = 1 token -> (2050 + 1) * 512 bytes.
+            // Context, B=1, s=4, prefix 0: sparse_pairs(0, 4) selects 10
+            // pairs, x = 4 tokens -> (10 + 4) * 512 bytes.
+            for (is_context, s, extra_bytes) in
+                [(false, 4098.0, 2051.0 * 512.0), (true, 4.0, 14.0 * 512.0)]
+            {
+                fp8.is_context = is_context;
+                bf16.is_context = is_context;
+                let a = fp8.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let b = bf16.sol(&spec, 1.0, s, 0.0).unwrap().sol.unwrap();
+                let expected_ms = extra_bytes / 1e6 * 1e3;
+                assert!(
+                    (b.mem_ms - a.mem_ms - expected_ms).abs() <= 1e-9 * expected_ms,
+                    "{backend} context={is_context}: {} vs {expected_ms}",
+                    b.mem_ms - a.mem_ms
+                );
+                assert_eq!(b.math_ms, a.math_ms, "{backend} context={is_context}");
+            }
+        }
     }
 }

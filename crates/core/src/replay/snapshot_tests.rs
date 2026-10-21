@@ -189,7 +189,7 @@ fn qualify_prefix(case: PrefixCase) {
         .request_id()
         .to_string();
     let prepared = graph
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let play = prepared.context().prepare_play(0, 0, Some(500.0)).unwrap();
     let next_play = prepared.context().prepare_play(0, 1, Some(500.0)).unwrap();
@@ -539,7 +539,7 @@ fn frontier_graph() -> ValidatedAgenticGraph {
 fn snapshot_consumes_recorded_active_history_and_drains_live_child_join_without_primers() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         let prepared = frontier_graph()
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         let play = prepared.context().prepare_play(0, 0, Some(500.0)).unwrap();
         let evidence = play.evidence();
@@ -641,7 +641,7 @@ fn snapshot_consumes_recorded_active_history_and_drains_live_child_join_without_
 fn snapshot_seeded_initial_lanes_use_separate_cache_identities_in_the_same_engine() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         let prepared = frontier_graph()
-            .prepare_snapshots(2, AgenticSnapshotOptions { seed: 2026 })
+            .prepare_snapshots(2, AgenticSnapshotOptions::seeded(2026))
             .unwrap();
         let evidence = prepared.snapshots().to_vec();
         assert_eq!(evidence.len(), 2);
@@ -696,7 +696,7 @@ fn snapshot_seeded_initial_lanes_use_separate_cache_identities_in_the_same_engin
 fn snapshot_request_start_at_the_cut_stays_live_and_matches_turn_zero_tokens() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         let prepared = frontier_graph()
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         let zero = prepared.context().prepare_play(0, 0, Some(0.0)).unwrap();
         let cut = prepared.context().prepare_play(0, 0, Some(800.0)).unwrap();
@@ -767,7 +767,7 @@ fn snapshot_original_prompt_has_fixed_token_and_native_hash_vectors() {
         .request_id()
         .to_string();
     let prepared = graph
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let play = prepared.context().prepare_play(0, 0, Some(500.0)).unwrap();
     // This one original prompt introduces four complete source units and one
@@ -921,7 +921,7 @@ fn snapshot_new_incarnation_can_finish_before_old_incarnation_without_identity_o
         .request_id()
         .to_string();
     let prepared = graph
-        .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+        .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
         .unwrap();
     let old = prepared.context().prepare_play(0, 0, Some(0.0)).unwrap();
     let new = prepared.context().prepare_play(0, 1, Some(0.0)).unwrap();
@@ -993,7 +993,7 @@ fn snapshot_new_incarnation_can_finish_before_old_incarnation_without_identity_o
 fn warmup_preserves_snapshot_spawn_join_timers_at_nonunit_speedup() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         let prepared = frontier_graph()
-            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(1, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         let play = prepared.context().prepare_play(0, 0, Some(500.0)).unwrap();
         let make = || PreparedAgenticSnapshots::from_plays(vec![play.clone()]).unwrap();
@@ -1046,7 +1046,7 @@ fn warmup_preserves_snapshot_spawn_join_timers_at_nonunit_speedup() {
 fn warmup_initial_lanes_keep_native_cache_identities_separate() {
     for backend in [Backend::Vllm, Backend::Sglang] {
         let prepared = frontier_graph()
-            .prepare_snapshots(2, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(2, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         let context = prepared.context();
         let plays = (0..2)

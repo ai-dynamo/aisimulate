@@ -41,8 +41,14 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
-    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
+    if (
+        config.engine.speculation is not None
+        and config.engine.speculation.kind == "ngram"
+        and (adapter_specs or execution_mode != "offline")
+    ):
         raise ValueError("ngram speculation requires the offline engine stack without adapters")
+    if config.engine.speculation is not None and execution_mode != "offline":
+        raise ValueError("speculation requires offline execution")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
@@ -175,6 +181,17 @@ def _prediction_encoder(config: CorePredictionConfig, workload):
     return next(iter(pools.values()))
 
 
+def _tokenization(engine: EnginePredictionConfig) -> dict[str, JSONValue] | None:
+    tokenization = getattr(engine, "tokenization", None)
+    if tokenization is None or (tokenization.base_ms == 0 and tokenization.per_input_token_us == 0):
+        return None
+    return {
+        "workers": tokenization.workers,
+        "base_ms": tokenization.base_ms,
+        "per_input_token_ms": tokenization.per_input_token_us / 1000.0,
+    }
+
+
 def _deployment(
     engine: EnginePredictionConfig,
     *,
@@ -226,6 +243,7 @@ def _deployment(
         "deployment_mode": mode,
         "backend": engine.backend,
         "backend_version": engine.backend_version or "",
+        "tokenization": _tokenization(engine),
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None
@@ -837,6 +855,8 @@ def _traffic(
                 workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
             if load.agentic_warmup:
                 workload["agentic_warmup"] = True
+            if load.agentic_warmup_policy != "repeated_prefixes":
+                workload["agentic_warmup_policy"] = load.agentic_warmup_policy
             if load.agentic_profile is not None:
                 workload["agentic_profile"] = load.agentic_profile.model_dump(mode="json")
         if stop is not None and stop.max_virtual_time_seconds is not None:

@@ -56,6 +56,18 @@ class SpeculationConfig:
     draft_model_path: str | None = None
     draft_config: dict | None = None
 
+    def replay_depth(self) -> int:
+        """Resolve a scheme compatible with the existing chain replay executor."""
+        from .eagle import EagleScheme
+
+        scheme = build_spec_scheme(None, resolve_speculation_config(self))
+        depth = scheme.verify_width() - 1
+        if isinstance(scheme, EagleScheme) and (scheme.is_tree or depth != len(scheme.tree_shape)):
+            raise ValueError("speculative replay requires an EAGLE chain with one verification token per draft")
+        if self.kind != "none" and not 1 <= depth <= 5:
+            raise ValueError("speculative replay requires 1..5 draft tokens")
+        return depth
+
     def identity_hash(self) -> str:
         """Content hash for cache keys — independent of display names.
 

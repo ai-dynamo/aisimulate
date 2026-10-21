@@ -19,6 +19,7 @@ from pathlib import Path
 
 # Support direct execution as well as package imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from scripts.e2e_accuracy.build_e2e_accuracy_overview import measurement_source_url
 from scripts.fpm_accuracy.contract import artifact_key, eligible_branch, strict_json, validate_summary
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -372,8 +373,7 @@ def _accuracy_summary(text: str, *, allow_preview: bool = False) -> dict:
         require("research_preview" not in snapshot, "research previews are local-only and cannot be published")
         require(isinstance(snapshot.get("release_tag"), str), "measurement release")
         require(
-            snapshot.get("measurement_source_url")
-            == "https://github.com/SemiAnalysisAI/InferenceX-app/releases/tag/" + snapshot["release_tag"],
+            snapshot.get("measurement_source_url") == measurement_source_url(snapshot["release_tag"]),
             "measurement source URL",
         )
         require(isinstance(snapshot.get("aisimulate_packages"), dict), "AISimulate packages")

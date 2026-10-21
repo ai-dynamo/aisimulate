@@ -13,6 +13,7 @@ mod handoff;
 mod host_offload;
 mod kv_manager;
 mod launch;
+mod offload_lru;
 mod offload_transfer;
 mod protocol;
 mod runtime;

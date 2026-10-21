@@ -1164,8 +1164,6 @@ def estimate_kv_cache(
     if request_occupancy_tokens is not None and fpm_profile is None:
         raise ValueError("request_occupancy_tokens requires an FPM profile")
     if fpm_profile is not None:
-        if nextn:
-            raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
         profile = load_fpm_profile(fpm_profile)
         if backend_version is None:
             raise ValueError("FPM profile memory estimation requires the profile's literal backend_version")
@@ -1182,6 +1180,8 @@ def estimate_kv_cache(
             moe_ep_size=moe_ep_size,
             cp_size=cp_size,
         )
+        if nextn and deployment.execution_profile is None:
+            raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
         deployment.validate_overrides(
             gemm_quant_mode=gemm_quant_mode,
             moe_quant_mode=moe_quant_mode,
@@ -1208,6 +1208,7 @@ def estimate_kv_cache(
             resources.cache_layout == "grouped"
             or resources.runtime_memory is not None
             or request_occupancy_tokens is not None
+            or deployment.execution_profile is not None
         ):
             from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -1223,7 +1224,21 @@ def estimate_kv_cache(
                     "attention_dp": attention_dp_size,
                     "moe_tp_size": deployment.moe_tp,
                     "moe_ep_size": deployment.moe_ep,
+                    "cp_size": cp_size,
+                    # This API's default DCP1 means no sharding, not a recorded
+                    # DCP selector. Preserve nontrivial DCP for native validation.
+                    **({"dcp": dcp_size} if dcp_size != 1 else {}),
                     "fpm_profile": profile.model_dump(mode="json"),
+                    **(
+                        {
+                            "nextn": nextn,
+                            "estimation_mode": "fpm_interpolation",
+                            "fallback_policy": "deny",
+                            "estimator_config": {"fpm_interpolation": {"method": "direct"}},
+                        }
+                        if deployment.execution_profile is not None
+                        else {}
+                    ),
                 },
                 {
                     "total_gpu_capacity_bytes": capacity,

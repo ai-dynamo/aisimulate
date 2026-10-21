@@ -97,6 +97,46 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### B60 graph-timing data promotion in PR #329
+
+The `qwen3-30b-a3b-b60-vllm-scan-coverage` case follows the `current`
+version slot, which moves from vLLM 0.26.0 to 0.28.0. Its static, mixed,
+aggregate and disaggregated references were selectively refreshed from
+`8f6faf712d0d6288b31aa41714a4ddb2fa590095` with a matching native build.
+The aggregate reference also includes the new XPU backend's scheduling model.
+
+| Metric (ms) | Before | After |
+| --- | ---: | ---: |
+| Static context | 164.960 | 133.227 |
+| Static generation | 38.997 | 9.784 |
+| Mixed step | 168.776 | 135.781 |
+| Aggregate TTFT | 233.073 | 231.165 |
+| Aggregate TPOT | 168.776 | 131.905 |
+| Disaggregated TTFT | 326.621 | 263.788 |
+| Disaggregated TPOT | 33.115 | 19.844 |
+
+Selecting 0.26.0 explicitly on the PR reproduces the base revision's static
+per-operation latencies. With 0.28.0, generation MoE changes from 21.219994
+to 3.039994 ms, attention from 5.025209 to 2.485675 ms, and each MoE
+dispatch phase from 3.638394 to 1.008275 ms. The new measurements account
+for the static shift; these references do not independently establish
+whole-model B60 silicon accuracy.
+
+From a clean checkout of the source revision, with its native extension built
+and development dependencies installed, regenerate only these four records:
+
+```bash
+PYTHONPATH=python/aisimulate/src:python/aisimulate \
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh qwen3-30b-a3b-b60-vllm-scan-coverage::static \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::mixed \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::agg \
+  qwen3-30b-a3b-b60-vllm-scan-coverage::disagg
+```
+
+The fixture records the source revision in `post_freeze_pins`. Other cases,
+the test matrix and tolerances are unchanged.
+
 ### FP8-block correction in PR #244
 
 The selective refresh from `0a51476b6ab90bc0e475bd41d4b1c7abbef07b95`

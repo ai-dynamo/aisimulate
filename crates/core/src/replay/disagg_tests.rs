@@ -3119,7 +3119,7 @@ mod agentic_pd_qualification {
 
     fn prepared(graph: AgenticTrace, lanes: usize) -> PreparedAgenticSnapshots {
         let prepared = graph
-            .prepare_snapshots(lanes, AgenticSnapshotOptions { seed: 42 })
+            .prepare_snapshots(lanes, AgenticSnapshotOptions::seeded(42))
             .unwrap();
         PreparedAgenticSnapshots::from_plays(
             (0..lanes)

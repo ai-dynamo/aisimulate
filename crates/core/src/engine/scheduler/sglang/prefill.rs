@@ -84,11 +84,8 @@ pub(super) fn get_new_batch_prefill(
             } else {
                 req.current_sequence_len().saturating_sub(1)
             };
-            let page_hashes = req.kv_lease.page_hashes();
-            let pages = (match_len / config.block_size).min(page_hashes.len());
-            kv_manager
-                .cache()
-                .prefix_match_hashes_len(&page_hashes[..pages])
+            let pages = (match_len / config.block_size).min(req.kv_lease.page_hashes().len());
+            kv_manager.admission_prefix_match(&mut req.kv_lease, pages)
         } else {
             0
         };
