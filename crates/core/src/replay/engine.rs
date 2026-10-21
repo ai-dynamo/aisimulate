@@ -225,6 +225,8 @@ pub struct ReplayRoleFactory {
     backend: Backend,
     total_blocks: u64,
     kv_cache_capacity_bytes: Option<u64>,
+    /// Per-rank P/D KV transfer link bandwidth in decimal GB/s, if priced.
+    kv_transfer_bandwidth: Option<f64>,
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
@@ -364,6 +366,10 @@ impl ReplayRoleFactory {
     pub(crate) fn kv_cache_capacity_bytes(&self) -> Option<u64> {
         self.kv_cache_capacity_bytes
     }
+
+    pub(crate) fn kv_transfer_bandwidth(&self) -> Option<f64> {
+        self.kv_transfer_bandwidth
+    }
 }
 
 /// Resolves built-in or Runner-provided timing once, then creates role factories.
@@ -447,6 +453,7 @@ impl ReplayEngineFactory {
         };
         let backend = role.rank.backend;
         let kv_cache_capacity_bytes = role.rank.kv_cache_capacity_bytes;
+        let kv_transfer_bandwidth = role.rank.kv_transfer_bandwidth;
         let total_blocks = if role.rank.kv_cache_groups.is_empty() {
             u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
                 ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
@@ -498,6 +505,7 @@ impl ReplayEngineFactory {
             backend,
             total_blocks,
             kv_cache_capacity_bytes,
+            kv_transfer_bandwidth,
             g3_config,
             g3_block_bytes,
             g3_tier: None,
