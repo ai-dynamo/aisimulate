@@ -202,6 +202,8 @@ class ProfileDraft:
     pending_runtime: dict[str, str] = field(default_factory=dict)
     # Config notes for the classification this draft used; an architecture override can change the layout notes.
     notes: dict[str, str] = field(default_factory=dict)
+    # The pending reasons that cache_layout_markers found; empty when an unrecognized architecture is the only one.
+    layout_markers: tuple[str, ...] = ()
 
 
 class ProfileRequestError(ValueError):
@@ -1435,7 +1437,15 @@ def derive_profile(
             "onboard probe-runtime measures it for this runtime and topology, and onboard import-observations "
             "imports the measurement"
         )
-        return ProfileDraft(None, values, missing, sources, {"cache_geometry": pending}, notes=notes)
+        return ProfileDraft(
+            None,
+            values,
+            missing,
+            sources,
+            {"cache_geometry": pending},
+            notes=notes,
+            layout_markers=cache_layout_markers(config.raw, architecture),
+        )
     if missing or request is None:
         return ProfileDraft(None, values, missing, sources, notes=notes)
     declared_memory = supplied.keys() >= _NON_KV_FIELDS
@@ -1568,9 +1578,11 @@ def _observation_mismatch(key: str, typed: Any, resources: Mapping[str, Any]) ->
                 f"{claim}, but the runtime probe measured no per-token cache size: its cache group {group.name} "
                 f"has {field}; {remedy}"
             )
-    if resources.get(key) is None:
+    # A linear observation states its per-token size only in kv_bytes_per_token.
+    measured_key = "kv_bytes_per_token" if per_token_claim and resources.get("cache_layout") == "linear" else key
+    if resources.get(measured_key) is None:
         layout = f" for its {resources['cache_layout']} cache_layout" if resources.get("cache_layout") else ""
-        return f"{claim}, but the runtime probe measured no {key}{layout}; {remedy}"
+        return f"{claim}, but the runtime probe measured no {measured_key}{layout}; {remedy}"
     return f"{claim} differs from the runtime probe's measured {key}={compact(resources[key])}; {remedy}"
 
 

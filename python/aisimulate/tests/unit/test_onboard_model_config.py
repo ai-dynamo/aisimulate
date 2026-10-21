@@ -1746,17 +1746,20 @@ def _glm_precision(tmp_path):
     return ["--resource-overrides", str(path)]
 
 
-def _stops_with_guidance(command, capsys):
-    """Run init to its nonzero exit and return its (stdout, stderr)."""
+def _stops_with_guidance(command, capsys, *, import_limit=True):
+    """Run init to its nonzero exit and return its (stdout, stderr).
+
+    ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop warns
+    that observation import cannot take recurrent-state cache groups yet.
+    """
     with pytest.raises(SystemExit) as result:
         cli.main(command)
     assert result.value.code == 2
     captured = capsys.readouterr()
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
-    # Every stop warns that observation import cannot take recurrent-state cache groups yet.
-    assert "Importing recurrent-state cache groups is not supported yet." in captured.err
-    assert "Import reports such probes as incomplete." in captured.err
+    limit = "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+    assert (limit in captured.err) is import_limit
     return captured.out, captured.err
 
 
@@ -1787,6 +1790,11 @@ def test_issue_475_command_with_precision_stops_with_probe_guidance(tmp_path, ca
     assert "onboard import-observations" in stderr and "onboarding checkpoint" in stderr
     assert "implementation.md#cache-geometry-pending-the-runtime-probe" in stderr
     assert stderr.count("run onboard probe-runtime") == 1
+    # The probe needs all five precision values, and the stop prints each of them under Profile inputs.
+    assert "the five precision values printed under Profile inputs" in stderr
+    inputs = stdout.split("Profile inputs", 1)[1]
+    for name in ("gemm_quant_mode", "moe_quant_mode", "fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype"):
+        assert f"\n  {name}: " in inputs, name
     # No cache geometry override was given, so there is nothing for the import to check.
     assert "cache geometry override" not in stderr
     # No user-owned input is left, and geometry is never a user input.
@@ -1927,6 +1935,34 @@ def test_issue_475_typed_geometry_is_a_claim_the_import_checks(tmp_path, capsys)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["typed.yaml"]
 
 
+@pytest.mark.parametrize(
+    "fields,import_limit",
+    [
+        # A recurrent-state marker: the probe reports state cache groups, which import cannot take yet.
+        ({"ssm_state_size": 16}, True),
+        # Only an unrecognized architecture: the probe reports attention cache groups, which import takes.
+        ({"architectures": ["MiMoForCausalLM"], "model_type": "mimo"}, False),
+    ],
+)
+def test_recurrent_state_import_warning_needs_a_layout_marker(tmp_path, capsys, fields, import_limit):
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    overrides["num_experts"] = 0  # MiMoForCausalLM is not a known dense architecture.
+    source, resources = _files(tmp_path, config={**_CONFIG, **fields}, overrides=overrides)
+    _stops_with_guidance(_args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit)
+
+
+def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):
+    source, _ = _files(tmp_path)
+    # The declared interconnect 'none' limits automatic choices to one GPU, so one candidate remains.
+    with pytest.raises(SystemExit) as result:
+        cli.main(_args(tmp_path / "request.yaml", source, tensor_parallel=None, interconnect="none"))
+    assert result.value.code == 2
+    stderr = capsys.readouterr().err
+    assert stderr.count("needs_inputs") == 1
+    assert "The candidate is missing fmha_quant_mode: resolve attention precision" in stderr
+    assert "Every candidate" not in stderr
+
+
 @pytest.mark.parametrize("architecture", ["LlamaForCausalLM", "MambaForCausalLM"])
 def test_printed_cache_layout_note_follows_an_architecture_override(tmp_path, capsys, architecture):
     config = {key: value for key, value in _CONFIG.items() if key not in ("architectures", "model_type")}
@@ -1949,7 +1985,8 @@ def test_guided_architecture_answer_prints_the_matching_cache_layout_note(tmp_pa
     source, resources = _files(tmp_path, config=config)
     output = tmp_path / "request.yaml"
     prompts = _terminal(monkeypatch, ["MiMoForCausalLM", "0"])
-    stdout, _ = _stops_with_guidance(_args(output, source, resources) + ["--interactive"], capsys)
+    # The only reason is the unrecognized architecture, so the stop has no recurrent-state import warning.
+    stdout, _ = _stops_with_guidance(_args(output, source, resources) + ["--interactive"], capsys, import_limit=False)
     assert [prompt.split(":", 1)[0].split(" ", 1)[0] for prompt in prompts] == ["architecture", "num_experts"]
     # The note is printed after the answer, so it describes the classification the answer produced.
     note = "cache layout pending the runtime probe (unrecognized architecture MiMoForCausalLM)"

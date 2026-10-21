@@ -597,6 +597,21 @@ def test_claim_without_a_measured_counterpart_names_the_measured_layout():
     assert "the runtime probe measured no cache_groups for its linear cache_layout" in message
 
 
+@pytest.mark.parametrize("claim", [{"cache_layout": "linear"}, {"kv_bytes_per_token": 6000}])
+def test_per_token_claim_against_a_linear_observation_without_kv_bytes_names_the_missing_field(claim):
+    # A malformed observation: FpmModelProfile alone rejects a linear cache without kv_bytes_per_token.
+    observed = {key: value for key, value in _LINEAR_OBSERVATION.items() if key != "kv_bytes_per_token"}
+    with pytest.raises(ValueError) as error:
+        _import(observed, claim)
+    message = str(error.value)
+    ((key, value),) = claim.items()
+    assert (
+        f"resource_overrides.{key}={value}, but the runtime probe measured no kv_bytes_per_token "
+        "for its linear cache_layout"
+    ) in message
+    assert "measured cache_layout=linear" not in message
+
+
 def test_cache_group_claims_match_without_names_or_order():
     # The user names a group; the probe names it runtime_group_<i>. A full-history group may omit sliding_window.
     named = {**_RUNTIME_GROUP, "name": "full_attention"}
@@ -652,7 +667,8 @@ def test_linear_claims_match_the_measured_full_attention_groups(tmp_path, pages)
     profile = profile_from_observations(
         config, request, _LLAMA_PRECISION, observed, {"cache_layout": "linear", "kv_bytes_per_token": claim}
     )
-    # The measurement is authoritative: the profile keeps the measured groups, not the linear claim.
+    # The measurement is authoritative: the profile keeps the measured groups, not the cache_layout and
+    # kv_bytes_per_token overrides.
     resources = profile.deployments[0].resources
     assert resources.cache_layout == "grouped" and resources.kv_bytes_per_token is None
     assert _sources(profile) == {"cache_layout": _CHECKED, "kv_bytes_per_token": _CHECKED}

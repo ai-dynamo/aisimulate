@@ -868,7 +868,8 @@ def _topology_summary(suggestions: TopologySuggestions, *, missing: bool = True)
                 for name, reason in candidate.missing.items()
                 if (name, reason) not in shared
             )
-    lines.extend(f"  Every candidate is missing {name}: {reason}" for name, reason in shared)
+    subject = "The candidate" if len(candidates) == 1 else "Every candidate"
+    lines.extend(f"  {subject} is missing {name}: {reason}" for name, reason in shared)
     if not suggestions.candidates:
         lines.append("  No eligible topology remains in the automatic hardware domain.")
         for candidate in suggestions.rejected_candidates:
@@ -910,8 +911,9 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
     if shortlist is not None:
         lines.append(shortlist)
     lines.append(
-        "Next step: record the deployment, the model config path and the precision in the onboarding checkpoint "
-        "(onboard checkpoint), then run onboard probe-runtime --checkpoint PATH --output-dir DIR "
+        "Next step: record the deployment, the model config path and the five precision values printed under "
+        "Profile inputs in the onboarding checkpoint (onboard checkpoint), then run onboard probe-runtime "
+        "--checkpoint PATH --output-dir DIR "
         f"(guide: {_PROBE_GUIDE})."
     )
     if shortlist is not None:
@@ -920,9 +922,11 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
             if starting_points
             else "No usable starting point exists. The probe takes an explicit topology: record your own."
         )
-    lines.append(
-        "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
-    )
+    # Recurrent state comes with a marker; an unrecognized architecture alone does not declare it.
+    if draft.layout_markers:
+        lines.append(
+            "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+        )
     lines.append("Nothing was saved.")
     return "\n".join(lines)
 
