@@ -3451,11 +3451,60 @@ def test_simulation_dynamo_optional_literal_fields(tmp_path, monkeypatch, reques
 _SESSION = "    pub session_id: Option<String>,\n"
 
 
+def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monkeypatch):
+    builder, _, dynamo, sources = _literal_fixture(tmp_path, monkeypatch)
+
+    records = builder.patch_optional_literal_fields(REPOSITORY_ROOT / "crates/core", dynamo)
+
+    request, placement = builder.OPTIONAL_FIELD_LITERALS
+    expected = sources[request.path].replace(
+        "        }\n",
+        f"            {_MARKER}"
+        "            session_id: None,\n"
+        "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        "            images: {\n"
+        "                assert!(\n"
+        "                    request.images.is_empty(),\n"
+        '                    "pinned Dynamo CI adapter supports text-only requests",\n'
+        "                );\n"
+        "                Vec::new()\n"
+        "            },\n"
+        "        }\n",
+    )
+    assert (dynamo / request.path).read_text() == expected
+    assert records[0] == {
+        "path": request.path,
+        "struct": "Request",
+        "before_sha256": request.sha256,
+        "inserted_fields": ["session_id", "images"],
+        "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
+    }
+    assert (dynamo / placement.path).read_text() == sources[placement.path]
+    assert records[1]["inserted_fields"] == []
+
+
 # Each case would otherwise insert `session_id: None`; no file may be written.
 @pytest.mark.parametrize(
     ("request_extra", "placement_extra", "request_literal", "bad_sha", "error"),
     [
         (_SESSION + "    pub priority: u8,\n", "", _REQUEST_LITERAL, False, r"must set .*\['priority'\]"),
+        (
+            _SESSION + "    pub images: Vec<ImageSpec>,\n    pub priority: u8,\n",
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"must set .*\['priority'\]",
+        ),
+        (_SESSION + "    pub images: Vec<u32>,\n", "", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
+        (_SESSION + "    images: Vec<ImageSpec>,\n", "", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
+        (
+            _SESSION + "    pub(crate) images: Vec<ImageSpec>,\n",
+            "",
+            _REQUEST_LITERAL,
+            False,
+            r"must set .*\['images'\]",
+        ),
+        (_SESSION, "    pub images: Vec<ImageSpec>,\n", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
         (_SESSION, "    pub(crate) note: Option<u8>,\n", _REQUEST_LITERAL, False, r"must set .*\['note'\]"),
         (
             _SESSION,
@@ -3465,6 +3514,13 @@ _SESSION = "    pub session_id: Option<String>,\n"
             r"no longer has: \['legacy'\]",
         ),
         (_SESSION, "", _REQUEST_LITERAL, True, "kv_router/mod.rs differs from reviewed source"),
+        (
+            _SESSION + "    pub images: Vec<ImageSpec>,\n",
+            "",
+            _REQUEST_LITERAL,
+            True,
+            "kv_router/mod.rs differs from reviewed source",
+        ),
         (
             _SESSION + '    #[cfg(target_os = "windows")]\n    pub hint: Option<u8>,\n',
             "",

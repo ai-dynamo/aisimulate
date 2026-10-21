@@ -124,8 +124,8 @@ class LiteralSite(NamedTuple):
 # Compatibility adaptation of NVIDIA Dynamo's Apache-2.0 sources at DYNAMO_REVISION:
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
-# Adds `field: None` for new optional AISimulate fields to these exhaustive
-# struct literals only; Dynamo behavior is otherwise unchanged.
+# Adds `field: None` for new optional AISimulate fields and empty images for the
+# pinned text-only Request; Dynamo behavior is otherwise unchanged.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -204,7 +204,7 @@ def _struct_fields(api_source: str, struct: str) -> dict[str, tuple[bool, str]]:
 
 
 def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple[str, list[str]]:
-    """Insert ``None`` for missing optional fields into the literal after ``site.anchor``."""
+    """Fill missing optional fields and the reviewed text-only Request images."""
     if source.count(site.anchor) != 1:
         raise ValueError(f"{site.path}: literal anchor is not unique")
     literal = re.compile(rf"(?<![\w:]){site.struct}\s*\{{").search(source, source.index(site.anchor) + len(site.anchor))
@@ -221,8 +221,12 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     if stale:
         raise ValueError(f"{site.path}: {site.struct} literal sets fields AISimulate no longer has: {stale}")
     missing = [name for name in struct_fields if name not in present]
+    empty_images = (
+        site.struct == "Request" and "images" in missing and struct_fields["images"] == (True, "Vec<ImageSpec>")
+    )
+    optional = [name for name in missing if not (empty_images and name == "images")]
     required = [
-        name for name in missing if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
+        name for name in optional if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
     ]
     if required:
         raise ValueError(
@@ -234,13 +238,27 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     if source[line_start:close].strip() or not source[:line_start].rstrip().endswith(","):
         raise ValueError(f"{site.path}: {site.struct} literal is not multi-line with a trailing comma")
     indent = re.search(r"\n([ \t]*)\S", source[start - 1 : close])[1]
-    inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
-    inserted += "".join(f"{indent}{name}: None,\n" for name in missing)
+    inserted = ""
+    if optional:
+        inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
+        inserted += "".join(f"{indent}{name}: None,\n" for name in optional)
+    if empty_images:
+        inserted += f"{indent}// Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
+        inserted += (
+            f"{indent}images: {{\n"
+            f"{indent}    assert!(\n"
+            f"{indent}        request.images.is_empty(),\n"
+            f'{indent}        "pinned Dynamo CI adapter supports text-only requests",\n'
+            f"{indent}    );\n"
+            f"{indent}    Vec::new()\n"
+            f"{indent}}},\n"
+        )
     return source[:line_start] + inserted + source[line_start:], missing
 
 
-# Fail closed: each file must match its reviewed sha256, every field the literal
-# lacks must be a public `Option`, and the literal may not set a removed field.
+# Fail closed: each file must match its reviewed sha256. Missing fields must be
+# public `Option`s or the reviewed Request.images: Vec<ImageSpec>; removed fields
+# remain errors.
 def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:
     originals, patched, records = {}, {}, []
     for site in OPTIONAL_FIELD_LITERALS:
