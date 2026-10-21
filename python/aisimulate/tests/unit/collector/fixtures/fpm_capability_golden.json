@@ -1,0 +1,414 @@
+{
+  "capabilities": {
+    "MiniMaxAI/MiniMax-M3|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": true,
+      "architecture": "MiniMaxM3ForCausalLM",
+      "attention_kind": "moe_msa",
+      "attention_source": "dsa_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "4305a3e78ba0bb324b1bc9b2f15a08ab5bf2598eccd295390847064e1f27b1f2",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MINIMAXM3",
+      "support_level": "family_template",
+      "support_reason": "no exact collector model case; derived from the registered AIC model family",
+      "template_id": "aic_family:minimaxm3:moe_msa",
+      "template_version": 1
+    },
+    "MiniMaxAI/MiniMax-M3|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": true,
+      "architecture": "MiniMaxM3ForCausalLM",
+      "attention_kind": "moe_msa",
+      "attention_source": "dsa_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "4305a3e78ba0bb324b1bc9b2f15a08ab5bf2598eccd295390847064e1f27b1f2",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MINIMAXM3",
+      "support_level": "family_template",
+      "support_reason": "no exact collector model case; derived from the registered AIC model family",
+      "template_id": "aic_family:minimaxm3:moe_msa",
+      "template_version": 1
+    },
+    "Qwen/Qwen3-30B-A3B|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": true,
+      "architecture": "Qwen3MoeForCausalLM",
+      "attention_kind": "moe_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "50defee8f5577af237bee7679a702159d0f1b287875c14ff28aced29d2547988",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MOE",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    },
+    "Qwen/Qwen3-30B-A3B|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": true,
+      "architecture": "Qwen3MoeForCausalLM",
+      "attention_kind": "moe_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "50defee8f5577af237bee7679a702159d0f1b287875c14ff28aced29d2547988",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MOE",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    },
+    "deepseek-ai/DeepSeek-V3|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": true,
+      "architecture": "DeepseekV3ForCausalLM",
+      "attention_kind": "moe_mla",
+      "attention_source": "mla_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "fp8": "fp8"
+        },
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "fp8": "checkpoint_native"
+        },
+        "gemm_quant_mode": "fp8_block",
+        "kv_cache_dtypes": [
+          "fp8"
+        ],
+        "moe_quant_mode": "fp8_block",
+        "native_kv_cache_dtype": "fp8"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "fed8c13b4637058cd68e600bd4bf7dc734bda4594dd583e3b49fa27c6e123cc6",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "DEEPSEEK",
+      "support_level": "family_template",
+      "support_reason": "no exact collector model case; derived from the registered AIC model family",
+      "template_id": "aic_family:deepseek:moe_mla",
+      "template_version": 1
+    },
+    "deepseek-ai/DeepSeek-V3|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": true,
+      "architecture": "DeepseekV3ForCausalLM",
+      "attention_kind": "moe_mla",
+      "attention_source": "mla_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "fp8": "fp8"
+        },
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "fp8": "checkpoint_native"
+        },
+        "gemm_quant_mode": "fp8_block",
+        "kv_cache_dtypes": [
+          "fp8"
+        ],
+        "moe_quant_mode": "fp8_block",
+        "native_kv_cache_dtype": "fp8"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "fed8c13b4637058cd68e600bd4bf7dc734bda4594dd583e3b49fa27c6e123cc6",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "DEEPSEEK",
+      "support_level": "family_template",
+      "support_reason": "no exact collector model case; derived from the registered AIC model family",
+      "template_id": "aic_family:deepseek:moe_mla",
+      "template_version": 1
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": true,
+      "architecture": "DeepseekV41ForCausalLM",
+      "attention_kind": "moe_dsv41",
+      "attention_source": "dsv41_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "fp8": "fp8"
+        },
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "fp8": "checkpoint_native"
+        },
+        "gemm_quant_mode": "fp8_block",
+        "kv_cache_dtypes": [
+          "fp8"
+        ],
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8",
+        "native_kv_cache_dtype": "fp8"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "DEEPSEEKV41",
+      "support_level": "native_runtime",
+      "support_reason": "registered V4.1 config; native runtime must qualify every measured cell",
+      "template_id": "deepseek_v41_text_native",
+      "template_version": 1
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": true,
+      "architecture": "DeepseekV41ForCausalLM",
+      "attention_kind": "moe_dsv41",
+      "attention_source": "dsv41_module",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "fp8": "fp8"
+        },
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "fp8": "checkpoint_native"
+        },
+        "gemm_quant_mode": "fp8_block",
+        "kv_cache_dtypes": [
+          "fp8"
+        ],
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8",
+        "native_kv_cache_dtype": "fp8"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "DEEPSEEKV41",
+      "support_level": "native_runtime",
+      "support_reason": "registered V4.1 config; native runtime must qualify every measured cell",
+      "template_id": "deepseek_v41_text_native",
+      "template_version": 1
+    },
+    "meta-llama/Meta-Llama-3.1-8B|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": false,
+      "architecture": "LlamaForCausalLM",
+      "attention_kind": "dense_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": false,
+      "model_config": {
+        "sha256": "454a9a4d31a1a99cd3a85d8f6920fd0f6569377505238358527c2838f6fd7e45",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "LLAMA",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    },
+    "meta-llama/Meta-Llama-3.1-8B|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": false,
+      "architecture": "LlamaForCausalLM",
+      "attention_kind": "dense_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "bfloat16",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": false,
+      "model_config": {
+        "sha256": "454a9a4d31a1a99cd3a85d8f6920fd0f6569377505238358527c2838f6fd7e45",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "LLAMA",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    },
+    "openai/gpt-oss-20b|native": {
+      "aic_database_version": "0.27.0",
+      "allow_pure_tp": true,
+      "architecture": "GptOssForCausalLM",
+      "attention_kind": "moe_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "w4a16_mxfp4",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "fcfce87c5277689cce2b8c8ef5336a7385157bfe623dbe321cfe4904b0942102",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MOE",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    },
+    "openai/gpt-oss-20b|tables": {
+      "aic_database_version": "0.24.0",
+      "allow_pure_tp": true,
+      "architecture": "GptOssForCausalLM",
+      "attention_kind": "moe_gqa",
+      "attention_source": "dense_attention",
+      "dtype": {
+        "comm_quant_mode": "half",
+        "fmha_by_kv_dtype": {
+          "bfloat16": "bfloat16"
+        },
+        "fmha_quant_mode": "bfloat16",
+        "fmha_resolution": "checkpoint_native",
+        "fmha_resolution_by_kv_dtype": {
+          "bfloat16": "checkpoint_native"
+        },
+        "gemm_quant_mode": "bfloat16",
+        "kv_cache_dtypes": [
+          "bfloat16"
+        ],
+        "moe_quant_mode": "w4a16_mxfp4",
+        "native_kv_cache_dtype": "bfloat16"
+      },
+      "is_moe": true,
+      "model_config": {
+        "sha256": "fcfce87c5277689cce2b8c8ef5336a7385157bfe623dbe321cfe4904b0942102",
+        "source_kind": "aic_cache"
+      },
+      "model_family": "MOE",
+      "support_level": "exact",
+      "support_reason": "collector model cases and AIC architecture registry both match",
+      "template_id": "aic_exact:dense_attention",
+      "template_version": 1
+    }
+  },
+  "captured_at": "4cb2b7d6",
+  "description": "resolve_model_capability(...).to_dict() for configs without cache layout markers, captured before the collector checked those markers. model_config.payload is omitted; model_config.sha256 is its hash."
+}

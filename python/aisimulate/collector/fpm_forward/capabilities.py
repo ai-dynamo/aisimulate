@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from aisimulate.fpm_cache_layout import cache_layout_markers, recognized_layer_types
 from aisimulate.sdk import common
 from aisimulate.sdk.models.helpers import _infer_quant_modes_from_raw_config
 from aisimulate.sdk.perf_database import (
@@ -20,6 +21,8 @@ from aisimulate.sdk.utils import _attach_inferred_quant_fields
 from .model_capability import ResolvedModelConfig, load_model_config, resolve_attention_source
 
 TEMPLATE_VERSION = 1
+# A cache layout that config.json cannot describe gets no FPM attention template; the native runtime measures it.
+GENERIC_RUNTIME_TEMPLATE_ID = "generic:native_runtime"
 
 
 def _enum_name(value: object) -> str:
@@ -38,6 +41,17 @@ def _is_moe(config: dict[str, object]) -> bool:
     return any(int(config.get(key) or 0) > 1 for key in ("n_routed_experts", "num_local_experts", "num_experts"))
 
 
+def _check_layer_declarations(config: dict[str, object]) -> None:
+    layer_types = config.get("layer_types")
+    layers = config.get("num_hidden_layers")
+    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
+        raise ValueError("num_hidden_layers must be a positive integer")
+    if "layer_types" in config and (
+        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
+    ):
+        raise ValueError("layer_types must have one entry per num_hidden_layers")
+
+
 def _attention_template(
     *,
     config: dict[str, object],
@@ -54,17 +68,9 @@ def _attention_template(
         # MiniMax-M3's MSA op has no standalone silicon table. AIC transfers
         # utilization from DSA at the same (batch, suffix, prefix) coordinate.
         return "dsa_module", "moe_msa"
+    _check_layer_declarations(config)
     layer_types = config.get("layer_types")
-    layers = config.get("num_hidden_layers")
-    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
-        raise ValueError("num_hidden_layers must be a positive integer")
-    if "layer_types" in config and (
-        not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
-    ):
-        raise ValueError("layer_types must have one entry per num_hidden_layers")
-    allowed_layers = {"full_attention", "sliding_attention"}
-    if architecture in {"GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM"}:
-        allowed_layers.add("deepseek_sparse_attention")
+    allowed_layers = recognized_layer_types(architecture)
     if layer_types is not None and any(
         not isinstance(layer, str) or layer not in allowed_layers for layer in layer_types
     ):
@@ -226,43 +232,63 @@ def resolve_model_capability(
     # DSA is currently an MoE-only exact source in AIC. MLA is not: dense MLA
     # models must remain on the dense topology path.
     is_moe = _is_moe(config) or exact_source == "dsa_module"
-    template_source, template_kind = _attention_template(
-        config=config,
-        architecture=architecture,
-        model_family=model_family,
-        is_moe=is_moe,
-    )
-    # The dense-attention op pair is inherited by every ``include_base: true``
-    # model file, so its presence in selected_ops is not exact evidence by
-    # itself. When the family template deliberately routes attention away from
-    # the dense path (e.g. MiniMax-M3 MSA transfers utilization from DSA), the
-    # family routing wins; a dense exact source is authoritative only for
-    # families that are themselves dense.
-    if exact_source == "dense_attention" and template_source != "dense_attention":
-        exact_source = None
-    if has_model_cases and model_family and exact_source is not None:
-        support_level = "exact"
-        source_name = exact_source
-        attention_kind = {
-            "dsa_module": "moe_dsa",
-            "dsv4_module": "moe_dsv4",
-            "mla_module": "moe_mla" if is_moe else "dense_mla",
-            "dense_attention": template_kind,
-        }[source_name]
-        template_id = f"aic_exact:{source_name}"
-        support_reason = "collector model cases and AIC architecture registry both match"
-    elif model_family:
-        support_level = "family_template"
-        source_name = template_source
-        attention_kind = template_kind
-        template_id = f"aic_family:{model_family.lower()}:{template_kind}"
-        support_reason = "no exact collector model case; derived from the registered AIC model family"
+    # The check config intake uses; DeepSeek-V4.1 keeps its own native runtime path below.
+    layout_markers = () if model_family == "DEEPSEEKV41" else cache_layout_markers(config, architecture)
+    if layout_markers:
+        # No FPM attention template represents this cache, at any support level.
+        _check_layer_declarations(config)
+        reasons = ", ".join(layout_markers)
+        if not checkpoint_native_dtypes:
+            raise ValueError(
+                f"FPM attention templates cannot represent the cache layout of {architecture!r} ({reasons}). "
+                "Collect it with --fpm-model-profile or --fpm-backend-version. Then precision comes from the "
+                "checkpoint, and the runtime measures the cache."
+            )
+        support_level = "native_runtime"
+        source_name = "native_runtime"
+        attention_kind = "moe_native_runtime" if is_moe else "dense_native_runtime"
+        template_id = GENERIC_RUNTIME_TEMPLATE_ID
+        support_reason = (
+            f"config.json cannot describe this cache layout ({reasons}). The native runtime measures every cell."
+        )
     else:
-        support_level = "bootstrap_template"
-        source_name = template_source
-        attention_kind = template_kind
-        template_id = f"generic:{template_kind}"
-        support_reason = "architecture is not registered by AIC; using a conservative config-derived template"
+        template_source, template_kind = _attention_template(
+            config=config,
+            architecture=architecture,
+            model_family=model_family,
+            is_moe=is_moe,
+        )
+        # The dense-attention op pair is inherited by every ``include_base: true``
+        # model file, so its presence in selected_ops is not exact evidence by
+        # itself. When the family template deliberately routes attention away from
+        # the dense path (e.g. MiniMax-M3 MSA transfers utilization from DSA), the
+        # family routing wins; a dense exact source is authoritative only for
+        # families that are themselves dense.
+        if exact_source == "dense_attention" and template_source != "dense_attention":
+            exact_source = None
+        if has_model_cases and model_family and exact_source is not None:
+            support_level = "exact"
+            source_name = exact_source
+            attention_kind = {
+                "dsa_module": "moe_dsa",
+                "dsv4_module": "moe_dsv4",
+                "mla_module": "moe_mla" if is_moe else "dense_mla",
+                "dense_attention": template_kind,
+            }[source_name]
+            template_id = f"aic_exact:{source_name}"
+            support_reason = "collector model cases and AIC architecture registry both match"
+        elif model_family:
+            support_level = "family_template"
+            source_name = template_source
+            attention_kind = template_kind
+            template_id = f"aic_family:{model_family.lower()}:{template_kind}"
+            support_reason = "no exact collector model case; derived from the registered AIC model family"
+        else:
+            support_level = "bootstrap_template"
+            source_name = template_source
+            attention_kind = template_kind
+            template_id = f"generic:{template_kind}"
+            support_reason = "architecture is not registered by AIC; using a conservative config-derived template"
 
     inferred = _infer_quant_modes_from_raw_config(config, architecture)
     gemm = _enum_name(inferred.get("gemm_quant_mode", common.GEMMQuantMode.bfloat16))
@@ -313,7 +339,6 @@ def resolve_model_capability(
                 fmha_resolution_by_kv_dtype={native_kv: "checkpoint_native"},
             ),
         )
-    context_op, generation_op = _attention_ops(source_name)
     requested_kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv_cache_dtypes))
     resolved_kv = tuple(dict.fromkeys(native_kv if value == "auto" else value for value in requested_kv))
     # vLLM v0.27.0 config/cache.py:CacheDType has no literal "int8" option.
@@ -322,6 +347,8 @@ def resolve_model_capability(
         raise ValueError("vLLM FPM collection does not support KV-cache dtype 'int8'; select bfloat16 or fp8")
     database = None
     if not checkpoint_native_dtypes:
+        # Only AIC table evidence needs the template's attention ops; a detected cache layout never reaches here.
+        context_op, generation_op = _attention_ops(source_name)
         database = get_database(system, backend, version)
         if database is None:
             raise ValueError(

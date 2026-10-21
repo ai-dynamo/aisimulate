@@ -17,7 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from collector.fpm_forward.capabilities import resolve_model_capability
+from collector.fpm_forward import capabilities
+from collector.fpm_forward.capabilities import GENERIC_RUNTIME_TEMPLATE_ID, resolve_model_capability
 from collector.fpm_forward.config import (
     FPMCollectionOptions,
     PrefillSamplingProfile,
@@ -1043,9 +1044,58 @@ def _unknown_fp8_moe_config(*, hidden_size: int = 4096) -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
-@pytest.mark.parametrize("mixed", [True, False])
-def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architecture, mixed):
+_MODEL_CONFIGS = Path(__file__).parents[3] / "src/aisimulate_core/model_configs"
+_LAYOUT_REFUSAL = (
+    "FPM attention templates cannot represent the cache layout of {architecture!r} ({reasons}). "
+    "Collect it with --fpm-model-profile or --fpm-backend-version. Then precision comes from the checkpoint, "
+    "and the runtime measures the cache."
+)
+
+
+def _layout_capability(model_path, architecture=None, *, native, has_model_cases=False, model_config_path=None):
+    """Resolve on one collection path: ``native`` stands for --fpm-model-profile or --fpm-backend-version."""
+    return resolve_model_capability(
+        backend="vllm",
+        model_path=str(model_path),
+        model_architecture=architecture,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=has_model_cases,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        model_config_path=model_config_path,
+        database_version="0.27.0" if native else None,
+        checkpoint_native_dtypes=native,
+    )
+
+
+def _forbid_templates_and_timing_data(monkeypatch):
+    """A detected layout gets no attention template and, without a flag, is refused before any AIC table loads."""
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("a detected cache layout used an attention template or AIC timing data")
+
+    for name in ("_attention_template", "_attention_ops", "get_database", "get_latest_database_version"):
+        monkeypatch.setattr(capabilities, name, forbidden)
+
+
+def _assert_native_runtime(capability, reasons, *, is_moe):
+    assert capability.attention_source == "native_runtime"
+    assert capability.attention_kind == ("moe" if is_moe else "dense") + "_native_runtime"
+    assert capability.support_level == "native_runtime"
+    assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID == "generic:native_runtime"
+    assert capability.support_reason == (
+        f"config.json cannot describe this cache layout ({reasons}). The native runtime measures every cell."
+    )
+    assert capability.is_moe is is_moe
+    assert capability.allow_pure_tp is is_moe
+    assert capability.aic_database_version == "0.27.0"
+    # Precision comes from the checkpoint, as on every --fpm-model-profile or --fpm-backend-version path.
+    assert capability.dtype.kv_cache_dtypes == (capability.dtype.native_kv_cache_dtype,)
+    assert capability.dtype.fmha_resolution == "checkpoint_native"
+
+
+def _mixed_attention_config(tmp_path, architecture, mixed):
     config = _unknown_fp8_moe_config()
     config.update(
         architectures=[architecture],
@@ -1055,24 +1105,36 @@ def test_mixed_attention_cannot_fall_back_to_an_mla_template(tmp_path, architect
     )
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
-        resolve_model_capability(
-            backend="vllm",
-            model_path=str(path),
-            model_architecture=architecture,
-            selected_ops={"attention_context", "attention_generation"},
-            has_model_cases=False,
-            system="b200_sxm",
-            requested_weight_quantizations=(),
-            requested_kv_cache_dtypes=("auto",),
-            database_version="0.27.0",
-            checkpoint_native_dtypes=True,
-        )
+    return path
 
 
-@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
-@pytest.mark.parametrize("native", [False, True])
-def test_qwen_gdn_hybrid_cannot_select_exact_dense_attention(tmp_path, architecture, native):
+_MIXED_REASONS = {
+    True: "layer_types deepseek_sparse_attention x2, layer_types linear_attention x2",
+    False: "layer_types deepseek_sparse_attention x4",
+}
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture, mixed):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=_MIXED_REASONS[mixed])
+
+
+@pytest.mark.parametrize("architecture", ["UnknownMixedForCausalLM", "Glm5NextForConditionalGeneration"])
+@pytest.mark.parametrize("mixed", [True, False])
+def test_mixed_attention_with_a_profile_or_version_gets_the_native_runtime_capability(
+    tmp_path, monkeypatch, architecture, mixed
+):
+    path = _mixed_attention_config(tmp_path, architecture, mixed)
+    _forbid_templates_and_timing_data(monkeypatch)
+    _assert_native_runtime(_layout_capability(path, architecture, native=True), _MIXED_REASONS[mixed], is_moe=True)
+
+
+def _qwen_gdn_hybrid_config(tmp_path, architecture):
     config = {
         "architectures": [architecture],
         "text_config": {
@@ -1086,19 +1148,203 @@ def test_qwen_gdn_hybrid_cannot_select_exact_dense_attention(tmp_path, architect
     }
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match="FPM attention templates cannot represent"):
-        resolve_model_capability(
-            backend="vllm",
-            model_path=str(path),
-            model_architecture=architecture,
-            selected_ops={"attention_context", "attention_generation"},
-            has_model_cases=True,
-            system="b200_sxm",
-            requested_weight_quantizations=(),
-            requested_kv_cache_dtypes=("auto",),
-            database_version="0.27.0",
-            checkpoint_native_dtypes=native,
+    return path
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_without_a_profile_or_version_is_refused(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(path, architecture, native=False, has_model_cases=True)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(
+        architecture=architecture, reasons="layer_types linear_attention x3"
+    )
+
+
+@pytest.mark.parametrize("architecture", ["Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration"])
+def test_qwen_gdn_hybrid_model_cases_cannot_select_exact_dense_attention(tmp_path, monkeypatch, architecture):
+    path = _qwen_gdn_hybrid_config(tmp_path, architecture)
+    _forbid_templates_and_timing_data(monkeypatch)
+    # The native runtime capability takes precedence over the exact, family and bootstrap levels.
+    capability = _layout_capability(path, architecture, native=True, has_model_cases=True)
+    _assert_native_runtime(capability, "layer_types linear_attention x3", is_moe=False)
+
+
+@pytest.mark.parametrize(
+    "model,architecture,reasons,is_moe",
+    [
+        ("moonshotai/Kimi-K3", "KimiLinearForCausalLM", "recurrent-state field linear_attn_config", True),
+        (
+            "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            True,
+        ),
+        (
+            "nvidia/Nemotron-H-56B-Base-8K",
+            "NemotronHForCausalLM",
+            "recurrent-state field mamba_num_heads, recurrent-state field ssm_state_size",
+            False,
+        ),
+    ],
+)
+@pytest.mark.parametrize("has_model_cases", [False, True])
+def test_packaged_recurrent_state_configs_get_no_attention_template(
+    monkeypatch, model, architecture, reasons, is_moe, has_model_cases
+):
+    # Kimi K3 declares KDA state and Nemotron-H Mamba state without any layer_types marker.
+    path = str(_MODEL_CONFIGS / f"{model.replace('/', '--')}_config.json")
+    _forbid_templates_and_timing_data(monkeypatch)
+    with pytest.raises(ValueError) as error:
+        _layout_capability(model, native=False, has_model_cases=has_model_cases, model_config_path=path)
+    assert str(error.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+    capability = _layout_capability(model, native=True, has_model_cases=has_model_cases, model_config_path=path)
+    assert capability.architecture == architecture
+    _assert_native_runtime(capability, reasons, is_moe=is_moe)
+
+
+@pytest.mark.parametrize(
+    "declared_layers,layer_count,error",
+    [(4, count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
+    + [(value, 4, "num_hidden_layers must be a positive integer") for value in (4.5, 4.0, "4", True, 0, -1, None)],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_count, error, native):
+    config = _unknown_fp8_moe_config()
+    config.update(num_hidden_layers=declared_layers, layer_types=["linear_attention"] * layer_count)
+    if not layer_count:
+        config["ssm_state_size"] = 16  # An empty layer list declares no marker; recurrent state still does.
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=error):
+        _layout_capability(path, "NewMoeDsaForCausalLM", native=native)
+
+
+# Captured with resolve_model_capability(...).to_dict() at 4cb2b7d6, before the collector checked cache layout
+# markers. These configs have none, so their capabilities, and the plan hashes, stay unchanged.
+_GOLDEN_CAPABILITIES = Path(__file__).parent / "fixtures/fpm_capability_golden.json"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "meta-llama/Meta-Llama-3.1-8B",
+        "Qwen/Qwen3-30B-A3B",
+        "deepseek-ai/DeepSeek-V3",
+        "deepseek-ai/DeepSeek-V4.1-Flash",
+        "MiniMaxAI/MiniMax-M3",
+        "openai/gpt-oss-20b",
+    ],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_capability_without_cache_layout_markers_is_unchanged(model, native):
+    capability = resolve_model_capability(
+        backend="vllm",
+        model_path=model,
+        model_architecture=None,
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=True,
+        system="b200_sxm",
+        requested_weight_quantizations=(),
+        requested_kv_cache_dtypes=("auto",),
+        database_version="0.27.0" if native else "0.24.0",
+        checkpoint_native_dtypes=native,
+    ).to_dict()
+    golden = json.loads(_GOLDEN_CAPABILITIES.read_text())["capabilities"][f"{model}|{'native' if native else 'tables'}"]
+    # The fixture omits the config payload; model_config.sha256 is its hash and is compared.
+    del capability["model_config"]["payload"]
+    assert capability == golden
+
+
+def test_collector_cache_layout_markers_match_config_intake_for_packaged_configs():
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    detected, unrecognized_only = set(), set()
+    # ModelOpt sidecars share the file suffix but are not model configs.
+    for path in sorted(p for p in _MODEL_CONFIGS.glob("*_config.json") if not p.name.endswith("_hf_quant_config.json")):
+        name = path.name.removesuffix("_config.json")
+        try:
+            intake = load_intake_config(path)
+        except ValueError:
+            continue
+        markers = tuple(
+            reason for reason in intake.runtime_layout if not reason.startswith("unrecognized architecture")
         )
+        if intake.runtime_layout and not markers:
+            unrecognized_only.add(name)
+        capability = _layout_capability(name.replace("--", "/", 1), native=True, model_config_path=str(path))
+        if markers:
+            detected.add(name)
+            assert capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID, name
+            assert capability.support_reason == (
+                f"config.json cannot describe this cache layout ({', '.join(markers)}). "
+                "The native runtime measures every cell."
+            ), name
+        else:
+            # The rule for unrecognized architectures stays in intake; AIC model families handle them here.
+            assert capability.template_id != GENERIC_RUNTIME_TEMPLATE_ID, name
+    assert {
+        "zai-org--GLM-5.3-Flash",
+        "moonshotai--Kimi-K3",
+        "nvidia--NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "Qwen--Qwen3.5-27B",
+    } <= detected
+    assert {"Qwen--Qwen3-VL-8B-Instruct", "XiaomiMiMo--MiMo-7B-Base", "MiniMaxAI--MiniMax-M3"} <= unrecognized_only
+
+
+def _detected_layout_plan(tmp_path, monkeypatch, generator_overrides):
+    config = _unknown_fp8_moe_config()
+    config["layer_types"] = ["linear_attention", "full_attention"] * 2
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("the checkpoint is accessible only inside the runtime Pod")
+
+    monkeypatch.setattr("collector.fpm_forward.memory_admission.KVCacheEstimator.from_request", unavailable)
+    return build_collection_plan(
+        backend="vllm",
+        model_path=str(tmp_path),
+        model_architecture="NewMoeDsaForCausalLM",
+        system="b200_sxm",
+        selected_ops={"attention_context", "attention_generation"},
+        has_model_cases=False,
+        options=FPMCollectionOptions.from_args(_args()),
+        collector_config={"aic_database_version": "0.27.0"},  # --fpm-backend-version
+        generator_overrides=generator_overrides,
+    )
+
+
+@pytest.mark.parametrize("name", ["DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED"])
+@pytest.mark.parametrize("value", ["off", "OFF", "0", "false", "False"])
+def test_detected_layout_refuses_disabled_seeding_at_plan_time(tmp_path, monkeypatch, name, value):
+    overrides = {"K8sConfig": {"extra_env": [{"name": name, "value": value}]}}
+    with pytest.raises(ValueError) as error:
+        _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert str(error.value) == (
+        f"{name}={value} is not allowed for this cache layout (layer_types linear_attention x2). "
+        "It needs real prefix seeding and real decode warm-up. Remove the override."
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        None,
+        {
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "TRUE"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "1"},
+                ]
+            }
+        },
+    ],
+)
+def test_detected_layout_plans_with_real_seeding(tmp_path, monkeypatch, overrides):
+    plan = _detected_layout_plan(tmp_path, monkeypatch, overrides)
+    assert plan.capability.template_id == GENERIC_RUNTIME_TEMPLATE_ID
+    assert plan.cells
 
 
 @pytest.mark.parametrize(
@@ -1879,6 +2125,101 @@ def test_non_protocol_kvwarm_skips_remain_fake_fallback(tmp_path, skip_reason):
     rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
     assert {row["kv_seed_regime"] for row in rows} == {"fake_fallback"}
+
+
+def _seeded_prefill_cell(tmp_path, regime, *, kv_tokens=128):
+    """Two-rank prefill whose native rows report ``regime`` (None: a row without a regime) with its stamp."""
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    stamp = {"real_prefix": "prefill_real_seed", "fake_prefix": "prefill_fake_prefix"}.get(regime)
+
+    def seed(value):
+        if isinstance(value, dict):
+            if "point_type" in value:
+                value["total_kv_read_tokens"] = kv_tokens
+                value["sample_reasons"] = [*value["sample_reasons"], *([stamp] if stamp else [])]
+            if "sum_prefill_kv_tokens" in value:
+                value["sum_prefill_kv_tokens"] = kv_tokens
+            for child in value.values():
+                seed(child)
+        elif isinstance(value, list):
+            for child in value:
+                seed(child)
+
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        seed(payload)
+        if regime is not None:
+            for row in payload["results"]:
+                row["kv_seed_regime"] = regime
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("regime", ["fake_prefix", "not_applicable", None])
+def test_detected_layout_publishes_cached_prefill_only_with_real_prefix_seeding(tmp_path, regime):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime)
+    # Other models keep their classification: the formal prefill regime stays n/a.
+    assert [row["kv_seed_regime"] for row in aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")] == [
+        "n/a"
+    ]
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    with pytest.raises(ValueError) as error:
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert str(error.value) == (
+        f"cached prefill for this cache layout requires real_prefix seeding, got {regime or 'unreported'}"
+    )
+
+
+@pytest.mark.parametrize("regime,kv_tokens", [("real_prefix", 128), (None, 0)])
+def test_detected_layout_publishes_real_prefix_and_uncached_prefill(tmp_path, regime, kv_tokens):
+    plan, cell, cell_dir = _seeded_prefill_cell(tmp_path, regime, kv_tokens=kv_tokens)
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert [(row["total_kv_read_tokens"], row["kv_seed_regime"]) for row in rows] == [(kv_tokens, "n/a")]
+
+
+_WARM_ELIGIBLE = {"enabled": True, "warm_eligible": True, "skip_reason": None}
+
+
+@pytest.mark.parametrize(
+    "kvwarm,marker,strategy,regime",
+    [(_WARM_ELIGIBLE, "kvwarm_fake_fallback", "tep", "fake_fallback"), (None, None, "tp", "legacy")],
+)
+def test_detected_layout_refuses_fake_fallback_and_legacy_decode(tmp_path, kvwarm, marker, strategy, regime):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
+    )
+    # Other models keep their classification and publish the row.
+    assert {row["kv_seed_regime"] for row in aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")} == {
+        regime
+    }
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    with pytest.raises(ValueError) as error:
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert (
+        str(error.value) == f"decode for this cache layout requires real_kv seeding or an approved skip, got {regime}"
+    )
+
+
+@pytest.mark.parametrize(
+    "kvwarm,marker,strategy,regime",
+    [
+        (_WARM_ELIGIBLE, "kvwarm_real_kv", "tep", "real_kv"),
+        (
+            {"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"},
+            "kvwarm_fake_fallback",
+            "tp",
+            "skip:moe_tp_balanced_by_construction",
+        ),
+    ],
+)
+def test_detected_layout_publishes_real_kv_and_approved_skip_decode(tmp_path, kvwarm, marker, strategy, regime):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path, kvwarm=kvwarm, markers=(marker,), parallel_strategy=strategy
+    )
+    plan.capability.template_id = GENERIC_RUNTIME_TEMPLATE_ID
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    assert {row["kv_seed_regime"] for row in rows} == {regime}
 
 
 def test_native_validation_rejects_cross_rank_kvwarm_disagreement(tmp_path):
