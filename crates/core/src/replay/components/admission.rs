@@ -415,12 +415,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
             return CoreAdmissionSource::on_output_token(self, uuid, token_id);
         }
         let AdmissionSource::Workload {
+            driver,
             pending_agentic_runtime_feedback,
-            ..
         } = &mut self.source
         else {
             unreachable!("only an agentic workload can buffer agentic feedback");
         };
+        if !driver.observes_output_token(uuid) {
+            return Ok(());
+        }
         if let Some(existing) = pending_agentic_runtime_feedback
             .output_tokens
             .iter_mut()
@@ -954,5 +957,54 @@ mod generated_tests {
         );
         let error = failing.drain_ready_compact(0.0, 0, false).err().unwrap();
         assert_eq!(error.to_string(), "source failed");
+    }
+}
+
+#[cfg(test)]
+mod agentic_feedback_tests {
+    use super::*;
+    use crate::replay::loadgen::{
+        AGENTIC_MOONCAKE_SCHEMA, AGENTIC_MOONCAKE_VERSION, AgenticHashIdScope,
+        AgenticMooncakeHeader, AgenticMooncakeRow, AgenticSourceProvenance, AgenticTrace,
+    };
+
+    #[test]
+    fn full_prompt_agentic_output_tokens_are_not_buffered() {
+        let trace = AgenticTrace::from_agentic_mooncake_rows(
+            AgenticMooncakeHeader {
+                schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
+                version: AGENTIC_MOONCAKE_VERSION,
+                block_size: 4,
+                hash_id_scope: AgenticHashIdScope::Local,
+                source: AgenticSourceProvenance {
+                    format: "test".to_string(),
+                    digest: "fixture".to_string(),
+                },
+            },
+            vec![AgenticMooncakeRow {
+                request_id: "root".to_string(),
+                play_id: "play".to_string(),
+                session_id: "play".to_string(),
+                model: "model".to_string(),
+                input_length: Some(4),
+                output_length: Some(2),
+                hash_ids: Some(vec![1]),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let mut driver = WorkloadDriver::new_agentic_trace(trace, 4).unwrap();
+        let uuid = driver.pop_ready(0.0, usize::MAX)[0].request_uuid;
+        let mut admission = AdmissionQueue::<()>::new_workload(driver, ReplayMode::Trace);
+
+        admission.defer_output_token(uuid, 7).unwrap();
+        assert!(
+            !admission.flush_agentic_runtime_feedback(1.0).unwrap(),
+            "full-prompt output progress has no consumer and must not be batched"
+        );
+        admission
+            .defer_terminal(uuid, 1.0, ReplayTerminalStatus::Completed)
+            .unwrap();
+        assert!(admission.flush_agentic_runtime_feedback(1.0).unwrap());
     }
 }
