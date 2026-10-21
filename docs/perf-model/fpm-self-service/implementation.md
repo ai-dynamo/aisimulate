@@ -692,11 +692,11 @@ This rule has limits:
 - A config that names no architecture still asks for its cache layout.
 - Cache geometry overrides never change the classification.
 
-Packaged configs that are pending include GLM-5.3-Flash (KDA and
+For example, these packaged configs are pending: GLM-5.3-Flash (KDA and
 sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
 NemotronH hybrids such as Nemotron-3 Nano. The rule for unrecognized
-architectures adds the Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and
-Llama-3.3-Nemotron-Super configs.
+architectures adds configs such as Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and
+Llama-3.3-Nemotron-Super.
 For these layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not
 rejected.
 
@@ -729,8 +729,10 @@ that. The guidance then says that `onboard import-observations` checks each
 cache geometry override against the probe's measurement. For that check, keep
 the claim in the configuration's `resource_overrides` in the checkpoint.
 
-The vLLM probe always reports a grouped cache. Import checks each kind of claim
-against the measured groups:
+The vLLM probe always reports a grouped cache, so the imported profile is
+grouped. The [limits of grouped profiles](#create-the-request) apply to it:
+prefix reuse, host offload and disaggregation are not available for it yet.
+Import checks each kind of claim against the measured groups:
 
 - A `cache_groups` claim must have the same groups as the measurement: the same
   kinds, layer counts, block sizes, page sizes and windows. Import does not
@@ -790,7 +792,7 @@ cache profile.
 
 ### Review grouped cache resources
 
-Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit, and contradictory layer/window declarations fail. Unrecognized layer types and recurrent state are not derived here; they leave the cache geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe).
+Config intake recognizes unambiguous full/sliding layer declarations, including `sliding_window`/`layer_types` and supported `sliding_window_size`/`local_layer_ids` aliases. It also recognizes the supported `use_sconv` and convolution-kernel metadata. It derives available layer/head geometry and records the source. Runtime attention block sizes after page unification, effective KV dtype and allocation padding are not established by the model config. Unknown resource assumptions remain explicit, and contradictory layer/window declarations fail for recognized architectures. Unrecognized layer types and recurrent state are not derived here; they leave the cache geometry [pending the runtime probe](#cache-geometry-pending-the-runtime-probe).
 
 After selecting precision and topology, investigate the pinned cache/backend implementation and available allocation metadata for block sizes after page unification; ask only for values that remain unresolved. The model config's omission does not imply that the user must supply them. Supply `cache_block_sizes` using the generated group names listed by intake. For example, a mixed full/sliding model might require this JSON answer, or the equivalent mapping in a `--resource-overrides` file:
 
