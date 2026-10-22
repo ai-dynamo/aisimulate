@@ -3361,8 +3361,9 @@ mod host_loop_passes {
     #[test]
     fn prefix_cache_commits_reach_their_requests_in_any_running_order() {
         let mut core = core(true);
+        // Prompts of different lengths, so a commit applied to the wrong request shows.
         core.receive(direct_request(vec![1, 2, 3, 4], 8));
-        core.receive(direct_request(vec![5, 6, 7, 8], 8));
+        core.receive(direct_request(vec![5, 6, 7, 8, 9], 8));
         // A prefill, then a decode whose commits are in flight.
         let prefill = core.execute_hidden_pass(0.0);
         let decode = core.execute_hidden_pass(prefill.end_ms);
@@ -3372,8 +3373,8 @@ mod host_loop_passes {
         let before: Vec<usize> = core.running.iter().map(|r| r.cached_tokens()).collect();
         core.execute_hidden_pass(decode.end_ms);
         let after: Vec<usize> = core.running.iter().map(|r| r.cached_tokens()).collect();
-        assert_eq!(before, vec![5, 5]);
-        assert_eq!(after, vec![6, 6]);
+        assert_eq!(before, vec![6, 5]);
+        assert_eq!(after, vec![7, 6]);
     }
 
     #[test]
