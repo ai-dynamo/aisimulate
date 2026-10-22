@@ -2031,6 +2031,21 @@ def test_linear_claim_sentence_needs_a_config_without_a_window(tmp_path, capsys,
     ) is sentence
 
 
+def test_packaged_mimo_v2_flash_config_is_pending_without_the_linear_claim_sentence(tmp_path, capsys):
+    config_path = Path(__file__).parents[2] / "src/aisimulate_core/model_configs/XiaomiMiMo--MiMo-V2-Flash_config.json"
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
+    source, resources = _files(tmp_path, config=json.loads(config_path.read_text()), overrides=overrides)
+    # The config has no _name_or_path, so the command names the model.
+    command = _args(tmp_path / "request.yaml", source, resources, model="XiaomiMiMo/MiMo-V2-Flash")
+    _, stderr = _stops_with_guidance(command, capsys, import_limit=False)
+    assert "not derived from config.json (unrecognized architecture MiMoV2FlashForCausalLM):" in stderr
+    # The config declares windowed attention, so the probe can report a windowed group, which no per-token size
+    # matches. The stop does not invite a kv_bytes_per_token claim.
+    assert "kv_bytes_per_token" not in stderr
+    # Nothing was written beside the test's own inputs.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["config.json", "resources.yaml"]
+
+
 def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):
     source, _ = _files(tmp_path)
     # The declared interconnect 'none' limits automatic choices to one GPU, so one candidate remains.
