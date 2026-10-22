@@ -139,6 +139,10 @@ shared:
     owners: [replay, mocker, maintainers]
   - glob: .claude/skills/aisimulate-replay-performance
     owners: [replay, mocker, maintainers]
+  - glob: .agents/skills/aisimulate-agentx-gap-debug/
+    owners: [replay, forward-pass-engine, maintainers]
+  - glob: .claude/skills/aisimulate-agentx-gap-debug
+    owners: [replay, forward-pass-engine, maintainers]
   - glob: python/aisimulate/tools/simulation_perf_gate/
     owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
