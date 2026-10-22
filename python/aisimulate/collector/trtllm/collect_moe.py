@@ -313,18 +313,18 @@ def run_moe_torch(
         print("MOE Allocated GDRAM:", torch.cuda.memory_allocated(device.index) / 1024**2, "MB")
         print("MOE Reserved GDRAM:", torch.cuda.memory_reserved(device) / 1024**2, "MB")
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
+    # rc29 modeling_qwen3_moe.py:114-124 passes config.torch_dtype; FP8
+    # storage is selected by QuantConfig, not by the layer's model dtype
+    # (fused_moe_cutlass.py:133-140, c76f4a8).
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-        dtype = torch.float8_e4m3fn
     elif moe_type == "w4afp8":
         quant_algo = QuantAlgo.W4A8_AWQ
-        dtype = torch.float8_e4m3fn
     elif moe_type == "fp8":
         quant_algo = QuantAlgo.FP8
-        dtype = torch.float8_e4m3fn
     elif moe_type == "int4_wo":
         quant_algo = QuantAlgo.W4A16
         int4_config = get_moe_quantization_module_config("trtllm", moe_type, model_name=model_name)

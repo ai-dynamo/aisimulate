@@ -50,11 +50,7 @@ class ReachedNativeBuilder(Exception):
     pass
 
 
-@pytest.mark.parametrize("sm", [90, 100, 103, 120])
-@pytest.mark.parametrize("tp", [2, 4, 8])
-@pytest.mark.parametrize("quant", ["w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
-@pytest.mark.parametrize("model_name", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "other-mxfp4-model"])
-def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name):
+def _load_moe_native_builder(sm):
     tree = ast.parse((COLLECTOR / "collect_moe.py").read_text())
     functions = [
         node
@@ -84,6 +80,15 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
         "inspect": SimpleNamespace(signature=lambda _: SimpleNamespace(parameters={})),
     }
     exec(compile(ast.Module(body=functions, type_ignores=[]), "collect_moe.py", "exec"), namespace)
+    return namespace, native_builder
+
+
+@pytest.mark.parametrize("sm", [90, 100, 103, 120])
+@pytest.mark.parametrize("tp", [2, 4, 8])
+@pytest.mark.parametrize("quant", ["w4a16_mxfp4", "w4a8_mxfp4_mxfp8"])
+@pytest.mark.parametrize("model_name", ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "other-mxfp4-model"])
+def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name):
+    namespace, native_builder = _load_moe_native_builder(sm)
     if sm in (90, 120):
         with pytest.raises(ValueError, match="weight-layout alignment"):
             namespace["run_moe_torch"](quant, [1], 2880, 2880, 4, 128, tp, 1, False, model_name, perf_filename="unused")
@@ -104,6 +109,32 @@ def test_unaligned_mxfp4_honors_native_padding_window(sm, tp, quant, model_name)
     else:
         assert not namespace["RenormalizeMoeRoutingMethod"].call_args.kwargs
         assert native_builder.call_args.kwargs["activation"] is namespace["SwigluActivation"].return_value
+
+
+@pytest.mark.parametrize(
+    "quant, algorithm", [("fp8", "FP8"), ("fp8_block", "FP8_BLOCK_SCALES"), ("w4afp8", "W4A8_AWQ")]
+)
+def test_quantized_moe_passes_model_dtype_to_native_builder(quant, algorithm):
+    namespace, native_builder = _load_moe_native_builder(90)
+    namespace["is_sm_100f"] = lambda sm: sm in (100, 103)
+    with pytest.raises(ReachedNativeBuilder):
+        namespace["run_moe_torch"](
+            quant,
+            [1],
+            2048,
+            768,
+            8,
+            128,
+            1,
+            8,
+            False,
+            "Qwen/Qwen3-30B-A3B",
+            perf_filename="unused",
+        )
+    assert native_builder.call_args.kwargs["dtype"] is namespace["torch"].bfloat16
+    assert native_builder.call_args.kwargs["model_config"].moe_backend == "cutlass"
+    assert namespace["QuantConfig"].call_args.kwargs["quant_algo"] is getattr(namespace["QuantAlgo"], algorithm)
+    assert native_builder.call_args.kwargs["allow_backend_degradation"] is False
 
 
 @pytest.mark.parametrize("outcomes", ["fail,fail", "fail,pass", "pass,fail", "pass,pass", "fatal", "cached"])

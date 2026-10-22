@@ -392,6 +392,10 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 
 ## Runtime Behavior
 
+TRT-LLM quantized MoE construction uses the BF16 model dtype and selects weight
+quantization through `QuantConfig`, matching rc29 serving. Passing FP8 as the
+model dtype is rejected by rc29's CUTLASS implementation resolver.
+
 The TRT-LLM all-to-all Slurm launcher uses the same rc29 image digest as the
 stock runtime manifest. Explicit image overrides must match that runtime's
 package-version gate; the launcher default is covered by the network tests.
