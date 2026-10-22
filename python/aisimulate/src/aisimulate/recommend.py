@@ -921,8 +921,10 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
-    if config.optimization.constraints.min_goodput_rps is not None:
-        payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
+    for name in ("min_goodput_rps", "max_p99_ttft_ms", "max_p99_e2e_latency_ms"):
+        value = getattr(config.optimization.constraints, name)
+        if value is not None:
+            payload[name] = value
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)

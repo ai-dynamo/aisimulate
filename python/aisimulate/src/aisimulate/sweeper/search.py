@@ -89,7 +89,13 @@ from .result import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, InvalidSuggestionError, Suggestion, make_branch_sampler
-from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
+from .score import (
+    analyze_candidates,
+    is_feasible,
+    latency_constraint_violations,
+    make_candidate,
+    minimum_goodput_violations,
+)
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -990,19 +996,22 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
-    if goal.requires_aggregate_sla:
-        assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        violations = aggregate_sla_violations(report, goal.sla)
-        if violations:
-            return _EvalResult(
-                candidate=None,
-                observe_metrics=None,
-                outcome="infeasible",
-                reason=f"strict aggregate SLA violation: {'; '.join(violations)}",
-                reason_category=ReasonCategory.SLA_CONSTRAINT,
-                runner_metadata=replay_result.metadata,
-                report_metrics=report,
-            )
+    violations = latency_constraint_violations(report, goal)
+    if violations:
+        label = (
+            "aggregate latency constraint violation"
+            if goal.max_p99_ttft_ms is not None or goal.max_p99_e2e_latency_ms is not None
+            else "strict aggregate SLA violation"
+        )
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="infeasible",
+            reason=f"{label}: {'; '.join(violations)}",
+            reason_category=ReasonCategory.SLA_CONSTRAINT,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
     if load_violations:
         measured_goodput = report.get("goodput_request_throughput_rps")

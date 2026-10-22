@@ -18,7 +18,8 @@ Three steps, mirroring the profiler replay optimizer in the ``ai-dynamo/dynamo``
 2. **feasibility** — within the GPU budget. SLA is not gated by default: a
    ``goodput`` target already counts SLA-satisfying requests. The explicit
    ``strict_sla`` option additionally filters aggregate means before ranking.
-   Over-budget and strict-SLA-violating candidates are dropped.
+   Explicit percentile constraints independently gate the report's p99 latencies.
+   Over-budget and latency-constraint-violating candidates are dropped.
 3. **rank** — feasible candidates best-first by score, ties broken toward fewer GPUs.
 
 ``min_gpus`` scores the concrete provisioned GPU count negatively, always gates aggregate
@@ -55,8 +56,10 @@ _METRIC_KEYS = (
     "num_e2e_latency_samples",
     "output_throughput_tok_s",
     "mean_ttft_ms",
+    "p99_ttft_ms",
     "mean_tpot_ms",
     "mean_e2e_latency_ms",
+    "p99_e2e_latency_ms",
     "mean_output_token_throughput_per_user",
     "goodput_output_throughput_tok_s",
     "request_throughput_rps",
@@ -229,6 +232,48 @@ def meets_aggregate_sla(
     return not aggregate_sla_violations(report, sla)
 
 
+def latency_constraint_violations(
+    report: Mapping[str, float],
+    goal: OptimizationGoal,
+) -> tuple[str, ...]:
+    """Check mean and explicit p99 constraints before selection or sampler feedback.
+
+    Percentile bounds apply independently of ``strict_sla`` and never alter
+    replay's per-request goodput thresholds. Missing or invalid evidence fails
+    closed; an observed percentile equal to its bound is feasible.
+    """
+    violations: list[str] = []
+    if goal.requires_aggregate_sla:
+        assert goal.sla is not None  # OptimizationGoal validates this invariant.
+        violations.extend(aggregate_sla_violations(report, goal.sla))
+
+    checks = (
+        ("p99_ttft_ms", "num_ttft_samples", goal.max_p99_ttft_ms),
+        ("p99_e2e_latency_ms", "num_e2e_latency_samples", goal.max_p99_e2e_latency_ms),
+    )
+    if not any(bound is not None for _, _, bound in checks):
+        return tuple(violations)
+
+    def finite_number(value: object) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+    completed = report.get("completed_requests")
+    if not finite_number(completed) or completed <= 0:
+        violations.append("completed_requests is missing or invalid for percentile constraints")
+    for metric, sample_metric, bound in checks:
+        if bound is None:
+            continue
+        samples = report.get(sample_metric)
+        if not finite_number(samples) or samples <= 0:
+            violations.append(f"{metric} has no qualifying samples ({sample_metric} is missing or invalid)")
+        value = report.get(metric)
+        if not finite_number(value) or value < 0:
+            violations.append(f"{metric} is missing or invalid")
+        elif value > bound:
+            violations.append(f"{metric}={value:g}ms > {bound:g}ms")
+    return tuple(violations)
+
+
 def objective_vector(report: dict[str, float], objectives: list[OptimizationTarget]) -> dict[str, float]:
     """Raw value (natural units, NOT signed) for each Pareto objective, keyed by target
     value. Dominance uses each objective's own direction (``target.maximize``)."""
@@ -325,11 +370,8 @@ def analyze_candidates(
     candidates: Sequence[Candidate],
     goal: OptimizationGoal,
 ) -> list[Candidate]:
-    """Apply strict SLA filtering before scalar ranking or Pareto dominance."""
-    pool = list(candidates)
-    if goal.requires_aggregate_sla:
-        assert goal.sla is not None  # OptimizationGoal validates this invariant.
-        pool = [candidate for candidate in pool if meets_aggregate_sla(candidate.metrics, goal.sla)]
+    """Apply latency constraints before scalar ranking or Pareto dominance."""
+    pool = [candidate for candidate in candidates if not latency_constraint_violations(candidate.metrics, goal)]
     if goal.target is OptimizationTarget.MIN_GPUS:
         pool = [
             candidate for candidate in pool if not minimum_goodput_violations(candidate.metrics, goal.min_goodput_rps)

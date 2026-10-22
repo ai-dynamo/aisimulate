@@ -38,6 +38,7 @@ from aisimulate.sweeper import (
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.result import make_candidate_provenance
 from aisimulate.sweeper.sampler import Suggestion
+from aisimulate.sweeper.score import analyze_candidates
 from aisimulate.sweeper.search_space import BranchSpace
 
 
@@ -660,6 +661,84 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     assert result.selected_candidates == []
     assert result.candidates[0].metrics["mean_ttft_ms"] == 20.0
     assert {record.reason_category for record in result.candidates} == {ReasonCategory.SLA_CONSTRAINT}
+
+
+@pytest.mark.parametrize(
+    ("violated_bound", "violated_metric"),
+    [
+        ("max_p99_ttft_ms", "p99_ttft_ms"),
+        ("max_p99_e2e_latency_ms", "p99_e2e_latency_ms"),
+    ],
+)
+def test_p99_constraint_evidence_and_reanalysis_survive_result_round_trip(
+    monkeypatch,
+    violated_bound,
+    violated_metric,
+):
+    parallel_config = ReplicaParallelConfig(ParallelShape(tp=4, dp=1, moe_tp=1, moe_ep=4), replicas=2)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel_config,),
+        supported_backends={parallel_config: frozenset({"trtllm"})},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
+
+    bounds = {"max_p99_ttft_ms": 100.0, "max_p99_e2e_latency_ms": 200.0}
+
+    class TailLatencyRunner(_Runner):
+        def run(self, spec):
+            report = super().run(spec)
+            metrics = {
+                **report.metrics,
+                "completed_requests": 10.0,
+                "num_ttft_samples": 10.0,
+                "num_e2e_latency_samples": 10.0,
+                "mean_ttft_ms": 20.0,
+                "mean_e2e_latency_ms": 40.0,
+                "p99_ttft_ms": bounds["max_p99_ttft_ms"],
+                "p99_e2e_latency_ms": bounds["max_p99_e2e_latency_ms"],
+            }
+            if report.metrics["output_throughput_tok_s"] == 512.0:
+                metrics[violated_metric] *= 1.5
+            return ReplayReport(metrics=metrics, metadata=report.metadata)
+
+    class TailLatencyRunnerFactory(_RunnerFactory):
+        def create(self, worker_id):
+            return TailLatencyRunner()
+
+    config_payload = _config().model_dump(mode="python")
+    config_payload["goal"].update(bounds)
+    config_payload["sweep"]["max_trials"] = 2
+    config_payload["sweep"]["max_eval_seconds"] = None
+    result = Sweeper(
+        runner_factory=TailLatencyRunnerFactory(),
+        sampler_factory=_Sampler,
+        show_progress=False,
+    ).run(SmartSearchConfig.model_validate(config_payload))
+
+    assert result.counts.feasible == 1
+    assert result.counts.infeasible == 1
+    assert [candidate.score for candidate in result.selected_candidates] == [256.0]
+    rejected = next(record for record in result.candidates if record.status is CandidateStatus.INFEASIBLE)
+    assert rejected.reason_category is ReasonCategory.SLA_CONSTRAINT
+    assert "aggregate latency constraint" in rejected.reason
+    assert violated_metric in rejected.reason
+    assert rejected.metrics[violated_metric] == bounds[violated_bound] * 1.5
+
+    restored = SweepResult.from_json(result.to_json())
+    assert restored == result
+    for field, bound in bounds.items():
+        assert restored.provenance.config["goal"][field] == bound
+        assert all(record.provenance.objective[field] == bound for record in restored.candidates)
+    restored_goal = SmartSearchConfig.model_validate(restored.provenance.config).goal
+    assert analyze_candidates(restored.feasible_candidates, restored_goal) == restored.selected_candidates
+    assert restored.selected_candidates == result.selected_candidates
+    assert restored.selected_candidates[0].metrics["p99_ttft_ms"] == 100.0
+    assert restored.selected_candidates[0].metrics["p99_e2e_latency_ms"] == 200.0
+    tighter_goal = restored_goal.model_copy(update={violated_bound: bounds[violated_bound] / 2.0})
+    assert analyze_candidates(restored.feasible_candidates, tighter_goal) == []
 
 
 def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch):
