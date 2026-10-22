@@ -24,7 +24,11 @@ ALLOWED_LICENSES = (
 )
 
 
-def check_licenses(python: str, inventory: Path | None = None, pyproject: Path | None = None) -> int:
+def check_licenses(
+    python: str, inventory: Path | None = None, pyproject: Path | None = None, *, inventory_only: bool = False
+) -> int:
+    if inventory_only and inventory is None:
+        raise ValueError("inventory-only collection requires an output path")
     with (pyproject or PYPROJECT).open("rb") as manifest:
         dependencies = tomllib.load(manifest)["project"]["dependencies"]
     dependencies = [d for d in dependencies if not d.lower().startswith("aisimulate-core")]
@@ -42,15 +46,16 @@ def check_licenses(python: str, inventory: Path | None = None, pyproject: Path |
     # must not silently exempt a future runtime dependency with the same name.
     command = [python, "-m", "piplicenses", "--with-system"]
     # Preserve the release policy: detailed findings stay out of public CI logs.
-    result = subprocess.run(
-        [*command, "--allow-only", ALLOWED_LICENSES],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
-    if result.returncode:
-        print("::error::Python dependency license check failed; run pip-licenses locally for details")
-        return 1
+    if not inventory_only:
+        result = subprocess.run(
+            [*command, "--allow-only", ALLOWED_LICENSES],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode:
+            print("::error::Python dependency license check failed; run pip-licenses locally for details")
+            return 1
     if inventory is not None:
         inventory.parent.mkdir(parents=True, exist_ok=True)
         with inventory.open("w", encoding="utf-8", newline="") as output:
@@ -63,8 +68,11 @@ def main() -> int:
     parser.add_argument("--python", default=sys.executable, help="Interpreter whose environment is checked")
     parser.add_argument("--inventory", type=Path, help="Optional CSV output after the license check succeeds")
     parser.add_argument("--pyproject", type=Path, help="Package manifest from the source revision being built")
+    parser.add_argument(
+        "--inventory-only", action="store_true", help="Collect the comparison baseline without applying head policy"
+    )
     args = parser.parse_args()
-    return check_licenses(args.python, args.inventory, args.pyproject)
+    return check_licenses(args.python, args.inventory, args.pyproject, inventory_only=args.inventory_only)
 
 
 if __name__ == "__main__":
