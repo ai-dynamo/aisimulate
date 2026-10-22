@@ -1589,11 +1589,12 @@ def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | N
 
 
 def linear_block_bytes(resources: Mapping[str, Any]) -> int | None:
-    """Bytes of one cache block in the linear layout of measured grouped resources, or None without that layout.
+    """The smallest capacity, in bytes, that fills whole cache blocks in every measured group.
 
-    vLLM gives a request whole blocks in every group. A block of the linear layout holds the fewest tokens that fill
-    whole blocks in every measured group. With one block size, it is one block of each group. A capacity of whole
-    blocks holds exactly the tokens that the linear layout counts.
+    It is None when the measured grouped resources have no linear layout. vLLM gives a request whole blocks in every
+    group. This capacity holds the fewest tokens that fill whole blocks in every group, the lcm of the block sizes.
+    With one block size, it is one block of each group. A whole multiple of it holds exactly the tokens that the
+    linear layout counts.
     """
     if _linear_layout_gap(resources) is not None:
         return None

@@ -865,13 +865,13 @@ def test_linear_capacity_override_must_be_whole_measured_blocks(tmp_path, capsys
     checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
     changed = _capacity_override(checkpoint, request, capacity)
     assert runtime_probe_manifest(changed)["user_overrides"]["runtime_memory.kv_cache_bytes"]["value"] == capacity
-    # The plan counts 1503 or 1500 whole tokens, but 93 whole blocks hold only 1488 tokens.
+    # The plan counts 1503 or 1500 whole tokens, but 93 whole blocks in each group hold only 1488 tokens.
     with pytest.raises(ValueError) as error:
         verify_runtime_profile(changed)
     assert str(error.value) == (
-        f"the runtime_memory.kv_cache_bytes override {capacity} is not a whole number of the measured 256-byte "
-        "cache blocks (16 tokens each). A linear runtime profile needs whole blocks. The nearest lower capacity of "
-        "whole blocks is 23808 bytes"
+        f"the runtime_memory.kv_cache_bytes override {capacity} is not a whole multiple of 256 bytes (16 tokens). "
+        "That is the smallest capacity that fills whole cache blocks in every measured group. A linear runtime "
+        "profile needs whole blocks. The nearest lower capacity of whole blocks is 23808 bytes"
     )
     # The refusal does not rewrite the draft.
     assert changed.profile_deployment().resources.runtime_memory.kv_cache_bytes == capacity

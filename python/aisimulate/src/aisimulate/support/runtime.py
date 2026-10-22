@@ -489,15 +489,16 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
             "resource edits require checkpoint registration to preserve observed values and label user overrides"
         )
     if overrides and actual == linear:
-        # The plan counts whole tokens of a linear profile, but vLLM allocates whole blocks. A capacity of whole
-        # blocks keeps the two counts equal. The grouped estimate already counts whole blocks.
+        # The plan counts whole tokens of a linear profile, but vLLM allocates whole blocks. A whole multiple of the
+        # smallest capacity that fills whole cache blocks in every group keeps the two counts equal. The grouped
+        # estimate already counts whole blocks.
         block = linear_block_bytes(expected)
         if actual_capacity % block:
             raise ValueError(
-                f"the runtime_memory.kv_cache_bytes override {actual_capacity} is not a whole number of the measured "
-                f"{block}-byte cache blocks ({block // linear['kv_bytes_per_token']} tokens each). A linear runtime "
-                "profile needs whole blocks. The nearest lower capacity of whole blocks is "
-                f"{actual_capacity // block * block} bytes"
+                f"the runtime_memory.kv_cache_bytes override {actual_capacity} is not a whole multiple of {block} "
+                f"bytes ({block // linear['kv_bytes_per_token']} tokens). That is the smallest capacity that fills "
+                "whole cache blocks in every measured group. A linear runtime profile needs whole blocks. The nearest "
+                f"lower capacity of whole blocks is {actual_capacity // block * block} bytes"
             )
     metadata = {key: getattr(request.fpm_profile, key) for key in ("architecture", "context_length", "num_experts")}
     if metadata != manifest["model_metadata"]:
