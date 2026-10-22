@@ -1168,7 +1168,7 @@ def test_finalization_reuses_original_collection_with_accepted_observed_capacity
         tmp_path, capsys, resource_overrides=_LINEAR_CLAIM if claim else None
     )
     revised = SupportRequest.from_yaml(memory_config)
-    # The capacity revision imports the formal observations with the same checkpoint claim, so its form matches.
+    # The capacity revision imports the formal observations with the same checkpoint claim, so its layout matches.
     layout = "linear" if claim else "grouped"
     assert original.profile_deployment().resources.cache_layout == layout
     assert revised.profile_deployment().resources.cache_layout == layout

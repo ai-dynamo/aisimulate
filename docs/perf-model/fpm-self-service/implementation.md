@@ -771,8 +771,8 @@ and `cache_layout_reason` gives the reason.
 
 A `cache_layout: grouped` or `cache_groups` claim keeps the grouped layout.
 Acceptance takes either layout, because both come from the probe evidence.
-Finalization keeps a linear profile linear. The token capacity of the two
-layouts differs by less than one block.
+Finalization keeps such an imported linear profile linear. The token capacity
+of the two layouts differs by less than one block.
 
 A `cache_block_sizes` override is an error for these layouts, at intake and at
 import. It names cache groups that intake derives from `config.json`, and these
