@@ -528,7 +528,7 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
         ),
         (
             NotImplementedError,
-            r"GLM-5\.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+            r"GLM-5\.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1",
         ),
         (
             NotImplementedError,

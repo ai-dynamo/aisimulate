@@ -434,7 +434,7 @@ def test_unrecognized_quantized_moe_error_remains_blocking():
     "message,expected",
     [
         (
-            "GLM-5.3-Flash baseline requires TP1/2/4, MoE TP=TP, DP=PP=CP=EP=1",
+            "GLM-5.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1",
             STATUS_SDK_UNREPRESENTABLE,
         ),
         (
