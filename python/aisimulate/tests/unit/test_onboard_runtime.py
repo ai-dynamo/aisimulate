@@ -791,6 +791,33 @@ def test_plan_accepts_an_exact_fit_of_observed_capacity_for_a_linear_profile(tmp
         assert json.loads((root / "support-plan.json").read_text())["resources"]["total_kv_size_tokens"] == 1504
 
 
+@pytest.mark.parametrize("memory_source", ["runtime", "declared"])
+def test_grouped_peak_refusal_names_the_memory_source(tmp_path, capsys, memory_source):
+    # Twice the probe's blocks give 24064 bytes, but a 1505-token request needs 95 blocks of 128 bytes in each of
+    # the two groups: 24320 bytes.
+    _, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=2, context_length=1505)
+    config = Path(files["request"])
+    if memory_source == "declared":
+        payload = request.model_dump(mode="json", exclude_none=True)
+        resources = payload["fpm_profile"]["deployments"][0]["resources"]
+        del resources["runtime_memory"]
+        resources.update(weights_bytes=0, activations_bytes=0, runtime_overhead_bytes=0, comm_overhead_bytes=0)
+        # Declared memory gets its KV budget from the GPU capacity, which these pages exceed.
+        for group in resources["cache_groups"]:
+            group["page_size_bytes"] = 2**40
+        config = tmp_path / "declared.yaml"
+        _write(config, payload)
+    assert SupportRequest.from_yaml(config).profile_deployment().resources.memory_source == memory_source
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")])
+    assert error.value.code == 2
+    word = "observed" if memory_source == "runtime" else "declared"
+    assert (
+        f"{word} FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
+
+
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
     from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
 

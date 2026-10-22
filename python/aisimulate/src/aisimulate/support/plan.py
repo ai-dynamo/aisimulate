@@ -323,8 +323,9 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             )
         elif deployment.resources.cache_layout == "grouped":
             if estimate["request_peak_cache_bytes"] > estimate["total_kv_size_bytes"]:
+                source = "observed" if deployment.resources.memory_source == "runtime" else "declared"
                 raise ValueError(
-                    "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+                    f"{source} FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
                 )
         elif deployment.resources.memory_source == "runtime":
             # vLLM starts when one full-context request fills the observed capacity exactly.
