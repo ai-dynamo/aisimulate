@@ -932,8 +932,8 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
         )
     elif not draft.declares_window:
         lines.append(
-            "If you supply kv_bytes_per_token, onboard import-observations checks it, and when it matches, "
-            "import writes a linear profile."
+            "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+            "onboard import-observations checks it, and when it matches, import writes a linear profile."
         )
     lines.append("Nothing was saved.")
     return "\n".join(lines)

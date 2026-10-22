@@ -1346,7 +1346,10 @@ def test_real_cli_unknown_multimodal_decoder_is_pending_the_runtime_probe_withou
     # import checks it against the probe.
     assert "fmha_quant_mode" in result.stderr and "--resource-overrides" in result.stderr
     assert "cache_layout" not in result.stderr and "  kv_bytes_per_token: " not in result.stderr
-    assert "If you supply kv_bytes_per_token, onboard import-observations checks it" in result.stderr
+    assert (
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it" in result.stderr
+    )
     assert "unsupported encoder, multimodal" not in result.stderr
     assert not output.parent.exists()
 
@@ -1976,8 +1979,8 @@ def test_import_limit_warning_needs_a_layout_marker(tmp_path, capsys, fields, re
     # Without a marker or a declared window, the probe reports attention groups, so a matching per-token size
     # gives a linear profile.
     linear = (
-        "If you supply kv_bytes_per_token, onboard import-observations checks it, and when it matches, "
-        "import writes a linear profile."
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it, and when it matches, import writes a linear profile."
     )
     assert (linear in stderr) is not import_limit
 
@@ -2022,7 +2025,10 @@ def test_linear_claim_sentence_needs_a_config_without_a_window(tmp_path, capsys,
     source, resources = _files(tmp_path, config=config, overrides=overrides)
     _, stderr = _stops_with_guidance(_args(tmp_path / "request.yaml", source, resources), capsys, import_limit=False)
     # A declared window can make the probe report a windowed group, which no per-token size matches.
-    assert ("If you supply kv_bytes_per_token, onboard import-observations checks it" in stderr) is sentence
+    assert (
+        "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+        "onboard import-observations checks it" in stderr
+    ) is sentence
 
 
 def test_automatic_topology_with_one_candidate_names_the_candidate(tmp_path, capsys):
