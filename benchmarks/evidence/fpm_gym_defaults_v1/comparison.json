@@ -1,0 +1,3364 @@
+{
+  "aggregation": "Gym cell MAPE = sum(100*abs(predicted-actual)/actual)/successful_count; all pools successful workload observations. No cross-cell pooling or weighting is applied.",
+  "input_sha256": {
+    "after-hybrid-glm_bc_50-r0.json": "0e6cbc1e8d7d3864524bcbc2ae05f57009e5861536f5cdf986d39985424a6946",
+    "after-hybrid-glm_bc_50-r1.json": "f2b80c19b9d91fc3443671dfa6071aab1b24f90d4eda0342496fe5072f4ee706",
+    "after-hybrid-glm_bc_50-r2.json": "91eb77aaedfc737f1eaf6db8e71117de2426034d6b7301d18dd8a11a6feb0e06",
+    "after-hybrid-kimi_ac-r0.json": "01242c3cc34e1f259bf85c9a7b27cae3d133fb60bdd14070a9003f858eeb4a80",
+    "after-hybrid-kimi_ac-r1.json": "ef3f2156ec5ccf9f4a9d1726b19c09673dbc68d021994fc5756e72045e04e3d9",
+    "after-hybrid-kimi_ac-r2.json": "206956e3359cfed0b169b84b9e1f2747d134a7d4dd8bc2ac4743069db9c9a8ee",
+    "after-hybrid-kimi_bc_50-r0.json": "8f6ccba17b2298bb65324c57dae69bc369c7953a536664f9aa691d7ac875740e",
+    "after-hybrid-kimi_bc_50-r1.json": "0c823da131591b2be061fc3c81deedc939eee157e10264433bfd96d98ebec5ff",
+    "after-hybrid-kimi_bc_50-r2.json": "1b9052476bdbf3ba258d3ffbdcd0624b82a78bff12adce7562e229c5f74f9bf4",
+    "after-online-glm_bc_50-r0.json": "0c273f978148062453a87fa50ebbce86490fc25bfff2f8db308dc7ff72d1ab7c",
+    "after-online-kimi_ac-r0.json": "3a3a9e9055ddbcf5977515ae5a688277d9ecce1d86440578739e7073c13aeeff",
+    "after-online-kimi_bc_50-r0.json": "fca8c77c409cdbb8e5c343ccb152a3ddc839e0f97ff5f4466c5ebd46ec0175ef",
+    "after-selector-glm_bc_50-r0.json": "5a3f74ef315156241550ac5a719871c77d448c62794dcf29c4a9e36de3c94051",
+    "after-selector-glm_bc_50-r1.json": "fd8be03d4b7bcf7dfae1cd4bdb8ed199fc5217d5915682f8685ff0f68d6473eb",
+    "after-selector-glm_bc_50-r2.json": "2bff62df065d0837b4176a30eb2d23ed091cb1eb51ce8da308b923191898c0e4",
+    "after-selector-kimi_ac-r0.json": "a5bd483f4d7ed0619fa89a4cb1001f6f52b7f13510e8303e4ff775f82b637399",
+    "after-selector-kimi_ac-r1.json": "894aeaaf4e97889198663d478223f3c7adedb61720be2cef78bd6b810c08b93b",
+    "after-selector-kimi_ac-r2.json": "83932f4859a4bcab2036b95438d9bae8097483ff998b31b3912cf87788fc025a",
+    "after-selector-kimi_bc_50-r0.json": "542a4056a93cdfcb4c6adb543b38c3f3958e8ddc69c65e027486d17b886d5643",
+    "after-selector-kimi_bc_50-r1.json": "946001416d4d852255b8f956405dc7d864a6ab59e105a162bce11ca78ce867b2",
+    "after-selector-kimi_bc_50-r2.json": "c57696bc4e47ac712ebc232e007fd67345b31b94649453303a1999f59804e272",
+    "before-hybrid-glm_bc_50-r0.json": "a928a0d2e0e16e84cdbfa152d7d0ed4d661e33f4509e9217e3e7016f29d44586",
+    "before-hybrid-glm_bc_50-r1.json": "6062de55bb648bc6847f5e0e810700c708ddc0e877311e9c215a2fcce5fabd4f",
+    "before-hybrid-glm_bc_50-r2.json": "e09da314e2d95ff7bbbe081fe5cd394d9601b39c26964f74fc81f256883eb5f2",
+    "before-hybrid-kimi_ac-r0.json": "926db11d090ca22bfe5a57af1209e8bece14f10367cec939b54030ffd71ad259",
+    "before-hybrid-kimi_ac-r1.json": "1952a08f1847070cc2687a7ce11bcb05ef331aef44a49ab5fbae2df52fc116b8",
+    "before-hybrid-kimi_ac-r2.json": "1fd9e33f53142f8c7d4457c2ca9857afafdc4095eb484bd845b49cf7dbacd8d4",
+    "before-hybrid-kimi_bc_50-r0.json": "c10b6388d000c3b8ec8227e96d9020579437977418046f954b33e8240494471e",
+    "before-hybrid-kimi_bc_50-r1.json": "de9a7f2bdd751fdfd638d5725671df3e0e311d35295f1e7c7779410b98540c83",
+    "before-hybrid-kimi_bc_50-r2.json": "da1d15c6b32da88d23c1e55436bbdb7d63b859dd9beeb269c2f8a898bb0e8f91",
+    "before-online-glm_bc_50-r0.json": "dd12d112376cdde874b27e0551bc8a60abd2fe1c09e85be5216514d763574a47",
+    "before-online-kimi_ac-r0.json": "d2b7294324a9da4147239408a65647e5e149ad12db358be317a912b2d2024400",
+    "before-online-kimi_bc_50-r0.json": "35e25590ab4cf82f0d20caef4ace13642f0cae402f3bdeb9bef12bd722ccc3c0",
+    "before-selector-glm_bc_50-r0.json": "768533d1313f7fbc8ba94726d1c006c8d862a53adb0862e0721ff88148abcabf",
+    "before-selector-glm_bc_50-r1.json": "69b7343787017badc8fe7bca1cecc97d5ecd856fc14f09b6a33a8cd35ef62f0c",
+    "before-selector-glm_bc_50-r2.json": "ff3e38503f449c7bd5b59dc97c8997cc52f22fbec552203d0a4034e521cfbd74",
+    "before-selector-kimi_ac-r0.json": "371f510eb46545bcbaaaea2955ea993472599d1cf554583fe11b8fbe9e90b767",
+    "before-selector-kimi_ac-r1.json": "b38e11e4d3e7dc72c7fdddf8a59303f0a6c7d4c471a51a9c4d04e9fb6d6a8bf4",
+    "before-selector-kimi_ac-r2.json": "b4d6721a929010b7af0763ec8ef4bf38a6a0c820d442546da43d9c226b364e72",
+    "before-selector-kimi_bc_50-r0.json": "16edccbdc421939ae890c2eff7b93c4ccba63aed9ae831bfa6148bd1ba9849cb",
+    "before-selector-kimi_bc_50-r1.json": "35ed7333acc442a88d66a1f424add297e829ba4eb62fd4524e8522a0e2f21d00",
+    "before-selector-kimi_bc_50-r2.json": "a05076211c45f53ea2870e880516dfcfffb322c9d04a93a0fb6d265a5453d0c7"
+  },
+  "replicate_summaries": [
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.311126986718693,
+        "mape_mean_pct": 4.311126986718693,
+        "mape_min_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.311126986718693,
+        "mape_mean_pct": 4.309745439722397,
+        "mape_min_pct": 4.306982345729803,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": 0.0013815469962965565,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.296596080199139,
+        "mape_mean_pct": 4.296596080199139,
+        "mape_min_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.296596080199139,
+        "mape_mean_pct": 4.2952103455013555,
+        "mape_min_pct": 4.292438876105789,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": 0.0013857346977834695,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.104957284658093,
+        "mape_mean_pct": 9.104957284658093,
+        "mape_min_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.104957284658093,
+        "mape_mean_pct": 9.104957284658093,
+        "mape_min_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": 0.0,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": null,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 2.09984530174264,
+        "mape_mean_pct": 2.098080102089402,
+        "mape_min_pct": 2.0956109407238337,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 2.1002659668353285,
+        "mape_mean_pct": 2.0982988516018444,
+        "mape_min_pct": 2.096205100089184,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.00021874951244216234,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.7378631048774986,
+        "mape_mean_pct": 1.736000715300661,
+        "mape_min_pct": 1.7333990461911502,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.7382863162078437,
+        "mape_mean_pct": 1.7362242313901575,
+        "mape_min_pct": 1.7340323640435957,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.000223516089496556,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": null,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.355675851747856,
+        "mape_mean_pct": 9.355489068245936,
+        "mape_min_pct": 9.355306222667354,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.355675851747856,
+        "mape_mean_pct": 9.355612277939436,
+        "mape_min_pct": 9.355485130322597,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.0001232096935002147,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.3567099300033714,
+        "mape_mean_pct": 1.3563946414567476,
+        "mape_min_pct": 1.3562369630181017,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.3567099983340392,
+        "mape_mean_pct": 1.3563946870105261,
+        "mape_min_pct": 1.3562370313487695,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -4.5553778527107625e-08,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.2656970255022992,
+        "mape_mean_pct": 1.265357338734679,
+        "mape_min_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.2656970255022992,
+        "mape_mean_pct": 1.265357338734679,
+        "mape_min_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": 0.0,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.5784601872369,
+        "mape_mean_pct": 5.5784601872369,
+        "mape_min_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.5784601872369,
+        "mape_mean_pct": 5.5784601872369,
+        "mape_min_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": 0.0,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.2348500722179785,
+        "mape_mean_pct": 2.234849375016193,
+        "mape_min_pct": 2.2348490264153003,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.2348500722179785,
+        "mape_mean_pct": 2.2348500722179785,
+        "mape_min_pct": 2.2348500722179785,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -6.972017856377022e-07,
+      "mode": "hybrid",
+      "repeats": 3,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.894692922901714,
+        "mape_mean_pct": 5.894692922901714,
+        "mape_min_pct": 5.894692922901714,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 6.698534824334681,
+        "mape_mean_pct": 6.698534824334681,
+        "mape_min_pct": 6.698534824334681,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": -0.8038419014329667,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.888488296088607,
+        "mape_mean_pct": 5.888488296088607,
+        "mape_min_pct": 5.888488296088607,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 6.691240552813938,
+        "mape_mean_pct": 6.691240552813938,
+        "mape_min_pct": 6.691240552813938,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": -0.8027522567253316,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 7.941635277398322,
+        "mape_mean_pct": 7.941635277398322,
+        "mape_min_pct": 7.941635277398322,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.104957284658093,
+        "mape_mean_pct": 9.104957284658093,
+        "mape_min_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": -1.1633220072597714,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": null,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 1.8357069542401068,
+        "mape_mean_pct": 1.8357069542401068,
+        "mape_min_pct": 1.8357069542401068,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 2.3253945182267435,
+        "mape_mean_pct": 2.3253945182267435,
+        "mape_min_pct": 2.3253945182267435,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.4896875639866367,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.6406704649000943,
+        "mape_mean_pct": 1.6406704649000943,
+        "mape_min_pct": 1.6406704649000943,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.9807721173260793,
+        "mape_mean_pct": 1.9807721173260793,
+        "mape_min_pct": 1.9807721173260793,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.340101652425985,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": null,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.744958952863025,
+        "mape_mean_pct": 5.744958952863025,
+        "mape_min_pct": 5.744958952863025,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.232900975351553,
+        "mape_mean_pct": 9.232900975351553,
+        "mape_min_pct": 9.232900975351553,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -3.487942022488528,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.361896222622079,
+        "mape_mean_pct": 1.361896222622079,
+        "mape_min_pct": 1.361896222622079,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.4353352519998568,
+        "mape_mean_pct": 1.4353352519998568,
+        "mape_min_pct": 1.4353352519998568,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.0734390293777778,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.2798164785897206,
+        "mape_mean_pct": 1.2798164785897206,
+        "mape_min_pct": 1.2798164785897206,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.3428610485849577,
+        "mape_mean_pct": 1.3428610485849577,
+        "mape_min_pct": 1.3428610485849577,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.06304456999523711,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.547351460781078,
+        "mape_mean_pct": 5.547351460781078,
+        "mape_min_pct": 5.547351460781078,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.9245171706055855,
+        "mape_mean_pct": 5.9245171706055855,
+        "mape_min_pct": 5.9245171706055855,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.37716570982450737,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.116690666827394,
+        "mape_mean_pct": 2.116690666827394,
+        "mape_min_pct": 2.116690666827394,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.3079549256695517,
+        "mape_mean_pct": 2.3079549256695517,
+        "mape_min_pct": 2.3079549256695517,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.1912642588421578,
+      "mode": "online",
+      "repeats": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.134191452996656,
+        "mape_mean_pct": 4.134191452996656,
+        "mape_min_pct": 4.134191452996656,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.353159776883398,
+        "mape_mean_pct": 4.353159776883398,
+        "mape_min_pct": 4.353159776883398,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": -0.2189683238867426,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.119124225093007,
+        "mape_mean_pct": 4.119124225093007,
+        "mape_min_pct": 4.119124225093007,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 4.338756278825704,
+        "mape_mean_pct": 4.338756278825704,
+        "mape_min_pct": 4.338756278825704,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": -0.21963205373269723,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.104957284658093,
+        "mape_mean_pct": 9.104957284658093,
+        "mape_min_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.104957284658093,
+        "mape_mean_pct": 9.104957284658093,
+        "mape_min_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": 0.0,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_mean_percentage_points": null,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 1.8593678450362536,
+        "mape_mean_pct": 1.8588053679320349,
+        "mape_min_pct": 1.8580515385116254,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_max_pct": 2.1123375666733755,
+        "mape_mean_pct": 2.111510286410695,
+        "mape_min_pct": 2.1110966462793552,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.2527049184786603,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.5518196793841954,
+        "mape_mean_pct": 1.5512270893722897,
+        "mape_min_pct": 1.5504343623305754,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.7318873220853006,
+        "mape_mean_pct": 1.7310187679834834,
+        "mape_min_pct": 1.7305844909325747,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -0.17979167861119372,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_max_pct": null,
+        "mape_mean_pct": null,
+        "mape_min_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": null,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 8.023836540414278,
+        "mape_mean_pct": 8.023810717758531,
+        "mape_min_pct": 8.023769620911118,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 9.737966412153717,
+        "mape_mean_pct": 9.737966412153717,
+        "mape_min_pct": 9.737966412153717,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_mean_percentage_points": -1.7141556943951866,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.2274644223998057,
+        "mape_mean_pct": 1.2274284903560166,
+        "mape_min_pct": 1.2274052976161152,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.3675735209786841,
+        "mape_mean_pct": 1.3675735209786841,
+        "mape_min_pct": 1.3675735209786841,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.14014503062266748,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.1255822104541822,
+        "mape_mean_pct": 1.1255397467996697,
+        "mape_min_pct": 1.1255185149724136,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 1.2777850960703228,
+        "mape_mean_pct": 1.2777850960703228,
+        "mape_min_pct": 1.2777850960703228,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": -0.15224534927065303,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.69603658114579,
+        "mape_mean_pct": 5.69603658114579,
+        "mape_min_pct": 5.69603658114579,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 5.5784601872369,
+        "mape_mean_pct": 5.5784601872369,
+        "mape_min_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": 0.11757639390888919,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.2359266603694032,
+        "mape_mean_pct": 2.235820000293503,
+        "mape_min_pct": 2.2357666702555528,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_max_pct": 2.2293842646536737,
+        "mape_mean_pct": 2.2293842646536737,
+        "mape_min_pct": 2.2293842646536737,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_mean_percentage_points": 0.006435735639829243,
+      "mode": "selector",
+      "repeats": 3,
+      "workload": "prefill"
+    }
+  ],
+  "rows": [
+    {
+      "after": {
+        "ape_sum_pct": 196867.61384850912,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 196867.61384850912,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 195611.1297432262,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 195611.1297432262,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 196867.61384850912,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 196678.34881775142,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.306982345729803,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.004144640988890558,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 195611.1297432262,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 195421.86471246823,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.292438876105789,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.004157204093350408,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 196867.61384850912,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 196867.61384850912,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.311126986718693,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 195611.1297432262,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 195611.1297432262,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.296596080199139,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 591417.0328582582,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.0956109407238337,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 592730.7603623659,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.1002659668353285,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.00465502611149482,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 125468.9688477905,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355675851747856,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 125468.9688477905,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355675851747856,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 465948.0640104583,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7333990461911502,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 467261.79151456564,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7382863162078437,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.0048872700166935346,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 592612.0415219027,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.09984530174264,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 591584.7147318692,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.096205100089184,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": 0.003640201653456021,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 125464.01175219189,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355306222667354,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 125466.41108275634,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355485130322597,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.000178907655243421,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 467148.0297697009,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7378631048774986,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 466118.3036491028,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7340323640435957,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": 0.0038307408339028903,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 592312.5421339335,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.0987840638017325,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 592211.3459133179,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.0984254878810202,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": 0.0003585759207123118,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 125466.41108275634,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355485130322597,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 125468.9688477905,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.355675851747856,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.0001907214252589995,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 466846.1310511691,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7367399948333337,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 466742.37706551957,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.736354013919033,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": 0.0003859809143007542,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 192855.53990421104,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3562369630181017,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 192922.80505310203,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3567099983340392,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.0004730353159374534,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20763.982304424553,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348490264153003,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20763.99202097724,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348500722179785,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -1.0458026782345087e-06,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 166998.42344883794,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 167065.678881176,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2656970255022992,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.000509530151430404,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 192922.7953365494,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3567099300033714,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 192855.54962076366,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3562370313487695,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0004728986546018721,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20763.982304424553,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348490264153003,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20763.99202097724,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348500722179785,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -1.0458026782345087e-06,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 167065.678881176,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2656970255022992,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 166998.42344883794,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.000509530151430404,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 192855.54962076366,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3562370313487695,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 192855.54962076366,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3562370313487695,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20763.99202097724,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348500722179785,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20763.99202097724,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2348500722179785,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 166998.42344883794,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 166998.42344883794,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2651874953508688,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "hybrid",
+      "replica": 2,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 269181.1523243068,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.894692922901714,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 305888.5927532432,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 6.698534824334681,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.8038419014329667,
+      "mode": "online",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "online",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 268085.206656026,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.888488296088607,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 304632.1086479602,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 6.691240552813938,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.8027522567253316,
+      "mode": "online",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1095.9456682809684,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 7.941635277398322,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -1.1633220072597714,
+      "mode": "online",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 518067.70950478024,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 1.8357069542401068,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 656265.8647503968,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.3253945182267435,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.4896875639866367,
+      "mode": "online",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 77045.64451684603,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.744958952863025,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 123822.43498043969,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.232900975351553,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -3.487942022488528,
+      "mode": "online",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 441022.0649879347,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.6406704649000943,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 532443.4297699541,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.9807721173260793,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.340101652425985,
+      "mode": "online",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "online",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 193660.280960637,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.361896222622079,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 204103.23749912763,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.4353352519998568,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.0734390293777778,
+      "mode": "online",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 19666.17298549332,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.116690666827394,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 21443.209214395807,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.3079549256695517,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.1912642588421578,
+      "mode": "online",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 168929.37609145016,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2798164785897206,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 177250.9441079715,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3428610485849577,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.06304456999523711,
+      "mode": "online",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5064.7318836931245,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.547351460781078,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5409.0841767629,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.9245171706055855,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.37716570982450737,
+      "mode": "online",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 188787.85270109228,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.134191452996656,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 198787.0412113804,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.353159776883398,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.2189683238867426,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 187531.36859580933,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.119124225093007,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 197530.55710609784,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.338756278825704,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.21963205373269723,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 188787.85270109228,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.134191452996656,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 198787.0412113804,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.353159776883398,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.2189683238867426,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 187531.36859580933,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.119124225093007,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 197530.55710609784,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.338756278825704,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.21963205373269723,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 188787.85270109228,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.134191452996656,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 198787.0412113804,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.353159776883398,
+        "measured_count": 45665,
+        "predicted_count": 45665,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.2189683238867426,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": null,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 0,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 187531.36859580933,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.119124225093007,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 197530.55710609784,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 4.338756278825704,
+        "measured_count": 45527,
+        "predicted_count": 45527,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": -0.21963205373269723,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 1256.484105282817,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.104957284658093,
+        "measured_count": 138,
+        "predicted_count": 138,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "glm_bc_50",
+      "delta_percentage_points": 0.0,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 524640.4773982934,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 1.8589967202482254,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 595787.3622230208,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.1110966462793552,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.25209992603112985,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 107607.53037804409,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 8.023825991950197,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 130595.8675533935,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.737966412153717,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -1.7141404202035204,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 417032.9470202424,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.551427226402098,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 465191.4946696217,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7305844909325747,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.17915726453047665,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 524373.7310441354,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 1.8580515385116254,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 596137.57105386,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.1123375666733755,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.25428602816175006,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 107607.67184349587,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 8.023836540414278,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 130595.8675533935,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.737966412153717,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -1.7141298717394395,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 416766.0592006327,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.5504343623305754,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 465541.7035004613,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7318873220853006,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.1814529597547252,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 524745.2151225964,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 1.8593678450362536,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 595787.3622230208,
+        "coverage_pct": 99.23311696988024,
+        "error_count": 0,
+        "mape_pct": 2.1110966462793552,
+        "measured_count": 284398,
+        "predicted_count": 282217,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.2517288012431016,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 107606.77438603899,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 8.023769620911118,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 130595.8675533935,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 9.737966412153717,
+        "measured_count": 13411,
+        "predicted_count": 13411,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -1.7141967912425997,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 417138.44073654804,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.5518196793841954,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 465191.4946696217,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.7305844909325747,
+        "measured_count": 268806,
+        "predicted_count": 268806,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": -0.1787648115483793,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "before": {
+        "ape_sum_pct": 0.0,
+        "coverage_pct": 0.0,
+        "error_count": 0,
+        "mape_pct": null,
+        "measured_count": 2181,
+        "predicted_count": 0,
+        "tuning_error_count": 0,
+        "unavailable_count": 2181
+      },
+      "cell_id": "kimi_ac",
+      "delta_percentage_points": null,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 174537.29238386173,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2274157510521293,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 194467.5871096479,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3675735209786841,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.14015776992655482,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20773.994601492126,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2359266603694032,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20713.209202897284,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2293842646536737,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.006542395715729565,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 148562.81638378373,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.1255185149724136,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 168661.24375580225,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2777850960703228,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.15226658109790914,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5200.481398586106,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.69603658114579,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.11757639390888919,
+      "mode": "selector",
+      "replica": 0,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 174535.80591571395,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2274052976161152,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 194467.5871096479,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3675735209786841,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.14016822336256896,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20772.50813334434,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2357666702555528,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20713.209202897284,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2293842646536737,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.006382405601879082,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 148562.81638378373,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.1255185149724136,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 168661.24375580225,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2777850960703228,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.15226658109790914,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5200.481398586106,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.69603658114579,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.11757639390888919,
+      "mode": "selector",
+      "replica": 1,
+      "workload": "mixed"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 174544.21340082996,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2274644223998057,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 194467.5871096479,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.3675735209786841,
+        "measured_count": 142199,
+        "predicted_count": 142199,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.14010909857887843,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "all"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 20772.50813334434,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2357666702555528,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 20713.209202897284,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 2.2293842646536737,
+        "measured_count": 9291,
+        "predicted_count": 9291,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.006382405601879082,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "prefill"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 148571.22386889977,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.1255822104541822,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 168661.24375580225,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 1.2777850960703228,
+        "measured_count": 131995,
+        "predicted_count": 131995,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": -0.1522028856161406,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "decode"
+    },
+    {
+      "after": {
+        "ape_sum_pct": 5200.481398586106,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.69603658114579,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "before": {
+        "ape_sum_pct": 5093.13415094729,
+        "coverage_pct": 100.0,
+        "error_count": 0,
+        "mape_pct": 5.5784601872369,
+        "measured_count": 913,
+        "predicted_count": 913,
+        "tuning_error_count": 0,
+        "unavailable_count": 0
+      },
+      "cell_id": "kimi_bc_50",
+      "delta_percentage_points": 0.11757639390888919,
+      "mode": "selector",
+      "replica": 2,
+      "workload": "mixed"
+    }
+  ],
+  "schema": "fpm-gym-defaults-summary-v1"
+}
