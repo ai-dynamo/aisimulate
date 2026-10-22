@@ -1997,6 +1997,7 @@ _UNNAMED_TEXT = {key: value for key, value in _CONFIG.items() if key not in ("ar
         (_multimodal_config({**_UNNAMED_TEXT, "attention_chunk_size": 8192}), False),
         # Sliding-window declarations that intake cannot derive cache groups from.
         (_mimo(sliding_window=4096, sliding_window_pattern=6), False),
+        (_mimo(sliding_window=128, hybrid_layer_pattern=[0, 1]), False),
         (_mimo(use_sliding_window=True), False),
         (_mimo(local_layer_ids=[0]), False),
         (_mimo(layer_types=["sliding_attention", "full_attention"]), False),
@@ -2007,6 +2008,7 @@ _UNNAMED_TEXT = {key: value for key, value in _CONFIG.items() if key not in ("ar
     ids=[
         "chunked-attention",
         "window-schedule",
+        "hybrid-layer-pattern",
         "window-flag-without-size",
         "local-layers-without-size",
         "sliding-layer-types-without-size",

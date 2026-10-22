@@ -152,6 +152,7 @@ _UNRECOGNIZED = {
     "MiniMaxAI--MiniMax-M3": "MiniMaxM3ForCausalLM",
     "nvidia--MiniMax-M3-NVFP4": "MiniMaxM3SparseForCausalLM",
     "XiaomiMiMo--MiMo-7B-Base": "MiMoForCausalLM",
+    "XiaomiMiMo--MiMo-V2-Flash": "MiMoV2FlashForCausalLM",
     "nvidia--Llama-3_3-Nemotron-Super-49B-v1": "DeciLMForCausalLM",
 }
 # DeepSeek, Kimi K2 and GLM-5 MLA/DSA configs keep explicit cache accounting.
@@ -343,6 +344,8 @@ _SLIDING_FIRST = ["sliding_attention", "full_attention"]
     [
         # A window with sliding_window_pattern but no explicit layer list.
         ({"sliding_window": 512, "sliding_window_pattern": 6}, "unsupported implicit sliding-window schedule"),
+        # A window with hybrid_layer_pattern, as in MiMo-V2-Flash, but no explicit layer list.
+        ({"sliding_window": 128, "hybrid_layer_pattern": [0, 1]}, "unsupported implicit sliding-window schedule"),
         ({"use_sliding_window": True}, "use_sliding_window=true requires a positive sliding_window"),
         ({"sliding_window": 128, "local_layer_ids": [-1]}, "local_layer_ids must be a list of nonnegative layer"),
         ({"sliding_window": 128, "local_layer_ids": None}, "local_layer_ids must be a list of nonnegative layer"),
@@ -1688,6 +1691,7 @@ def test_unread_non_finite_numbers_load(tmp_path, value, sidecar):
         ({"use_mtp": "VALUE"}, "use_mtp"),
         ({"compress_ratios": [4, "VALUE"]}, r"compress_ratios\[1\]"),
         ({"max_window_layers": "VALUE"}, "max_window_layers"),
+        ({"hybrid_layer_pattern": [0, "VALUE"]}, r"hybrid_layer_pattern\[1\]"),
         (
             {"quantization_config": {"kv_cache_scheme": {"num_bits": 8, "type": "float", "group_size": "VALUE"}}},
             r"quantization_config\.kv_cache_scheme\.group_size",

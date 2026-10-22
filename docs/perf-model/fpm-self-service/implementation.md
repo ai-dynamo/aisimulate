@@ -682,10 +682,11 @@ This rule has limits:
   `cache_layout` and `kv_bytes_per_token`.
 - If the config's own fields declare sliding-window layers in use or
   convolution state, it does not apply. Intake derives the cache groups of
-  these layouts, such as gpt-oss, Gemma 4, MiMo-V2-Flash, Step-3.7-Flash, Muse
-  Glimmer, DeepSeek V4 and Inkling. If intake cannot derive the sliding-window
+  these layouts, such as gpt-oss, Gemma 4, Step-3.7-Flash, Muse Glimmer,
+  DeepSeek V4 and Inkling. If intake cannot derive the sliding-window
   layers, the rule still applies. Examples:
-  - Only a schedule field, such as `sliding_window_pattern`, selects them.
+  - Only a schedule field, such as `sliding_window_pattern` or
+    `hybrid_layer_pattern`, selects them.
   - Sliding layers, or `use_sliding_window: true`, come without a window size.
   - `local_layer_ids` is malformed or disagrees with `layer_types`.
   - Sliding layers come with `use_sliding_window: false`.
@@ -695,8 +696,8 @@ This rule has limits:
 For example, these packaged configs are pending: GLM-5.3-Flash (KDA and
 sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
 NemotronH hybrids such as Nemotron-3 Nano. The rule for unrecognized
-architectures adds configs such as Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and
-Llama-3.3-Nemotron-Super.
+architectures adds configs such as Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B,
+MiMo-V2-Flash and Llama-3.3-Nemotron-Super.
 For these layouts, a zero `head_dim`, `num_key_value_heads` or MLA/DSA head
 dimension is accepted, not rejected.
 

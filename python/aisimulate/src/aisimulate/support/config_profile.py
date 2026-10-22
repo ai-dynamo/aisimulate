@@ -104,6 +104,7 @@ _UNTYPED_READ_FIELDS = (
     "attention_k_eq_v",
     "max_window_layers",
     "sliding_window_pattern",
+    "hybrid_layer_pattern",
     "lm_head_bias",
     "use_qk_norm",
     "moe_router_dtype",
@@ -440,7 +441,7 @@ def _cache_layer_ids(raw: Mapping[str, Any], architecture: str | None, *, inklin
             raise _UnderivableWindowLayout("use_sliding_window=false conflicts with sliding attention layers")
         return ()
     if local is None and window:
-        if any(raw.get(key) for key in ("max_window_layers", "sliding_window_pattern")):
+        if any(raw.get(key) for key in ("max_window_layers", "sliding_window_pattern", "hybrid_layer_pattern")):
             raise _UnderivableWindowLayout("unsupported implicit sliding-window schedule; provide explicit layer_types")
         local = tuple(range(layers or 0))
     if local and not window:
