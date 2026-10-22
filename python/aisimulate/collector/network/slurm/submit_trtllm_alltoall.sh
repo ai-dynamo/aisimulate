@@ -47,7 +47,7 @@ REPO_DIR=$(cd "${SCRIPT_DIR}/../../.." && pwd)
 # The value is duplicated because login nodes cannot be assumed to have the
 # repo's Python deps; it is kept in sync with the manifest by
 # tests/unit/collector/test_network_layout.py::test_submit_trtllm_alltoall_default_image_matches_manifest.
-CONTAINER_IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:1532b38814b3faf2affdb5ef01ca91468685d314ffb7e8926a0567595355ed88}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43}"
 CONTAINER_MOUNTS="${CONTAINER_MOUNTS:-${REPO_DIR}:${REPO_DIR}}"
 ACCOUNT="${ACCOUNT:-coreai_tritoninference_triton3}"
 PARTITION="${PARTITION:-gb200}"

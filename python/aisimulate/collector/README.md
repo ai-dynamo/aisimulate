@@ -392,6 +392,10 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 
 ## Runtime Behavior
 
+The TRT-LLM all-to-all Slurm launcher uses the same rc29 image digest as the
+stock runtime manifest. Explicit image overrides must match that runtime's
+package-version gate; the launcher default is covered by the network tests.
+
 At collection time:
 1. `collect.py` reads the backend registry
 2. `build_collections()` resolves each op to the correct module for the detected framework version
