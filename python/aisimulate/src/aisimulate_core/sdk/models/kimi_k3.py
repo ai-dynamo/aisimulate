@@ -715,6 +715,8 @@ class KimiK3Model(BaseModel):
                     # replicated hidden -> latent down projection (bf16, unsharded)
                     ops.GEMM(f"{prefix}_latent_down_gemm", num_moe, latent, h, common.GEMMQuantMode.bfloat16),
                     ops.ElementWise(f"{prefix}_latent_norm", num_moe, 2 * latent, 2 * latent, 0.8),
+                    # The attention-output AR is priced above (`*_kda_ar` / `*_mla_ar`),
+                    # so the pre-dispatch stand-in for it is not charged again.
                     ops.MoEDispatch(
                         f"{prefix}_moe_pre_dispatch",
                         num_moe,
@@ -726,6 +728,7 @@ class KimiK3Model(BaseModel):
                         attn_dp,
                         True,
                         quant_mode=moe_q,
+                        attn_ar_modeled=True,
                         backend=self._backend_name,
                     ),
                     # routed experts entirely in latent space (3584 / 3072)
@@ -743,6 +746,9 @@ class KimiK3Model(BaseModel):
                         attn_dp,
                         moe_kernel_source=self.config.moe_kernel_source,
                     ),
+                    # Combine: TP all-reduce of the routed partial sums in latent space.
+                    # The shared-expert partial-sum reduction is not priced here (a known gap);
+                    # the combine below reduces only the routed results.
                     ops.MoEDispatch(
                         f"{prefix}_moe_post_dispatch",
                         num_moe,

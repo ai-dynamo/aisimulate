@@ -635,7 +635,8 @@ fn moe_dispatch_sol(op: &MoEDispatchOp, spec: &SystemSpec, x: f64) -> Result<f64
             // vllm (moe.py:1222-1239): additive.
             BackendKind::Vllm => {
                 let mut total = 0.0;
-                if attn_tp > 1 {
+                // The pre AR is the attention-AR proxy; skipped when the model prices it.
+                if attn_tp > 1 && !(pre && op.attn_ar_modeled) {
                     total += custom_allreduce_sol(spec, num_gpus, volume);
                 }
                 if attn_dp > 1 {
@@ -663,6 +664,9 @@ fn moe_dispatch_sol(op: &MoEDispatchOp, spec: &SystemSpec, x: f64) -> Result<f64
                     } else {
                         custom_allreduce_sol(spec, num_gpus, volume)
                     }
+                } else if attn_tp > 1 && pre && op.attn_ar_modeled {
+                    // Plain TP: same attention-AR proxy as vllm.
+                    0.0
                 } else if attn_tp > 1 {
                     custom_allreduce_sol(spec, num_gpus, volume)
                 } else if attn_dp > 1 {
@@ -1091,6 +1095,39 @@ mod tests {
             moe_dispatch_sol(&op, &s, 8192.0).unwrap(),
             2.0 * volume * 2.0 / 4.0 * 3.0 / bw * 1000.0,
         );
+    }
+
+    /// SOL mirrors `MoEDispatchOp::query`: `attn_ar_modeled` zeroes the
+    /// pre-dispatch AR on vllm and plain-TP sglang; the combine stays priced.
+    #[test]
+    fn moe_dispatch_skips_pre_proxy_when_attn_ar_modeled() {
+        let s = spec();
+        let ar = custom_allreduce_sol(&s, 4, 8192.0 * 6144.0);
+        assert!(ar > 0.0);
+        let cases = [(true, true), (true, false), (false, true), (false, false)];
+        for backend in [BackendKind::Vllm, BackendKind::Sglang] {
+            for (pre_dispatch, attn_ar_modeled) in cases {
+                let mut op = MoEDispatchOp::new(
+                    "moe_dispatch",
+                    6144,
+                    8,
+                    256,
+                    1, // moe_tp
+                    4, // moe_ep
+                    1, // attention_dp
+                    pre_dispatch,
+                    backend,
+                    crate::operators::moe_dispatch::DispatchFlavor::CustomAllReduce,
+                );
+                op.attn_ar_modeled = attn_ar_modeled;
+                let expected = if pre_dispatch && attn_ar_modeled {
+                    0.0
+                } else {
+                    ar
+                };
+                approx(moe_dispatch_sol(&op, &s, 8192.0).unwrap(), expected);
+            }
+        }
     }
 
     #[test]

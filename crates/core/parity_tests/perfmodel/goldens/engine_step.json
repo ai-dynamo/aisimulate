@@ -498,30 +498,30 @@
       },
       "mixed": {
         "values": {
-          "mixed_step": 227.75040955509274
+          "mixed_step": 224.76070880957917
         }
       },
       "static": {
         "values": {
-          "static_ctx": 228.353,
-          "static_gen": 19.439,
-          "static_total": 247.792
+          "static_ctx": 225.04,
+          "static_gen": 18.72,
+          "static_total": 243.76
         }
       }
     },
     "kimi-k3-b300-sglang-next-dspark-nextn7": {
       "agg": {
         "values": {
-          "agg_request": 260.0170466224618,
-          "agg_tpot": 88.14137173642773,
-          "agg_ttft": 171.87567488603406
+          "agg_request": 251.41693935748756,
+          "agg_tpot": 85.22608113813138,
+          "agg_ttft": 166.1908582193562
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 190.94,
-          "disagg_tpot": 16.936,
-          "disagg_ttft": 174.004
+          "disagg_request": 184.367,
+          "disagg_tpot": 16.38,
+          "disagg_ttft": 167.987
         }
       },
       "mixed": {
@@ -529,25 +529,25 @@
       },
       "static": {
         "values": {
-          "static_ctx": 87.881,
-          "static_gen": 13.912,
-          "static_total": 101.793
+          "static_ctx": 84.842,
+          "static_gen": 13.431,
+          "static_total": 98.273
         }
       }
     },
     "kimi-k3-b300-sglang-next-nospec": {
       "agg": {
         "values": {
-          "agg_request": 260.0170466224618,
-          "agg_tpot": 88.14137173642773,
-          "agg_ttft": 171.87567488603406
+          "agg_request": 251.41693935748756,
+          "agg_tpot": 85.22608113813138,
+          "agg_ttft": 166.1908582193562
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 190.94,
-          "disagg_tpot": 16.936,
-          "disagg_ttft": 174.004
+          "disagg_request": 184.367,
+          "disagg_tpot": 16.38,
+          "disagg_ttft": 167.987
         }
       },
       "mixed": {
@@ -555,9 +555,9 @@
       },
       "static": {
         "values": {
-          "static_ctx": 87.881,
-          "static_gen": 13.912,
-          "static_total": 101.793
+          "static_ctx": 84.842,
+          "static_gen": 13.431,
+          "static_total": 98.273
         }
       }
     },
@@ -2163,43 +2163,43 @@
     },
     "kimi-k3-b200-vllm-nospec::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b200-vllm-nospec::static": {
       "engine": "rust",
-      "git_head": "5f678722434314c2af45f8dc0c3b5f552ff792d4"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-dspark-nextn7::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-dspark-nextn7::disagg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-dspark-nextn7::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-dspark-nextn7::static": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-nospec::agg": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-nospec::disagg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-nospec::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "kimi-k3-b300-sglang-next-nospec::static": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "45b07eb8a17dfa4f5c5c732c2d97ff08e307e69e"
     },
     "llama31-8b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
