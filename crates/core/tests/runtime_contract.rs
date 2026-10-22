@@ -12,10 +12,10 @@ use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, AuthoredKvHints, NoEngineEvents, NoReplayMetadata, Placement,
     PlacementEffects, PlacementPolicy, PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters,
     ReplayCaptureOptions, ReplayComposition, ReplayDeterminism, ReplayEngineConfig,
-    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayScalingDecision, ReplayScalingPolicy,
-    ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver, ReplayTelemetrySampleKind,
-    ReplayTelemetrySnapshot, ReplayTopology, Replayer, WorkerLifecycleTransitionKind, WorkerPool,
-    WorkerPoolSpec, WorkerTopology,
+    ReplayEngineFactory, ReplayError, ReplayRequest, ReplayRequestPool, ReplayScalingDecision,
+    ReplayScalingPolicy, ReplayScalingSnapshot, ReplaySpec, ReplayTelemetryObserver,
+    ReplayTelemetrySampleKind, ReplayTelemetrySnapshot, ReplayTopology, Replayer,
+    WorkerLifecycleTransitionKind, WorkerPool, WorkerPoolSpec, WorkerTopology,
 };
 use uuid::Uuid;
 
@@ -1579,23 +1579,89 @@ fn round_robin_rejects_invalid_session_configuration() {
 }
 
 #[test]
-fn round_robin_session_affinity_rejects_disaggregated_workers() {
-    let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
-    spec.adapters.placement.config = serde_json::json!({"session_affinity": true});
-    spec.topology = ReplayTopology::Disaggregated {
-        prefill: WorkerPoolSpec {
-            initial_workers: 1,
-            startup_delay_ms: 0.0,
-        },
-        decode: WorkerPoolSpec {
-            initial_workers: 1,
-            startup_delay_ms: 0.0,
-        },
-        handoff_latency_ms: 1.0,
-    };
-    let Err(ReplayError::InvalidSpec(message)) = Replayer::new(spec, ReplayEngineFactory::new())
-    else {
-        panic!("disaggregated session affinity must fail during construction");
-    };
-    assert!(message.contains("requires aggregated workers"));
+fn disaggregated_session_affinity_routes_turns_and_preserves_cache_reuse() {
+    for backend in [Backend::Vllm, Backend::Sglang] {
+        for (prefill_workers, decode_workers, prefill_dp, decode_dp) in
+            [(2, 2, 1, 1), (1, 4, 1, 1), (2, 2, 2, 3)]
+        {
+            for explicit_rank in [false, true] {
+                for affinity in [false, true] {
+                    let requests = (0..8)
+                        .map(|i| {
+                            let session = i / 2;
+                            let input = 12 + (i % 2) * 4;
+                            let mut req = request(&format!("turn-{i}"), i as f64 * 100.0, input, 3);
+                            req.input_token_ids = Some(vec![session as u32 + 1; input]);
+                            req.session_id = Some(format!("session-{session}"));
+                            if explicit_rank {
+                                req.prefill_dp_rank = Some(prefill_dp - 1);
+                                req.dp_rank = Some(decode_dp - 1);
+                            }
+                            req
+                        })
+                        .collect();
+                    let mut spec = aggregated_spec(backend, 1, 0.0, requests);
+                    spec.adapters.placement.config =
+                        serde_json::json!({"session_affinity": affinity});
+                    spec.topology = ReplayTopology::Disaggregated {
+                        prefill: WorkerPoolSpec {
+                            initial_workers: prefill_workers,
+                            startup_delay_ms: 0.0,
+                        },
+                        decode: WorkerPoolSpec {
+                            initial_workers: decode_workers,
+                            startup_delay_ms: 0.0,
+                        },
+                        handoff_latency_ms: 1.0,
+                    };
+                    spec.engine["rank"]["enable_prefix_caching"] = true.into();
+                    let rank = spec.engine["rank"].clone();
+                    spec.engine["prefill"] =
+                        serde_json::json!({"dp_size": prefill_dp, "rank": rank});
+                    spec.engine["decode"] = serde_json::json!({"dp_size": decode_dp, "rank": rank});
+                    let report = Replayer::new(spec, ReplayEngineFactory::new())
+                        .unwrap()
+                        .run()
+                        .unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 8);
+                    assert_eq!(report.request_counts.total_output_tokens, 24);
+                    for turns in report.per_request.chunks_exact(2) {
+                        assert_eq!(turns[0].routing_history.len(), 2);
+                        assert_eq!(turns[1].routing_history.len(), 2);
+                        for (first, next) in turns[0]
+                            .routing_history
+                            .iter()
+                            .zip(&turns[1].routing_history)
+                        {
+                            assert_eq!(first.pool, next.pool);
+                            if explicit_rank {
+                                let rank = match first.pool {
+                                    ReplayRequestPool::Prefill => prefill_dp - 1,
+                                    ReplayRequestPool::Decode => decode_dp - 1,
+                                    ReplayRequestPool::Agg => unreachable!(),
+                                };
+                                assert_eq!(first.dp_rank, Some(rank));
+                                assert_eq!(next.dp_rank, Some(rank));
+                            }
+                            if affinity {
+                                assert_eq!(
+                                    (first.logical_worker_id, first.dp_rank),
+                                    (next.logical_worker_id, next.dp_rank)
+                                );
+                            }
+                        }
+                        if affinity {
+                            assert!(
+                                turns[1].reused_input_tokens >= 8,
+                                "{backend:?}: expected a resident prefix"
+                            );
+                        } else if prefill_workers > 1 && prefill_dp == 1 {
+                            assert_ne!(turns[0].prefill_worker_idx, turns[1].prefill_worker_idx);
+                            assert_eq!(turns[1].reused_input_tokens, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

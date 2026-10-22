@@ -63,6 +63,44 @@ impl AuthoredKvHintSources {
     }
 }
 
+#[derive(Debug, Default)]
+struct SessionPins(Option<FxHashMap<String, usize>>);
+
+impl SessionPins {
+    fn get(
+        &self,
+        session_id: Option<&str>,
+        preferred_rank: Option<u32>,
+        workers: &BTreeMap<usize, Vec<usize>>,
+    ) -> Result<Option<usize>> {
+        let pinned = self
+            .0
+            .as_ref()
+            .and_then(|pins| pins.get(session_id?).copied());
+        if let (Some(scheduler), Some(rank)) = (pinned, preferred_rank) {
+            anyhow::ensure!(
+                workers
+                    .values()
+                    .any(|ranks| ranks.get(rank as usize) == Some(&scheduler)),
+                "session affinity conflicts with the requested attention-DP rank"
+            );
+        }
+        Ok(pinned)
+    }
+
+    fn insert(&mut self, session_id: Option<String>, scheduler_id: usize) {
+        if let (Some(pins), Some(session)) = (&mut self.0, session_id) {
+            pins.insert(session, scheduler_id);
+        }
+    }
+
+    fn retire(&mut self, scheduler_ids: &[usize]) {
+        if let Some(pins) = &mut self.0 {
+            pins.retain(|_, scheduler| !scheduler_ids.contains(scheduler));
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AggregatedRoundRobin {
     next_worker: usize,
@@ -76,7 +114,7 @@ pub struct AggregatedRoundRobinPlacement<Events: EngineEventBatch> {
     workers: BTreeMap<usize, Vec<usize>>,
     hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
-    session_pins: Option<FxHashMap<String, usize>>,
+    session_pins: SessionPins,
 }
 
 impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
@@ -93,13 +131,13 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
             events: PhantomData,
-            session_pins: None,
+            session_pins: SessionPins::default(),
         }
     }
 
     /// Pin each session to its first selected scheduler until that worker retires.
     pub fn with_session_affinity(mut self, enabled: bool) -> Self {
-        self.session_pins = enabled.then(FxHashMap::default);
+        self.session_pins = SessionPins(enabled.then(FxHashMap::default));
         self
     }
 }
@@ -123,20 +161,12 @@ where
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let pinned = self.session_pins.as_ref().and_then(|pins| {
-            session_id
-                .as_ref()
-                .and_then(|session| pins.get(session).copied())
-        });
+        let pinned = self.session_pins.get(
+            session_id.as_deref(),
+            request.preferred_dp_rank(),
+            &self.workers,
+        )?;
         let scheduler_id = if let Some(scheduler) = pinned {
-            if let Some(rank) = request.preferred_dp_rank() {
-                anyhow::ensure!(
-                    self.workers
-                        .values()
-                        .any(|ranks| ranks.get(rank as usize) == Some(&scheduler)),
-                    "session affinity conflicts with the requested attention-DP rank"
-                );
-            }
             scheduler
         } else {
             self.counter.next(
@@ -150,10 +180,8 @@ where
                 },
             )?
         };
-        if pinned.is_none()
-            && let (Some(pins), Some(session)) = (&mut self.session_pins, session_id)
-        {
-            pins.insert(session, scheduler_id);
+        if pinned.is_none() {
+            self.session_pins.insert(session_id, scheduler_id);
         }
         let kv_hints = self
             .hints
@@ -203,18 +231,14 @@ where
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        if let Some(pins) = &mut self.session_pins {
-            pins.retain(|_, scheduler| !worker.scheduler_ids.contains(scheduler));
-        }
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
-        if let Some(pins) = &mut self.session_pins {
-            pins.retain(|_, scheduler| !worker.scheduler_ids.contains(scheduler));
-        }
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         self.counter.worker_removed(worker.worker_id);
@@ -233,6 +257,7 @@ pub struct PoolRoundRobinPlacement<Events: EngineEventBatch> {
     workers: BTreeMap<usize, Vec<usize>>,
     hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
+    session_pins: SessionPins,
 }
 
 impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
@@ -245,7 +270,14 @@ impl<Events: EngineEventBatch> PoolRoundRobinPlacement<Events> {
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
             events: PhantomData,
+            session_pins: SessionPins::default(),
         }
+    }
+
+    /// Pin each session to its first selected scheduler until that worker retires.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.session_pins = SessionPins(enabled.then(FxHashMap::default));
+        self
     }
 
     #[cfg(test)]
@@ -268,44 +300,55 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
-        let active_count = match preferred_dp_rank {
-            Some(rank) => self
-                .workers
-                .values()
-                .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
-                .count(),
-            None => self.workers.values().map(Vec::len).sum::<usize>(),
-        };
-        if active_count == 0 {
-            if let Some(rank) = preferred_dp_rank {
-                return Err(anyhow!(
-                    "preferred attention-DP rank {rank} is out of range for the active worker pool"
-                ));
+        let pinned = self.session_pins.get(
+            session_id.as_deref(),
+            request.preferred_dp_rank(),
+            &self.workers,
+        )?;
+        let scheduler_id = if let Some(scheduler) = pinned {
+            scheduler
+        } else {
+            let preferred_dp_rank = request.preferred_dp_rank().map(|rank| rank as usize);
+            let active_count = match preferred_dp_rank {
+                Some(rank) => self
+                    .workers
+                    .values()
+                    .filter(|scheduler_ids| scheduler_ids.get(rank).is_some())
+                    .count(),
+                None => self.workers.values().map(Vec::len).sum::<usize>(),
+            };
+            if active_count == 0 {
+                if let Some(rank) = preferred_dp_rank {
+                    return Err(anyhow!(
+                        "preferred attention-DP rank {rank} is out of range for the active worker pool"
+                    ));
+                }
+                return Err(anyhow!("no active workers for round-robin placement"));
             }
-            return Err(anyhow!("no active workers for round-robin placement"));
-        }
-        let index = self.next % active_count;
-        let scheduler_id = match preferred_dp_rank {
-            Some(rank) => self
-                .workers
-                .values()
-                .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
-                .nth(index),
-            None => self
-                .workers
-                .values()
-                .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
-                .nth(index),
-        }
-        .expect("active round-robin pool must contain a scheduler");
-        self.next = index + 1;
+            let index = self.next % active_count;
+            let scheduler_id = match preferred_dp_rank {
+                Some(rank) => self
+                    .workers
+                    .values()
+                    .filter_map(|scheduler_ids| scheduler_ids.get(rank).copied())
+                    .nth(index),
+                None => self
+                    .workers
+                    .values()
+                    .flat_map(|scheduler_ids| scheduler_ids.iter().copied())
+                    .nth(index),
+            }
+            .expect("active round-robin pool must contain a scheduler");
+            self.next = index + 1;
+            self.session_pins.insert(session_id, scheduler_id);
+            scheduler_id
+        };
         let kv_hints = self
             .hints
             .resolve(&self.workers, request.authored_kv_hints());
@@ -349,12 +392,14 @@ where
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        self.session_pins.retire(&worker.scheduler_ids);
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
@@ -551,6 +596,63 @@ mod tests {
                     .to_string()
                     .contains("no active workers")
             );
+        }
+    }
+
+    #[test]
+    fn pool_session_affinity_preserves_pins_until_worker_retirement() {
+        for draining in [false, true] {
+            let worker = |worker_id| WorkerTopology {
+                worker_id,
+                scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+                router_hint: false,
+            };
+            let mut policy = PoolRoundRobinPlacement::<()>::new(vec![worker(1), worker(2)])
+                .with_session_affinity(true);
+            let request_id = Uuid::new_v4();
+            let place = |policy: &mut PoolRoundRobinPlacement<()>, session: Option<&str>, rank| {
+                PlacementPolicy::<DirectRequest>::place(
+                    policy,
+                    &DirectRequest {
+                        uuid: Some(request_id),
+                        preferred_dp_rank: rank,
+                        ..DirectRequest::default()
+                    },
+                    (),
+                    session.map(str::to_owned),
+                    0.0,
+                )
+                .map(|effects| immediate(effects).scheduler_id)
+            };
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("b"), Some(1)).unwrap(), 21);
+            assert!(!PlacementPolicy::<DirectRequest>::cancel_pending(
+                &mut policy,
+                request_id
+            ));
+            PlacementPolicy::<DirectRequest>::request_terminal(&mut policy, request_id, 0.0)
+                .unwrap();
+            PlacementPolicy::<DirectRequest>::prefill_completed(&mut policy, request_id, 0.0)
+                .unwrap();
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 11);
+            assert!(
+                place(&mut policy, Some("a"), Some(0))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("conflicts")
+            );
+            assert_eq!(place(&mut policy, None, None).unwrap(), 20);
+            if draining {
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            } else {
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            }
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 21);
+            assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 21);
+            PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
+            assert!(place(&mut policy, Some("a"), None).is_err());
         }
     }
 

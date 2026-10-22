@@ -254,11 +254,6 @@ impl ReplayComposition for RoundRobinComposition {
                 spec.adapters.scaling.provider
             )));
         }
-        if self.session_affinity && !matches!(spec.topology, ReplayTopology::Aggregated { .. }) {
-            return Err(ReplayError::InvalidSpec(
-                "session affinity currently requires aggregated workers".into(),
-            ));
-        }
         Ok(())
     }
 
@@ -279,8 +274,10 @@ impl ReplayComposition for RoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> AnyResult<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 }
