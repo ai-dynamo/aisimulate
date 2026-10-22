@@ -195,10 +195,8 @@ def merge_experiment_results_by_mode(
     agg (with top N from all backends) and disagg (with top N from all backends).
 
     Args:
-        results: Dictionary containing the results of the experiments.
         tasks: Dictionary containing the task configs of the experiments.
         best_configs: Dictionary containing the best configs of the experiments.
-        best_throughputs: Dictionary containing the best throughputs of the experiments.
         pareto_fronts: Dictionary containing the pareto fronts of the experiments.
         pareto_x_axis: Dictionary containing the pareto x-axis of the experiments.
         top_n: Number of top configurations to return.
@@ -209,10 +207,11 @@ def merge_experiment_results_by_mode(
     Returns:
         tuple:
             - best_configs: Dictionary containing the best configs of the merged experiments.
-            - best_throughputs: Dictionary containing the best throughputs of the merged experiments.
+            - best_throughputs: Dictionary of objective-specific comparison scores: inverse GPU count for
+                full-target load matches, or cluster token throughput for GPU-capped fallbacks and runs
+                without a load target.
             - pareto_fronts: Dictionary containing the pareto fronts of the merged experiments.
             - pareto_x_axis: Dictionary containing the pareto x-axis of the merged experiments.
-            - tasks: Dictionary containing the task configs of the merged experiments.
     """
     agg_exps = [name for name, task in tasks.items() if task.serving_mode == "agg"]
     disagg_exps = [name for name, task in tasks.items() if task.serving_mode == "disagg"]
