@@ -174,7 +174,6 @@ _MLA = (
     "zai-org--GLM-5.2",
     "zai-org--GLM-5.2-FP8",
     "zai-org--GLM-5.3",
-    "zai-org--GLM-5.3-FP8",
     "nvidia--GLM-5-NVFP4",
     "nvidia--GLM-5.1-NVFP4",
     "nvidia--GLM-5.2-NVFP4",
