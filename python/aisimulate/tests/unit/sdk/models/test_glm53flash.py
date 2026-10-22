@@ -624,25 +624,47 @@ def test_sol_is_unchanged_by_measured_composition(backend, prefill_ms, decode_ms
         model.close()
 
 
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_ep4_sol_differs_from_tp4_only_in_routed_experts(backend):
-    def ops(moe_tp, moe_ep, prefill):
-        config = _config("SOL", backend).to_dict() | dict(tp=4, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
-        model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
-        try:
-            args = dict(batch_size=1, context_length=2048) if prefill else dict(batch_size=32, context_length=2048)
-            return {op["name"]: op for op in model.static_phase_diagnostics(prefill=prefill, **args)}
-        finally:
-            model.close()
+# Accepted EP layouts at TP4: vLLM runs pure EP only (enable_expert_parallel
+# forces MoE TP 1); SGLang also runs the hybrid MoE TP x EP split.
+_EP_E2E_LAYOUTS = [("vllm", 1, 4), ("sglang", 1, 4), ("sglang", 2, 2)]
+_SPARSE_FFNS = {f"ffn_{layer}" for layer in range(3, 45)}
 
-    sparse = {f"ffn_{layer}" for layer in range(3, 45)}
+
+def _tp4_phase_ops(database_mode, backend, moe_tp, moe_ep, prefill):
+    config = _config(database_mode, backend).to_dict() | dict(tp=4, moe_tp_size=moe_tp, moe_ep_size=moe_ep)
+    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    try:
+        args = dict(batch_size=1, context_length=2048) if prefill else dict(batch_size=32, context_length=2048)
+        return {op["name"]: op for op in model.static_phase_diagnostics(prefill=prefill, **args)}
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize(("backend", "moe_tp", "moe_ep"), _EP_E2E_LAYOUTS)
+def test_ep_sol_differs_from_tp4_only_in_routed_experts(backend, moe_tp, moe_ep):
     for prefill in (True, False):
-        tp4, ep4 = ops(4, 1, prefill), ops(1, 4, prefill)
-        assert tp4.keys() == ep4.keys()
-        changed = {name for name in tp4 if tp4[name]["latency_ms"] != ep4[name]["latency_ms"]}
+        tp4, ep = _tp4_phase_ops("SOL", backend, 4, 1, prefill), _tp4_phase_ops("SOL", backend, moe_tp, moe_ep, prefill)
+        assert tp4.keys() == ep.keys()
+        changed = {name for name in tp4 if tp4[name]["latency_ms"] != ep[name]["latency_ms"]}
         # Attention, mHC, dense FFN and every TP all-reduce/gather are identical.
-        assert changed <= sparse and changed
-        assert all(ep4[name]["source"] == "sol" for name in ep4)
+        assert changed <= _SPARSE_FFNS and changed
+        assert all(ep[name]["source"] == "sol" for name in ep)
+
+
+@pytest.mark.parametrize(("backend", "moe_tp", "moe_ep"), _EP_E2E_LAYOUTS)
+def test_ep_hybrid_labels_routed_ffn_fallback(backend, moe_tp, moe_ep):
+    # The default-version GB300 tables carry no GLM MoE rows for any layout, so
+    # HYBRID composes the routed FFN from estimated children and labels it
+    # "mixed", never "silicon". Everything outside the sparse FFNs is
+    # layout-independent and matches TP4 exactly.
+    for prefill in (True, False):
+        tp4 = _tp4_phase_ops("HYBRID", backend, 4, 1, prefill)
+        ep = _tp4_phase_ops("HYBRID", backend, moe_tp, moe_ep, prefill)
+        assert tp4.keys() == ep.keys()
+        assert {ep[name]["source"] for name in _SPARSE_FFNS} == {"mixed"}
+        assert all(ep[name]["latency_ms"] > 0 for name in _SPARSE_FFNS)
+        for name in tp4.keys() - _SPARSE_FFNS:
+            assert (ep[name]["latency_ms"], ep[name]["source"]) == (tp4[name]["latency_ms"], tp4[name]["source"]), name
 
 
 def test_kda_kernels_match_collected_kda_rows():
