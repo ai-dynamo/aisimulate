@@ -266,6 +266,13 @@ are rejected before interpolation; the existing execution-identity and real-KV
 requirements still apply. The legacy `dynamo_native_single_sample_v1` contract
 is unchanged.
 
+Autoregressive native CUDA samples use schema 7 and the separate
+`vllm_native_ar_model_step_cuda_v1` policy. They require the full text AR
+execution identity, `timing_scope: model_step_cuda`, and the same actual-sample
+reduction fields described above. This policy records the complete model step,
+including sampling. It cannot supply speculative-round timing. Keep these
+observations separate from Dynamo scheduler wall-time measurements.
+
 For a Kimi K3 text profile, an explicit configuration can be:
 
 ```python
