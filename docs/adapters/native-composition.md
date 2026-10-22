@@ -35,6 +35,22 @@ into stable user APIs. Public input/report contracts are in the
 
 ## PlacementPolicy
 
+`Replayer::new` accepts
+`adapters.placement.config: {"session_affinity": true}` for aggregated workers.
+The field defaults to `false`. Each session stays on its first selected
+scheduler. New sessions and requests without sessions use round-robin placement.
+Draining or removing a worker clears its pins.
+
+A conflicting explicit attention-DP rank returns an error. Pins last for the
+replay, with no TTL or KV-based initial placement. Disaggregated session affinity
+remains unsupported. This native descriptor is not a prediction-YAML field.
+For custom Rust composition, use `RoundRobinComposition::default()` or set its
+`session_affinity` field.
+
+| Field in `adapters.placement.config` | Default | Behavior |
+| --- | --- | --- |
+| `session_affinity` | `false` | Pin each session to its first worker and attention-DP rank. Applies to aggregated `round_robin` placement. |
+
 [`PlacementPolicy<Request>`](../../crates/core/src/replay/core/mod.rs) supplies:
 
 - `place(request, metadata, session_id, now_ms) -> Result<PlacementEffects>`.

@@ -1524,3 +1524,78 @@ fn canceled_startup_is_captured_without_unregistering_an_unready_worker() {
         }
     }
 }
+
+#[test]
+fn round_robin_session_affinity_routes_turns_through_the_public_replayer() {
+    for (config, expected) in [
+        (serde_json::Value::Null, vec![Some(0), Some(1), Some(0)]),
+        (
+            serde_json::json!({"session_affinity": false}),
+            vec![Some(0), Some(1), Some(0)],
+        ),
+        (
+            serde_json::json!({"session_affinity": true}),
+            vec![Some(0), Some(0), Some(1)],
+        ),
+    ] {
+        let requests = ["a", "a", "b"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, session)| {
+                let mut req = request(&format!("turn-{i}"), i as f64 * 30.0, 8, 3);
+                req.session_id = Some(session.into());
+                req
+            })
+            .collect();
+        let mut spec = aggregated_spec(Backend::Vllm, 2, 0.0, requests);
+        spec.adapters.placement.config = config;
+        let report = Replayer::new(spec, ReplayEngineFactory::new())
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 3);
+        let workers: Vec<_> = report
+            .per_request
+            .iter()
+            .map(|record| record.decode_worker_idx)
+            .collect();
+        assert_eq!(workers, expected);
+    }
+}
+
+#[test]
+fn round_robin_rejects_invalid_session_configuration() {
+    for config in [
+        serde_json::json!({"session_affinity": "true"}),
+        serde_json::json!({"session_affinty": true}),
+    ] {
+        let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
+        spec.adapters.placement.config = config;
+        assert!(matches!(
+            Replayer::new(spec, ReplayEngineFactory::new()),
+            Err(ReplayError::InvalidSpec(_))
+        ));
+    }
+}
+
+#[test]
+fn round_robin_session_affinity_rejects_disaggregated_workers() {
+    let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
+    spec.adapters.placement.config = serde_json::json!({"session_affinity": true});
+    spec.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec {
+            initial_workers: 1,
+            startup_delay_ms: 0.0,
+        },
+        decode: WorkerPoolSpec {
+            initial_workers: 1,
+            startup_delay_ms: 0.0,
+        },
+        handoff_latency_ms: 1.0,
+    };
+    let Err(ReplayError::InvalidSpec(message)) = Replayer::new(spec, ReplayEngineFactory::new())
+    else {
+        panic!("disaggregated session affinity must fail during construction");
+    };
+    assert!(message.contains("requires aggregated workers"));
+}

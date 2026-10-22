@@ -76,6 +76,7 @@ pub struct AggregatedRoundRobinPlacement<Events: EngineEventBatch> {
     workers: BTreeMap<usize, Vec<usize>>,
     hints: AuthoredKvHintSources,
     events: PhantomData<Events>,
+    session_pins: Option<FxHashMap<String, usize>>,
 }
 
 impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
@@ -92,7 +93,14 @@ impl<Events: EngineEventBatch> AggregatedRoundRobinPlacement<Events> {
                 .map(|worker| (worker.worker_id, worker.scheduler_ids))
                 .collect(),
             events: PhantomData,
+            session_pins: None,
         }
+    }
+
+    /// Pin each session to its first selected scheduler until that worker retires.
+    pub fn with_session_affinity(mut self, enabled: bool) -> Self {
+        self.session_pins = enabled.then(FxHashMap::default);
+        self
     }
 }
 
@@ -109,22 +117,44 @@ where
         &mut self,
         request: &Request,
         _metadata: Self::Metadata,
-        _session_id: Option<String>,
+        session_id: Option<String>,
         _now_ms: f64,
     ) -> Result<PlacementEffects> {
         let request_id = request
             .request_id()
             .ok_or_else(|| anyhow!("round-robin placement requires a request UUID"))?;
-        let scheduler_id = self.counter.next(
-            self.workers.keys().copied(),
-            request.preferred_dp_rank(),
-            |worker_id, rank| {
-                self.workers
-                    .get(&worker_id)
-                    .and_then(|ranks| ranks.get(rank as usize))
-                    .copied()
-            },
-        )?;
+        let pinned = self.session_pins.as_ref().and_then(|pins| {
+            session_id
+                .as_ref()
+                .and_then(|session| pins.get(session).copied())
+        });
+        let scheduler_id = if let Some(scheduler) = pinned {
+            if let Some(rank) = request.preferred_dp_rank() {
+                anyhow::ensure!(
+                    self.workers
+                        .values()
+                        .any(|ranks| ranks.get(rank as usize) == Some(&scheduler)),
+                    "session affinity conflicts with the requested attention-DP rank"
+                );
+            }
+            scheduler
+        } else {
+            self.counter.next(
+                self.workers.keys().copied(),
+                request.preferred_dp_rank(),
+                |worker_id, rank| {
+                    self.workers
+                        .get(&worker_id)
+                        .and_then(|ranks| ranks.get(rank as usize))
+                        .copied()
+                },
+            )?
+        };
+        if pinned.is_none()
+            && let (Some(pins), Some(session)) = (&mut self.session_pins, session_id)
+        {
+            pins.insert(session, scheduler_id);
+        }
         let kv_hints = self
             .hints
             .resolve(&self.workers, request.authored_kv_hints());
@@ -173,12 +203,18 @@ where
     }
 
     fn worker_draining(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        if let Some(pins) = &mut self.session_pins {
+            pins.retain(|_, scheduler| !worker.scheduler_ids.contains(scheduler));
+        }
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         Ok(Vec::new())
     }
 
     fn worker_removed(&mut self, worker: WorkerTopology, _now_ms: f64) -> Result<Vec<Placement>> {
+        if let Some(pins) = &mut self.session_pins {
+            pins.retain(|_, scheduler| !worker.scheduler_ids.contains(scheduler));
+        }
         self.workers.remove(&worker.worker_id);
         self.hints.retire(worker.worker_id);
         self.counter.worker_removed(worker.worker_id);
@@ -464,6 +500,58 @@ mod tests {
             panic!("round-robin placement must be immediate");
         };
         placement.scheduler_id
+    }
+
+    #[test]
+    fn session_affinity_pins_dp_ranks_and_reassigns_retired_workers() {
+        for draining in [false, true] {
+            let worker = |worker_id| WorkerTopology {
+                worker_id,
+                scheduler_ids: vec![worker_id * 10, worker_id * 10 + 1],
+                router_hint: false,
+            };
+            let mut policy =
+                AggregatedRoundRobinPlacement::<()>::new(2, vec![worker(1), worker(2)])
+                    .with_session_affinity(true);
+            let place =
+                |policy: &mut AggregatedRoundRobinPlacement<()>, session: Option<&str>, rank| {
+                    PlacementPolicy::<DirectRequest>::place(
+                        policy,
+                        &DirectRequest {
+                            uuid: Some(Uuid::new_v4()),
+                            preferred_dp_rank: rank,
+                            ..DirectRequest::default()
+                        },
+                        (),
+                        session.map(str::to_owned),
+                        0.0,
+                    )
+                    .map(|effects| immediate(effects).scheduler_id)
+                };
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 11);
+            let error = place(&mut policy, Some("a"), Some(0)).unwrap_err();
+            assert!(error.to_string().contains("conflicts"));
+            assert_eq!(place(&mut policy, Some("a"), Some(1)).unwrap(), 11);
+            assert_eq!(place(&mut policy, Some("b"), None).unwrap(), 20);
+            assert_eq!(place(&mut policy, None, None).unwrap(), 10);
+            assert_eq!(place(&mut policy, None, None).unwrap(), 21);
+            if draining {
+                PlacementPolicy::<DirectRequest>::worker_draining(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            } else {
+                PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(1), 0.0)
+                    .unwrap();
+            }
+            assert_eq!(place(&mut policy, Some("a"), None).unwrap(), 20);
+            PlacementPolicy::<DirectRequest>::worker_removed(&mut policy, worker(2), 0.0).unwrap();
+            assert!(
+                place(&mut policy, Some("a"), None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no active workers")
+            );
+        }
     }
 
     #[test]
