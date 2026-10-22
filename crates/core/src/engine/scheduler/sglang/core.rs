@@ -1026,6 +1026,7 @@ impl SglangCore {
             &admit
                 .prefill_fpm
                 .iter()
+                .filter(|item| item.tokens_computed > 0)
                 .map(|item| (item.tokens_computed, item.prefix_tokens))
                 .collect::<Vec<_>>(),
         )?;

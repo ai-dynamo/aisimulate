@@ -3048,6 +3048,39 @@ fn prefill_timing_queries_scheduled_totals_after_a_chunk() {
 }
 
 #[test]
+fn prefill_validation_excludes_cached_zero_output_members() {
+    struct HomogeneousOnly;
+    impl crate::engine::TimingModel for HomogeneousOnly {
+        fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> anyhow::Result<()> {
+            anyhow::ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "heterogeneous geometry {requests:?}"
+            );
+            Ok(())
+        }
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+    let mut args = test_args(128, 1, 64);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: std::sync::Arc::new(HomogeneousOnly),
+    }
+    .into();
+    let mut core = SglangCore::new(args);
+    core.receive(direct_request((0..8).collect(), 1));
+    let first = core.try_execute_pass_internal(None, 0.0).unwrap();
+    // The cached zero-output request computes nothing, so only the 4-token
+    // prompt is validated, as it is the only member priced.
+    core.receive(direct_request((0..8).collect(), 0));
+    core.receive(direct_request((100..104).collect(), 1));
+    core.try_execute_pass_internal(None, first.end_ms).unwrap();
+}
+
+#[test]
 fn prefill_timing_excludes_cached_zero_output_members() {
     let (mut core, timing) = fpm_coordinate_core(64);
     core.receive(direct_request((0..8).collect(), 1));
