@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dynamo-free engine replay implementation of the Sweeper Runner contract."""
+"""Native replay implementation hosted by AISimulate."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .config.engine import StateCacheConfig, _validate_replay_estimation_mode
 from .power import normalize_power_summary, power_metadata
+from .router import native_placement
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
 from .sweeper.afd_perfmodel import AFDLayerTimes
@@ -31,6 +32,7 @@ from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     BackendDeploymentSpec,
     EncoderPoolSpec,
+    HookCapability,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -359,7 +361,7 @@ class AICAFDCompanionPerformanceModel:
 
 @dataclass(frozen=True)
 class EngineReplayRunnerFactory:
-    """Create reusable engine-only Runners for Sweeper candidates.
+    """Create reusable AISimulate runners for replay and Sweeper candidates.
 
     The optional runtime is a test seam. Production factories leave it unset so
     the dataclass remains process-serializable and each worker loads its local
@@ -382,6 +384,7 @@ class EngineReplayRunnerFactory:
         return RunnerCapabilities(
             replay_spec_api_version=1,
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
+            supported_hooks=(HookCapability("engine.router", "placement_policy", 1),),
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
             supports_native_epd=True,
@@ -479,6 +482,9 @@ class EngineReplayRunner:
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
+        if set(spec.adapters) - {"engine.router"}:
+            raise InvalidRunnerError("EngineReplayRunner does not support component adapters other than engine.router")
+        placement = native_placement(spec)
         encoder = spec.backend_deployment.encoder
         if (
             encoder is None
@@ -593,7 +599,13 @@ class EngineReplayRunner:
             separators=(",", ":"),
         )
         try:
-            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+            runtime = self._resolve_runtime()
+            if placement["provider"] == "dynamo_kv_router":
+                from .router import run_dynamo_policy
+
+                report_json = run_dynamo_policy(runtime, execution_spec_json)
+            else:
+                report_json = runtime.run_replay_json(execution_spec_json)
         except MemoryError as error:
             # Resource-aware installations classify a report storage failure as host
             # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
@@ -1130,10 +1142,7 @@ def _materialize_engine_execution_spec(
         "topology": topology,
         "engine": engine,
         "adapters": {
-            "placement": {
-                "provider": "round_robin",
-                "config": None,
-            },
+            "placement": native_placement(spec),
             "scaling": {
                 "provider": "none",
                 "config": None,
@@ -1272,7 +1281,8 @@ def _execution_target_model(
             model = config.get("model", config.get("model_path"))
             if isinstance(model, str) and model.strip():
                 return model.strip()
-    timing = raw_engine_args.get("timing_model")
+    rank = raw_engine_args.get("rank", raw_engine_args)
+    timing = rank.get("timing_model") if isinstance(rank, Mapping) else None
     if isinstance(timing, Mapping) and timing.get("provider") == "aic":
         config = timing.get("config")
         if isinstance(config, Mapping):

@@ -136,7 +136,7 @@ def test_legacy_replay_config_preserves_execution_mode() -> None:
     assert config.to_replay_spec().execution_mode == "online"
 
 
-def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
+def test_factory_is_pickleable_and_advertises_native_router_capability():
     factory = pickle.loads(pickle.dumps(EngineReplayRunnerFactory()))
     capabilities = factory.capabilities()
 
@@ -145,7 +145,8 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_backend_topology("trtllm", "disagg")
     assert capabilities.supports_disaggregated_attention_dp
     assert capabilities.supported_execution_modes == ("offline",)
-    assert capabilities.supported_hooks == ()
+    assert capabilities.supports_hook(RuntimeHookSpec("engine.router", "placement_policy", 1))
+    assert not capabilities.supports_hook(RuntimeHookSpec("dynamo.router", "placement_policy", 1))
     assert capabilities.supports_trace_format("weka")
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
@@ -1804,6 +1805,20 @@ def test_engine_runner_does_not_silently_parse_a_dynamo_trace_as_mooncake():
                 }
             )
         )
+
+
+@pytest.mark.parametrize("provider", ["engine.router", "dynamo.router"])
+def test_engine_runner_rejects_unhandled_router_config_without_execution(provider):
+    runtime = RecordingRuntime()
+    spec = _spec(adapters={provider: AdapterReplaySpec(config={"policy": "kv_router"})})
+    error, message = (
+        (ValueError, "runtime hooks must match")
+        if provider == "engine.router"
+        else (InvalidRunnerError, "does not support component adapters")
+    )
+    with pytest.raises(error, match=message):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 def test_engine_runner_rejects_dynamo_runtime_hooks():

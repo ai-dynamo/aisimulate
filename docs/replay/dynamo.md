@@ -9,7 +9,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Dynamo integration
 
-Select `--stack dynamo` to use Dynamo-owned Router/Planner behavior. Install the
+For conversation-aware AgentX simulation, use AISimulate's default engine stack
+with the standalone Dynamo policy API; see the [AgentX quickstart](agentic/quickstart.md).
+That path needs neither the Dynamo runner plugin nor an update to its AISimulate
+pin. AISimulate owns its complete simulation and acceptance suite.
+
+Select `--stack dynamo` to use the optional Dynamo-owned Router/Planner integration. Install the
 integration in the same environment as AISimulate and select the same stack when
 replaying a saved recommendation. The YAML does not embed stack selection.
 The engine stack remains sufficient for reading native Dynamo trace files.
@@ -104,7 +109,37 @@ run `python3 -m pip check`, and repeat this prediction. A successful dependency
 check, basic prediction without Planner, or `predict --help` alone does not
 verify that Planner loads.
 
-## Router configuration
+## Router policy on the AISimulate engine stack
+
+The built-in `engine.router` adapter accepts a fixed `router` block with the
+default `--stack engine`. `kv_router` requires a separately installed Dynamo
+runtime exposing `OfflineRouter`; its production selector, cache index and
+session affinity remain in Dynamo. A missing or incompatible API fails instead
+of switching to another policy.
+
+| Knob | Default | Rules |
+| --- | --- | --- |
+| `router.policy` | `round_robin` | `round_robin` or `kv_router`; fixed in prediction and recommendation. |
+| `router.prefill_load_model.type` | `none` | Only `none`; custom prefill estimators belong to the optional Dynamo integration. |
+| `router.overlap_score_credit` | Dynamo policy default | Finite value in `[0, 1]`, KV-router-only. |
+| `router.prefill_load_scale` | Dynamo policy default | Finite, nonnegative, KV-router-only. |
+| `router.temperature` | Dynamo policy default | Finite, nonnegative, KV-router-only. |
+| `router.affinity.mode` | Unset | `session` or `sibling_group`; requires `kv_router`. |
+| `router.affinity.ttl_seconds` | `3600` | Finite value from `1` through `31536000`, including fractions. Uses simulation time. |
+
+Affinity uses vLLM/SGLang with static aggregated or P/D workers, device-only KV
+cache, no grouped caches or speculative decoding, and default scoring. It binds
+the selected worker and DP rank separately for each pool; dispatch acceptance
+commits the binding. Session keys distinguish conversations within each play;
+sibling keys group conversations with the same parent. TTL starts after the
+last active request releases its lease. Seeded snapshots, saved-frontier warmup,
+continuous profiles, and worker tokenization remain owned by AISimulate.
+
+The following sections describe the optional Dynamo-stack adapter. Its search
+and Planner capabilities do not establish support in the engine-stack policy
+adapter.
+
+## Router configuration on the Dynamo stack
 
 Router is not part of the AISimulate core schema. The `dynamo.router` config adapter owns this
 section's concrete model, defaults, recommendation domains, validation, and runtime lowering. The

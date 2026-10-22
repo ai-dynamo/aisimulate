@@ -69,6 +69,13 @@ pub struct ForwardPassSpeculationConfig {
 }
 
 impl ForwardPassSpeculationConfig {
+    /// Resolve executor depth through the SDK scheme registry, using the cost
+    /// identity returned by `ForwardPassPerfModel::best_available` provenance.
+    #[cfg(feature = "python")]
+    pub fn replay_depth(&self) -> Result<u32, AicError> {
+        crate::py::speculation_replay_depth(self)
+    }
+
     /// Preserve the existing prompt-lookup contract for canonical and replay callers.
     pub(crate) fn ngram_depth(&self) -> Result<u32, AicError> {
         if self.kind != "ngram" {

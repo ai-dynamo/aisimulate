@@ -167,7 +167,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
         raise ValueError("ngram speculation requires offline --stack engine without adapters")
     if config.engine.speculation is not None and args.online:
         raise ValueError("speculation requires offline execution")
-    plan = _resource_plan(args, config, factory)
+    plan = _resource_plan(args, config, factory, adapter_raw)
     require_plan(plan)
     from .supervision import checkpoint, mark_execution_ready, mark_shutdown
 
@@ -389,13 +389,14 @@ def _recommend(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     return 0
 
 
-def _resource_plan(args, config, factory) -> dict[str, Any]:
+def _resource_plan(args, config, factory, adapter_configs=None) -> dict[str, Any]:
     return build_plan(
         workload_bounds(config),
         stack=args.stack,
         policy=config.execution.resources,
         requested_parallelism=config.optimizer.parallelism if isinstance(config, CoreRecommendationConfig) else 1,
         factory=factory,
+        native_router=args.stack == "engine" and (adapter_configs or {}).get("router", {}).get("policy") == "kv_router",
     )
 
 

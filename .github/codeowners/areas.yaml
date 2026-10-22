@@ -75,6 +75,7 @@ areas:
       - tests/test_agentx_g2.py
       - tests/test_agentx_snapshot_export.py
       - tests/test_agentx_live_warmup.py
+      - tests/test_conversation_routing_cli.py
       - tests/test_runner.py
       - tests/test_traffic.py
       - tests/e2e/
@@ -289,6 +290,8 @@ shared:
     owners: [replay, maintainers]
   - glob: tests/test_agentx_live_warmup.py
     owners: [replay, maintainers]
+  - glob: tests/test_conversation_routing_cli.py
+    owners: [replay, maintainers]
   - glob: tests/test_runner.py
     owners: [replay, maintainers]
   - glob: tests/test_traffic.py
@@ -312,6 +315,8 @@ shared:
   - glob: crates/core/tests/perfmodel/
     owners: [forward-pass-engine, maintainers]
   - glob: crates/core/src/python.rs
+    owners: [mocker, replay, forward-pass-engine, maintainers]
+  - glob: crates/core/src/python/**
     owners: [mocker, replay, forward-pass-engine, maintainers]
   - glob: Cargo.lock
     owners: [infra, maintainers]

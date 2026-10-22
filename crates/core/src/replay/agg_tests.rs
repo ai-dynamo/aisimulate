@@ -184,6 +184,230 @@ fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     );
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum DispatchHookRecord {
+    Selected(Uuid, f64),
+    Clock(f64),
+    Released(Uuid, f64),
+    Committed(Uuid, f64),
+    Terminal(Uuid, f64),
+}
+
+type DispatchHookRecords = std::sync::Arc<std::sync::Mutex<Vec<DispatchHookRecord>>>;
+
+struct RecordingDispatchPlacement {
+    records: DispatchHookRecords,
+    release_at_ms: Option<f64>,
+    pending: Option<Uuid>,
+}
+
+impl RecordingDispatchPlacement {
+    fn placement(request_id: Uuid) -> Placement {
+        Placement {
+            request_id,
+            scheduler_id: 0,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            kv_hints: None,
+            placement_replica_id: None,
+        }
+    }
+
+    fn record(&self, event: DispatchHookRecord) {
+        self.records.lock().unwrap().push(event);
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for RecordingDispatchPlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _: (),
+        _: Option<String>,
+        now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        let uuid = request.metadata().uuid.unwrap();
+        self.record(DispatchHookRecord::Selected(uuid, now_ms));
+        let decision = if self.release_at_ms.is_some() {
+            self.pending = Some(uuid);
+            PlacementDecision::Queued
+        } else {
+            PlacementDecision::Immediate(Self::placement(uuid))
+        };
+        Ok(crate::replay::PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn dispatch_committed(&mut self, uuid: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        self.record(DispatchHookRecord::Committed(uuid, now_ms));
+        Ok(())
+    }
+    fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        self.record(DispatchHookRecord::Clock(now_ms));
+        if self.release_at_ms.is_some_and(|at| at <= now_ms)
+            && let Some(uuid) = self.pending.take()
+        {
+            self.release_at_ms = None;
+            self.record(DispatchHookRecord::Released(uuid, now_ms));
+            return Ok(vec![Self::placement(uuid)]);
+        }
+        Ok(Vec::new())
+    }
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        self.pending.and(self.release_at_ms)
+    }
+    fn cancel_pending(&mut self, uuid: Uuid) -> bool {
+        if self.pending == Some(uuid) {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+    fn request_terminal(&mut self, uuid: Uuid, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        self.record(DispatchHookRecord::Terminal(uuid, now_ms));
+        Ok(Vec::new())
+    }
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn pending_count(&self) -> usize {
+        usize::from(self.pending.is_some())
+    }
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+fn dispatch_hook_runtime(
+    backend: crate::engine::Backend,
+    release_at_ms: Option<f64>,
+    records: DispatchHookRecords,
+) -> AggRuntimeImpl<RecordingDispatchPlacement, NoEngineEvents, NoReplayMetadata> {
+    let config = ReplayEngineConfig {
+        rank: EngineConfig {
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ..ReplayEngineConfig::default()
+    };
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    AggRuntimeImpl::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| {
+            Ok(RecordingDispatchPlacement {
+                records,
+                release_at_ms,
+                pending: None,
+            })
+        },
+    )
+    .unwrap()
+    .with_per_request_records(true)
+}
+
+#[rstest::rstest]
+#[case(crate::engine::Backend::Vllm)]
+#[case(crate::engine::Backend::Sglang)]
+fn placement_dispatch_hooks_commit_after_clock_releases_a_queued_request(
+    #[case] backend: crate::engine::Backend,
+    #[values(0.0, 3.0)] tokenization_ms: f64,
+    #[values(0.0, 7.0)] wakeup_ms: f64,
+) {
+    let records = DispatchHookRecords::default();
+    let report = dispatch_hook_runtime(backend, Some(wakeup_ms), records.clone())
+        .with_tokenization(TokenizationLatency::new(1, tokenization_ms, 0.0))
+        .run()
+        .unwrap()
+        .0
+        .finish();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.per_request[0].arrival_time_ms, 0.0);
+    assert_eq!(
+        report.per_request[0].first_admit_ms,
+        Some(wakeup_ms + tokenization_ms)
+    );
+    let terminal_ms = report.per_request[0].terminal_time_ms;
+    assert!(terminal_ms > wakeup_ms);
+    let records = records.lock().unwrap();
+    let semantic = records
+        .iter()
+        .filter(|event| !matches!(event, DispatchHookRecord::Clock(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let uuid = Uuid::from_u128(1);
+    assert_eq!(
+        semantic,
+        vec![
+            DispatchHookRecord::Selected(uuid, 0.0),
+            DispatchHookRecord::Released(uuid, wakeup_ms),
+            DispatchHookRecord::Committed(uuid, wakeup_ms + tokenization_ms),
+            DispatchHookRecord::Terminal(uuid, terminal_ms)
+        ]
+    );
+    assert!(records.contains(&DispatchHookRecord::Clock(wakeup_ms)));
+}
+
+#[rstest::rstest]
+fn canceling_tokenization_releases_policy_without_committing_dispatch(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+) {
+    let records = DispatchHookRecords::default();
+    let mut runtime = dispatch_hook_runtime(backend, None, records.clone())
+        .with_tokenization(TokenizationLatency::new(1, 3.0, 0.0));
+    let uuid = Uuid::from_u128(1);
+    runtime.step().unwrap();
+    assert_eq!(runtime.now_ms, 0.0);
+    assert_eq!(runtime.engine.in_flight(), 0);
+    assert_eq!(runtime.cluster_in_flight(), 1);
+    assert_eq!(
+        runtime.cancel_dynamic(uuid).unwrap(),
+        Some(ReplayTerminalStatus::Canceled)
+    );
+    assert_eq!(runtime.cluster_in_flight(), 0);
+    runtime.now_ms = 3.0;
+    assert!(!runtime.release_tokenized().unwrap());
+    let semantic = records
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| !matches!(event, DispatchHookRecord::Clock(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        semantic,
+        [
+            DispatchHookRecord::Selected(uuid, 0.0),
+            DispatchHookRecord::Terminal(uuid, 0.0),
+        ]
+    );
+}
+
 // G3 fixtures independently adapt vLLM behavioral contracts (Apache-2.0).
 // Upstream: https://github.com/vllm-project/vllm/tree/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac
 // Paths: vllm/v1/core/sched/{scheduler,request_queue}.py and
@@ -866,4 +1090,192 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
     assert!(stepped.engine.starting_group_ids().is_empty());
     assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
     assert!(stepped.next_timestamps().1.unwrap() > 0.0);
+}
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn agg_rejects_invalid_policy_wakeup_before_advancing_clock(#[case] wakeup_ms: f64) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = ReplayEngineConfig::default();
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    let mut runtime = AggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| Ok(WakeupPlacement::new(Some(wakeup_ms), false)),
+    )
+    .unwrap();
+    let error = runtime
+        .step()
+        .expect_err("invalid or unconsumed wakeup must fail while settling");
+    assert!(
+        error
+            .to_string()
+            .contains("aggregated placement policy wakeup"),
+        "{error:#}"
+    );
+    assert_eq!(
+        runtime.now_ms, 0.0,
+        "invalid policy must not corrupt replay time"
+    );
+}
+
+fn failing_dispatch_runtime(
+    backend: crate::engine::Backend,
+    fail_commit: bool,
+    fail_abort: bool,
+) -> AggRuntimeImpl<
+    crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement,
+    NoEngineEvents,
+    NoReplayMetadata,
+> {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = ReplayEngineConfig {
+        rank: EngineConfig {
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ..ReplayEngineConfig::default()
+    };
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    AggRuntimeImpl::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| {
+            Ok(FailingDispatchPlacement {
+                fail_commit,
+                fail_abort,
+                ..Default::default()
+            })
+        },
+    )
+    .unwrap()
+    .into_steppable()
+}
+
+#[rstest::rstest]
+fn dispatch_commit_failure_rolls_back_and_prevents_runtime_reuse(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+    #[values(false, true)] fail_abort: bool,
+    #[values(0.0, 3.0)] tokenization_ms: f64,
+) {
+    let mut runtime = failing_dispatch_runtime(backend, true, fail_abort)
+        .with_tokenization(TokenizationLatency::new(1, tokenization_ms, 0.0));
+    let error = if tokenization_ms == 0.0 {
+        runtime.submit_dynamic(request(1, 0.0)).unwrap_err()
+    } else {
+        runtime.submit_dynamic(request(1, 0.0)).unwrap();
+        assert_eq!(runtime.engine.in_flight(), 0);
+        assert!(runtime.placement.calls.lock().unwrap().is_empty());
+        runtime.step_dynamic_until(10.0).unwrap_err()
+    };
+    assert_eq!(
+        runtime.engine.in_flight(),
+        0,
+        "failed submission retained engine ownership"
+    );
+    assert!(!runtime.engine.has_runnable_worker());
+    assert!(runtime.requests.is_empty());
+    assert_eq!(
+        *runtime.placement.calls.lock().unwrap(),
+        ["commit", "abort"]
+    );
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string() == "injected commit failure")
+    );
+    assert!(
+        error.to_string().contains("injected commit failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    runtime.placement.fail_commit = false;
+    runtime.placement.fail_abort = false;
+    for retry_id in [1, 2] {
+        assert!(
+            runtime
+                .submit_dynamic(request(retry_id, 0.0))
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned")
+        );
+    }
+    assert!(
+        runtime
+            .step_dynamic_until(10.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .take_report_dynamic(0.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}
+
+#[rstest::rstest]
+fn dispatch_abort_preserves_native_error_and_existing_ownership(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+    #[values(false, true)] fail_abort: bool,
+) {
+    let mut runtime = failing_dispatch_runtime(backend, false, fail_abort);
+    runtime
+        .engine
+        .dispatch(0, request(1, 0.0), None, 0.0)
+        .unwrap();
+    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains("already active")),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("already active"), "{error:#}");
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    // A rejected duplicate must never cancel the engine's original request.
+    assert_eq!(runtime.engine.in_flight(), 1);
+    assert!(runtime.requests.is_empty());
+    assert_eq!(*runtime.placement.calls.lock().unwrap(), ["abort"]);
+    assert!(
+        runtime
+            .step_dynamic_until(10.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
 }

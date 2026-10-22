@@ -12,6 +12,11 @@ remaining requests and recycles completed plays to keep two client lanes occupie
 for a 3,600-second simulated admission window. The simulator runs offline on your
 CPU; you do not need to allocate those GPUs or download model weights.
 
+AISimulate runs the simulation and calls the separately installed Dynamo native
+policy for worker selection, KV indexing, and conversation affinity. No Dynamo
+serving process is required, and its routing implementation is not packaged in
+the AISimulate wheel.
+
 Run the commands below from the repository root. This path is experimental and
 qualified for functional behavior, not hardware performance accuracy.
 
@@ -32,6 +37,24 @@ uv sync --project python/aisimulate --extra dev
 This installs the Python environment and builds the native simulator. The
 commands below use that environment explicitly. Internet access is needed for
 initial dependency installation, the trace download, and model metadata.
+
+Build the `ai-dynamo-runtime` native bindings from
+[Dynamo #16854](https://github.com/ai-dynamo/dynamo/pull/16854), revision
+[`c2e854fe829445dfb22128f082a053f9f37a425c`](https://github.com/ai-dynamo/dynamo/tree/c2e854fe829445dfb22128f082a053f9f37a425c/lib/bindings/python#readme),
+following the linked build instructions and using the AISimulate environment at
+`python/aisimulate/.venv`. Dynamo must provide this API first; AISimulate #306
+then consumes and accepts it. The `ai-dynamo` runner package and its version
+update in Dynamo #15240 are optional. Check the installed interfaces:
+
+```bash
+python/aisimulate/.venv/bin/python - <<'PYTHON'
+from aisimulate import _runtime
+from dynamo._core import OfflineRouter, SessionAffinity
+assert callable(_runtime.run_replay_with_policy_json)
+assert callable(OfflineRouter.submit)
+assert callable(SessionAffinity.try_acquire)
+PYTHON
+```
 
 ## 2. Download a reproducible Weka workload
 
@@ -93,6 +116,11 @@ traffic:
     agentic_warmup: true
     agentic_profile:
       duration_seconds: 3600
+router:
+  policy: kv_router
+  affinity:
+    mode: sibling_group  # or session
+    ttl_seconds: 3600
 engine:
   mode: disaggregated
   model: Qwen/Qwen3-4B-Instruct-2507
@@ -125,12 +153,17 @@ execution:
     memory_limit_gb: 4
 ```
 
+The default `engine` stack uses native hard affinity: `sibling_group` binds
+children of the same parent conversation together, while `session` binds each
+conversation separately. Omit `router` for round-robin replay without Dynamo.
+See [router fields and supported configurations](../dynamo.md#router-policy-on-the-aisimulate-engine-stack)
+for worker/rank binding, virtual-time TTL, and capability restrictions.
+
 The trace's embedded hash blocks contain 64 tokens. The explicit
 `traffic.source.block_size: 64` keeps host resource inspection aligned with
 those blocks; it is separate from the worker KV-cache block setting.
-Use a host with at least 5 GB of available RAM: the example allows a 4 GB
-execution-process budget and keeps the default 1 GB host reserve. Initial trace
-materialization is estimated at about 2.81 GB. The full profile has no qualified
+Allow headroom for the 4 GB execution-process budget, the default 1 GB host
+reserve, and the CLI coordinator. The full profile has no qualified
 static peak-memory bound because recycled plays retain lifecycle evidence.
 The CLI runs it under live resource supervision and can stop with
 `resource_limited` if that budget is exhausted. Increasing the duration or lane
@@ -221,6 +254,15 @@ qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
+`routing_policy.roles` records each pool's native policy, Dynamo version,
+placement decisions and physical KV-event count. Match `request_id`, `group_key`,
+`worker_id`, and `dp_rank` to per-request `routing_history`; decision counts also
+include preparation requests. Decode selection is load-based and its index event
+count is zero. Measure destination-cache reuse through the difference between
+`destination_reserved_ms` and `destination_activated_ms`, comparing
+`destination_missing` and `full_prompt` transfer timing with a cache-disabled
+control. A routing overlap score alone does not prove physical cache reuse.
+
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
 for the resolved duration and grace settings, admission cutoff, recycled play
@@ -251,3 +293,19 @@ To run the initial snapshot suffixes once without recycling, remove
 `agentic_profile` from the YAML. To replay those finite plays from turn zero,
 also remove `agentic_snapshot` and `agentic_warmup`. Continuous profiles require
 seeded snapshots for the initial lanes.
+
+## Acceptance from AISimulate
+
+Run the CPU-only suite with this AISimulate build and the native Dynamo runtime,
+without installing the `ai-dynamo` runner package:
+
+```bash
+AISIM_REQUIRE_DYNAMO_ROUTER=1 python/aisimulate/.venv/bin/python -m pytest \
+  tests/test_conversation_routing_cli.py
+```
+
+Required mode fails if the native API is absent. The suite blocks Dynamo runner
+imports and checks vLLM/SGLang aggregated/P-D routing, session/sibling affinity,
+physical cache reuse, Weka lineage, tokenization, and snapshot/warmup profiles.
+These checks establish functional simulation, not hardware accuracy or bitwise
+parity with the live AgentX harness.

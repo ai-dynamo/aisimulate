@@ -11,6 +11,35 @@ The built-in `RoundRobinComposition` has fixed workers. Dynamo constructs its
 own Router/Planner policies against the same neutral contracts.
 These are Rust crate interfaces, not a stable dynamically loaded binary ABI.
 
+## External policy transport
+
+The engine stack can call an independently built policy through
+`aisimulate._runtime.run_replay_with_policy_json(payload_json, factory)` while
+retaining AISimulate's executor. The factory receives JSON describing one
+role, worker topology, resolved engine configuration, placement descriptor,
+selector seed and capture settings. It returns an object implementing
+`call_json(command_json) -> result_json`.
+
+Commands carry schema-versioned neutral data for placement, KV observations,
+dispatch commit/abort, terminal requests, virtual-time advancement, cancellation,
+and worker lifecycle events. A result supplies the operation result, pending
+count and next wakeup. A final snapshot adds provider-owned evidence without
+copying a growing decision log on every callback. Policy errors fail simulation;
+they cannot silently select another policy. Evidence is returned by role in
+`external_policy` and may be presented by the Python adapter as `routing_policy`.
+
+The built-in `engine.router` adapter implements this transport in AISimulate and
+calls Dynamo's native `OfflineRouter`, `SessionAffinity`, and existing `RadixTree`
+Python interfaces. Dynamo does not interpret AISimulate requests, conversation
+lineage, lifecycle messages or reports; the adapter translates those host fields. The `ai-dynamo` whole-run plugin and its AISimulate version
+update are optional for this path. The AISimulate CLI and its acceptance suite
+exercise the complete AgentX simulation. See the
+[AgentX quickstart](../replay/agentic/quickstart.md).
+
+This Python/JSON boundary does not link Dynamo into the AISimulate wheel. The
+Rust composition interface below remains available to consumers that choose to
+compile against AISimulate's core.
+
 ## Composition construction
 
 The trait is defined in
@@ -43,6 +72,9 @@ into stable user APIs. Public input/report contracts are in the
 - `observe(observation, now_ms)`, `request_terminal(request_id, now_ms)` and
   `prefill_completed(request_id, now_ms)`, returning newly releasable placements.
 - `cancel_pending(request_id) -> bool` and `pending_count()` for queued ownership.
+- Optional `dispatch_committed`, `dispatch_aborted`, `advance_clock` and
+  `next_wakeup_ms` hooks for tentative bindings and policy wakeups; see the
+  [conversation lineage contract](../replay/agentic/conversation-lineage.md).
 - `worker_ready`, `worker_draining`, `worker_removed`, and `topology_settled`
   lifecycle callbacks, also returning releasable placements.
 

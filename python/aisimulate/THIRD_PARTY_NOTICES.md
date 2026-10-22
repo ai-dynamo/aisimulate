@@ -1432,3 +1432,38 @@ https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a06
 
 The AISimulate files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
+
+## NVIDIA Dynamo offline routing adapter and acceptance
+
+The repository-root file `python/aisimulate/src/aisimulate/router.py` is adapted
+and modified from Dynamo's
+`components/src/dynamo/router/simulation/config.py` and `provider.py` at commit
+`6d6d36d7bfa63d80a0302df637c08f85523aa5b6`:
+https://github.com/ai-dynamo/dynamo/tree/6d6d36d7bfa63d80a0302df637c08f85523aa5b6/components/src/dynamo/router/simulation
+The adaptation retains the configuration vocabulary and field mapping, and
+transports policy calls to the separately installed Dynamo runtime. It does not
+copy the Router, KV index, or session-affinity algorithms into AISimulate.
+The AISim lifecycle and conversation-metadata translation was also adapted and
+modified from the same Apache-2.0 NVIDIA project at
+`2c4be58bdd6a2dc78c409bdfd67ad54d1b6fedf8`, original files
+`lib/bindings/python/rust/llm/offline_router/{affinity,mod,wire}.rs`:
+https://github.com/ai-dynamo/dynamo/tree/2c4be58bdd6a2dc78c409bdfd67ad54d1b6fedf8/lib/bindings/python/rust/llm/offline_router
+
+The repository-root file `tests/test_conversation_routing_cli.py` is adapted and
+modified from Dynamo's
+`components/src/dynamo/replay/tests/e2e/test_unified_cli_dynamo.py` and
+`components/src/dynamo/replay/tests/e2e/configs/unified_cli/predict/dynamo/13-trace-dynamo-agentic.yaml`
+at commit `35ea1e7f689198333b1af0a2db8f94f545817792`:
+https://github.com/ai-dynamo/dynamo/tree/35ea1e7f689198333b1af0a2db8f94f545817792/components/src/dynamo/replay/tests/e2e
+The adaptation runs the conversation fixtures through AISimulate's engine CLI,
+uses the standalone policy API, and rejects dependence on Dynamo's whole-run
+plugin. The synthetic request tree contains no external dataset material.
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+These source revisions are licensed under Apache-2.0. The full license is
+reproduced in `LICENSE`; the applicable upstream licenses are:
+https://github.com/ai-dynamo/dynamo/blob/6d6d36d7bfa63d80a0302df637c08f85523aa5b6/LICENSE
+https://github.com/ai-dynamo/dynamo/blob/35ea1e7f689198333b1af0a2db8f94f545817792/LICENSE
+https://github.com/ai-dynamo/dynamo/blob/2c4be58bdd6a2dc78c409bdfd67ad54d1b6fedf8/LICENSE
+The source files' copyright/license headers are preserved. These source
+revisions have no root NOTICE file applicable to these files.

@@ -12,8 +12,6 @@ from pathlib import Path
 import pytest
 from packaging.requirements import Requirement
 
-from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplaySpec
-
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10
@@ -101,13 +99,14 @@ def test_aisimulate_has_no_dynamo_or_component_adapter_dependencies():
     assert "prophet" not in names
 
 
-def test_importing_sweeper_does_not_import_dynamo():
+@pytest.mark.parametrize("module", ["aisimulate.sweeper", "aisimulate.router"])
+def test_importing_simulation_adapters_does_not_import_dynamo(module):
     subprocess.run(
         [
             sys.executable,
             "-c",
             (
-                "import sys; import aisimulate.sweeper; "
+                f"import sys; import {module}; "
                 "assert not any(name == 'dynamo' or name.startswith('dynamo.') "
                 "for name in sys.modules)"
             ),
@@ -133,32 +132,6 @@ def test_ai_dynamo_registers_optional_sweeper_providers():
     }
 
 
-@pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
-def test_ai_dynamo_runner_preserves_independent_sla_bounds(field: str, bound: float) -> None:
-    _ai_dynamo_distribution_or_skip()
-    from dynamo.replay.simulation import DynamoReplayRunner
-
-    spec = ReplaySpec(
-        backend_deployment=BackendDeploymentSpec(
-            deployment_mode="agg",
-            backend="vllm",
-            backend_version="test",
-            agg_engine_args={},
-            num_workers=1,
-        ),
-        workload={},
-        goal={"target": "throughput", "strict_sla": False, "sla": {field: bound}},
-    )
-    expected = {
-        "sla_ttft_ms": None,
-        "sla_itl_ms": None,
-        "sla_e2e_ms": None,
-    }
-    expected[f"sla_{field}"] = bound
-
-    assert DynamoReplayRunner._goodput_sla_kwargs(spec) == expected
-
-
 def test_aisimulate_source_versions_are_synchronized():
     root, repo_root = _source_checkout_roots()
     project = tomllib.loads((root / "pyproject.toml").read_text())
@@ -170,6 +143,9 @@ def test_aisimulate_source_versions_are_synchronized():
     assert core["package"]["version"] == workspace_version
     assert workspace["workspace"]["members"] == ["crates/core"]
     assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
+    lock = tomllib.loads((repo_root / "Cargo.lock").read_text())
+    assert not any(package["name"].startswith("dynamo-") for package in lock["package"])
+    assert not (repo_root / "crates/python").exists()
 
 
 def test_profiler_does_not_publish_or_reexport_sweeper():
