@@ -486,9 +486,14 @@ SMOKE_CASES = [
         id="qwen35-27b-b200-sglang-lanes-trtllm-mha",
     ),
     # Qwen3.8-Max (Qwen3.5-family hybrid GDN + full-attention, 2.4T-A95B)
-    # on gb300/sglang/0.5.17 exercises the sparse 0.5.17 data identity:
-    # model-specific gemm/gdn/moe measurements with the approved shared-layer
-    # attention/communication/quantization tables. The native FP8 checkpoint
+    # on gb300/sglang exercised the sparse 0.5.17 data identity when it was
+    # the derived `next`: model-specific gemm/gdn/moe measurements with the
+    # approved shared-layer attention/communication/quantization tables. The
+    # four Qwen3.8-Max cases below query the `next` slot rather than the raw
+    # version: the public surfaces (cli_estimate, the model builder) enforce
+    # the queryable-version gate, so a raw 0.5.17 / 0.27.1 pin stops loading
+    # as soon as a fleet upgrade moves `next` (2026-10: 0.5.21 / 0.30.0). The
+    # 0.5.17 / 0.27.1 tables stay reachable as earlier same-backend donors. The native FP8 checkpoint
     # needs tp=16 to fit its estimated weight footprint. Keep EP node-local
     # on GB300's four-GPU node (the current engine rejects cross-node EP),
     # while the wider aggregate batch exercises the IFB batch dimension at
@@ -498,14 +503,14 @@ SMOKE_CASES = [
             model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
             system_name="gb300",
             backend_name="sglang",
-            backend_version="0.5.17",
+            backend_version="next",
             tp_size=16,
             moe_tp_size=4,
             moe_ep_size=4,
             agg_batch_size=32,
             nextn=0,
         ),
-        id="qwen38-max-gb300-sglang-0517-fp8-agg",
+        id="qwen38-max-gb300-sglang-next-fp8-agg",
     ),
     # Simulation-only quantization override on the bf16 checkpoint. This
     # covers the measured NVFP4 MoE rows and a non-trivial disaggregated
@@ -516,7 +521,7 @@ SMOKE_CASES = [
             model_path="Qwen/Qwen3.8-2.4T-A95B",
             system_name="gb300",
             backend_name="sglang",
-            backend_version="0.5.17",
+            backend_version="next",
             moe_quant_mode="nvfp4",
             moe_tp_size=2,
             moe_ep_size=4,
@@ -525,7 +530,7 @@ SMOKE_CASES = [
             disagg_decode_num_workers=2,
             nextn=0,
         ),
-        id="qwen38-max-gb300-sglang-0517-nvfp4-disagg",
+        id="qwen38-max-gb300-sglang-next-nvfp4-disagg",
     ),
     # vLLM 0.27.1 sparse-data twin: model-specific GEMM/GDN/MoE silicon with
     # attention, communication, and quantization supplied by the approved
@@ -537,14 +542,14 @@ SMOKE_CASES = [
             model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
             system_name="gb300",
             backend_name="vllm",
-            backend_version="0.27.1",
+            backend_version="next",
             tp_size=16,
             moe_tp_size=16,
             moe_ep_size=1,
             agg_batch_size=32,
             nextn=0,
         ),
-        id="qwen38-max-gb300-vllm-0271-fp8-agg",
+        id="qwen38-max-gb300-vllm-next-fp8-agg",
     ),
     # The bf16 checkpoint needs two TP16 pipeline stages to satisfy the
     # weight-memory bound. This is the second measured vLLM MoE lane and uses
@@ -555,7 +560,7 @@ SMOKE_CASES = [
             model_path="Qwen/Qwen3.8-2.4T-A95B",
             system_name="gb300",
             backend_name="vllm",
-            backend_version="0.27.1",
+            backend_version="next",
             tp_size=16,
             pp_size=2,
             moe_tp_size=16,
@@ -565,7 +570,7 @@ SMOKE_CASES = [
             disagg_decode_num_workers=2,
             nextn=0,
         ),
-        id="qwen38-max-gb300-vllm-0271-bf16-disagg",
+        id="qwen38-max-gb300-vllm-next-bf16-disagg",
     ),
 ]
 

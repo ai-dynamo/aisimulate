@@ -43,7 +43,8 @@ def _raw_context_latency(db, kernel_source, model_key, batch, seq_len):
 
 def test_query_gdn_vllm_0271_context_scan_prefers_own_flashinfer_rows():
     """The logical query resolves the shipped Qwen3.8 physical row."""
-    db = get_database("gb300", "vllm", "0.27.1")
+    # 0.27.1 was the derived `next` until the 2026-10 campaign landed 0.30.0; this test pins raw 0.27.1 coordinates.
+    db = get_database("gb300", "vllm", "0.27.1", allow_unlisted_version=True)
     model_key = (8192, 1, 128, 8, 128, 4)  # Qwen3.8-Max GDN tp16 shard
 
     own_raw = _raw_context_latency(db, "chunk_gated_delta_rule_flashinfer", model_key, 1, 1024)

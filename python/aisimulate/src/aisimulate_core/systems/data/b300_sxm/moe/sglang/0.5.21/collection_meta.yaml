@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.5.21
+  image: lmsysorg/sglang:v0.5.21
+  image_digest: sha256:b1259f3ea3275f66237c498ea388919729018bc9f01c3d638391e06e2cf3f469
+tables:
+  moe_perf:
+    rows: 182727
+    status: complete
+    collections:
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:ccbf34566a7a80b723161bf590641f645382131f539a36b94cea31d2e8d85d43
+      case_plan_hash: sha256:a13a658601a1283896be35c91e12f5de6bf601233d74a3a73d68bfef2fb49017
+      collected_at: '2026-10-08'
+      rows: 56244
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:ccbf34566a7a80b723161bf590641f645382131f539a36b94cea31d2e8d85d43
+      case_plan_hash: sha256:54daa6ee7eb01422c5ac6ebfc15e9960013c854e04334c8383869c77388b2648
+      collected_at: '2026-10-08'
+      rows: 51186
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:ccbf34566a7a80b723161bf590641f645382131f539a36b94cea31d2e8d85d43
+      case_plan_hash: sha256:7b3b29036da3cb76df539b453df9e757020dd68070507b166443cd9625a84a50
+      collected_at: '2026-10-08'
+      rows: 2349
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:ccbf34566a7a80b723161bf590641f645382131f539a36b94cea31d2e8d85d43
+      case_plan_hash: sha256:a2919af9187f319954177f0593ae470be81662b252c52bcc84138c5c31aa7afc
+      collected_at: '2026-10-08'
+      rows: 22842
+      status: complete
+    - collector_ref: ee219cc60e13e9f60db50b63f13bab536c598781
+      collector_hash: sha256:ccbf34566a7a80b723161bf590641f645382131f539a36b94cea31d2e8d85d43
+      case_plan_hash: sha256:cbeb6e487916e8ccb2310fd22d7d2bb2e137eea9762da2a0baf01bb6a472b2f2
+      collected_at: '2026-10-08'
+      rows: 50136
+      status: complete
