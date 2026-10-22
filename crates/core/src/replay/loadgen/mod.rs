@@ -45,8 +45,9 @@ pub use types::{
     AgenticPlayStatus, AgenticSourceProvenance, AgenticTrace, AgenticTrajectorySnapshot,
     ArrivalSpec, DelaySpec, LengthSpec, MooncakeRow, OUTPUT_REPLAY_CONSUMER_RUNTIME_KEY,
     OUTPUT_REPLAY_ID_ANNOTATION_KEY, ReadyTurn, ReplayRequestHashes, ReplayRequestPayload,
-    SessionPartitionSpec, SessionTrace, SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace,
-    ValidatedAgenticGraph, effective_replay_key, output_replay_id_annotation,
+    SessionPartitionSpec, SessionTrace, SyntheticImages, SyntheticTraceSpec, Trace,
+    TraceFileFormat, TurnTrace, ValidatedAgenticGraph, effective_replay_key,
+    output_replay_id_annotation,
 };
 #[cfg(feature = "python")]
 pub(crate) use weka::load_weka_agentic_graph_cached;

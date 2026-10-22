@@ -79,9 +79,56 @@ class ForwardPassEstimatorSpec:
         return ""
 
 
+_ENCODER_SHAPE_FIELDS = ("sequences", "patch_tokens", "transformer_tokens", "output_tokens")
+
+
+@dataclass(frozen=True)
+class NativeEncoderTiming:
+    """Terms of SGLang's encoder loop the replay prices batches from.
+
+    The forward itself is priced at replay time by the canonical timing model
+    (`timing_model`, a prefill-shaped rank at the pool's tensor width whose model
+    compiles the vision tower). `preprocess_ms_per_image` extrapolates the tokenizer
+    manager's measured `process` stage per image, the origin `preprocess_source`
+    records; the encoder servers run the same image processor. `frontend` is that
+    stage with the workload it was measured for, so a saved pool needs no table.
+    """
+
+    preprocess_ms_per_image: float
+    preprocess_source: str
+    # Geometry of one image as the encoder forward sees it.
+    shape: dict[str, int]
+    # Embedding bytes for one language rank; the runner multiplies by the receiving tensor-parallel width.
+    transfer_bytes_per_image: int
+    transfer_bandwidth_gb_s: float
+    timing_model: dict[str, Any]
+    frontend: dict[str, Any]
+    # Content digest of the host table row the stage was resolved from; a saved stage carries none.
+    host_profile_digest: str | None
+
+    def __post_init__(self):
+        if not math.isfinite(self.preprocess_ms_per_image) or self.preprocess_ms_per_image < 0:
+            raise ValueError("encoder preprocess_ms_per_image must be finite and non-negative")
+        if not isinstance(self.frontend.get("stages"), list) or not self.frontend["stages"]:
+            raise ValueError("encoder frontend must carry at least one stage")
+        if set(self.shape) != set(_ENCODER_SHAPE_FIELDS) or any(
+            type(value) is not int or value <= 0 for value in self.shape.values()
+        ):
+            raise ValueError(f"encoder shape must hold positive {', '.join(_ENCODER_SHAPE_FIELDS)}")
+        if type(self.transfer_bytes_per_image) is not int or self.transfer_bytes_per_image <= 0:
+            raise ValueError("encoder transfer_bytes_per_image must be a positive integer")
+        if not math.isfinite(self.transfer_bandwidth_gb_s) or self.transfer_bandwidth_gb_s <= 0:
+            raise ValueError("encoder transfer_bandwidth_gb_s must be positive and finite")
+        if self.timing_model.get("type") != "external" or self.timing_model.get("provider") != "aic":
+            raise ValueError("encoder timing_model must be the canonical external provider")
+
+
 @dataclass(frozen=True)
 class EncoderPoolSpec:
-    """Resolved analytical EPD pool. Missing power is unavailable, never zero watts."""
+    """Resolved encoder pool: the analytical overlay's batch point, plus the native loop's terms when replayed.
+
+    Missing power is unavailable, never zero watts.
+    """
 
     model: str
     system: str
@@ -101,8 +148,12 @@ class EncoderPoolSpec:
     power_w: float | None = None
     power_coverage: float = 0.0
     latency_correction: float = 1.0
+    mode: str = "analytical"
+    native: NativeEncoderTiming | None = None
 
     def __post_init__(self):
+        if self.mode not in ("analytical", "native") or (self.mode == "native") != (self.native is not None):
+            raise ValueError("encoder mode must be analytical, or native with its loop terms")
         for name in ("model", "system", "backend", "backend_version"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"encoder {name} must be nonempty")
@@ -340,6 +391,8 @@ class RunnerCapabilities:
     supports_state_cache: bool = False
     supports_agentic_profile: bool = False
     supports_grouped_kv_cache: bool = False
+    supports_native_epd: bool = False
+    supports_sglang_host_loop: bool = False
     supports_agentic_live_warmup: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
@@ -491,15 +544,35 @@ class RunnerCapabilities:
                     raise ValueError(
                         "runner does not support state_cache; select a stack that advertises this capability"
                     )
+        if not self.supports_sglang_host_loop:
+            for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if not isinstance(rank, Mapping):
+                    continue
+                sglang = rank.get("sglang")
+                if any(rank.get(name) is not None for name in ("vision", "frontend")) or (
+                    isinstance(sglang, Mapping)
+                    and any(sglang.get(name) is not None for name in ("host_loop", "vlm_cache_bytes"))
+                ):
+                    raise ValueError(
+                        "runner does not support the SGLang host loop "
+                        "(vision, frontend, sglang.host_loop, sglang.vlm_cache_bytes); use --stack engine"
+                    )
         if deployment.tokenization is not None:
             if not self.supports_tokenization:
                 raise ValueError("runner does not support engine.tokenization; use --stack engine")
             if spec.execution_mode != "offline":
                 raise ValueError("engine.tokenization requires offline replay")
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
-            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
-        if deployment.encoder is not None and not self.supports_analytical_epd:
-            raise ValueError("runner does not support analytical EPD")
+            raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
+        if deployment.encoder is not None:
+            supported = (
+                self.supports_native_epd if deployment.encoder.mode == "native" else self.supports_analytical_epd
+            )
+            if not supported:
+                raise ValueError(f"runner does not support {deployment.encoder.mode} EPD")
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"

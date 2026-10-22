@@ -29,7 +29,16 @@ composition. Construction validates the spec and composition. Running consumes
 the Replayer so ownership, virtual time and caches remain within one execution.
 `ReplayEngineFactory::default()` uses engine timing from the descriptor;
 `with_timing_model` or `with_optional_role_timing_models` supplies explicit
-`Arc<dyn TimingModel>` providers.
+`Arc<dyn TimingModel>` providers. Schedulers price each prefill batch with
+`TimingModel::predict_prefill_totals_ms(batch_size, new_tokens, prefix_tokens)`:
+the tokens the batch computes and the cached or earlier-chunk KV its requests
+read. The default reduces these totals to the integer per-request means of
+`predict_prefill_ms`; providers indexed by iteration totals override it.
+`TimingModel::predict_vision_ms(&[VisionShape])`
+prices one vision-encoder batch; the default returns `None`, and a rank with
+image work then rejects it rather than treating the encoder as free. The AIC
+provider answers from the `EngineSpec` `vision` section compiled under
+`encoder_parallel`.
 
 `run_engine_replay`, `run_engine_replay_with_timing`, and
 `run_engine_replay_with_optional_role_timing` are exported convenience functions;
@@ -59,6 +68,18 @@ adapter must not invent token content for KV-aware replay. `dp_rank` selects
 aggregated/decode rank; `prefill_dp_rank` is P/D-only. `WorkerPoolSpec` defines
 initial worker count and startup delay. Millisecond clocks, bandwidth-derived
 handoff times and callback timestamps use simulated time, never host wall time.
+
+A request may author `kv_hints: {"source_worker": W, "source_dp_rank": R}`, the
+worker and attention-DP rank that hold a prefix of its prompt, as when a client
+attaches a `kv.fetch` hint. It is omitted when absent. When replay starts, an
+`R` outside the `dp_size` of the pool that places the request (aggregated, or
+prefill in P/D) fails with `ReplayError::InvalidSpec`. The built-in round-robin
+placement ignores a hint whose source worker is unknown, not yet ready, draining
+or removed, and the P/D decode pool ignores every hint. Only a pool that
+configures `kvcr` acts on hints ([KV cache](../engine/kv-cache.md#kvcr-peer-fetch));
+elsewhere they change nothing. Engines receive the resolved source as
+`engine::Request::kv_hint` (`KvHintSource { worker_id, dp_rank }`), which never
+names the receiving rank.
 
 `ReplayEngineConfig` has the aggregated rank/DP/TP/PCP descriptor and optional
 prefill/decode `ReplayRoleConfig` objects. Engine and topology validators enforce

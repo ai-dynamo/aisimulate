@@ -10,6 +10,9 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
     EngineRecommendationConfig,
+    EstimatorPolicyConfig,
+    HostWorkerPredictionConfig,
+    TimingConfig,
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
@@ -26,6 +29,61 @@ def _engine() -> dict:
         "hardware": "h200_sxm",
         "workers": {"aggregated": {}},
     }
+
+
+@pytest.mark.parametrize("config_type", [CorePredictionConfig, CoreRecommendationConfig])
+@pytest.mark.parametrize("role", [None, "aggregated", "prefill", "decode"])
+def test_engine_configuration_rejects_learned_timing_before_loading_source(config_type, role):
+    engine = _engine()
+    policy = {
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
+    }
+    if role is None:
+        engine.update(policy)
+    elif role == "aggregated":
+        engine["workers"][role]["timing"] = policy
+    else:
+        engine["mode"] = "disaggregated"
+        engine["workers"] = {"prefill": {}, "decode": {}}
+        engine["workers"][role]["timing"] = policy
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        config_type.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize("schema_mode", ["validation", "serialization"])
+@pytest.mark.parametrize("config_type", [TimingConfig, EstimatorPolicyConfig])
+def test_replay_estimation_schema_advertises_supported_modes(config_type, schema_mode):
+    field = config_type.model_json_schema(mode=schema_mode)["properties"]["estimation_mode"]
+    alternatives = field.get("anyOf", [field])
+    supported = {"auto", "op_level", "fpm_interpolation", "fpm_regression"}
+    assert [set(option["enum"]) for option in alternatives if "enum" in option] == [supported]
+    assert {option["type"] for option in alternatives} == (
+        {"string", "null"} if config_type is TimingConfig else {"string"}
+    )
+    assert field["default"] == (None if config_type is TimingConfig else "auto")
+
+    for mode in supported:
+        config = config_type(estimation_mode=mode)
+        assert config_type.model_validate_json(config.model_dump_json()).estimation_mode == mode
+    if config_type is TimingConfig:
+        assert config_type(estimation_mode=None).estimation_mode is None
+    else:
+        with pytest.raises(ValidationError, match="estimation_mode"):
+            config_type(estimation_mode=None)
+
+
+@pytest.mark.parametrize(
+    "estimator_config",
+    [
+        None,
+        {"fpm_learned": {"artifact_path": "/missing/learned-seed.json"}},
+        {"fpm_learned": {"checkpoint_path": "/missing/learned-checkpoint"}},
+    ],
+)
+def test_timing_config_rejects_learned_with_actionable_error_before_loading_source(estimator_config):
+    with pytest.raises(ValidationError, match="engine replay's phase-only timing"):
+        TimingConfig(estimation_mode="fpm_learned", estimator_config=estimator_config)
 
 
 @pytest.mark.parametrize(
@@ -126,6 +184,8 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1
     assert programmatic.decode.scheduler.max_sequences == 256
+    hosted = WorkersPredictionConfig(prefill=HostWorkerPredictionConfig(host_loop=True))
+    assert hosted.prefill is not None and hosted.prefill.host_loop is True
 
 
 def test_prediction_rejects_nonpositive_prefill_schedule_interval() -> None:
@@ -1021,6 +1081,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
+    if mode != "aggregated":
+        worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
     roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
     raw["engine"]["mode"] = mode
     for public_role in roles:
@@ -1892,14 +1954,26 @@ def test_agentic_warmup_requires_snapshot_and_lanes(missing: str) -> None:
         )
 
 
-def test_new_default_selection_survives_serialization_without_becoming_legacy_op_level():
-    config = CorePredictionConfig.model_validate({"engine": _engine()})
+@pytest.mark.parametrize("mode", [None, "auto", "op_level", "fpm_interpolation", "fpm_regression"])
+def test_estimation_selection_survives_serialization_and_compilation(mode):
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    engine = {
+        **_engine(),
+        "context_length": 2048,
+        "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 256}}}},
+    }
+    if mode is not None:
+        engine["estimation_mode"] = mode
+    config = CorePredictionConfig.model_validate({"engine": engine})
     serialized = config.model_dump(mode="json", exclude_none=True)
     timing = serialized["engine"]["workers"]["aggregated"]["timing"]
     assert "forward_model" not in timing
     reloaded = CorePredictionConfig.model_validate(serialized)
-    assert reloaded.engine.estimation_mode == "auto"
+    assert reloaded.engine.estimation_mode == (mode or "auto")
     assert reloaded.engine.workers.aggregated.timing.estimation_mode is None
+    deployment = prediction_to_replay_spec(reloaded).backend_deployment
+    assert deployment.agg_engine_args["timing_model"]["config"]["estimation_mode"] == (mode or "auto")
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])

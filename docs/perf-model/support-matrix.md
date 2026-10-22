@@ -17,17 +17,20 @@ queries, Replay feature support, and measured accuracy are separate results.
 | `fpm_interpolation`, `method: direct` | Verified architecture metadata, resource profile, genuine phase measurements | Exact identity and measured brackets; no out-of-domain extrapolation or analytical graph. |
 | `fpm_interpolation`, `method: sol` | Registered analytical model and matching forward table/sidecar | Only the implemented SOL transfer domain; not every analytical operation is supported by the FPM SOL evaluator. |
 | `fpm_regression` | Valid observed iterations for the selected workload store | Cold or unusable stores return no nonempty prediction. One ready store does not train another. |
+| `fpm_learned` | Explicit selection with `fallback_policy: deny` and exactly one inference artifact or checkpoint; online adaptation requires a training/runtime checkpoint, and the causal selector requires a training seed | Standalone canonical API with complete per-iteration `ForwardPassMetrics`; absent learned stores return `None`. Phase-based Replay, engine CLI prediction/recommendation, and Sweeper timing reject this mode. |
 
 See [selection and fallback](configuration.md#selection-and-fallback) and
-[whole-forward coverage](methods/whole-forward.md). Explicit invalid configuration
-is not converted into a fallback estimator.
+[whole-forward coverage](methods/whole-forward.md). Learned source identity,
+adaptation and correction requirements are documented in
+[learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
+Explicit invalid configuration is not converted into a fallback estimator.
 
 ## Published FPE matrix
 
 The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
 is a **strict-native op-level** probe of `EngineHandle.compile` and representative
 forward queries. It does not call `best_available`, enable regression fallback,
-or rescue missing data with HYBRID. It is not a matrix of all three estimator paths.
+or rescue missing data with HYBRID. It is not a matrix of all estimator paths.
 
 Rows retain model/architecture, system, backend/version, resolved precision,
 topology, role, phase, source SHA, package version, and a reproducer. Aggregated

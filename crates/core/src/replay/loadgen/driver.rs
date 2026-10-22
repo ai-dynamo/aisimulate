@@ -35,6 +35,7 @@ use super::{
     AgenticPlaySnapshot, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
     SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
 };
+use crate::engine::ImageSpec;
 use crate::engine::belady::{SequenceHash, input_sequence_hashes};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::{
@@ -365,6 +366,7 @@ struct TurnRuntime {
     strict_priority: u32,
     policy_class: Option<String>,
     synthetic_session_id: bool,
+    images: Vec<ImageSpec>,
     // Canonical capture assigns ordinals; Belady may instead reserve an opaque
     // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
@@ -2002,6 +2004,7 @@ impl WorkloadDriver {
                         strict_priority: source.strict_priority,
                         policy_class: source.policy_class.clone(),
                         synthetic_session_id: false,
+                        images: Vec::new(),
                         deterministic_request_id: Some(snapshot.request_uuid(source_index)?),
                     }],
                     cumulative_tokens: Vec::new(),
@@ -2323,6 +2326,7 @@ impl WorkloadDriver {
                     strict_priority: node.strict_priority,
                     policy_class: node.policy_class,
                     synthetic_session_id: node.synthetic_session_id,
+                    images: Vec::new(),
                     deterministic_request_id: Some(deterministic_request_id),
                 }],
                 cumulative_tokens: Vec::new(),
@@ -2459,9 +2463,18 @@ impl WorkloadDriver {
                                 std::mem::take(&mut turn.hash_ids),
                                 trace_block_size,
                             )?,
-                            PromptMode::DeltaCumulative => PromptTokens::Materialized(
-                                turn.synthesize_tokens(trace_block_size)?,
-                            ),
+                            PromptMode::DeltaCumulative => {
+                                // Image spans index the turn's own prompt, not the
+                                // session history the cumulative request carries.
+                                if !turn.images.is_empty() {
+                                    bail!(
+                                        "accumulating session deltas does not support image turns"
+                                    );
+                                }
+                                PromptTokens::Materialized(
+                                    turn.synthesize_tokens(trace_block_size)?,
+                                )
+                            }
                         };
                         let output_token_ids = Some(planned_output_token_ids(
                             turn.output_token_ids,
@@ -2480,6 +2493,7 @@ impl WorkloadDriver {
                             strict_priority: turn.strict_priority,
                             policy_class: turn.policy_class,
                             synthetic_session_id: turn.synthetic_session_id,
+                            images: turn.images,
                             deterministic_request_id: None,
                         })
                     })
@@ -2833,11 +2847,13 @@ impl WorkloadDriver {
                         dp_rank: 0,
                         preferred_dp_rank: None,
                         preferred_prefill_dp_rank: None,
+                        kv_hints: None,
                         arrival_timestamp_ms,
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context: replay_context.clone(),
+                        images: turn.images.clone(),
                     };
                     deferred_request_with_hashes(
                         request_metadata,
@@ -2863,11 +2879,13 @@ impl WorkloadDriver {
                         dp_rank: 0,
                         preferred_dp_rank: None,
                         preferred_prefill_dp_rank: None,
+                        kv_hints: None,
                         arrival_timestamp_ms,
                         priority: turn.priority,
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context,
+                        images: turn.images.clone(),
                     });
                     (request, replay_hashes)
                 }
@@ -2935,16 +2953,22 @@ impl WorkloadDriver {
         emitted
     }
 
+    /// Whether `on_output_token` has any effect for this request. Full-prompt
+    /// requests outside preparation ignore output progress.
+    pub fn observes_output_token(&self, request_uuid: Uuid) -> bool {
+        self.prompt_mode != PromptMode::Full || self.knows_preparation_request(request_uuid)
+    }
+
     pub fn on_output_token(&mut self, request_uuid: Uuid, token_id: u32) -> Result<()> {
+        if !self.observes_output_token(request_uuid) {
+            return Ok(());
+        }
         if self.knows_preparation_request(request_uuid) {
             return self
                 .agentic_preparation
                 .as_mut()
                 .unwrap()
                 .on_output(request_uuid);
-        }
-        if self.prompt_mode == PromptMode::Full {
-            return Ok(());
         }
         let in_flight = self
             .in_flight
@@ -4307,6 +4331,43 @@ mod tests {
     }
 
     #[test]
+    fn accumulating_delta_mode_rejects_image_turns() {
+        let trace = Trace {
+            block_size: 4,
+            sessions: vec![SessionTrace {
+                session_id: "a".into(),
+                first_arrival_timestamp_ms: Some(0.0),
+                turns: vec![TurnTrace {
+                    input_length: 6,
+                    max_output_tokens: 1,
+                    output_token_ids: None,
+                    replay_key: None,
+                    hash_ids: vec![10, 11],
+                    delay_after_previous_ms: 0.0,
+                    priority: 0,
+                    strict_priority: 0,
+                    policy_class: None,
+                    synthetic_session_id: false,
+                    images: vec![ImageSpec {
+                        identity: 0,
+                        token_start: 0,
+                        token_end: 4,
+                        encoder: crate::engine::EncoderShape {
+                            sequences: 1,
+                            patch_tokens: 4,
+                            transformer_tokens: 4,
+                            output_tokens: 1,
+                        },
+                        embedding_bytes: 1,
+                    }],
+                }],
+            }],
+        };
+        assert!(WorkloadDriver::new_trace(trace.clone(), 4).is_ok());
+        assert!(WorkloadDriver::new_trace_accumulating_deltas(trace, 4).is_err());
+    }
+
+    #[test]
     fn accumulating_delta_mode_includes_previous_output_tokens() {
         let trace = Trace {
             block_size: 4,
@@ -4325,6 +4386,7 @@ mod tests {
                         strict_priority: 4,
                         policy_class: None,
                         synthetic_session_id: false,
+                        images: Vec::new(),
                     },
                     TurnTrace {
                         input_length: 3,
@@ -4337,6 +4399,7 @@ mod tests {
                         strict_priority: 7,
                         policy_class: None,
                         synthetic_session_id: false,
+                        images: Vec::new(),
                     },
                 ],
             }],

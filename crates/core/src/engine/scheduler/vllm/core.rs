@@ -22,7 +22,7 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
-use crate::engine::host_offload::G2Binding;
+use crate::engine::host_offload::{G2Binding, HostTierHandle};
 use crate::engine::kv_manager::AllocationRequirement;
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::kv_manager::{G1Manager, GroupedKvPool};
@@ -42,8 +42,8 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, PressureEvent, PressureKind,
-    PressureState, modeled_duration_ms,
+    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PressureEvent,
+    PressureKind, PressureState, modeled_duration_ms,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,7 +477,6 @@ impl SchedulerState {
         self.connector_waiting_selections
     }
 
-    #[cfg(test)]
     fn waiting_request_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
         self.waiting_members
             .iter()
@@ -719,6 +718,17 @@ impl VllmCore {
             .as_mut()
             .expect("G3 requires G2")
             .set_g3(registry, node);
+    }
+
+    pub(crate) fn set_kvcr(
+        &mut self,
+        registry: crate::engine::kvcr::SharedKvcrRegistry,
+        rank: KvHintSource,
+    ) -> HostTierHandle {
+        self.native_host_offload
+            .as_mut()
+            .expect("KVCR requires G2")
+            .set_kvcr(registry, rank)
     }
 
     pub(crate) fn set_host_offload_observer(
@@ -969,6 +979,17 @@ impl VllmCore {
         // fallible command is validated, violating RankEngine error atomicity.
         // While a model pass is in flight, also keep its physical transfer
         // completions hidden until complete_engine_boundary().
+        match &command {
+            SchedulerCommand::Submit(request)
+            | SchedulerCommand::SubmitHandoffPrefill { request, .. }
+            | SchedulerCommand::ReserveDestination { request, .. } => {
+                anyhow::ensure!(
+                    request.images.is_empty(),
+                    "native request images require the SGLang backend; vLLM and TRT-LLM do not support them"
+                );
+            }
+            _ => {}
+        }
         anyhow::ensure!(
             self.kv_manager.grouped().is_none()
                 || matches!(
@@ -1172,15 +1193,11 @@ impl VllmCore {
             return Vec::new();
         }
 
-        if self.pending_destinations.front_due(generation).is_none() {
-            return Vec::new();
-        }
-        let (held_completion_blocks, activated_waiting_completion_blocks) =
-            self.destination_handoff_completion_headroom(None);
         let reservation_mode = {
             let Some((_, _, request)) = self.pending_destinations.front_due(generation) else {
                 return Vec::new();
             };
+            let to_completion_blocks = request.sequence.to_completion_blocks();
             let running = self
                 .state
                 .running
@@ -1193,11 +1210,10 @@ impl VllmCore {
                     num_gpu_blocks: self.args.num_gpu_blocks,
                     block_size: self.args.block_size,
                 },
-                &request.sequence,
+                to_completion_blocks,
                 running,
                 &self.kv_manager,
-                held_completion_blocks,
-                activated_waiting_completion_blocks,
+                || self.destination_handoff_completion_headroom(None),
             ) {
                 policy::DestinationAdmissionDecision::Reserve { mode } => mode,
                 policy::DestinationAdmissionDecision::Wait => {
@@ -1257,28 +1273,28 @@ impl VllmCore {
         }]
     }
 
-    fn destination_handoff_completion_headroom(
-        &self,
-        exclude_request: Option<Uuid>,
-    ) -> (usize, usize) {
+    /// Completion tails already promised to destination handoffs that are not
+    /// running: held reservations plus activated requests still waiting.
+    fn destination_handoff_completion_headroom(&self, exclude_request: Option<Uuid>) -> usize {
         let held = self
             .destination_holds
             .payloads()
             .map(ReservedVllmDecode::unallocated_completion_blocks)
             .fold(0usize, usize::saturating_add);
         if self.active_destination_handoffs.is_empty() {
-            return (held, 0);
+            return held;
         }
+        // An activated handoff stays tracked until it finishes, so scan only
+        // the waiting queues rather than every resident request.
         let activated_waiting = self
             .state
-            .requests
-            .iter()
-            .filter(|(uuid, _)| {
-                Some(**uuid) != exclude_request
-                    && self.active_destination_handoffs.contains_request(**uuid)
-                    && !self.state.running_members.contains(*uuid)
+            .waiting_request_ids()
+            .filter(|uuid| {
+                Some(*uuid) != exclude_request
+                    && self.active_destination_handoffs.contains_request(*uuid)
             })
-            .map(|(_, request)| {
+            .filter_map(|uuid| self.state.requests.get(&uuid))
+            .map(|request| {
                 policy::blocks_needed_to_finish(
                     &request.sequence,
                     self.args.block_size,
@@ -1287,7 +1303,7 @@ impl VllmCore {
                 )
             })
             .fold(0usize, usize::saturating_add);
-        (held, activated_waiting)
+        held.saturating_add(activated_waiting)
     }
 
     fn validate_request_id(&self, uuid: Uuid) -> anyhow::Result<()> {
@@ -1412,6 +1428,7 @@ impl VllmCore {
                 &sequence.lease,
                 self.args.block_size,
                 adapter.publishes_residency(),
+                request.kv_hint,
             ))
         });
         VllmRequestState {
@@ -1799,7 +1816,10 @@ impl VllmCore {
     ) -> anyhow::Result<EnginePassResult> {
         #[cfg(test)]
         let requests_before = self.state.requests.len();
-        let g3_epoch_before = self.native_host_offload.as_ref().and_then(|a| a.g3_epoch());
+        let retry_epoch_before = self
+            .native_host_offload
+            .as_ref()
+            .and_then(|a| a.retry_epoch());
         self.kv_manager.begin_step();
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
@@ -1932,7 +1952,11 @@ impl VllmCore {
                 && self.native_host_offload.is_some()
                 && self.state.has_materialized_waiting());
             let prioritize_connector_waiting = self.native_host_offload.is_some();
-            let g1_owner = g3_epoch_before.and_then(|_| {
+            // A G3 or KVCR restore can wake a connector waiter ahead of one
+            // that already holds reserved G1 for its load; serve that owner
+            // first so the restored head cannot block the space it waits for.
+            // A rank without G3 that has never pulled keeps plain G2 order.
+            let g1_owner = retry_epoch_before.and_then(|_| {
                 self.state.connector_waiting.iter().copied().find(|uuid| {
                     self.state.connector_waiting_members.contains(uuid)
                         && !self.state.connector_deadline_waiting_members.contains(uuid)
@@ -2016,8 +2040,6 @@ impl VllmCore {
             };
 
             let decision = {
-                let (held_completion_blocks, activated_waiting_completion_blocks) =
-                    self.destination_handoff_completion_headroom(Some(uuid));
                 let request = self
                     .state
                     .requests
@@ -2080,8 +2102,7 @@ impl VllmCore {
                                     &self.kv_manager,
                                     reserved_request_blocks,
                                     inflight_prefill_reserved_blocks,
-                                    held_completion_blocks,
-                                    activated_waiting_completion_blocks,
+                                    || self.destination_handoff_completion_headroom(Some(uuid)),
                                     raw_prefill_cost
                                         .expect("fresh admission must retain its G1 lookup"),
                                 )
@@ -2331,10 +2352,10 @@ impl VllmCore {
         Ok(EnginePassResult {
             committed_requests,
             end_ms,
-            same_timestamp_retry: if g3_epoch_before.is_some()
+            same_timestamp_retry: if retry_epoch_before.is_some()
                 && end_ms == now_ms
                 && self.native_host_offload.as_ref().is_some_and(|a| {
-                    a.g3_epoch() != g3_epoch_before
+                    a.retry_epoch() != retry_epoch_before
                         || a.next_deadline().is_some_and(|d| d <= now_ms)
                 }) {
                 crate::engine::generalized::SameTimestampRetry::Retry
@@ -2598,7 +2619,8 @@ impl VllmCore {
                 end = aligned;
             }
         }
-        let last_full = known / alignment * alignment;
+        // Match the state cache's replay boundary, including prompts that end on a full block.
+        let last_full = prompt.saturating_sub(1) / alignment * alignment;
         let tail = prompt / unit * unit;
         let next = start.checked_add(alignment - start % alignment);
         for stop in [
@@ -3371,11 +3393,13 @@ fn predict_prefill_duration(
         return Ok(Duration::ZERO);
     }
 
-    let mean_isl = batch_total_isl / batch_count;
-    let mean_prefix = batch_total_prefix / batch_count;
-    let prefill_ms = args
-        .perf_model
-        .predict_prefill_time(batch_count, mean_isl, mean_prefix)?;
+    // Price the scheduled totals: integer per-request means can reconstruct
+    // more prefill tokens than the budget admitted.
+    let prefill_ms = args.perf_model.predict_prefill_time(
+        batch_count,
+        batch_total_isl - batch_total_prefix,
+        batch_total_prefix,
+    )?;
     let modeled_ms = modeled_duration_ms(prefill_ms, args.speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))
 }
@@ -3721,6 +3745,31 @@ mod state_cache_tests {
 
     fn step(core: &mut VllmCore) -> EnginePassResult {
         core.try_execute_hidden_pass(0.0).unwrap()
+    }
+
+    #[test]
+    fn aligned_prompt_retains_a_reusable_state_after_long_decode() {
+        let mut config = args(64, true, None);
+        config.prefix_match_unit = Some(4);
+        let mut core = VllmCore::new(config);
+        submit(&mut core, 93_030, 16, 16);
+        for _ in 0..32 {
+            if core.state.requests.is_empty() {
+                break;
+            }
+            step(&mut core);
+        }
+        assert!(core.state.requests.is_empty());
+        let second = submit(&mut core, 93_031, 16, 1);
+        let pass = step(&mut core);
+        assert_eq!(
+            pass.admissions
+                .iter()
+                .find(|admission| admission.uuid == second)
+                .unwrap()
+                .reused_input_tokens,
+            12
+        );
     }
 
     #[test]
@@ -4160,6 +4209,34 @@ mod state_cache_tests {
                 Some(request.sequence.len() - 1)
             );
             assert_eq!(request.num_computed_tokens, request.sequence.len() - 1);
+        }
+    }
+
+    #[test]
+    fn full_block_alignment_retains_state_with_mtp() {
+        for rates in ["0,0,0", "1,1,1", "1,0.57,0.5"] {
+            let mut config = args(64, true, Some(3));
+            config.prefix_match_unit = Some(4);
+            config.aic_nextn_accept_rates = Some(rates.to_owned());
+            let mut core = VllmCore::new(config);
+            submit(&mut core, 93_032, 17, 16);
+            for _ in 0..32 {
+                if core.state.requests.is_empty() {
+                    break;
+                }
+                step(&mut core);
+            }
+            assert!(core.state.requests.is_empty());
+            let second = submit(&mut core, 93_033, 17, 1);
+            let pass = step(&mut core);
+            assert_eq!(
+                pass.admissions
+                    .iter()
+                    .find(|admission| admission.uuid == second)
+                    .unwrap()
+                    .reused_input_tokens,
+                16
+            );
         }
     }
 
