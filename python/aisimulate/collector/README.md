@@ -32,6 +32,9 @@ The affected stock collectors use those paths and declare exact rc29
 compatibility. The old attention package only re-exports selected public names;
 it does not preserve imports such as `attention_backend.interface`. These
 source fixes still require GPU qualification of inputs and kernel dispatch.
+MoE also uses rc29's explicit activation payload: GPT-OSS preserves its
+`1.702 / 1.0 / 7.0` SwiGLU constants, and Nemotron-3 preserves ReLU². The removed
+activation keyword arguments must not silently fall back to ordinary SwiGLU.
 
 # Preparation
 
