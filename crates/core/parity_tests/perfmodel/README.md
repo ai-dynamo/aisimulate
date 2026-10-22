@@ -142,13 +142,15 @@ at a time and run:
 ```bash
 python/aisimulate/.venv/bin/python -m pytest -c python/aisimulate/pytest.ini -q -p no:timeout \
   crates/core/parity_tests/perfmodel/test_engine_step_parity.py \
-  -k 'kimi-k3-b300-sglang-next-nospec and Static'
+  -k 'kimi-k3-b300-sglang-next-nospec and (TestRustEngineStepStaticParity or TestRustEngineStepDisaggParity)'
 ```
 
 With no 0.5.20 families present, the static and disaggregated records pass
-against the old references. With only `gemm` or only `comm` present, the test
-reports the static deltas quoted above. With only `kda`, `moe`, `mhc` or
-`glm53_attention` present, it passes.
+against the old references. With only `gemm` or only `comm` present, both
+records drift. `gemm` alone moves disaggregated TTFT/TPOT by +2.07%/−2.01%,
+and `comm` alone moves them by −1.04%/−1.64%; the two together give the
+refreshed values above. With only `kda`, `moe`, `mhc` or `glm53_attention`
+present, both records pass.
 
 ### B60 graph-timing data promotion in PR #329
 
