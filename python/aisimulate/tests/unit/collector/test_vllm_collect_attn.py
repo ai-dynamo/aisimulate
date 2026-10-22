@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 import typing
 from contextlib import ExitStack, contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -66,6 +67,58 @@ class SlidingWindowSpec(Spec):
 class BatchSpec:
     seq_lens: list[int]
     query_lens: list[int]
+
+
+@pytest.mark.parametrize("legacy_cpu_fields", [False, True])
+@pytest.mark.parametrize("query_lens", [[1, 1], [9, 32], [1, 16]])
+def test_common_attention_metadata_preserves_context_across_constructor_versions(legacy_cpu_fields, query_lens):
+    torch = _real_torch_or_skip()
+    # Strict constructors reject unexpected keywords, unlike a **kwargs stub.
+    field_names = [
+        "query_start_loc",
+        "query_start_loc_cpu",
+        "seq_lens",
+        "seq_lens_cpu_upper_bound",
+        "num_reqs",
+        "num_actual_tokens",
+        "max_query_len",
+        "max_seq_len",
+        "block_table_tensor",
+        "slot_mapping",
+        "causal",
+    ]
+    if legacy_cpu_fields:
+        field_names += ["_seq_lens_cpu", "_num_computed_tokens_cpu"]
+    metadata_type = make_dataclass("CommonAttentionMetadata", field_names)
+    create = _load_function(
+        UTILS_SOURCE,
+        "create_common_attn_metadata",
+        {
+            "torch": torch,
+            "inspect": inspect,
+            "CommonAttentionMetadata": metadata_type,
+        },
+    )
+    batch = SimpleNamespace(
+        seq_lens=[9, 32],
+        query_lens=query_lens,
+        batch_size=2,
+        compute_num_tokens=lambda: sum(query_lens),
+    )
+    metadata = create(batch, 16, torch.device("cpu"), arange_block_indices=True)
+    assert metadata.seq_lens.tolist() == [9, 32]
+    assert metadata.seq_lens_cpu_upper_bound.tolist() == [9, 32]
+    assert metadata.query_start_loc_cpu.tolist() == [0, query_lens[0], sum(query_lens)]
+    assert metadata.num_actual_tokens == sum(query_lens)
+    assert metadata.num_reqs == 2
+    assert metadata.max_query_len == max(query_lens)
+    assert metadata.max_seq_len == 32
+    assert metadata.block_table_tensor.tolist() == [[0, 1], [2, 3]]
+    context_lens = metadata.seq_lens - metadata.query_start_loc.diff()
+    assert context_lens.tolist() == [9 - query_lens[0], 32 - query_lens[1]]
+    if legacy_cpu_fields:
+        assert torch.equal(metadata._seq_lens_cpu, metadata.seq_lens_cpu_upper_bound)
+        assert torch.equal(metadata._num_computed_tokens_cpu, context_lens)
 
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
