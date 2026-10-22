@@ -812,9 +812,9 @@ that names no architecture. Onboarding passes the profile's architecture with
 `--model-architecture`, so the second example differs only on the direct
 collector path.
 
-Planned work covers per-request state in the FPM profile, importing the
-recurrent-state cache groups a probe reports, and guided collection for these
-layouts. Until then, use a qualified model-specific collection path and verified
+Planned work covers per-request state in the FPM profile, importing cache groups
+other than full or sliding attention, and guided collection for these layouts.
+Until then, use a qualified model-specific collection path and verified
 cache profile.
 
 ### Review grouped cache resources

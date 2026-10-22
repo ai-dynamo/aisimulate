@@ -922,11 +922,13 @@ def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starti
             if starting_points
             else "No usable starting point exists. The probe takes an explicit topology: record your own."
         )
-    # Recurrent state comes with a marker; an unrecognized architecture alone does not declare it. Without a declared
-    # window, the probe reports attention groups, and a matching per-token size then gives back a linear profile.
+    # A marker declares a cache group other than full or sliding attention, such as recurrent state. An unrecognized
+    # architecture alone does not declare one. Without a declared window, the probe reports attention groups, and a
+    # matching per-token size then gives back a linear profile.
     if draft.layout_markers:
         lines.append(
-            "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+            "Importing cache groups other than full or sliding attention (for example recurrent state) is not "
+            "supported yet. Import reports such probes as incomplete."
         )
     elif not draft.declares_window:
         lines.append(

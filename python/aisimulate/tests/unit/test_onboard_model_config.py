@@ -1755,7 +1755,7 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     """Run init to its nonzero exit and return its (stdout, stderr).
 
     ``import_limit`` says whether a pending reason comes from cache_layout_markers, which is when the stop warns
-    that observation import cannot take recurrent-state cache groups yet.
+    that observation import cannot take cache groups other than full or sliding attention yet.
     """
     with pytest.raises(SystemExit) as result:
         cli.main(command)
@@ -1763,7 +1763,10 @@ def _stops_with_guidance(command, capsys, *, import_limit=True):
     captured = capsys.readouterr()
     assert "Cache geometry: pending runtime probe" in captured.err
     assert "model config did not produce a complete FPM profile" not in captured.err
-    limit = "Importing recurrent-state cache groups is not supported yet. Import reports such probes as incomplete."
+    limit = (
+        "Importing cache groups other than full or sliding attention (for example recurrent state) is not supported "
+        "yet. Import reports such probes as incomplete."
+    )
     assert (limit in captured.err) is import_limit
     return captured.out, captured.err
 
@@ -1943,21 +1946,33 @@ def test_issue_475_typed_geometry_is_a_claim_the_import_checks(tmp_path, capsys)
 
 
 @pytest.mark.parametrize(
-    "fields,import_limit",
+    "fields,reason,import_limit",
     [
         # A recurrent-state marker: the probe reports state cache groups, which import cannot take yet.
-        ({"ssm_state_size": 16}, True),
+        ({"ssm_state_size": 16}, "recurrent-state field ssm_state_size", True),
+        # Only a sparse-attention layer outside a DSA decoder: the probe can report a group that import cannot take.
+        (
+            {"layer_types": ["full_attention", "deepseek_sparse_attention"]},
+            "layer_types deepseek_sparse_attention x1",
+            True,
+        ),
         # Only an unrecognized architecture: the probe reports attention cache groups, which import takes.
-        ({"architectures": ["MiMoForCausalLM"], "model_type": "mimo"}, False),
+        (
+            {"architectures": ["MiMoForCausalLM"], "model_type": "mimo"},
+            "unrecognized architecture MiMoForCausalLM",
+            False,
+        ),
     ],
 )
-def test_recurrent_state_import_warning_needs_a_layout_marker(tmp_path, capsys, fields, import_limit):
+def test_import_limit_warning_needs_a_layout_marker(tmp_path, capsys, fields, reason, import_limit):
     overrides = {key: value for key, value in _OVERRIDES.items() if key not in ("cache_layout", "kv_bytes_per_token")}
     overrides["num_experts"] = 0  # MiMoForCausalLM is not a known dense architecture.
     source, resources = _files(tmp_path, config={**_CONFIG, **fields}, overrides=overrides)
     _, stderr = _stops_with_guidance(
         _args(tmp_path / "request.yaml", source, resources), capsys, import_limit=import_limit
     )
+    # The stop names the one reason, so the case has no other marker.
+    assert f"not derived from config.json ({reason}):" in stderr
     # Without a marker or a declared window, the probe reports attention groups, so a matching per-token size
     # gives a linear profile.
     linear = (
@@ -2042,7 +2057,7 @@ def test_guided_architecture_answer_prints_the_matching_cache_layout_note(tmp_pa
     source, resources = _files(tmp_path, config=config)
     output = tmp_path / "request.yaml"
     prompts = _terminal(monkeypatch, ["MiMoForCausalLM", "0"])
-    # The only reason is the unrecognized architecture, so the stop has no recurrent-state import warning.
+    # The only reason is the unrecognized architecture, so the stop has no import-limit warning.
     stdout, _ = _stops_with_guidance(_args(output, source, resources) + ["--interactive"], capsys, import_limit=False)
     assert [prompt.split(":", 1)[0].split(" ", 1)[0] for prompt in prompts] == ["architecture", "num_experts"]
     # The note is printed after the answer, so it describes the classification the answer produced.
