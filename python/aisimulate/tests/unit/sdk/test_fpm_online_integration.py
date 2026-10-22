@@ -79,10 +79,107 @@ def load(path, mode, refresh="eager", *, identity=IDENTITY):
                     "recent_window": 5,
                     "update_every": 3,
                     "eager_refresh_interval": 4,
+                    # The independent reference below uses unit observation weights.
+                    "history_weight": None,
+                    "history_weight_ramp_observations": 0,
+                    "history_bin_grouping": False,
+                    "split_sampling_rate": 1.0,
+                    "split_rank_tolerance": 0.0,
                 },
             },
         }
     )
+
+
+def test_default_online_matches_gym_recipe_and_checkpoint_continuation(tmp_path):
+    _, seed, _ = train(tmp_path)
+    config = {
+        **IDENTITY,
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"checkpoint_path": str(seed)}},
+    }
+    explicit = copy.deepcopy(config)
+    explicit["estimator_config"]["correction"] = {"enabled": False}
+    explicit["estimator_config"]["fpm_learned"].update(
+        adaptation="online",
+        recent_window=64,
+        recent_sampling="fifo",
+        history_weight=0.1,
+        history_weight_ramp_observations=32,
+        history_bin_grouping=True,
+        update_every=1,
+        update_mode="structural",
+        update_step=1.0,
+        derivative_refresh="lazy",
+        eager_refresh_interval=32,
+        split_sampling_rate=0.5,
+        split_rank_tolerance=0.01,
+        mutable_tree_tail=None,
+        recent_max_age_observations=None,
+        seed=0,
+    )
+    normalized = RustForwardPassPerfModel.normalize_config(config)
+    assert normalized == RustForwardPassPerfModel.normalize_config(explicit)
+    assert normalized == RustForwardPassPerfModel.normalize_config(ForwardPassPerfModelConfig(**normalized))
+    default = RustForwardPassPerfModel.best_available(config)
+    reference = RustForwardPassPerfModel.best_available(explicit)
+    assert default.diagnostics()["source"] == "learned_online"
+    for index in range(72):
+        row = iteration(index, shifted=True)
+        assert default.estimate_forward_pass_time_ms(row) == reference.estimate_forward_pass_time_ms(row)
+        for model in (default, reference):
+            model.tune_with_fpms([row])
+    assert default.export_learned_artifact() == reference.export_learned_artifact()
+    state = default.learned_online_diagnostics()["stores"]["pure_decode"]
+    assert state["accepted_observations"] == 72
+    assert state["recent_rows"] == 64
+    assert state["pending_rows"] == 0
+    assert state["publications"] == 72
+    assert state["evicted_observations"] == 8
+
+    checkpoint = tmp_path / "continuation"
+    default.save_online_checkpoint(checkpoint)
+    resumed_config = copy.deepcopy(config)
+    resumed_config["estimator_config"]["fpm_learned"]["checkpoint_path"] = str(checkpoint)
+    resumed = RustForwardPassPerfModel.best_available(resumed_config)
+    for index in range(72, 80):
+        row = iteration(index, shifted=True)
+        assert default.estimate_forward_pass_time_ms(row) == resumed.estimate_forward_pass_time_ms(row)
+        for model in (default, resumed):
+            model.tune_with_fpms([row])
+        assert default.export_learned_artifact() == resumed.export_learned_artifact()
+
+
+@pytest.mark.parametrize("shifted", [False, True], ids=["scenario_a_only", "scenario_b_only"])
+def test_train_and_freeze_independent_scenario_data(tmp_path, shifted):
+    rows = [iteration(index, shifted=shifted) for index in range(64)]
+    artifact = fpm_learned.train(
+        rows,
+        "decode",
+        features=("num_decode_requests", "sum_decode_kv_tokens"),
+        max_iter=4,
+        max_leaf_nodes=3,
+        min_samples_leaf=2,
+        min_store_rows=5,
+        identity=IDENTITY,
+    )
+    path = tmp_path / "frozen.json"
+    path.write_text(json.dumps(artifact))
+    model = RustForwardPassPerfModel.best_available(
+        {
+            **IDENTITY,
+            "estimation_mode": "fpm_learned",
+            "estimator_config": {
+                "fpm_learned": {"artifact_path": str(path), "adaptation": "frozen"},
+                "correction": {"enabled": False},
+            },
+        }
+    )
+    expected = [reference_predict_ms(artifact, row) for row in rows]
+    assert [model.estimate_forward_pass_time_ms(row) for row in rows] == pytest.approx(expected)
+    model.tune_with_fpms([[{**rank, "wall_time": 0.1} for rank in row] for row in rows])
+    assert model.export_learned_artifact() == artifact
+    assert [model.estimate_forward_pass_time_ms(row) for row in rows] == pytest.approx(expected)
 
 
 def test_native_identity_projection_preserves_export_and_load_compatibility(tmp_path):

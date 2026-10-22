@@ -206,7 +206,7 @@ def _stump_artifact() -> dict:
     }
 
 
-@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("enabled", [False, True, None], ids=["disabled", "enabled", "default_hybrid"])
 def test_canonical_frozen_model_is_independent_of_native_tables(tmp_path, enabled):
     """Hybrid calibration is a complete selected estimator with an immutable seed."""
     from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
@@ -221,21 +221,27 @@ def test_canonical_frozen_model_is_independent_of_native_tables(tmp_path, enable
         estimation_mode="fpm_learned",
         estimator_config={
             "fpm_learned": {"artifact_path": str(path), "adaptation": "frozen"},
-            "correction": {"enabled": enabled, "mode": "hybrid"},
+            "correction": {} if enabled is None else {"enabled": enabled, "mode": "hybrid"},
         },
     )
     model = RustForwardPassPerfModel.best_available(config)
+    calibrated = enabled is not False
     query = _decode_fpm(2, 100, 0.0)
     assert model.diagnostics()["source"] == "learned"
     assert model.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
     model.tune_with_fpms([[_decode_fpm(2, 100, 0.02)] for _ in range(5)])
-    assert model.diagnostics()["source"] == ("learned_with_correction" if enabled else "learned")
-    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if enabled else 10.0)
+    assert model.diagnostics()["source"] == ("learned_with_correction" if calibrated else "learned")
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if calibrated else 10.0)
     provenance = model.diagnostics()["provenance"]
     assert provenance["selected_estimation_mode"] == "fpm_learned"
     resolved = provenance["config"]
     assert resolved["model"] == "private-model"
     assert resolved["estimator_config"]["fpm_learned"]["adaptation"] == "frozen"
+    correction = resolved["estimator_config"]["correction"]
+    assert correction["enabled"] == calibrated
+    assert correction["mode"] == "hybrid"
+    assert correction["sampling"]["max_observations"] == 64
+    assert correction["sampling"]["bins_per_axis"] == [4, 4]
     # A config round trip preserves the constructor, not the observed labels.
     restored = RustForwardPassPerfModel.best_available(resolved)
     assert restored.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
@@ -252,7 +258,7 @@ def test_canonical_frozen_model_is_independent_of_native_tables(tmp_path, enable
     assert reloaded.diagnostics()["retained_observations"] == 0
     assert reloaded.diagnostics()["correction_ready_buckets"] == 0
     assert reloaded.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
-    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if enabled else 10.0)
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if calibrated else 10.0)
 
 
 def test_canonical_learned_config_pins_source_content(tmp_path):
@@ -266,7 +272,7 @@ def test_canonical_learned_config_pins_source_content(tmp_path):
         backend="vllm",
         worker_type="decode",
         estimation_mode="fpm_learned",
-        estimator_config={"fpm_learned": {"artifact_path": str(path)}},
+        estimator_config={"fpm_learned": {"artifact_path": str(path), "adaptation": "frozen"}},
     )
     model = RustForwardPassPerfModel.best_available(config)
     resolved = model.diagnostics()["provenance"]["config"]
@@ -293,7 +299,7 @@ def test_canonical_learned_config_normalizes_explicit_disabled_speculation(tmp_p
             "worker_type": "decode",
             "estimation_mode": "fpm_learned",
             "speculation": {"kind": "none"},
-            "estimator_config": {"fpm_learned": {"artifact_path": str(path)}},
+            "estimator_config": {"fpm_learned": {"artifact_path": str(path), "adaptation": "frozen"}},
         }
     )
     resolved = model.diagnostics()["provenance"]["config"]

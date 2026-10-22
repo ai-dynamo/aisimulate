@@ -10,13 +10,15 @@ the scheduled batch composition, starting from a tree ensemble trained on
 `ForwardPassMetrics` (FPM) records emitted by a real deployment. Construct it
 through `RustForwardPassPerfModel.best_available(config)` with explicit
 `estimation_mode="fpm_learned"`. It is outside the automatic estimator search.
+Learned adaptation defaults to `online`; frozen evaluation and hybrid-only
+calibration explicitly select `adaptation: frozen`.
 
 | Explicit estimator | Base estimate | Feedback behavior | Source |
 | --- | --- | --- | --- |
 | `op_level` | Compiled AIC engine | Optional correction | Supported model and performance database |
 | `fpm_regression` | Linear or spline fit | Online fitting per workload store | Admitted observations; can start untrained |
 | `fpm_learned`, `adaptation: frozen` | Fixed tree ensemble | Optional hybrid calibration | Inference artifact or checkpoint |
-| `fpm_learned`, `adaptation: online` | Adaptive binned tree ensemble | Tree updates; correction must be disabled | Training or saved online checkpoint |
+| `fpm_learned`, `adaptation: online` (default) | Adaptive binned tree ensemble | Tree updates; correction defaults to disabled | Training or saved online checkpoint |
 | `fpm_learned`, `adaptation: causal_selector` | Selected frozen calibrated or adaptive expert | Both experts learn; prior error evidence selects the next prediction | Training checkpoint |
 
 The learned mode does not use the anchor-library collector or a kvwarm
@@ -330,6 +332,14 @@ ms = model.estimate_forward_pass_time_ms([query_rank0])
 model.tune_with_fpms([[observed_rank0]])  # reveal the measured target afterward
 ```
 
+For the gym's A-only or B-only frozen GBDT scenarios, train on that scenario's
+selected data, set `adaptation: frozen` and `correction.enabled: false`, and
+score the held-out observations without feedback. A-only fits the self-benchmark
+data; B-only fits its distributed training subset. The source can be an
+inference artifact or a checkpoint. Selecting frozen adaptation does not choose
+the training data or retrain the forest. The training defaults in the preceding
+table remain independent of the online update defaults.
+
 ### Online correction
 
 With frozen adaptation, `estimate_forward_pass_time_ms` returns the learned
@@ -452,8 +462,9 @@ without supplying the required iteration and request features.
 
 Use the seed checkpoint and the same deployment identity to construct a
 standalone online forest. Exactly one of `artifact_path` and `checkpoint_path`
-may be supplied for explicit learned mode. Online adaptation requires the latter
-and disabled correction:
+may be supplied for explicit learned mode. Online adaptation requires the latter.
+Omitted adaptation selects `online`, and omitted correction resolves to disabled.
+The following example spells out those choices and the standalone W64 defaults:
 
 ```python
 online_config = ForwardPassPerfModelConfig(
@@ -468,6 +479,7 @@ online_config = ForwardPassPerfModelConfig(
             "checkpoint_path": "models/decode_online_seed",
             "adaptation": "online",
             "recent_window": 64,
+            "recent_sampling": "fifo",
             "update_every": 1,
             "history_weight": 0.1,
             "history_weight_ramp_observations": 32,
@@ -484,12 +496,14 @@ online.tune_with_fpms([[observed_rank0]])
 print(online.learned_online_diagnostics())
 ```
 
-The explicit settings illustrate a small recent window and historical mass
-balance; they are not universal accuracy defaults. Consult the
+The standalone defaults retain a small recent window and balance historical
+loss mass. Consult the
 [complete field table](configuration.md#learned-forest-and-online-fitting-controls)
 and [mathematical explanation](online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) before
-changing the fitting policy. Omitted controls use Rust's defaults, including
-structural updates and eager derivatives.
+changing the fitting policy or applying it to another deployment. Omitted
+controls use Rust's defaults, including structural updates, lazy derivatives,
+split sampling rate 0.5, and split rank tolerance 0.01. These settings do not
+create a forest: the checkpoint still owns the training parameters and trees.
 
 Own one model instance per worker and fixed deployment identity. A `worker_id`
 inside telemetry does not select independent mutable state. Within an instance,
@@ -578,16 +592,16 @@ calibrating against an evolving forest would mix ratios measured against
 different predictors. Publishing an adaptive update never changes the stable
 forest or resets its calibration history.
 
-The following explicit profile uses 32 calibration slots per policy and query
-kind, four correction buckets (2-by-2 for decode/mixed), factor bounds
-`[0.5, 2.0]`, and a 64-observation online window with 10% historical loss mass
-after a 32-observation support ramp. `b4` means four total buckets, not four
-per axis; `W64` means `recent_window: 64`, not selector warmup.
-These are application settings, separate from API defaults: correction capacity
-defaults to 64, online capacity to 2,048, and online fitting to eager batches of
-64. Selector defaults are `alpha=0.025`, `warmup=10`, `margin=0.025`, and
-`persistence=1`. Validate an explicit profile on disjoint chronological data
-for the deployment and feedback cadence where it will run.
+Selecting `causal_selector` applies a separate set of defaults to its online
+expert: an eight-observation FIFO, fitting after four admitted observations per
+store, and 25% historical loss mass after an eight-observation support ramp.
+The stable expert uses 64 calibration slots per policy and query kind, sixteen
+correction buckets (4-by-4 for decode/mixed), and factor bounds `[0.5, 2.0]`.
+Selector defaults are `alpha=0.4`, `warmup=5`, `margin=0.05`, and `persistence=1`.
+Only omitted fields take these defaults; explicit overrides are preserved.
+The following example expands the default combined recipe. Validate it on
+disjoint chronological data for the deployment and feedback cadence where it
+will run.
 
 ```python
 selector_config = ForwardPassPerfModelConfig(
@@ -602,10 +616,11 @@ selector_config = ForwardPassPerfModelConfig(
             "checkpoint_path": "models/decode_online_seed",
             "adaptation": "causal_selector",
             "update_mode": "structural",
-            "recent_window": 64,
-            "update_every": 1,
-            "history_weight": 0.1,
-            "history_weight_ramp_observations": 32,
+            "recent_window": 8,
+            "recent_sampling": "fifo",
+            "update_every": 4,
+            "history_weight": 0.25,
+            "history_weight_ramp_observations": 8,
             "history_bin_grouping": True,
             "derivative_refresh": "lazy",
             "eager_refresh_interval": 32,
@@ -615,11 +630,11 @@ selector_config = ForwardPassPerfModelConfig(
         "correction": {
             "enabled": True,
             "mode": "hybrid",
-            "sampling": {"max_observations": 32, "bins_per_axis": [2, 2]},
+            "sampling": {"max_observations": 64, "bins_per_axis": [4, 4]},
             "min_observations": 5,
             "factor_bounds": {"min": 0.5, "max": 2.0},
         },
-        "selector": {"alpha": 0.025, "warmup": 10, "margin": 0.025, "persistence": 1},
+        "selector": {"alpha": 0.4, "warmup": 5, "margin": 0.05, "persistence": 1},
     },
 )
 selected = RustForwardPassPerfModel.best_available(selector_config)
@@ -635,10 +650,10 @@ Use one instance per worker and process observations in chronological order.
 label. The caller must estimate and then tune without intervening updates;
 this API has no saved prediction tickets for asynchronous or reordered labels.
 Prediction queries do not change the active expert, comparison counts or
-fitting state. The first ten comparisons of a fresh key therefore use the
-stable expert with the defaults; the tenth label can select online for the
+fitting state. The first five comparisons of a fresh key therefore use the
+stable expert with the defaults; the fifth label can select online for the
 next query. Calibration's five-observation readiness threshold is a separate
-control from the selector's ten-comparison warmup.
+control from the selector's five-comparison warmup.
 
 Evidence is local to `(worker instance, learned forest store, query kind)`.
 The four forest stores are `pure_prefill`, `pure_decode`,

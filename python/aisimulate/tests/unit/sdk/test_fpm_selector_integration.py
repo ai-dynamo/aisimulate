@@ -17,6 +17,83 @@ from .test_fpm_online_integration import IDENTITY, iteration, train
 pytestmark = pytest.mark.unit
 
 
+def test_selector_defaults_match_explicit_gym_recipe(tmp_path):
+    _, seed, _ = train(tmp_path)
+    config = {
+        **IDENTITY,
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {"fpm_learned": {"checkpoint_path": str(seed), "adaptation": "causal_selector"}},
+    }
+    explicit = copy.deepcopy(config)
+    explicit["estimator_config"]["fpm_learned"].update(
+        recent_window=8,
+        recent_sampling="fifo",
+        history_bin_grouping=True,
+        history_weight=0.25,
+        history_weight_ramp_observations=8,
+        update_every=4,
+        update_mode="structural",
+        update_step=1.0,
+        derivative_refresh="lazy",
+        eager_refresh_interval=32,
+        split_sampling_rate=0.5,
+        split_rank_tolerance=0.01,
+    )
+    explicit["estimator_config"]["correction"] = {
+        "enabled": True,
+        "mode": "hybrid",
+        "min_observations": 5,
+        "sampling": {"max_observations": 64, "bins_per_axis": [4, 4]},
+        "factor_bounds": {"min": 0.5, "max": 2.0},
+    }
+    explicit["estimator_config"]["selector"] = {"alpha": 0.4, "warmup": 5, "margin": 0.05, "persistence": 1}
+    assert RustForwardPassPerfModel.normalize_config(config) == RustForwardPassPerfModel.normalize_config(explicit)
+    models = [RustForwardPassPerfModel.best_available(settings) for settings in (config, explicit)]
+    for index in range(39):
+        row = iteration(index, shifted=index < 20)
+        assert models[0].estimate_forward_pass_time_ms(row) == models[1].estimate_forward_pass_time_ms(row)
+        for model in models:
+            model.tune_with_fpms([row])
+        assert models[0].learned_selector_diagnostics() == models[1].learned_selector_diagnostics()
+    state = models[0].learned_online_diagnostics()["stores"]["pure_decode"]
+    assert state["accepted_observations"] == 39
+    assert state["recent_rows"] == 8
+    assert state["pending_rows"] == 3
+    assert state["publications"] == 9
+
+
+def test_selector_explicit_standalone_values_and_partial_calibration_round_trip(tmp_path):
+    _, seed, _ = train(tmp_path)
+    overrides = {
+        "checkpoint_path": str(seed),
+        "adaptation": "causal_selector",
+        # Each differs from the selector recipe but equals a standalone default.
+        "recent_window": 64,
+        "history_weight": 0.1,
+        "history_weight_ramp_observations": 32,
+        "update_every": 1,
+        "recent_sampling": "fifo",
+    }
+    config = {
+        **IDENTITY,
+        "estimation_mode": "fpm_learned",
+        "estimator_config": {
+            "fpm_learned": overrides,
+            "correction": {"sampling": {"max_observations": 32}},
+            "selector": {"warmup": 3, "margin": 0},
+        },
+    }
+    saved = RustForwardPassPerfModel.normalize_config(config)
+    controls = saved["estimator_config"]
+    assert all(controls["fpm_learned"][key] == value for key, value in overrides.items())
+    assert controls["selector"] == {"alpha": 0.4, "warmup": 3, "margin": 0, "persistence": 1}
+    assert controls["correction"]["enabled"] is True
+    assert controls["correction"]["sampling"]["max_observations"] == 32
+    assert controls["correction"]["sampling"]["bins_per_axis"] == [4, 4]
+    assert saved == RustForwardPassPerfModel.normalize_config(saved)
+    assert RustForwardPassPerfModel.best_available(saved).diagnostics()["source"] == "learned_causal_selector"
+
+
 @pytest.mark.parametrize("persistence", [1, 3])
 def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, persistence):
     _, seed, artifact = train(tmp_path)
@@ -42,6 +119,8 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
                         "recent_window": 8,
                         "update_every": 1,
                         "history_weight": 0.01,
+                        # Compare identical experts, independent of mode defaults.
+                        "history_weight_ramp_observations": 0,
                     },
                 },
             }

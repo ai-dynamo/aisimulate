@@ -139,9 +139,11 @@ class ForwardPassPerfModelConfig:
 
     Select ``estimation_mode="fpm_learned"`` for a supplied tree artifact or
     online checkpoint. ``estimator_config.fpm_learned.adaptation`` selects
-    ``"frozen"`` (including independently usable hybrid calibration) or
-    ``"online"``. Online adaptation requires ``checkpoint_path`` and
-    ``estimator_config.correction.enabled=False``. Rust owns all online
+    ``"online"`` by default, or explicit ``"frozen"`` (including independently
+    usable hybrid calibration). Online adaptation requires ``checkpoint_path``;
+    omitted ``estimator_config.correction.enabled`` defaults to ``False`` for
+    this mode. Its default FIFO window is 64 observations, with a fit after
+    each admitted observation and lazy derivative refresh. Rust owns all online
     defaults, validation, fitting, and checkpoint continuation. Learned models
     are never added to the automatic estimator search.
 
@@ -150,11 +152,14 @@ class ForwardPassPerfModelConfig:
     ``estimation_mode="fpm_learned"``, ``fallback_policy="deny"``, a training
     ``checkpoint_path``, and correction enabled with mode ``"hybrid"`` or
     ``"auto"``. ``estimator_config["selector"]`` controls the error EWMA:
-    ``alpha=0.025`` must be finite in ``(0, 1]``; ``margin=0.025`` must be
-    finite in ``[0, 1)``; ``warmup=10`` and ``persistence=1`` must be positive
+    ``alpha=0.4`` must be finite in ``(0, 1]``; ``margin=0.05`` must be
+    finite in ``[0, 1)``; ``warmup=5`` and ``persistence=1`` must be positive
     integers. Nondefault selector settings are invalid in other modes.
     Default selector settings are omitted from saved configurations; custom
     settings survive reload. Rust owns these defaults and validation.
+    The combined mode defaults to an 8-observation online window, fitting every
+    four admitted observations, and independent 64-observation hybrid stores
+    with ``bins_per_axis=[4, 4]``. Explicit fitting controls override these defaults.
     Use chronological estimate/tune pairs with complete iteration metrics;
     phase-only replay, prediction and Sweeper callers reject learned modes.
     ``learned_selector_diagnostics()`` exposes the per-key evidence. Combined

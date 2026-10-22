@@ -285,6 +285,10 @@ def test_deep_structural_updates_match_raw_loss_reference_through_fifo(tmp_path,
                     "update_every": 4,
                     "split_sampling_rate": 1.0,
                     "split_rank_tolerance": 0.0,
+                    # RawLossForest is an independent, unit-weight reference.
+                    "history_weight": None,
+                    "history_weight_ramp_observations": 0,
+                    "history_bin_grouping": False,
                 },
             },
         }
