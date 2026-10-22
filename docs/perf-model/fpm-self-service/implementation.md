@@ -697,8 +697,8 @@ sparse-attention layers), Kimi K3 (KDA), the Qwen3.5 Gated DeltaNet hybrids and
 NemotronH hybrids such as Nemotron-3 Nano. The rule for unrecognized
 architectures adds configs such as Qwen3-VL, Llama 4, MiniMax-M3, MiMo-7B and
 Llama-3.3-Nemotron-Super.
-For these layouts, a zero `head_dim` or `num_key_value_heads` is accepted, not
-rejected.
+For these layouts, a zero `head_dim`, `num_key_value_heads` or MLA/DSA head
+dimension is accepted, not rejected.
 
 For such a config, `onboard init` cannot write a request yet, so it stops with
 guidance. It prints the facts it resolved with their sources and lists any
