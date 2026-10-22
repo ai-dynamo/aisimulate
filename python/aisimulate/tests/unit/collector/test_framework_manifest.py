@@ -36,8 +36,8 @@ def test_manifest_exposes_current_framework_versions_and_images():
     assert sglang.version == "0.5.14"
     assert sglang.image().startswith("lmsysorg/sglang:v0.5.14@sha256:")
     assert sglang.image("cu130").startswith("lmsysorg/sglang:v0.5.14-cu130@sha256:")
-    assert trtllm.version == "1.3.0rc20"
-    assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:")
+    assert trtllm.version == "1.3.0rc29"
+    assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc29@sha256:")
     assert vllm.version == "0.24.0"
     assert vllm.image().startswith("vllm/vllm-openai:v0.24.0@sha256:")
     assert vllm.image("cu129").startswith("vllm/vllm-openai:v0.24.0-cu129@sha256:")
@@ -52,6 +52,14 @@ def test_manifest_exposes_pinned_vllm_xpu_runtime_identity():
     assert runtime.data_backend == "vllm"
     assert runtime.version == "0.28.0"
     assert runtime.image().startswith("vllm/vllm-openai-xpu:v0.28.0@sha256:")
+
+
+def test_dynamo16_trtllm_stock_ops_share_one_runtime():
+    runtime = require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={e.op for e in TRTLLM_REGISTRY})
+    assert runtime.image().endswith("@sha256:124da3f10b73afbf4242f5c68fb04b48736c61fbe662e715202371fd7f046f43")
+    assert get_collector_runtime("wideep_trtllm").version == "1.3.0rc20"
+    with pytest.raises(RuntimeError, match="requires exactly 1.3.0rc29"):
+        require_collector_runtime("trtllm", "1.3.0rc23", requested_ops={"gemm", "moe"})
 
 
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():

@@ -19,6 +19,13 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# Dynamo 1.6 refresh candidate
+
+The stock TensorRT-LLM collector runtime is pinned to `1.3.0rc29`, including
+MoE and MSA. WideEP retains its independent runtime. This declaration enables
+qualification; it does not promote queryable data versions or establish GPU
+coverage. Collect and validate each target system before promoting its data.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
