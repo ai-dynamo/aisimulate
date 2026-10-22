@@ -518,10 +518,12 @@ def test_moe_model_quantization_policy_is_yaml_backed():
     assert not moe_model_allows_quantization("sglang", "nvidia/GLM-5.2-NVFP4", "bfloat16")
     assert moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "fp8_block")
     assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5-FP8", "nvfp4")
-    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-FP8", "fp8_block")
-    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-FP8", "nvfp4")
-    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
-    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
+    # zai-org/GLM-5.3 is Z.AI's FP8-block release; the BF16 weights carry the
+    # -BF16 suffix (there is no zai-org/GLM-5.3-FP8 repository).
+    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "fp8_block")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3", "bfloat16")
+    assert moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "bfloat16")
+    assert not moe_model_allows_quantization("sglang", "zai-org/GLM-5.3-BF16", "fp8_block")
 
     assert moe_model_allows_quantization("sglang", "openai/gpt-oss-120b", "w4a16_mxfp4")
     assert moe_model_allows_quantization("sglang", "openai/gpt-oss-120b", "w4a8_mxfp4_mxfp8")
@@ -1421,7 +1423,7 @@ def test_mla_module_metadata_and_micro_sweeps_are_yaml_backed():
         "zai-org/GLM-5.2-FP8",
         "nvidia/GLM-5.2-NVFP4",
         "zai-org/GLM-5.3",
-        "zai-org/GLM-5.3-FP8",
+        "zai-org/GLM-5.3-BF16",
         "nvidia/GLM-5.3-NVFP4",
     }
     assert {spec.native_num_heads for spec in dsa_specs if spec.architecture == "GlmMoeDsaForCausalLM"} == {64}
@@ -1545,11 +1547,13 @@ def test_vllm_dsa_reference_covers_native_full_and_reuse_without_duplicate_artif
     assert max(0 - config["index_skip_topk_offset"] + 1, 0) % config["index_topk_freq"] == 0
     all_specs = get_mla_module_model_specs(attention_type="dsa", backend="vllm", apply_model_filter=False)
     assert len(all_specs) == len(set(all_specs))
+    # GLM-5.3 reverses the zai-org naming: the plain repository is the FP8
+    # release and the BF16 weights carry -BF16 (no zai-org/GLM-5.3-FP8 exists).
     assert {s.model_path for s in all_specs if s.architecture == "GlmMoeDsaForCausalLM"} == {
         f"{prefix}/GLM-{version}{suffix}"
-        for version in ("5", "5.1", "5.2", "5.3")
+        for version in ("5", "5.1", "5.2")
         for prefix, suffix in (("zai-org", ""), ("zai-org", "-FP8"), ("nvidia", "-NVFP4"))
-    }
+    } | {"zai-org/GLM-5.3", "zai-org/GLM-5.3-BF16", "nvidia/GLM-5.3-NVFP4"}
 
 
 def test_vllm_mla_module_artifacts_have_local_configs():
