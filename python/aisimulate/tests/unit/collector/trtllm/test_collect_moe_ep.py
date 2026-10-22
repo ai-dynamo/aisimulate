@@ -415,21 +415,15 @@ def test_moe_ep_alone_resolves_to_the_wideep_trtllm_pin():
     assert runtime.version == "1.3.0rc20"
 
 
-def test_same_pin_mixing_with_stock_trtllm_ops_is_accepted():
-    # Unlike wideep_sglang (0.5.10 vs stock 0.5.14 — mixing fail-closes),
-    # wideep_trtllm pins the SAME version AND image digest as stock trtllm
-    # (framework_manifest.yaml), so require_collector_runtime accepts a mixed
-    # stock+wideep request — the reason moe_ep can stay in the default trtllm
-    # model plans. The stock op here must live on the DEFAULT trtllm runtime:
-    # moe/sparse_attention carry per-family rc23 overrides, and mixing those
-    # with default-runtime ops correctly fail-closes as a multi-runtime
-    # request (a separate behavior from wideep/stock mixing).
+def test_different_pin_mixing_with_stock_trtllm_ops_is_rejected():
+    # Stock rc29 and the independent WideEP fixture runtime cannot share a
+    # container. The stock full-plan runner must exclude moe_ep explicitly.
     from collector.framework_manifest import require_collector_runtime
 
-    mixed = require_collector_runtime("trtllm", "1.3.0rc20", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
-    stock = require_collector_runtime("trtllm", "1.3.0rc20", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
-    assert mixed.version == stock.version == "1.3.0rc20"
-    assert mixed.images == stock.images
+    with pytest.raises(RuntimeError, match="Stock trtllm and WideEP ops require different runtime versions"):
+        require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm", "moe_ep"}, wideep_ops={"moe_ep"})
+    stock = require_collector_runtime("trtllm", "1.3.0rc29", requested_ops={"gemm"}, wideep_ops={"moe_ep"})
+    assert stock.version == "1.3.0rc29"
 
 
 def test_moe_ep_is_in_the_default_trtllm_plan_for_wideep_models():

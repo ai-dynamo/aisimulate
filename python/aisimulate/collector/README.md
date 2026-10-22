@@ -37,6 +37,9 @@ MoE also uses rc29's explicit activation payload: GPT-OSS preserves its
 activation keyword arguments must not silently fall back to ordinary SwiGLU.
 Explicit MoE backend requests reject rc29 backend substitution, preserving a
 failure record instead of labeling a replacement kernel as the requested one.
+Full stock runs must select stock registry ops from the retained model plan:
+that plan still names WideEP `moe_ep`, whose independent runtime cannot be mixed
+with rc29 in one container.
 
 # Preparation
 
