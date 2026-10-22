@@ -41,7 +41,7 @@ No trtllm calib table is produced yet — same accepted state as vllm 0.24.0.
 
 from __future__ import annotations
 
-__compat__ = "trtllm>=1.3.0rc21"
+__compat__ = "trtllm==1.3.0rc29"
 
 import gc
 import json
@@ -474,11 +474,11 @@ def create_dsv4_kv_cache_and_metadata(
       (is_gen: req.prompt_len = token_num - 1; py_prompt_len = prompt_len),
       consumed at model_engine.py:4336
     """
-    from tensorrt_llm._torch.attention_backend.interface import (
+    from tensorrt_llm._torch.attention.backends.interface import (
         AttentionRuntimeFeatures,
         KVCacheParams,
     )
-    from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+    from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 

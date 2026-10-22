@@ -9,7 +9,7 @@ Shared MoE shapes come from YAML; this file owns TRT-LLM version quirks and
 kernel-specific filters.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import gc
 import glob
@@ -26,7 +26,7 @@ import torch
 from tensorrt_llm._torch.autotuner import AutoTuner, autotune
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
-from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+from tensorrt_llm._torch.moe.fused_moe import RenormalizeMoeRoutingMethod, create_moe
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
@@ -726,7 +726,7 @@ def run_moe_torch(
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":
         try:
-            from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+            from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 
             DeepGemmFusedMoE.buffers.buffers.clear()
         except (ImportError, AttributeError):
@@ -848,7 +848,7 @@ def run_moe_torch(
         del hidden_states
         if moe_type == "fp8_block" and num_tokens != max_tokens:
             try:
-                from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+                from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 
                 DeepGemmFusedMoE.buffers.buffers.clear()
             except (ImportError, AttributeError):

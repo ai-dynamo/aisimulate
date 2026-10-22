@@ -72,7 +72,7 @@ def _install_trtllm_stubs(monkeypatch):
     )
     _stub_module(
         monkeypatch,
-        "tensorrt_llm._torch.modules.fused_moe",
+        "tensorrt_llm._torch.moe.fused_moe",
         RenormalizeMoeRoutingMethod=_Dummy,
         create_moe=_noop,
     )

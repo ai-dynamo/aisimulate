@@ -8,7 +8,7 @@ context/generation MLA kernels. The module adapts shared MLA cases to current
 metadata objects, request/cache helpers, and backend-specific timing paths.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import math
 from dataclasses import dataclass
@@ -17,13 +17,13 @@ import tensorrt_llm
 import torch
 from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
-from tensorrt_llm._torch.attention_backend.interface import (
+from tensorrt_llm._torch.attention.backends.interface import (
     AttentionInputType,
     MLAParams,
     PositionalEmbeddingParams,
     RopeParams,
 )
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.pyexecutor.resource_manager import KVCacheManager
 from tensorrt_llm.bindings.executor import KvCacheConfig

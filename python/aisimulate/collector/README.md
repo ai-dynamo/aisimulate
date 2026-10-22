@@ -26,6 +26,13 @@ MoE and MSA. WideEP retains its independent runtime. This declaration enables
 qualification; it does not promote queryable data versions or establish GPU
 coverage. Collect and validate each target system before promoting its data.
 
+The rc29 source (`c76f4a856447820aa1f994b053da7580d69b657d`) moves attention
+submodules to `_torch.attention.backends` and MoE to `_torch.moe.fused_moe`.
+The affected stock collectors use those paths and declare exact rc29
+compatibility. The old attention package only re-exports selected public names;
+it does not preserve imports such as `attention_backend.interface`. These
+source fixes still require GPU qualification of inputs and kernel dispatch.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.

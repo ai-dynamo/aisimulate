@@ -248,9 +248,9 @@ def _install_trtllm_stubs(monkeypatch, module):
 
     tl = _mod("tensorrt_llm")
     _mod("tensorrt_llm._torch")
-    iface = _mod("tensorrt_llm._torch.attention_backend.interface")
-    _mod("tensorrt_llm._torch.attention_backend")
-    utils_mod = _mod("tensorrt_llm._torch.attention_backend.utils")
+    iface = _mod("tensorrt_llm._torch.attention.backends.interface")
+    _mod("tensorrt_llm._torch.attention.backends")
+    utils_mod = _mod("tensorrt_llm._torch.attention.backends.utils")
     bindings = _mod("tensorrt_llm.bindings")
     _mod("tensorrt_llm.bindings.internal")
     bm = _mod("tensorrt_llm.bindings.internal.batch_manager")
