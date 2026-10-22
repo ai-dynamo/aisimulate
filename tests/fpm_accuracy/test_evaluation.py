@@ -777,3 +777,30 @@ def test_learned_split_is_per_workload_kind():
     kinds = ["decode"] * 5 + ["prefill"] * 3
     observations = [SimpleNamespace(observation_id=f"o{i}", workload_kind=kind) for i, kind in enumerate(kinds)]
     assert training_observation_ids(observations) == {"o0", "o2", "o4", "o5", "o7"}
+
+
+def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
+    import sys
+
+    from scripts.fpm_accuracy.models.learned_predictor import HYPERPARAMETERS, LearnedFpm5Predictor
+
+    calls = []
+
+    def train(iterations, worker_type, **kwargs):
+        calls.append(kwargs)
+        raise ValueError("too few rows")
+
+    # Stand-ins for the evaluated wheel and scikit-learn, which this job does not install.
+    fpm_learned = SimpleNamespace(FEATURE_PRESETS={"fpm5": ("num_prefill_requests",)}, train=train)
+    sdk = SimpleNamespace(fpm_learned=fpm_learned)
+    monkeypatch.setitem(sys.modules, "aisimulate_core", SimpleNamespace(sdk=sdk))
+    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk", sdk)
+    monkeypatch.setitem(sys.modules, "aisimulate_core.sdk.fpm_learned", fpm_learned)
+    monkeypatch.setitem(
+        sys.modules, "aisimulate_core.sdk.rust_engine_step", SimpleNamespace(RustForwardPassPerfModel=None)
+    )
+    monkeypatch.setitem(sys.modules, "sklearn", SimpleNamespace())
+    predictor = LearnedFpm5Predictor.fit(SimpleNamespace(worker_role="decode"), [])
+    assert calls == [{"features": ("num_prefill_requests",), **HYPERPARAMETERS}]
+    assert HYPERPARAMETERS == {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
+    assert predictor.diagnostics()["hyperparameters"] == HYPERPARAMETERS
