@@ -522,6 +522,10 @@ def run_moe_torch(
         "reduce_results": False,
         "model_config": model_config,
         "activation": _moe_activation(model_name),
+        # rc29 can substitute another backend when the requested one rejects
+        # the layer. Our persisted labels describe the requested backend, so
+        # retain the rejection instead of timing a silently substituted kernel.
+        "allow_backend_degradation": False,
     }
     moe = create_moe(**create_moe_kwargs)
     moe.to(torch.device(device))

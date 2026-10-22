@@ -35,6 +35,8 @@ source fixes still require GPU qualification of inputs and kernel dispatch.
 MoE also uses rc29's explicit activation payload: GPT-OSS preserves its
 `1.702 / 1.0 / 7.0` SwiGLU constants, and Nemotron-3 preserves ReLU². The removed
 activation keyword arguments must not silently fall back to ordinary SwiGLU.
+Explicit MoE backend requests reject rc29 backend substitution, preserving a
+failure record instead of labeling a replacement kernel as the requested one.
 
 # Preparation
 
