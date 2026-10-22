@@ -1314,6 +1314,15 @@ https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8
 at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
 The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
 
+The following files under `python/aisimulate/tools/simulation_perf_gate/fixtures/`
+are copied without modification from the same dataset revision, with matching
+upstream relative paths:
+
+- `plots/distributions_log.png`
+- `plots/distributions_linear.png`
+- `plots/subagent_distributions_log.png`
+- `plots/subagent_distributions_linear.png`
+
 Upstream authors: SemiAnalysis. The upstream card supplies no separate
 copyright or NOTICE statement. License: Apache License 2.0, declared in the
 pinned dataset card and reproduced in `fixtures/LICENSE`.
