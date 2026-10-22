@@ -206,6 +206,104 @@ def _stump_artifact() -> dict:
     }
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_canonical_frozen_model_is_independent_of_native_tables(tmp_path, enabled):
+    """Hybrid calibration is a complete selected estimator with an immutable seed."""
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    path = tmp_path / "seed.json"
+    path.write_text(json.dumps(_stump_artifact()))
+    config = ForwardPassPerfModelConfig(
+        model="private-model",
+        system="private-system",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_learned",
+        estimator_config={
+            "fpm_learned": {"artifact_path": str(path), "adaptation": "frozen"},
+            "correction": {"enabled": enabled, "mode": "hybrid"},
+        },
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    query = _decode_fpm(2, 100, 0.0)
+    assert model.diagnostics()["source"] == "learned"
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+    model.tune_with_fpms([[_decode_fpm(2, 100, 0.02)] for _ in range(5)])
+    assert model.diagnostics()["source"] == ("learned_with_correction" if enabled else "learned")
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if enabled else 10.0)
+    provenance = model.diagnostics()["provenance"]
+    assert provenance["selected_estimation_mode"] == "fpm_learned"
+    resolved = provenance["config"]
+    assert resolved["model"] == "private-model"
+    assert resolved["estimator_config"]["fpm_learned"]["adaptation"] == "frozen"
+    # A config round trip preserves the constructor, not the observed labels.
+    restored = RustForwardPassPerfModel.best_available(resolved)
+    assert restored.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+
+    # Export preserves the forest, but neither calibration labels nor corrections.
+    exported_path = tmp_path / "exported.json"
+    exported_path.write_text(json.dumps(model.export_learned_artifact()))
+    exported_config = json.loads(json.dumps(resolved))
+    learned_config = exported_config["estimator_config"]["fpm_learned"]
+    learned_config["artifact_path"] = str(exported_path)
+    learned_config.pop("source_sha256", None)
+    reloaded = RustForwardPassPerfModel.best_available(exported_config)
+    assert reloaded.diagnostics()["source"] == "learned"
+    assert reloaded.diagnostics()["retained_observations"] == 0
+    assert reloaded.diagnostics()["correction_ready_buckets"] == 0
+    assert reloaded.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(20.0 if enabled else 10.0)
+
+
+def test_canonical_learned_config_pins_source_content(tmp_path):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    path = tmp_path / "seed.json"
+    path.write_text(json.dumps(_stump_artifact()))
+    config = ForwardPassPerfModelConfig(
+        model="private-model",
+        system="private-system",
+        backend="vllm",
+        worker_type="decode",
+        estimation_mode="fpm_learned",
+        estimator_config={"fpm_learned": {"artifact_path": str(path)}},
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    resolved = model.diagnostics()["provenance"]["config"]
+    digest = resolved["estimator_config"]["fpm_learned"]["source_sha256"]
+    assert len(digest) == 64
+    # Overwriting the same pathname must not silently change a saved model.
+    path.write_text(path.read_text() + "\n")
+    with pytest.raises(ValueError, match="(?i)(sha256|digest|hash)"):
+        RustForwardPassPerfModel.best_available(resolved)
+    fresh = RustForwardPassPerfModel.best_available(config)
+    assert fresh.diagnostics()["provenance"]["config"]["estimator_config"]["fpm_learned"]["source_sha256"] != digest
+
+
+def test_canonical_learned_config_normalizes_explicit_disabled_speculation(tmp_path):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    path = tmp_path / "seed.json"
+    path.write_text(json.dumps(_stump_artifact()))
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": "private-model",
+            "system": "private-system",
+            "backend": "vllm",
+            "worker_type": "decode",
+            "estimation_mode": "fpm_learned",
+            "speculation": {"kind": "none"},
+            "estimator_config": {"fpm_learned": {"artifact_path": str(path)}},
+        }
+    )
+    resolved = model.diagnostics()["provenance"]["config"]
+    assert resolved["speculation"] is None
+    query = _decode_fpm(2, 100, 0.0)
+    assert model.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+    restored = RustForwardPassPerfModel.best_available(resolved)
+    assert restored.estimate_forward_pass_time_ms(query) == pytest.approx(10.0)
+
+
 def test_reference_predict_and_evaluate() -> None:
     artifact = _stump_artifact()
     ref = fpm_reference.reference_predict_ms

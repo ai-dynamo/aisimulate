@@ -375,6 +375,23 @@ def test_profile_compilation_rejects_op_level_controls_before_graph_construction
         )
 
 
+def test_direct_compilation_rejects_encoder_parallel(profile_dict, direct_compile):
+    with pytest.raises(ValueError, match="does not support encoder_parallel"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            moe_ep_size=1,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            encoder_parallel="tp",
+        )
+
+
 def test_direct_json_transport_preserves_all_identity_fields(profile_dict, direct_compile):
     profile_dict["deployments"][0].update(moe_backend="pinned_moe", attention_backend="pinned_attention")
     spec = direct_compile(json.dumps(profile_dict), fpm_interpolation="direct")
@@ -1035,6 +1052,8 @@ def test_runtime_grouped_memory_keeps_layout_and_transient_pages(grouped_profile
         ({"memory_fraction_value": 0.9}, "gpu_memory_utilization"),
         ({"context_length": 2049}, "max_model_len"),
         ({"cuda_graph_reserved_bytes": 1}, "graph reservations"),
+        ({"reserved_bytes": 100}, "model build path only"),
+        ({"colocated_encoder": True, "encoder_parallel": "tp"}, "model build path only"),
         ({"gpu_memory_capacity_bytes_override": 599}, "smaller than"),
         ({"gpu_memory_capacity_bytes_override": 749}, "smaller than"),
     ],
@@ -1966,11 +1985,17 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
             1, 1 + prefix, prefix
         )
         assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+        assert (
+            covered.predict_prefill_latency_total(1, 1, prefix)
+            == original.predict_prefill_latency_total(1, 1, prefix)
+            == latency
+        )
+    assert covered.predict_prefill_latency_total(0, 0, 0) == original.predict_prefill_latency_total(0, 0, 0) == 0.0
     assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
     assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
     assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
     report = covered.fpm_query_coverage()
-    assert report["queries"] == {"measured": 5, "interpolated": 0, "unsupported": 0}
+    assert report["queries"] == {"measured": 7, "interpolated": 0, "unsupported": 0}
 
 
 @pytest.mark.parametrize("fallback", ["deny", "allow"])

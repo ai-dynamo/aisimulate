@@ -12,9 +12,9 @@ use super::model::{
 };
 use super::options::{validate_options, validate_regression_options};
 use super::{
-    ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions, ForwardPassPerfReadiness,
-    ForwardPassPerfSource, ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
-    LEARNED_SCHEMA_VERSION,
+    CorrectionMode, ForwardPassMetrics, ForwardPassPerfModel, ForwardPassPerfOptions,
+    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionWorkloadKind,
+    ForwardPassWorkerType, LEARNED_SCHEMA_VERSION,
 };
 use crate::common::enums::{FmhaQuantMode, GemmQuantMode, KvCacheQuantMode};
 use crate::operators::op::Op;
@@ -2589,6 +2589,100 @@ fn learned_model_applies_online_correction_after_tuning() {
 }
 
 #[test]
+fn learned_auto_uses_hybrid_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = ForwardPassPerfModel::from_learned(
+            &learned_decode_artifact_json(),
+            ForwardPassPerfOptions {
+                correction_mode: mode,
+                max_batch_size: 4,
+                max_kv_tokens: 1000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // The fixture predicts 20 ms above four requests; 30 ms feedback gives
+        // a 1.5 factor outside fixed bounds. Fixed must ignore these observations.
+        model
+            .tune_with_fpms(&vec![vec![decode_fpm(8, 1000, 0.030)]; 5])
+            .unwrap();
+        for (batch, kv, raw_ms, inside) in [
+            (4, 1000, 10.0, true),
+            (5, 1000, 20.0, false),
+            (4, 1001, 10.0, false),
+        ] {
+            let corrected =
+                mode == CorrectionMode::DynamicLocal || (!inside && mode != CorrectionMode::Fixed);
+            let expected = if corrected { raw_ms * 1.5 } else { raw_ms };
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(batch, kv, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                expected,
+            );
+        }
+        // Repeated tuning uses the uncorrected 10 ms base, not the already
+        // corrected prediction. Fixed/hybrid's boundary cell must settle at 5 ms.
+        for _ in 0..10 {
+            model
+                .tune_with_fpms(&[vec![decode_fpm(4, 1000, 0.005)]])
+                .unwrap();
+        }
+        if mode != CorrectionMode::DynamicLocal {
+            assert_close(
+                model
+                    .estimate_forward_pass_time_ms(&[decode_fpm(4, 1000, 0.0)])
+                    .unwrap()
+                    .unwrap(),
+                5.0,
+            );
+        }
+    }
+}
+
+#[test]
+fn native_auto_keeps_fixed_correction_and_explicit_modes_override_it() {
+    for mode in [
+        CorrectionMode::Auto,
+        CorrectionMode::Fixed,
+        CorrectionMode::DynamicLocal,
+        CorrectionMode::Hybrid,
+    ] {
+        let mut model = native_model(ForwardPassPerfOptions {
+            correction_mode: mode,
+            max_num_tokens: 10,
+            ..Default::default()
+        });
+        let query = prefill_fpm(20, 0.0);
+        let raw_ms = model
+            .estimate_forward_pass_time_ms(std::slice::from_ref(&query))
+            .unwrap()
+            .unwrap();
+        model
+            .tune_with_fpms(&vec![vec![prefill_fpm(20, raw_ms * 1.5 / 1000.0)]; 5])
+            .unwrap();
+        let expected = if matches!(mode, CorrectionMode::Auto | CorrectionMode::Fixed) {
+            raw_ms
+        } else {
+            raw_ms * 1.5
+        };
+        assert_close(
+            model
+                .estimate_forward_pass_time_ms(&[query])
+                .unwrap()
+                .unwrap(),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn learned_artifact_feature_list_is_unique_and_bounded() {
     use super::learned::{FEATURE_COUNT, feature_names};
     let artifact = |features: Vec<String>| {
@@ -2966,4 +3060,160 @@ fn learned_model_refuses_request_features_without_lists() {
     );
     // Artifacts without a metadata key expose an empty object, not null.
     assert!(model.learned_metadata().unwrap().is_object());
+}
+
+fn canonical_learned_fixture(path: &std::path::Path) -> crate::ForwardPassPerfModelConfig {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    config.backend_version = Some("test-version".into());
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.artifact_path = Some(path.to_owned());
+    config
+}
+
+#[test]
+fn canonical_learned_freezes_forest_and_preserves_resolved_content_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    std::fs::write(&path, learned_decode_artifact_json()).unwrap();
+    let mut config = canonical_learned_fixture(&path);
+    config.estimator_config.correction.enabled = false;
+    let mut model = ForwardPassPerfModel::best_available(config).unwrap();
+    let resolved = model.provenance().unwrap().config.clone();
+    assert_eq!(
+        resolved.estimator_config.correction.mode,
+        CorrectionMode::Hybrid
+    );
+    assert_eq!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .source_sha256
+            .as_ref()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(
+        resolved
+            .estimator_config
+            .fpm_learned
+            .artifact_path
+            .as_ref()
+            .unwrap()
+            .is_absolute()
+    );
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        false
+    );
+    let before = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+        .unwrap();
+    model
+        .tune_with_fpms(&vec![vec![decode_fpm(2, 1000, 0.050)]; 8])
+        .unwrap();
+    assert_eq!(
+        model
+            .estimate_forward_pass_time_ms(&[decode_fpm(2, 1000, 0.0)])
+            .unwrap(),
+        before
+    );
+    assert_eq!(model.diagnostics().retained_observations, 0);
+    let reloaded = ForwardPassPerfModel::best_available(
+        serde_json::from_str(&serde_json::to_string(&resolved).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(reloaded.provenance().unwrap().config, resolved);
+    assert!(model.flush_updates().is_err());
+    assert!(
+        model
+            .save_online_checkpoint(dir.path().join("snapshot"))
+            .is_err()
+    );
+    std::fs::write(&path, format!("{}\n", learned_decode_artifact_json())).unwrap();
+    assert!(
+        ForwardPassPerfModel::best_available(resolved)
+            .unwrap_err()
+            .to_string()
+            .contains("source_sha256")
+    );
+}
+
+#[test]
+fn canonical_learned_validates_optional_metadata_and_never_falls_back_on_bad_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forest.json");
+    let config = canonical_learned_fixture(&path);
+    let mut artifact: serde_json::Value =
+        serde_json::from_str(&learned_decode_artifact_json()).unwrap();
+    artifact["metadata"]["identity"] =
+        super::learned_online::canonical_learned_identity(&config).unwrap();
+    std::fs::write(&path, artifact.to_string()).unwrap();
+    let model = ForwardPassPerfModel::best_available(config.clone()).unwrap();
+    assert_eq!(
+        model.learned_online_diagnostics().unwrap()["identity_verified"],
+        true
+    );
+    let mut wrong = config.clone();
+    wrong.system = "another-gpu".into();
+    assert!(
+        ForwardPassPerfModel::best_available(wrong)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata.identity")
+    );
+    std::fs::write(&path, "not a JSON forest").unwrap();
+    assert!(ForwardPassPerfModel::best_available(config).is_err());
+}
+
+#[test]
+fn canonical_learned_selection_is_explicit_and_online_rejects_cascaded_correction() {
+    let mut config = crate::ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-gpu",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Decode,
+    );
+    assert_eq!(
+        config.candidate_modes(),
+        vec![
+            crate::EstimationMode::OpLevel,
+            crate::EstimationMode::FpmInterpolation,
+            crate::EstimationMode::FpmRegression
+        ]
+    );
+    config.estimation_mode = crate::EstimationMode::FpmLearned;
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Allow;
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("fallback_policy='deny'")
+    );
+    config.fallback_policy = crate::ForwardPassFallbackPolicy::Deny;
+    assert_eq!(
+        config.candidate_modes(),
+        vec![crate::EstimationMode::FpmLearned]
+    );
+    config.estimator_config.fpm_learned.adaptation = super::LearnedAdaptation::Online;
+    config.estimator_config.fpm_learned.checkpoint_path = Some("unused-checkpoint".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("correction.enabled=false")
+    );
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned.artifact_path = Some("unused-artifact".into());
+    assert!(
+        ForwardPassPerfModel::best_available(config)
+            .unwrap_err()
+            .to_string()
+            .contains("exactly one")
+    );
 }

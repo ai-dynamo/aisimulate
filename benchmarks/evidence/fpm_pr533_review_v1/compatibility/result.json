@@ -1,0 +1,144 @@
+{
+  "schema": "pr533-configuration-compatibility-v1",
+  "summary": {
+    "default_configurations_accepted_by_prior": 8,
+    "nondefault_controls_preserved_and_rejected_by_prior": 7,
+    "exact_candidate_roundtrips": 15
+  },
+  "binary_sha256": {
+    "candidate": "7a17d7fcf7f8342455d702d8bdf8bee048b615eef4a70e1d1add41f7fd929574",
+    "prior_main_reader": "e5d5c24ed2c37920d72911b5a6aa014607af3727ba0238e68be24cffcf3f83d4"
+  },
+  "script_sha256": "98f38bebf4e16a14ae9f38dccb18473cb72de7a86756d674d80987b2e4ec6a13",
+  "fixture_inputs_sha256": "a2ed5d85c869c057389f5bb8b53fcf5a7d0f0ac57391f0f3048d88e82bf65948",
+  "cases": [
+    {
+      "name": "auto-omitted",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "9ce7c304bb09975a674285d0ef10f4d2faf100a170f74eba7b7dc80d7fc9dcde"
+    },
+    {
+      "name": "auto-explicit-default",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "9ce7c304bb09975a674285d0ef10f4d2faf100a170f74eba7b7dc80d7fc9dcde"
+    },
+    {
+      "name": "op_level-omitted",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "d54b627949cef36ad95e2aba1d1a26e16ebe21372bd92c36f7b8d9ca843518e0"
+    },
+    {
+      "name": "op_level-explicit-default",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "d54b627949cef36ad95e2aba1d1a26e16ebe21372bd92c36f7b8d9ca843518e0"
+    },
+    {
+      "name": "fpm_interpolation-omitted",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "c67a6880b2405e00188ec3823d5ee6b91c04f782b25672cc8e06d294058e9fb1"
+    },
+    {
+      "name": "fpm_interpolation-explicit-default",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "normalized_config_sha256": "c67a6880b2405e00188ec3823d5ee6b91c04f782b25672cc8e06d294058e9fb1"
+    },
+    {
+      "name": "fpm_regression-omitted",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "regression_constructed_in_both_readers": true,
+      "normalized_config_sha256": "a86c74cd62e74eba8c38c8d9b51ad80ed658547ba20d50a23ce1608a8e0c9931"
+    },
+    {
+      "name": "fpm_regression-explicit-default",
+      "prior_accepted": true,
+      "candidate_roundtrip_equal": true,
+      "default_learned_block_omitted": true,
+      "regression_constructed_in_both_readers": true,
+      "normalized_config_sha256": "a86c74cd62e74eba8c38c8d9b51ad80ed658547ba20d50a23ce1608a8e0c9931"
+    },
+    {
+      "name": "nondefault-update_every",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "update_every": 7
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "8ed0e10262c8d6fb96e58941612088e19b51a8abeb8097c75b950839b99738b5"
+    },
+    {
+      "name": "nondefault-recent_window",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "recent_window": 123
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "5d710edc93d44afdcb440d2894690ff6bdc4b1ffc4ebd5268ad023f11fe69d72"
+    },
+    {
+      "name": "nondefault-history_weight",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "history_weight": 0.2
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "81efc99169e9dbd97f74d6646fd7f50009d17becf19af6a51f800c6eb3d53c25"
+    },
+    {
+      "name": "nondefault-mutable_tree_tail",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "mutable_tree_tail": 2
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "d5988ed6aac71a5dceeeaf18a8b48327d7478a285ffe34dfdd3623de140e3ee8"
+    },
+    {
+      "name": "nondefault-derivative_refresh",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "derivative_refresh": "lazy"
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "af3b1c6f357b080469ff3a9ce2e063e77eeaabb40c534f43f2874dccf90069b8"
+    },
+    {
+      "name": "nondefault-split_sampling_rate",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "split_sampling_rate": 0.5
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "5afbc5e8260407e56a2795abf4e1f3a4796369bc89f9d9b8e57323488ff758aa"
+    },
+    {
+      "name": "nondefault-recent_max_age_observations",
+      "prior_accepted": false,
+      "candidate_roundtrip_equal": true,
+      "preserved_override": {
+        "recent_max_age_observations": 5
+      },
+      "prior_error": "unknown field `fpm_learned`, expected one of `features`, `op_level`, `fpm_interpolation`, `fpm_regression`, `correction`",
+      "normalized_config_sha256": "ad72e144217e4a1008c371b23631121eb05c1b543464bb6b78142127e7230ccf"
+    }
+  ]
+}

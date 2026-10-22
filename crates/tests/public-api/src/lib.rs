@@ -89,6 +89,10 @@ pub fn covered_prefill(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_prefill_latency(1, 128, 0)
 }
 
+pub fn covered_prefill_total(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
+    model.predict_prefill_latency_total(1, 128, 0)
+}
+
 pub fn covered_decode(model: &ForwardPassPerfModel) -> Result<f64, AicError> {
     model.predict_decode_latency_total(1, 128)
 }
@@ -105,6 +109,62 @@ pub fn best_available_model_with_roots(
 ) -> Result<ForwardPassPerfModel, AicError> {
     config.systems_paths = vec![systems_root.as_ref().to_path_buf()];
     ForwardPassPerfModel::best_available(config)
+}
+
+/// Learned forests use the same typed constructor as every other estimator.
+pub fn online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{
+        FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh, LearnedUpdateMode,
+    };
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.correction.enabled = false;
+    config.estimator_config.fpm_learned = FpmLearnedConfig {
+        adaptation: LearnedAdaptation::Online,
+        checkpoint_path: Some(checkpoint.to_owned()),
+        update_mode: LearnedUpdateMode::Structural,
+        recent_window: 64,
+        update_every: 1,
+        history_weight: Some(0.1),
+        history_weight_ramp_observations: 32,
+        history_bin_grouping: true,
+        derivative_refresh: LearnedDerivativeRefresh::Lazy,
+        ..Default::default()
+    };
+    ForwardPassPerfModel::best_available(config)
+}
+
+/// Combined selection remains a mode of the canonical learned estimator.
+pub fn calibrated_online_forest_model(
+    mut config: ForwardPassPerfModelConfig,
+    checkpoint: &Path,
+) -> Result<ForwardPassPerfModel, AicError> {
+    use aisimulate_core::{LearnedAdaptation, SelectorConfig};
+    config.estimation_mode = EstimationMode::FpmLearned;
+    config.estimator_config.fpm_learned.adaptation = LearnedAdaptation::CausalSelector;
+    config.estimator_config.fpm_learned.checkpoint_path = Some(checkpoint.to_owned());
+    config.estimator_config.correction.enabled = true;
+    config.estimator_config.selector = SelectorConfig {
+        alpha: 0.025,
+        warmup: 10,
+        margin: 0.025,
+        persistence: 1,
+    };
+    let model = ForwardPassPerfModel::best_available(config)?;
+    let _scopes = model.learned_selector_diagnostics();
+    Ok(model)
+}
+
+pub fn online_forest_checkpoint(
+    model: &mut ForwardPassPerfModel,
+    path: &Path,
+) -> Result<String, AicError> {
+    model.flush_updates()?;
+    let _diagnostics = model.learned_online_diagnostics();
+    model.save_online_checkpoint(path)?;
+    model.export_learned_artifact()
 }
 
 /// Keep the KV request type in the external-consumer contract without
@@ -159,7 +219,8 @@ mod tests {
         // v24: FpmForwardOp carries typed DCP separately from matching strings.
         // v25: SOL/direct interpolation selector combined with typed DCP.
         // v26: attention / MLA / DSA ops gained tail-appended decode-CP dcp_size.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 28);
+        // v29: EngineSpec carries the optional vision section (SGLang VL host loop).
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 29);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -690,6 +751,7 @@ mod tests {
             max_in_flight: None,
             record_per_request: true,
             sla: Default::default(),
+            encoder: None,
             requests: Vec::new(),
         };
         let report = Replayer::new(
@@ -742,6 +804,7 @@ pub fn rebuild_replay_report_literals(
             kv_eviction_assumption: report.kv_eviction_assumption,
             committed_prefill_tokens: report.committed_prefill_tokens,
             g3_offload: report.g3_offload,
+            kvcr: report.kvcr,
             g2_domains: report.g2_domains,
             request_counts: report.request_counts,
             throughput: report.throughput,
@@ -792,6 +855,11 @@ pub fn rebuild_replay_report_literals(
             prefill_worker_idx: record.prefill_worker_idx,
             decode_worker_idx: record.decode_worker_idx,
             prefill_admit_ms: record.prefill_admit_ms,
+            encoder_ready_ms: None,
+            frontend_ready_ms: None,
+            scheduler_received_ms: None,
+            selected_ms: None,
+            prefill_complete_ms: None,
             source_held_ms: record.source_held_ms,
             destination_reserved_ms: record.destination_reserved_ms,
             destination_activated_ms: record.destination_activated_ms,

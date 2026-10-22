@@ -19,12 +19,32 @@ NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False
 Ratio = Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)]
 
 
+class ImagePool(StrictModel):
+    """Requests draw their images from a fixed pool, so embeddings can be reused."""
+
+    pool: PositiveInt
+
+
 class ImageInput(StrictModel):
     """Fixed image dimensions and count on every synthetic request."""
 
     height: PositiveInt
     width: PositiveInt
     count: PositiveInt = 1
+    encoding: Literal["png", "jpeg"] = "png"
+    identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale lower bound; defaults to the checkpoint's preprocessor value."
+    )
+    max_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale upper bound; defaults to the checkpoint's preprocessor value."
+    )
+
+    @model_validator(mode="after")
+    def _validate_pixel_bounds(self) -> ImageInput:
+        if self.min_pixels is not None and self.max_pixels is not None and self.min_pixels > self.max_pixels:
+            raise ValueError("images.min_pixels cannot exceed images.max_pixels")
+        return self
 
 
 class SyntheticSource(StrictModel):

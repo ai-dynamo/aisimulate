@@ -94,6 +94,12 @@ class NemotronHModel(BaseModel):
             "-": pattern.count("-"),
         }
 
+    def get_kvcache_elements_per_token(self) -> int:
+        # Mamba state is fixed per request and must be budgeted separately.
+        tp = self.config.tp_size
+        kv_heads = (self._num_kv_heads + tp - 1) // tp
+        return self._count_layer_types()["*"] * 2 * kv_heads * self._head_size
+
     def _build_context_ops(self) -> None:
         """Build the context (prefill) operations pipeline based on hybrid pattern."""
         if not self._hybrid_config:

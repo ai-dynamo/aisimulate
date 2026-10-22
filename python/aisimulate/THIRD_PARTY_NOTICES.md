@@ -692,6 +692,33 @@ also appear in `python/aisimulate/tests/unit/sdk/models/test_deepseek_v41.py`,
 Rust operator/spec unit tests, `docs/perf-model/models/deepseek-v41.md`. They distinguish candidate masking from scoring
 and physical FlashMLA cache payload from logical FP4 values.
 
+## SGLang 0.5.19 multimodal frontend and scheduler behavior
+
+The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
+`0bcd822377da7b5718e674eaf9c870d349424dd1`. Repository-root paths:
+
+- `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
+  their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
+  `run_batch`, `recv_requests`, `process_batch_result_prefill`,
+  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`,
+  `BaseMultimodalProcessor`, the scheduler's receive preparation
+  (`managers/scheduler_components/request_receiver.py`) and the Rust multimodal workers'
+  feature transport (`RustMmProcessor._use_feature_shm`) as performance models.
+  They do not execute or copy the upstream implementation.
+- `crates/core/src/engine/scheduler/sglang/core.rs` (disaggregated prefill) and
+  `crates/core/src/replay/components/encoder.rs` likewise re-implement the
+  observed behavior of `disaggregation/prefill.py` (`SchedulerDisaggregationPrefillMixin`)
+  and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
+  (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
+  performance models, without copying the upstream implementation.
+- `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
+  upstream frontend objects unmodified on the serving host and times them from
+  the outside; it does not copy or modify their implementations.
+
+Source: https://github.com/sgl-project/sglang/tree/0bcd822377da7b5718e674eaf9c870d349424dd1
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
+
 ## DeepSeek model configuration files
 
 The following model configuration files are copied from, or formatting-only
@@ -909,6 +936,16 @@ This material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+The Qwen VL `smart_resize` pixel-budget rule in
+`python/aisimulate/src/aisimulate_core/sdk/backends/base_backend.py`
+(`_qwen_smart_resize`) is a modified adaptation of the Qwen2-VL image processor
+in Hugging Face Transformers at tag `v4.57.0`:
+
+- https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+
+Copyright 2024 the HuggingFace Inc. team. All rights reserved.
+This material is licensed under the Apache License 2.0.
 
 The fixed-tile canvas and global-tile logic in
 `src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
@@ -1304,20 +1341,32 @@ the upstream copyright header and marks the modified conversion in the output.
 ## NVIDIA Dynamo CI struct-literal compatibility
 
 The exact-source rewrites in `scripts/performance/build_simulation_dynamo.py`
+and their regression fixtures in `tests/test_ci_workflow_contracts.py`
 are adapted and modified from NVIDIA Dynamo's
 `lib/mocker/src/grouped_scheduler/compatibility.rs` and
-`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs` at commit
+`lib/mocker/src/replay/offline/extensions/kv_router/mod.rs`,
+`lib/mocker/src/replay/offline/entrypoints.rs`,
+`lib/mocker/src/replay/offline/extensions/kv_events/mod.rs`, and
+`lib/bindings/python/rust/llm/replay.rs` at commit
 `def3b79b15c266805540a678dd400aeb6ccada1d`:
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/grouped_scheduler/compatibility.rs
 https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_router/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/entrypoints.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
+https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 
-Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0; the full license is reproduced in `LICENSE`.
 Upstream license: https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/LICENSE
 The adaptation adds `None` for new optional AISimulate fields to the native
 request and offline KV-router placement struct literals for CI builds against
-newer AISimulate APIs. It preserves the upstream copyright headers and marks
-each modified literal in the output.
+newer AISimulate APIs. It also sets an empty image list for the pinned text-only
+request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
+instead of adding multimodal support to Dynamo's adapter. Both offline replay
+specifications disable the encoder pool; the Python binding's synthetic trace
+explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
+rejects host-loop TTFT milestones, which its legacy DTO cannot represent.
+It preserves the upstream copyright headers and marks each modification in the output.
 
 The replay compatibility rewrite in the same script adapts
 `lib/mocker/src/engine_adapter.rs` at that same immutable revision:
@@ -1325,8 +1374,10 @@ https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1
 Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Licensed under Apache-2.0 as above. The modified adapter explicitly sets prefill
 context parallelism to 1 in four replay descriptors, preserving the pinned
-adapter's topology. Its upstream copyright header is retained and each modified
-literal is marked in the generated output.
+adapter's topology. It also disables the SGLang host loop and takes the vision
+cache capacity from the canonical SGLang default, preserving text-only behavior.
+Its upstream copyright header is retained and each modified literal is marked
+in the generated output.
 
 ## NVIDIA Dynamo CI speculation compatibility
 

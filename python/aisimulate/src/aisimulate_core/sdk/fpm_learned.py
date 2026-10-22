@@ -29,9 +29,10 @@ Workflow (Python trains, Rust predicts):
    ``crates/core/src/perfmodel/fpm/learned.rs``), fits one gradient-boosted
    tree ensemble per regression workload store on ``log(wall_ms)``, and
    writes the ``aic_fpm_learned_forward_perf`` artifact.
-3. ``RustForwardPassPerfModel.from_learned("model.json")`` loads the artifact
-   for pure-Rust inference inside AISimulate / the Dynamo mocker; the online
-   correction grid keeps tuning on top of it through ``tune_with_fpms``.
+3. ``RustForwardPassPerfModel.best_available(config)`` with explicit
+   ``estimation_mode="fpm_learned"`` loads the artifact. Optional training
+   checkpoints retain exact rows and bins for native online updates through
+   ``tune_with_fpms``.
 
 The feature ABI is the ordered ``features`` list in the artifact; every name
 must be one of :data:`FEATURE_NAMES` and is computed identically here and in
@@ -48,14 +49,17 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import logging
 import math
 import os
 import random
 import sys
+import tempfile
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +68,15 @@ logger = logging.getLogger(__name__)
 SCHEMA_NAME = "aic_fpm_learned_forward_perf"
 SCHEMA_VERSION = 1
 FPM_VERSION = 1
+TRAINING_CHECKPOINT_SCHEMA = "aisimulate_fpm_training_checkpoint"
+TRAINING_CHECKPOINT_VERSION = 1
+TRAINING_EXPORTER_VERSION = "1"
+# Export reads sklearn's fitted bin mapper and predictor arrays. A new version
+# needs explicit round-trip coverage before its private fitted state is accepted.
+ONLINE_SUPPORTED_SKLEARN_VERSIONS = frozenset({"1.9.1"})
+_TRAINING_METADATA_FIELDS = frozenset(
+    {"trainer", "model", "hyperparameters", "train_rows", "trees_fitted", "sklearn_version", "exporter_version"}
+)
 
 WORKER_TYPES = ("prefill", "decode", "aggregated")
 WORKLOAD_KINDS = ("pure_decode", "contains_locally_mixed", "cross_rank_aggregated", "pure_prefill")
@@ -550,6 +563,16 @@ def build_dataset(
     features: Sequence[str],
 ) -> dict[str, tuple[list[list[float]], list[float]]]:
     """Per-store ``(X, y_ms)`` rows from iterations with positive wall time."""
+    return _build_dataset(iterations, worker_type, features)
+
+
+def _build_dataset(
+    iterations: Sequence[Sequence[dict[str, Any]]],
+    worker_type: str,
+    features: Sequence[str],
+    *,
+    provenance: dict[str, list[tuple[int, str]]] | None = None,
+) -> dict[str, tuple[list[list[float]], list[float]]]:
     unknown = [name for name in features if name not in FEATURE_NAMES]
     if unknown:
         raise ValueError(f"unknown features {unknown}; valid names: {list(FEATURE_NAMES)}")
@@ -577,6 +600,12 @@ def build_dataset(
         rows, y = dataset[kind]
         rows.append([named[name] for name in features])
         y.append(wall_ms)
+        if provenance is not None:
+            source_fields = ("worker_id", "dp_rank", "counter_id", "observed_at_unix_ms", "recv_ms")
+            source = [{key: fpm[key] for key in source_fields if key in fpm} for fpm in metrics_by_rank]
+            provenance.setdefault(kind, []).append(
+                (index, json.dumps(source, sort_keys=True, separators=(",", ":"), allow_nan=False))
+            )
     if skipped_role:
         logger.warning("skipped %d iterations incompatible with worker_type=%s", skipped_role, worker_type)
     if skipped_lists:
@@ -603,7 +632,12 @@ def _export_hgb(model: Any) -> dict[str, Any]:
         left = np.where(is_leaf, -1, nodes["left"].astype(np.int64)).tolist()
         right = np.where(is_leaf, -1, nodes["right"].astype(np.int64)).tolist()
         feature = np.where(is_leaf, -1, nodes["feature_idx"].astype(np.int64)).tolist()
-        threshold = np.where(is_leaf, 0.0, nodes["num_threshold"].astype(np.float64)).tolist()
+        thresholds = np.where(is_leaf, 0.0, nodes["num_threshold"].astype(np.float64))
+        # sklearn uses +inf for a split separating every numeric value from
+        # NaN. Our feature contract permits finite values and NaN, so the
+        # largest finite float preserves that routing in strict JSON.
+        thresholds[np.isposinf(thresholds)] = np.finfo(np.float64).max
+        threshold = thresholds.tolist()
         value = nodes["value"].astype(np.float64).tolist()
         missing_left = nodes["missing_go_to_left"].astype(bool).tolist()
         if nodes["is_categorical"].any():
@@ -621,6 +655,170 @@ def _export_hgb(model: Any) -> dict[str, Any]:
     return {"baseline": baseline, "trees": trees}
 
 
+def _checkpoint_identity(identity: dict[str, Any] | None, worker_type: str) -> dict[str, Any]:
+    """Use Rust's shared identity projection for exported artifacts and checkpoints."""
+    if not isinstance(identity, dict):
+        raise ValueError("online_checkpoint_dir requires an identity containing the canonical FPM configuration")
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    resolved = RustForwardPassPerfModel.learned_identity(identity)
+    if resolved.get("worker_type") != worker_type:
+        raise ValueError("checkpoint identity worker_type must match the training worker_type")
+    return resolved
+
+
+def _online_store_metadata(model: Any, feature_count: int) -> dict[str, Any]:
+    """Describe fitted state supported by the scalar, unconstrained Rust updater."""
+    import numpy as np
+    import sklearn
+
+    if sklearn.__version__ not in ONLINE_SUPPORTED_SKLEARN_VERSIONS:
+        raise ValueError(
+            f"online checkpoint export does not support sklearn {sklearn.__version__}; "
+            f"supported versions: {sorted(ONLINE_SUPPORTED_SKLEARN_VERSIONS)}"
+        )
+    if model.loss != "squared_error":
+        raise ValueError("online checkpoint export requires squared_error loss")
+    if model.early_stopping is not False or getattr(model, "do_early_stopping_", True):
+        raise ValueError("online checkpoint export requires early_stopping=False and all fit rows")
+    # train() owns this model's fit call and never supplies sample weights.
+    # sklearn does not retain sufficient metadata to infer that afterward.
+    if model.monotonic_cst is not None or model.interaction_cst is not None:
+        raise ValueError("online checkpoint export does not support monotonic or interaction constraints")
+    if model.max_features != 1.0:
+        raise ValueError("online checkpoint export does not support feature subsampling")
+    mapper = model._bin_mapper
+    if np.any(mapper.is_categorical_):
+        raise ValueError("online checkpoint export does not support categorical features")
+    thresholds = [np.asarray(values, dtype=np.float64).tolist() for values in mapper.bin_thresholds_]
+    counts = np.asarray(mapper.n_bins_non_missing_, dtype=np.uint32).tolist()
+    missing_bin = int(mapper.missing_values_bin_idx_)
+    if len(thresholds) != feature_count or len(counts) != feature_count:
+        raise ValueError("fitted bin mapper feature count does not match the checkpoint feature ABI")
+    for values, count in zip(thresholds, counts, strict=True):
+        if (
+            count != len(values) + 1
+            or not 1 <= count <= missing_bin
+            or any(not math.isfinite(value) for value in values)
+            or any(left >= right for left, right in pairwise(values))
+        ):
+            raise ValueError("fitted bin mapper has invalid numeric thresholds or bin counts")
+    return {
+        "bin_thresholds": thresholds,
+        "missing_values_bin_idx": missing_bin,
+        "n_bins_non_missing": counts,
+        "loss": model.loss,
+        "learning_rate": float(model.learning_rate),
+        "l2_regularization": float(model.l2_regularization),
+        "min_samples_leaf": int(model.min_samples_leaf),
+        "max_depth": int(model.max_depth) if model.max_depth is not None else None,
+        "max_leaf_nodes": int(model.max_leaf_nodes) if model.max_leaf_nodes is not None else None,
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_checkpoint_files(directory: Path, manifest: dict[str, Any]) -> None:
+    """Verify written bytes before publishing the checkpoint's commit manifest."""
+    entries = [(manifest["artifact_file"], manifest["artifact_sha256"])]
+    entries.extend((store["rows_file"], store["rows_sha256"]) for store in manifest["stores"].values())
+    for filename, expected in entries:
+        if Path(filename).name != filename or _file_sha256(directory / filename) != expected:
+            raise ValueError(f"checkpoint file hash mismatch or invalid filename: {filename}")
+
+
+def _write_training_checkpoint(
+    destination: str | os.PathLike[str],
+    artifact: dict[str, Any],
+    identity: dict[str, Any],
+    dataset: dict[str, tuple[list[list[float]], list[float]]],
+    provenance: dict[str, list[tuple[int, str]]],
+    store_metadata: dict[str, dict[str, Any]],
+) -> None:
+    """Publish a new checkpoint directory atomically, with its manifest written last."""
+    import numpy as np
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import sklearn
+
+    destination = Path(destination)
+    if os.path.lexists(destination):
+        raise FileExistsError(f"checkpoint destination already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    validate_artifact(artifact)
+    artifact_bytes = json.dumps(artifact, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    manifest = {
+        "schema": TRAINING_CHECKPOINT_SCHEMA,
+        "schema_version": TRAINING_CHECKPOINT_VERSION,
+        "artifact_file": "model.json",
+        "artifact_sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "identity": identity,
+        "features": list(artifact["features"]),
+        "target": artifact["target"],
+        "sklearn_version": sklearn.__version__,
+        "exporter_version": TRAINING_EXPORTER_VERSION,
+        "shrinkage": "included_in_leaf_values",
+        "stores": {},
+    }
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}.tmp-", dir=destination.parent) as temporary:
+        staging = Path(temporary)
+        (staging / "model.json").write_bytes(artifact_bytes)
+        for kind, metadata in sorted(store_metadata.items()):
+            rows, wall_ms = dataset[kind]
+            values = np.asarray(rows, dtype=np.float64)
+            wall = np.asarray(wall_ms, dtype=np.float64)
+            if values.shape != (len(wall), len(artifact["features"])) or np.isinf(values).any():
+                raise ValueError(f"store {kind}: invalid training features")
+            if not np.isfinite(wall).all() or (wall <= 0).any():
+                raise ValueError(f"store {kind}: training wall_time_ms must be finite and positive")
+            # Match train() exactly, including Python's scalar log rounding.
+            target = [math.log(value) for value in wall_ms] if artifact["target"] == "log_ms" else wall_ms
+            source = provenance[kind]
+            if len(source) != len(rows) or len({row_id for row_id, _ in source}) != len(source):
+                raise ValueError(f"store {kind}: training row provenance must match rows and have unique IDs")
+            columns = {
+                "row_id": pa.array([row_id for row_id, _ in source], type=pa.uint64()),
+                "y": pa.array(target, type=pa.float64()),
+                "wall_time_ms": pa.array(wall, type=pa.float64()),
+                **{
+                    f"x{index}": pa.array(values[:, index], type=pa.float64(), from_pandas=False)
+                    for index in range(values.shape[1])
+                },
+                "source_json": pa.array([record for _, record in source], type=pa.string()),
+            }
+            rows_file = f"{kind}.rows.parquet"
+            pq.write_table(pa.table(columns), staging / rows_file, compression="zstd")
+            manifest["stores"][kind] = {
+                "rows_file": rows_file,
+                "rows_sha256": _file_sha256(staging / rows_file),
+                "row_count": len(rows),
+                **metadata,
+            }
+        _verify_checkpoint_files(staging, manifest)
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":"), allow_nan=False), encoding="utf-8"
+        )
+        for path in staging.iterdir():
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+        # Reserve once so concurrent exports cannot replace an empty destination.
+        destination.mkdir()
+        try:
+            os.rename(staging, destination)
+        except OSError:
+            try:
+                destination.rmdir()  # Only our still-empty reservation may be removed.
+            except OSError:
+                pass
+            raise
+
+
 def train(
     iterations: Sequence[Sequence[dict[str, Any]]],
     worker_type: str,
@@ -635,14 +833,44 @@ def train(
     random_state: int = 0,
     early_stopping: bool = False,
     metadata: dict[str, Any] | None = None,
+    online_checkpoint_dir: str | os.PathLike[str] | None = None,
+    identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fit one HGB ensemble per workload store and return the artifact mapping."""
+    """Fit each workload store and return the prediction artifact unchanged.
+
+    ``online_checkpoint_dir`` additionally exports the exact fitted rows and
+    bin mapper for Rust online fitting. It requires a canonical ``identity``
+    configuration, supported sklearn, and ``early_stopping=False``. Existing
+    checkpoint directories are never overwritten.
+    """
+    import sklearn
     from sklearn.ensemble import HistGradientBoostingRegressor
 
     if worker_type not in WORKER_TYPES:
         raise ValueError(f"invalid worker_type {worker_type!r}")
     if target not in TARGETS:
         raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+    checkpoint_identity = _checkpoint_identity(identity, worker_type) if identity is not None else None
+    if (
+        checkpoint_identity is not None
+        and metadata
+        and "identity" in metadata
+        and metadata["identity"] != checkpoint_identity
+    ):
+        raise ValueError("metadata.identity conflicts with the canonical training identity")
+    provenance: dict[str, list[tuple[int, str]]] = {}
+    checkpoint_stores: dict[str, dict[str, Any]] = {}
+    if online_checkpoint_dir is not None:
+        if early_stopping is not False:
+            raise ValueError("online checkpoint export requires early_stopping=False and all fit rows")
+        if sklearn.__version__ not in ONLINE_SUPPORTED_SKLEARN_VERSIONS:
+            raise ValueError(f"online checkpoint export does not support sklearn {sklearn.__version__}")
+        if protected := _TRAINING_METADATA_FIELDS.intersection(metadata or {}):
+            raise ValueError(f"checkpoint metadata cannot override training fields: {sorted(protected)}")
+        if os.path.lexists(online_checkpoint_dir):
+            raise FileExistsError(f"checkpoint destination already exists: {online_checkpoint_dir}")
+        if checkpoint_identity is None:
+            checkpoint_identity = _checkpoint_identity(identity, worker_type)
     features = tuple(features) if features else DEFAULT_FEATURES[worker_type]
     _reject_duplicate_features(features)
     needs_lists = any(name.startswith(("req_", "slot")) for name in features)
@@ -653,7 +881,9 @@ def train(
             "per-request features requested but no FPM record carries extend_lengths/past_kv_lengths; "
             "collect with the per-request FPM extension or pass --features v1 (or fpm5)"
         )
-    dataset = build_dataset(iterations, worker_type, features)
+    dataset = _build_dataset(
+        iterations, worker_type, features, provenance=provenance if online_checkpoint_dir is not None else None
+    )
     if not dataset:
         raise ValueError("no trainable iterations (all idle, zero wall_time, or role-incompatible)")
     stores: dict[str, Any] = {}
@@ -677,6 +907,8 @@ def train(
         )
         model.fit(rows, y_fit)
         stores[kind] = _export_hgb(model)
+        if online_checkpoint_dir is not None:
+            checkpoint_stores[kind] = _online_store_metadata(model, len(features))
         counts[kind] = len(y)
         trees[kind] = int(getattr(model, "n_iter_", len(stores[kind]["trees"])))
         logger.info("store %s: %d rows, %d trees", kind, len(y), trees[kind])
@@ -702,8 +934,14 @@ def train(
             "train_rows": counts,
             "trees_fitted": trees,
             **(metadata or {}),
+            **({"identity": checkpoint_identity} if checkpoint_identity is not None else {}),
         },
     }
+    if online_checkpoint_dir is not None:
+        assert checkpoint_identity is not None
+        _write_training_checkpoint(
+            online_checkpoint_dir, artifact, checkpoint_identity, dataset, provenance, checkpoint_stores
+        )
     return artifact
 
 
@@ -877,6 +1115,9 @@ def _format_report(report: dict[str, dict[str, float]]) -> str:
 
 
 def _cmd_train(args: argparse.Namespace) -> int:
+    if args.online_checkpoint_dir and not args.identity:
+        raise ValueError("--online-checkpoint-dir requires --identity with the canonical FPM configuration JSON")
+    identity = json.loads(Path(args.identity).read_text(encoding="utf-8")) if args.identity else None
     iterations = group_iterations(iter_fpm_records(args.fpm), args.join_ranks)
     if not iterations:
         print("no FPM iterations with positive wall_time found", file=sys.stderr)
@@ -899,6 +1140,8 @@ def _cmd_train(args: argparse.Namespace) -> int:
         min_store_rows=args.min_store_rows,
         random_state=args.seed,
         early_stopping=args.early_stopping,
+        online_checkpoint_dir=args.online_checkpoint_dir,
+        identity=identity,
         metadata={
             "sources": [os.fspath(p) for p in args.fpm],
             "join_ranks": args.join_ranks,
@@ -958,6 +1201,11 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--max-leaf-nodes", type=int, default=31)
     tr.add_argument("--min-samples-leaf", type=int, default=5)
     tr.add_argument("--min-store-rows", type=int, default=20)
+    tr.add_argument(
+        "--online-checkpoint-dir",
+        help="also export fitted rows and bins to a new directory for Rust online fitting (early stopping must be off)",
+    )
+    tr.add_argument("--identity", help="canonical FPM configuration JSON; required with --online-checkpoint-dir")
     tr.add_argument(
         "--early-stopping",
         action="store_true",

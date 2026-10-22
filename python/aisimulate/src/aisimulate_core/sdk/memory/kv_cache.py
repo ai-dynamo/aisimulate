@@ -137,6 +137,16 @@ def _validate_tolerance(tolerance_fraction: float | None) -> None:
         raise ValueError(f"tolerance_fraction must be finite and in [0, 1), got {tolerance_fraction}")
 
 
+def _validate_encoder_parallel(encoder_parallel: str | None) -> None:
+    if encoder_parallel not in (None, "tp", "dp"):
+        raise ValueError(f"encoder_parallel must be 'tp' or 'dp', got {encoder_parallel!r}")
+
+
+def _validate_reserved_bytes(reserved_bytes: int) -> None:
+    if isinstance(reserved_bytes, bool) or not isinstance(reserved_bytes, int) or reserved_bytes < 0:
+        raise ValueError(f"reserved_bytes must be a non-negative integer, got {reserved_bytes!r}")
+
+
 def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
     """Validate the fixed, rank-local CUDA graph reservation."""
     if (
@@ -295,8 +305,18 @@ class KVCacheEstimator:
         wideep_num_slots: int | None = None,
         nextn: int = 0,
         systems_path: str | None = None,
+        colocated_encoder: bool = False,
+        reserved_bytes: int = 0,
+        encoder_parallel: str | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
+
+        ``colocated_encoder`` keeps the model's vision-encoder weights resident on
+        this rank, laid out per ``encoder_parallel`` (``"tp"`` shards the tower
+        over the tensor-parallel group, ``"dp"`` replicates it; sharded when
+        unset, as SGLang lays the tower out by default); ``reserved_bytes`` is a
+        fixed rank-local reservation outside the KV pool (SGLang's multimodal
+        embedding cache).
 
         Reuses the exact AIC machinery the latency path uses: ``build_model_config``
         + ``apply_nextn`` (so the built model is spec-decode aware) + ``get_model``
@@ -326,6 +346,10 @@ class KVCacheEstimator:
             moe_backend=moe_backend,
             moe_kernel_source=moe_kernel_source,
         )
+        # A hosted tower is sharded unless dp is asked for, as SGLang lays it out.
+        encoder_layout = (
+            {"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None or colocated_encoder else {}
+        )
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
@@ -344,6 +368,7 @@ class KVCacheEstimator:
             wideep_num_slots=wideep_num_slots,
             cp_size=cp_size,
             dcp_size=dcp_size,
+            **encoder_layout,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -399,10 +424,15 @@ class KVCacheEstimator:
             resident_weights = weight_memory()
             if resident_weights is not None:
                 weights_bytes = float(resident_weights)
+        if colocated_encoder:
+            # The language worker loads the vision tower; its weights never enter
+            # the context-op inventory above.
+            weights_bytes += float(sum(op.get_weights() for op in getattr(model, "encoder_ops", ())))
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
-        non_kv_bytes = weights_bytes + runtime_overhead_bytes + comm_overhead_bytes
+        reserved_bytes = float(reserved_bytes)
+        non_kv_bytes = weights_bytes + runtime_overhead_bytes + comm_overhead_bytes + reserved_bytes
         # SGLang sizes its static weights/KV pool before allocating peak forward
         # activations. mem_fraction_static already leaves headroom for those
         # transient allocations; charging them inside the pool counts them twice.
@@ -432,6 +462,7 @@ class KVCacheEstimator:
                 "activations_bytes": activations_bytes,
                 "runtime_overhead_bytes": runtime_overhead_bytes,
                 "comm_overhead_bytes": comm_overhead_bytes,
+                "reserved_bytes": reserved_bytes,
                 "non_kv_bytes": non_kv_bytes,
                 # SGLang measures free memory after distributed/CUDA setup,
                 # before loading weights, and applies its static fraction there.
@@ -540,6 +571,7 @@ class KVCacheEstimator:
                 "activations_bytes": int(max(float(breakdown["activations_bytes"]), 0.0)),
                 "runtime_overhead_bytes": int(max(float(breakdown["runtime_overhead_bytes"]), 0.0)),
                 "comm_overhead_bytes": int(max(float(breakdown["comm_overhead_bytes"]), 0.0)),
+                "reserved_bytes": int(max(float(breakdown.get("reserved_bytes", 0.0)), 0.0)),
                 "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
             },
             "tolerance_adjusted": None,
@@ -1080,6 +1112,9 @@ def estimate_kv_cache(
     worker_type: str = "aggregated",
     context_length: int | None = None,
     request_occupancy_tokens: int | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
@@ -1134,6 +1169,10 @@ def estimate_kv_cache(
         request_occupancy_tokens: optional logical request length for a separate
             native one-token decode occupancy estimate. Requires an FPM profile;
             context and scheduler admission still use their original settings.
+        colocated_encoder, encoder_parallel, reserved_bytes: the resident vision
+            tower, its layout over the tensor-parallel group, and a fixed rank-local
+            reservation, charged by the model build path only; an FPM profile
+            records the rank's memory as measured and rejects them.
 
     Returns:
         A flat dict with ``total_gpu_capacity_bytes``, ``total_kv_size_bytes``,
@@ -1153,6 +1192,8 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
+    _validate_encoder_parallel(encoder_parallel)
+    _validate_reserved_bytes(reserved_bytes)
     # Before the model build and the naive fallback, which would swallow the error.
     validate_parallel_size("cp_size", cp_size)
     validate_parallel_size("dcp_size", dcp_size)
@@ -1164,6 +1205,13 @@ def estimate_kv_cache(
     if request_occupancy_tokens is not None and fpm_profile is None:
         raise ValueError("request_occupancy_tokens requires an FPM profile")
     if fpm_profile is not None:
+        if colocated_encoder or reserved_bytes or encoder_parallel is not None:
+            # The profile records the rank's memory as measured; it cannot be reshaped by
+            # a reservation or an encoder layout the recording did not carry.
+            raise ValueError(
+                "FPM profile resources carry the measured rank memory; colocated_encoder, "
+                "reserved_bytes and encoder_parallel apply to the model build path only"
+            )
         profile = load_fpm_profile(fpm_profile)
         if backend_version is None:
             raise ValueError("FPM profile memory estimation requires the profile's literal backend_version")
@@ -1310,6 +1358,9 @@ def estimate_kv_cache(
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
             systems_path=systems_path,
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
@@ -1327,6 +1378,9 @@ def estimate_kv_cache(
             or moe_backend not in (None, "default")
             or moe_kernel_source is not None
             or attention_backend is not None
+            or colocated_encoder
+            or reserved_bytes
+            or encoder_parallel is not None
         ):
             if isinstance(exc, perf_database.UnlistedQueryVersionError):
                 # A version-slot rejection is a configuration error with its
@@ -1407,6 +1461,9 @@ def estimate_num_gpu_blocks(
     fpm_profile: dict | str | FpmModelProfile | None = None,
     worker_type: str = "aggregated",
     context_length: int | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1476,6 +1533,9 @@ def estimate_num_gpu_blocks(
         fpm_profile=fpm_profile,
         worker_type=worker_type,
         context_length=context_length,
+        colocated_encoder=colocated_encoder,
+        reserved_bytes=reserved_bytes,
+        encoder_parallel=encoder_parallel,
     )
 
     if estimate.get("cache_layout") == "grouped":

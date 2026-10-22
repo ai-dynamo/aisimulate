@@ -90,15 +90,13 @@ with the exact recorded `execution_profile`; generic speculation cost graphs
 must not be composed with measurements that already include the draft work.
 
 Supported queries are pure-prefill and pure-decode `ForwardPassMetrics`, prefill
-static/detailed queries, and replay's decode query with actual total KV tokens.
-Raw mixed FPM, static multi-round generation, per-operation and ad-hoc operation
-queries fail explicitly. Ordinary replay retains its existing separate P/D
-phase composition; this is an approximation for mixed iterations, not a measured
-mixed-round model. Partial-width decode rounds still use the configured depth's
-timing. The existing replay prefill callback uses integer per-request mean
-lengths, so ragged batches can lose remainder tokens; raw FPM totals do not have
-that approximation. Enable query coverage to identify holes rather than
-extrapolating.
+static/detailed queries, and replay's prefill and decode queries with actual
+iteration totals. Raw mixed FPM, static multi-round generation, per-operation
+and ad-hoc operation queries fail explicitly. Ordinary replay retains its
+existing separate P/D phase composition; this is an approximation for mixed
+iterations, not a measured mixed-round model. Partial-width decode rounds still
+use the configured depth's timing. Enable query coverage to identify holes
+rather than extrapolating.
 
 The SD identity does not expand the guided `onboard` collector or its replay
 validation scope. Prepare and validate the measured table separately, then use
@@ -195,6 +193,7 @@ uncorrected native timings, in milliseconds:
 | Method | Coordinate contract |
 | --- | --- |
 | `predict_prefill_latency(batch_size, isl, prefix)` | Full input length and cached-prefix length per request; direct-FPM totals are `(batch_size, batch_size * (isl - prefix), batch_size * prefix)`. |
+| `predict_prefill_latency_total(batch_size, total_prefill_tokens, total_kv_read_tokens)` | Exact tokens computed and cached or earlier-chunk KV read across the prefill batch. Whole-forward FPM without operation-level draft tails queries these totals directly, so a ragged batch is never priced above its scheduled token count. Other graphs use the integer means of `predict_prefill_latency`; execution profiles reject totals that do not divide evenly across the batch. |
 | `predict_decode_latency_total(batch_size, total_past_kv_tokens)` | Exact total past-KV across the decode batch, preserving the native FPM coordinate without a mean-context conversion. |
 | `fpm_decode_kv_ceiling()` | Largest collected decode KV total, or `None`; reading this bound does not record a timing lookup or prove shape-specific coverage. |
 

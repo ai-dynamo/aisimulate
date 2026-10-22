@@ -109,6 +109,21 @@ def _role_capacity_tokens(
         if not roots:
             roots = sample.get("systems_paths")
         profile = resolved.get("fpm_profile", sample.get("fpm_profile"))
+        model_controls = {
+            name: resolved.get(name, sample.get(name))
+            for name in ENGINE_MODEL_CONTROL_FIELDS
+            if resolved.get(name, sample.get(name)) is not None
+            and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
+        }
+        vision = sample.get(f"{role}_vision")
+        if vision is not None:
+            # The runtime deducts the tower weights and the embedding cache from the
+            # KV pool; load resolution must size against the same capacity.
+            model_controls.update(
+                colocated_encoder=True,
+                reserved_bytes=int(vision["cache_mib"]) << 20,
+                encoder_parallel=str(vision["encoder_parallel"]),
+            )
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
@@ -129,12 +144,7 @@ def _role_capacity_tokens(
             worker_type="aggregated" if role == "agg" else role,
             context_length=sample.get("context_length"),
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
-            model_controls=tuple(
-                (name, resolved.get(name, sample.get(name)))
-                for name in ENGINE_MODEL_CONTROL_FIELDS
-                if resolved.get(name, sample.get(name)) is not None
-                and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
-            ),
+            model_controls=tuple(model_controls.items()),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
@@ -255,7 +265,25 @@ def resolve_kv_load(
     else:
         raise TypeError(f"unsupported parallel config for KV load: {type(parallel_config).__name__}")
 
-    expected_tokens_per_request = int(workload.isl) + int(workload.osl) // 2
+    isl = int(workload.isl)
+    images = getattr(workload, "images", None)
+    if images is not None and sample.get("encoder") is not None:
+        # An encoder pool: the runner prompts the language workers with the pool's visual tokens.
+        isl += int(sample["encoder"]["visual_tokens"])
+    elif images is not None:
+        # Visual placeholders occupy KV like text on every language role; size the
+        # load on the geometry the workload driver lays out, processor pixel budget included.
+        from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+        geometry = image_geometry(
+            str(sample["model_name"]),
+            images.height,
+            images.width,
+            min_pixels=images.min_pixels,
+            max_pixels=images.max_pixels,
+        )
+        isl += images.count * geometry.visual_tokens
+    expected_tokens_per_request = isl + int(workload.osl) // 2
     if expected_tokens_per_request <= 0:
         raise InfeasibleKVCapacity(
             f"kv_load_ratio requires positive average tokens per request, got isl={workload.isl}, osl={workload.osl}"
