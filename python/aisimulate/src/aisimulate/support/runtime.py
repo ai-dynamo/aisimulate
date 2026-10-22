@@ -18,6 +18,7 @@ import yaml
 from aisimulate.fpm_profile import FpmModelProfile
 
 from .config_profile import (
+    linear_block_bytes,
     linear_runtime_resources,
     load_model_config,
     profile_from_observations,
@@ -469,7 +470,8 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
     actual_capacity = actual["runtime_memory"].pop("kv_cache_bytes")
     # The draft holds the grouped evidence, or the same evidence in the linear layout. Only the evidence decides
     # which layouts exist.
-    if actual != expected and actual != linear_runtime_resources(expected):
+    linear = linear_runtime_resources(expected)
+    if actual != expected and actual != linear:
         raise ValueError("runtime cache geometry or settings changed; a compatible fresh probe is required")
     overrides = (
         {}
@@ -486,6 +488,17 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
         raise ValueError(
             "resource edits require checkpoint registration to preserve observed values and label user overrides"
         )
+    if overrides and actual == linear:
+        # The plan counts whole tokens of a linear profile, but vLLM allocates whole blocks. A capacity of whole
+        # blocks keeps the two counts equal. The grouped estimate already counts whole blocks.
+        block = linear_block_bytes(expected)
+        if actual_capacity % block:
+            raise ValueError(
+                f"the runtime_memory.kv_cache_bytes override {actual_capacity} is not a whole number of the measured "
+                f"{block}-byte cache blocks ({block // linear['kv_bytes_per_token']} tokens each). A linear runtime "
+                "profile needs whole blocks. The nearest lower capacity of whole blocks is "
+                f"{actual_capacity // block * block} bytes"
+            )
     metadata = {key: getattr(request.fpm_profile, key) for key in ("architecture", "context_length", "num_experts")}
     if metadata != manifest["model_metadata"]:
         raise ValueError("model metadata edits require a compatible fresh probe")

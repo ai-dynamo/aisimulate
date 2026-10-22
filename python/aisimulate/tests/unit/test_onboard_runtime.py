@@ -818,6 +818,106 @@ def test_grouped_peak_refusal_names_the_memory_source(tmp_path, capsys, memory_s
     )
 
 
+def _capacity_campaign(tmp_path, capsys, resource_overrides=None):
+    """A 1500-token draft whose probe measured 378 pages of 128 bytes: 48384 bytes, shared by two groups."""
+    checkpoint, _, request, _ = _imported(
+        tmp_path, capsys, capacity_multiplier=4, context_length=1500, resource_overrides=resource_overrides
+    )
+    return checkpoint, request
+
+
+def _capacity_override(checkpoint, request, capacity):
+    """Register a capacity edit of the draft in its checkpoint, where it becomes a labeled user override."""
+    payload = request.model_dump(mode="json", exclude_none=True)
+    payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]["kv_cache_bytes"] = capacity
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={"configurations": {"tp2": {"draft_request": payload}}},
+        expected_revision=state.revision,
+        accept=[],
+    )
+    return SupportRequest.model_validate(state.configurations["tp2"].draft_request)
+
+
+def _plan_override(tmp_path, request):
+    config = tmp_path / "override.yaml"
+    _write(config, request.model_dump(mode="json", exclude_none=True))
+    return ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "collection")]
+
+
+def test_measured_capacity_is_whole_linear_cache_blocks(tmp_path, capsys):
+    from aisimulate.support.config_profile import linear_block_bytes
+    from aisimulate.support.runtime import runtime_probe_manifest
+
+    _, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    observed = runtime_probe_manifest(request)["observed_resources"]
+    # 16 tokens fill one 128-byte page of each of the two groups, at 16 bytes per token.
+    assert linear_block_bytes(observed) == 256
+    assert observed["runtime_memory"]["kv_cache_bytes"] == 189 * 256
+    assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 189 * 256
+
+
+@pytest.mark.parametrize("capacity", [24063, 24000])
+def test_linear_capacity_override_must_be_whole_measured_blocks(tmp_path, capsys, capacity):
+    from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, capacity)
+    assert runtime_probe_manifest(changed)["user_overrides"]["runtime_memory.kv_cache_bytes"]["value"] == capacity
+    # The plan counts 1503 or 1500 whole tokens, but 93 whole blocks hold only 1488 tokens.
+    with pytest.raises(ValueError) as error:
+        verify_runtime_profile(changed)
+    assert str(error.value) == (
+        f"the runtime_memory.kv_cache_bytes override {capacity} is not a whole number of the measured 256-byte "
+        "cache blocks (16 tokens each). A linear runtime profile needs whole blocks. The nearest lower capacity of "
+        "whole blocks is 23808 bytes"
+    )
+    # The refusal does not rewrite the draft.
+    assert changed.profile_deployment().resources.runtime_memory.kv_cache_bytes == capacity
+
+
+@pytest.mark.parametrize("blocks", [93, 94])
+def test_linear_capacity_override_of_whole_blocks_plans_whole_blocks(tmp_path, capsys, blocks):
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys, _LINEAR_CLAIM)
+    changed = _capacity_override(checkpoint, request, blocks * 256)
+    verify_runtime_profile(changed)
+    command = _plan_override(tmp_path, changed)
+    if blocks == 93:
+        # 93 blocks hold 1488 tokens, fewer than the 1500-token context.
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert (
+            "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
+            in capsys.readouterr().err
+        )
+    else:
+        assert cli.main(command) == 0
+        plan = json.loads((tmp_path / "collection" / "support-plan.json").read_text())
+        assert plan["resources"]["total_kv_size_tokens"] == 1504
+
+
+def test_grouped_capacity_override_keeps_its_whole_block_plan_check(tmp_path, capsys):
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, request = _capacity_campaign(tmp_path, capsys)
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    changed = _capacity_override(checkpoint, request, 24063)
+    # The grouped estimate already counts whole blocks, so acceptance takes the override.
+    verify_runtime_profile(changed)
+    with pytest.raises(SystemExit) as error:
+        cli.main(_plan_override(tmp_path, changed))
+    assert error.value.code == 2
+    # A 1500-token request needs 94 pages of 128 bytes in each group: 24064 bytes.
+    assert (
+        "observed FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+        in capsys.readouterr().err
+    )
+
+
 def test_profile_edit_preserves_measured_values_and_requires_fresh_probe_for_settings(tmp_path, capsys):
     from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
 

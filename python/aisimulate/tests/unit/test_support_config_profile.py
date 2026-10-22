@@ -25,6 +25,7 @@ from aisimulate.support.config_profile import (
     _linear_layout_gap,
     _runtime_layout,
     derive_profile,
+    linear_block_bytes,
     linear_runtime_resources,
     load_model_config,
     profile_from_observations,
@@ -716,6 +717,21 @@ def test_linear_runtime_resources_has_no_linear_layout_for_other_measurements(re
     assert linear_runtime_resources(resources) is None
     # Finalization gives this reason when it refuses a linear profile.
     assert _linear_layout_gap(resources) == reason
+
+
+@pytest.mark.parametrize(
+    "groups,block",
+    [
+        # One block size: 16 tokens fill one 128-byte page of each group.
+        (_groups([(128, 16), (128, 16)]), 256),
+        # Block sizes of 16 and 32 tokens: 32 tokens fill two pages of the first group and one of the second.
+        (_groups([(128, 16), (128, 32)]), 384),
+        ([_RUNTIME_GROUP, _WINDOWED_GROUP], None),
+    ],
+    ids=["one-block-size", "two-block-sizes", "windowed-group"],
+)
+def test_linear_block_bytes_fill_whole_pages_in_every_group(groups, block):
+    assert linear_block_bytes({**_GROUPED_OBSERVATION, "cache_groups": groups}) == block
 
 
 @pytest.mark.parametrize(

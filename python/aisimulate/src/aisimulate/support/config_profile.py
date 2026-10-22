@@ -1588,6 +1588,19 @@ def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | N
     return linear
 
 
+def linear_block_bytes(resources: Mapping[str, Any]) -> int | None:
+    """Bytes of one cache block in the linear layout of measured grouped resources, or None without that layout.
+
+    vLLM gives a request whole blocks in every group. A block of the linear layout holds the fewest tokens that fill
+    whole blocks in every measured group. With one block size, it is one block of each group. A capacity of whole
+    blocks holds exactly the tokens that the linear layout counts.
+    """
+    if _linear_layout_gap(resources) is not None:
+        return None
+    tokens = math.lcm(*(group.block_size_tokens for group in _measured_groups(resources)))
+    return int(tokens * _measured_kv_bytes(resources))
+
+
 def _matches_observation(key: str, typed: Any, resources: Mapping[str, Any]) -> bool:
     """Whether a resource override agrees with what the runtime probe measured."""
     if key == "cache_groups":
