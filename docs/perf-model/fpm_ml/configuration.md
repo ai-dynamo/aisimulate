@@ -52,19 +52,14 @@ it must not contain parameters or a draft checkpoint.
 
 ## Learned forest and online fitting controls
 
-All fields below belong to `estimator_config.fpm_learned`. Standalone online
-defaults use the gym's W64 recipe. Selecting `adaptation: causal_selector`
-changes the defaults for its adaptive expert to the W8 recipe: an eight-row
-window, four-observation fitting batches, 0.25 historical mass and an eight-row
-support ramp. Defaults fill omitted fields; explicit values remain overrides.
-These recipes do not establish accuracy for an unevaluated deployment.
-Configuration normalization and validation happen in Rust; Python passes the
-complete configuration through.
+All fields below belong to `estimator_config.fpm_learned`. The defaults describe
+API behavior, not an accuracy recommendation. Omitted fields in canonical
+JSON/YAML select the standalone or `causal_selector` defaults listed below;
+explicit values remain overrides. Configuration normalization and validation
+happen in Rust; Python passes the complete configuration through.
 
-Rust callers constructing typed values can use
-`FpmLearnedConfig::for_adaptation(...)` or `EstimatorConfig::for_learned(...)`
-to select the mode's defaults before applying overrides. Changing `adaptation`
-on an existing typed configuration retains its already populated controls.
+Rust typed configurations already contain field values. Changing `adaptation`
+on an existing typed configuration retains those values.
 
 When every learned control has its default value, serialization omits the
 `fpm_learned` block to preserve existing non-learned configurations. Any
@@ -78,7 +73,6 @@ nondefault control preserves the complete block, even without a source path.
 | `adaptation` | `online` | `frozen` preserves tree values and topology; `online` updates the forest with correction disabled; `causal_selector` chooses between a frozen hybrid-calibrated forest and an independent online forest. The selector requires enabled hybrid correction and a training checkpoint. Set `frozen` explicitly when loading an inference artifact. |
 | `update_mode` | `structural` | With online adaptation, `leaf_only` refits existing leaves; `structural` can rebuild subtrees within each seed tree's existing capacity. Neither adds trees nor relearns feature-bin thresholds. |
 | `recent_window` | `64`; selector: `8` | Positive maximum number of retained online observations per learned store. FIFO eviction removes the oldest recent observations; immutable training history is additional to this budget. |
-| `recent_sampling` | `fifo` | Retain recent observations in admission order and evict the oldest when the window fills. `fifo` is the only supported policy. |
 | `update_every` | `1`; selector: `4` | Positive number of pending observations in a store that triggers a fitting batch. Predictions use the last published forest until fitting succeeds; `flush_updates()` processes a partial batch explicitly. Counts admitted observations, independently of the caller's feedback schedule. |
 | `derivative_refresh` | `lazy` | `eager` recomputes derivatives on the full retained fitting population. `lazy` updates cached statistics for insertions and evictions, with eager fallback when structure must change. |
 | `eager_refresh_interval` | `32` | Positive maximum fitting-batch interval between full derivative refreshes in lazy mode. Counts batches, not predictions or elapsed seconds. An interval of 1 refreshes every batch. |
@@ -92,8 +86,7 @@ nondefault control preserves the complete block, even without a source path.
 | `update_step` | `1.0` | Finite leaf-value displacement fraction in `(0, 1]`. Values below 1 interpolate from the existing leaf toward its fitted value and require `update_mode: leaf_only`. This differs from the seed learning rate. |
 | `recent_max_age_observations` | `null` | Optional positive maximum age of a recent row in the model's global accepted-observation sequence, inclusive. Batch fitting and explicit `flush_updates()` use the latest admission across every store, including when a store has no pending rows. `null` disables age expiry. This is an observation count, not time; history is never expired. |
 
-There is no built-in forest: a source path is always required. The seed
-checkpoint owns the feature order, numeric bin thresholds, target
+The seed checkpoint owns the feature order, numeric bin thresholds, target
 transform, baseline, tree count, per-tree capacity, learning rate, L2 penalty,
 minimum leaf support and maximum depth. They are verified when loading the
 checkpoint rather than independently overridden by online configuration.
@@ -109,10 +102,10 @@ without this metadata remain supported, with `identity_verified: false` in
 The content digest pins source bytes; it does not establish deployment identity
 for an artifact that lacks identity metadata.
 
-For example, this expanded standalone default profile keeps 64 recent
-observations and fits after each admitted label. It retains complete historical
-evidence while assigning it 10% of total loss mass once 32 recent observations
-are retained.
+For example, this standalone default profile keeps 64 recent observations and
+fits after each admitted label. It retains complete historical evidence while
+assigning it 10% of total loss mass once 32 recent observations are retained.
+These settings are not a universal optimum.
 
 ```yaml
 estimation_mode: fpm_learned
@@ -126,7 +119,6 @@ estimator_config:
     adaptation: online
     update_mode: structural
     recent_window: 64
-    recent_sampling: fifo
     update_every: 1
     history_weight: 0.1
     history_weight_ramp_observations: 32

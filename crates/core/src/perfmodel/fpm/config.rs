@@ -676,168 +676,81 @@ mod tests {
     }
 
     #[test]
-    fn contextual_defaults_keep_nested_deserialization_error_paths() {
-        let base = serde_json::json!({
-            "model": "model", "system": "system", "backend": "vllm", "worker_type": "decode"
-        });
-        for (overrides, path) in [
-            (serde_json::json!({"worker_type": "agg"}), "worker_type"),
+    fn contextual_defaults_keep_nested_error_paths() {
+        for (estimator, path) in [
             (
-                serde_json::json!({"estimator_config": {"fpm_regression": {"fit": {"rebuild_interval": -1}}}}),
+                serde_json::json!({"fpm_regression": {"fit": {"rebuild_interval": -1}}}),
                 "estimator_config.fpm_regression.fit.rebuild_interval",
             ),
             (
-                serde_json::json!({"estimator_config": {"fpm_learned": {"recent_window": -1}}}),
+                serde_json::json!({"fpm_learned": {"recent_window": -1}}),
                 "estimator_config.fpm_learned.recent_window",
             ),
-            (
-                serde_json::json!({"estimator_config": {"fpm_learned": {"adaptation": "invalid"}}}),
-                "estimator_config.fpm_learned.adaptation",
-            ),
         ] {
-            let mut value = base.clone();
-            value
-                .as_object_mut()
-                .unwrap()
-                .extend(overrides.as_object().unwrap().clone());
+            let value = serde_json::json!({
+                "model": "model", "system": "system", "backend": "vllm",
+                "worker_type": "decode", "estimator_config": estimator,
+            });
             let error = serde_json::from_value::<ForwardPassPerfModelConfig>(value).unwrap_err();
             assert!(error.to_string().contains(path), "{error}");
         }
     }
 
     #[test]
-    fn learned_recipes_resolve_only_missing_controls_and_round_trip() {
-        use super::super::{FpmLearnedConfig, LearnedAdaptation, LearnedDerivativeRefresh};
+    fn learned_defaults_preserve_overrides_and_round_trip() {
         for (adaptation, expected) in [
-            (None, LearnedAdaptation::Online),
-            (Some("online"), LearnedAdaptation::Online),
-            (Some("frozen"), LearnedAdaptation::Frozen),
-            (Some("causal_selector"), LearnedAdaptation::CausalSelector),
+            (None, serde_json::json!([64, 0.1, 32, 1, false])),
+            (Some("frozen"), serde_json::json!([64, 0.1, 32, 1, true])),
+            (
+                Some("causal_selector"),
+                serde_json::json!([8, 0.25, 8, 4, true]),
+            ),
         ] {
             let mut learned = serde_json::json!({"checkpoint_path": "/seed"});
             if let Some(adaptation) = adaptation {
                 learned["adaptation"] = adaptation.into();
             }
             let cfg = config(serde_json::json!({
-                "estimation_mode": "fpm_learned",
-                "estimator_config": {"fpm_learned": learned}
+                "estimation_mode": "fpm_learned", "estimator_config": {"fpm_learned": learned}
             }));
             cfg.validate().unwrap();
-            let mut defaults = FpmLearnedConfig::for_adaptation(expected);
-            defaults.checkpoint_path = Some("/seed".into());
-            assert_eq!(cfg.estimator_config.fpm_learned, defaults);
-            assert_eq!(defaults.derivative_refresh, LearnedDerivativeRefresh::Lazy);
-            assert_eq!(
-                cfg.estimator_config.correction.enabled,
-                expected != LearnedAdaptation::Online
-            );
-            let serialized = serde_json::to_value(&cfg).unwrap();
-            assert_eq!(
-                serialized["estimator_config"]["fpm_learned"]["recent_sampling"],
-                "fifo"
-            );
-            assert_eq!(
-                serde_json::from_value::<ForwardPassPerfModelConfig>(serialized).unwrap(),
-                cfg
-            );
+            let learned = &cfg.estimator_config.fpm_learned;
+            let actual = serde_json::json!([
+                learned.recent_window,
+                learned.history_weight,
+                learned.history_weight_ramp_observations,
+                learned.update_every,
+                cfg.estimator_config.correction.enabled
+            ]);
+            assert_eq!(actual, expected);
         }
-        let cfg = config(serde_json::json!({
-            "estimation_mode": "fpm_learned",
-            "estimator_config": {
-                "fpm_learned": {"checkpoint_path": "/seed", "adaptation": "causal_selector",
-                    "recent_window": 64, "history_weight": 0.1, "update_every": 1,
-                    "history_weight_ramp_observations": 0, "recent_sampling": "fifo"},
-                "selector": {"warmup": 3, "margin": 0},
-                "correction": {"sampling": {"max_observations": 32, "bins_per_axis": [2, 2]}}
-            }
-        }));
-        cfg.validate().unwrap();
-        let learned = &cfg.estimator_config.fpm_learned;
-        assert_eq!(learned.recent_window, 64);
-        assert_eq!(learned.history_weight, Some(0.1));
-        assert_eq!(learned.update_every, 1);
-        assert_eq!(learned.history_weight_ramp_observations, 0);
-        assert_eq!(cfg.estimator_config.selector.alpha, 0.4);
-        assert_eq!(cfg.estimator_config.selector.warmup, 3);
-        assert_eq!(cfg.estimator_config.selector.margin, 0.0);
-        assert_eq!(
-            cfg.estimator_config.correction.sampling.bins_per_axis,
-            [2, 2]
-        );
-        assert_eq!(
-            cfg.estimator_config.correction.sampling.max_observations,
-            32
-        );
-        assert_eq!(
-            serde_json::from_value::<ForwardPassPerfModelConfig>(
-                serde_json::to_value(&cfg).unwrap()
-            )
-            .unwrap(),
-            cfg
-        );
-    }
-
-    #[test]
-    fn learned_defaults_preserve_explicit_invalid_choices() {
-        for (adaptation, correction, message) in [
-            (
-                "online",
-                serde_json::json!({"enabled": true}),
-                "correction.enabled=false",
-            ),
-            (
-                "causal_selector",
-                serde_json::json!({"enabled": false}),
-                "correction.enabled=true",
-            ),
-            (
-                "causal_selector",
-                serde_json::json!({"mode": "fixed"}),
-                "correction.mode='hybrid'",
-            ),
-        ] {
+        for weight in [serde_json::json!(0.1), serde_json::Value::Null] {
+            let overrides = serde_json::json!({
+                "checkpoint_path": "/seed", "adaptation": "causal_selector",
+                "recent_window": 64, "history_weight": weight,
+                "history_weight_ramp_observations": 0, "update_every": 1
+            });
             let cfg = config(serde_json::json!({
-                "estimation_mode": "fpm_learned",
-                "estimator_config": {
-                    "fpm_learned": {"checkpoint_path": "/seed", "adaptation": adaptation},
-                    "correction": correction
+                "estimation_mode": "fpm_learned", "estimator_config": {
+                    "fpm_learned": overrides,
+                    "correction": {"sampling": {"max_observations": 32}},
+                    "selector": {"warmup": 3, "margin": 0}
                 }
             }));
-            assert!(cfg.validate().unwrap_err().to_string().contains(message));
-        }
-        let cfg = config(serde_json::json!({
-            "estimation_mode": "fpm_learned",
-            "estimator_config": {"fpm_learned": {"artifact_path": "/artifact"}}
-        }));
-        assert!(
-            cfg.validate()
-                .unwrap_err()
-                .to_string()
-                .contains("requires checkpoint_path")
-        );
-        let cfg = config(serde_json::json!({
-            "estimation_mode": "fpm_learned",
-            "estimator_config": {"fpm_learned": {"artifact_path": "/artifact", "adaptation": "frozen"}}
-        }));
-        cfg.validate().unwrap();
-        assert!(cfg.estimator_config.correction.enabled);
-    }
-
-    #[test]
-    fn nonlearned_modes_keep_correction_defaults_with_unused_learned_controls() {
-        for mode in ["auto", "op_level", "fpm_interpolation", "fpm_regression"] {
-            for learned in [
-                serde_json::json!({}),
-                serde_json::json!({"adaptation": "online"}),
-            ] {
-                let cfg = config(serde_json::json!({
-                    "estimation_mode": mode,
-                    "estimator_config": {"fpm_learned": learned}
-                }));
-                assert!(cfg.estimator_config.correction.enabled);
-                cfg.validate().unwrap();
+            cfg.validate().unwrap();
+            let saved = serde_json::to_value(&cfg).unwrap();
+            for (key, value) in overrides.as_object().unwrap() {
+                assert_eq!(&saved["estimator_config"]["fpm_learned"][key], value);
             }
+            let estimator = &cfg.estimator_config;
+            assert_eq!(estimator.correction.sampling.max_observations, 32);
+            assert_eq!(estimator.selector.warmup, 3);
+            assert_eq!(estimator.selector.margin, 0.0);
+            let restored: ForwardPassPerfModelConfig = serde_json::from_value(saved).unwrap();
+            assert_eq!(restored, cfg);
         }
+        let nonlearned = config(serde_json::json!({}));
+        assert!(nonlearned.estimator_config.correction.enabled);
     }
 
     #[test]

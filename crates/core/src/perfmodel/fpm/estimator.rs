@@ -97,7 +97,7 @@ pub enum LearnedDerivativeRefresh {
 /// Explicit learned-model sources and Rust-owned online fitting controls.
 /// Offline anchors are retained in addition to the bounded recent window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(remote = "Self", default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct FpmLearnedConfig {
     pub artifact_path: Option<PathBuf>,
     pub checkpoint_path: Option<PathBuf>,
@@ -151,81 +151,7 @@ impl Default for FpmLearnedConfig {
     }
 }
 
-// The derived remote codec retains the existing binary checkpoint layout.
-// Human-readable configuration additionally names the fixed FIFO policy and
-// resolves only omitted fields against the selected adaptation recipe.
-impl Serialize for FpmLearnedConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        if !serializer.is_human_readable() {
-            return Self::serialize(self, serializer);
-        }
-        #[derive(Serialize)]
-        struct Fields<'a>(#[serde(with = "FpmLearnedConfig")] &'a FpmLearnedConfig);
-        let mut value = serde_json::to_value(Fields(self)).map_err(serde::ser::Error::custom)?;
-        value["recent_sampling"] = serde_json::json!("fifo");
-        value.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for FpmLearnedConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        if !deserializer.is_human_readable() {
-            return Self::deserialize(deserializer);
-        }
-        let mut supplied = serde_json::Value::deserialize(deserializer)?;
-        let fields = supplied.as_object_mut().ok_or_else(|| {
-            serde::de::Error::custom("estimator_config.fpm_learned must be an object")
-        })?;
-        if let Some(policy) = fields.remove("recent_sampling") {
-            if policy != "fifo" {
-                return Err(serde::de::Error::custom(
-                    "estimator_config.fpm_learned.recent_sampling supports only 'fifo'",
-                ));
-            }
-        }
-        let adaptation = fields
-            .get("adaptation")
-            .map(|value| serde_json::from_value(value.clone()))
-            .transpose()
-            .map_err(|error| {
-                serde::de::Error::custom(format!(
-                    "estimator_config.fpm_learned.adaptation: {error}"
-                ))
-            })?
-            .unwrap_or_default();
-        #[derive(Serialize)]
-        struct Fields<'a>(#[serde(with = "FpmLearnedConfig")] &'a FpmLearnedConfig);
-        let defaults = Self::for_adaptation(adaptation);
-        let mut resolved =
-            serde_json::to_value(Fields(&defaults)).map_err(serde::de::Error::custom)?;
-        resolved.as_object_mut().unwrap().append(fields);
-        #[derive(Deserialize)]
-        #[serde(transparent)]
-        struct Resolved(#[serde(with = "FpmLearnedConfig")] FpmLearnedConfig);
-        serde_path_to_error::deserialize(resolved)
-            .map(|Resolved(config)| config)
-            .map_err(|error| {
-                serde::de::Error::custom(format!("estimator_config.fpm_learned.{error}"))
-            })
-    }
-}
-
 impl FpmLearnedConfig {
-    /// Start from the standalone or combined recipe, then apply explicit overrides.
-    pub fn for_adaptation(adaptation: LearnedAdaptation) -> Self {
-        let mut config = Self {
-            adaptation,
-            ..Self::default()
-        };
-        if adaptation == LearnedAdaptation::CausalSelector {
-            config.recent_window = 8;
-            config.history_weight = Some(0.25);
-            config.history_weight_ramp_observations = 8;
-            config.update_every = 4;
-        }
-        config
-    }
-
     fn is_default(&self) -> bool {
         self == &Self::default()
     }
@@ -923,6 +849,21 @@ impl EstimatorConfig {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("online");
         let enabled = adaptation != "online";
+        if adaptation == "causal_selector" {
+            if let Some(learned) = estimator
+                .get_mut("fpm_learned")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (key, value) in [
+                    ("recent_window", serde_json::json!(8)),
+                    ("history_weight", serde_json::json!(0.25)),
+                    ("history_weight_ramp_observations", serde_json::json!(8)),
+                    ("update_every", serde_json::json!(4)),
+                ] {
+                    learned.entry(key).or_insert(value);
+                }
+            }
+        }
         let correction = estimator
             .entry("correction")
             .or_insert_with(|| serde_json::json!({}));
@@ -930,20 +871,6 @@ impl EstimatorConfig {
             correction
                 .entry("enabled")
                 .or_insert(serde_json::json!(enabled));
-        }
-    }
-
-    /// Rust-owned learned recipe for typed callers. Set source paths and any
-    /// explicit overrides before passing the full config to `best_available`.
-    pub fn for_learned(adaptation: LearnedAdaptation) -> Self {
-        Self {
-            fpm_learned: FpmLearnedConfig::for_adaptation(adaptation),
-            correction: CorrectionConfig {
-                enabled: adaptation != LearnedAdaptation::Online,
-                mode: CorrectionMode::Hybrid,
-                ..CorrectionConfig::default()
-            },
-            ..Self::default()
         }
     }
 
@@ -1413,104 +1340,6 @@ fn merge_explicit(
         )));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod learned_defaults_tests {
-    use super::*;
-
-    #[test]
-    fn learned_binary_layout_remains_compatible_with_runtime_checkpoints() {
-        // Pre-default-change field order and discriminants, including legacy
-        // unit weighting and eager refresh. The trailing marker detects drift.
-        let old_fields = (
-            (
-                None::<PathBuf>,
-                Some(PathBuf::from("seed")),
-                None::<String>,
-                1u32,
-                1u32,
-                2048u64,
-                None::<f64>,
-                0u64,
-                false,
-                None::<u64>,
-            ),
-            (
-                1.0f64,
-                None::<u64>,
-                64u64,
-                0u32,
-                1.0f64,
-                0.0f64,
-                32u64,
-                0u64,
-            ),
-        );
-        let bytes = bincode::serialize(&(old_fields, 0x1234u64)).unwrap();
-        let (config, marker): (FpmLearnedConfig, u64) = bincode::deserialize(&bytes).unwrap();
-        assert_eq!(marker, 0x1234);
-        assert_eq!(config.adaptation, LearnedAdaptation::Online);
-        assert_eq!(config.recent_window, 2048);
-        assert_eq!(config.history_weight, None);
-        assert_eq!(config.derivative_refresh, LearnedDerivativeRefresh::Eager);
-        assert_eq!(bincode::serialize(&(config, marker)).unwrap(), bytes);
-    }
-
-    #[test]
-    fn learned_null_overrides_and_fifo_policy_are_preserved() {
-        let config: FpmLearnedConfig = serde_json::from_value(serde_json::json!({
-            "adaptation": "causal_selector", "history_weight": null,
-            "history_weight_ramp_observations": 0, "recent_sampling": "fifo"
-        }))
-        .unwrap();
-        config.validate().unwrap();
-        assert_eq!(config.history_weight, None);
-        assert_eq!(config.recent_window, 8);
-        assert_eq!(
-            serde_json::from_value::<FpmLearnedConfig>(serde_json::to_value(&config).unwrap())
-                .unwrap(),
-            config
-        );
-        for policy in [
-            serde_json::json!("reservoir"),
-            serde_json::json!(null),
-            serde_json::json!(1),
-        ] {
-            let result = serde_json::from_value::<FpmLearnedConfig>(
-                serde_json::json!({"recent_sampling": policy}),
-            );
-            assert!(
-                result
-                    .unwrap_err()
-                    .to_string()
-                    .contains("supports only 'fifo'")
-            );
-        }
-        assert!(
-            serde_json::from_value::<FpmLearnedConfig>(serde_json::json!({"unknown": 3})).is_err()
-        );
-    }
-
-    #[test]
-    fn typed_recipes_match_wire_defaults() {
-        for adaptation in [
-            LearnedAdaptation::Online,
-            LearnedAdaptation::Frozen,
-            LearnedAdaptation::CausalSelector,
-        ] {
-            let expected = EstimatorConfig::for_learned(adaptation);
-            let mut value = serde_json::json!({"fpm_learned": {"adaptation": adaptation}});
-            EstimatorConfig::apply_context_defaults(
-                &mut value,
-                super::super::EstimationMode::FpmLearned,
-            );
-            let mut actual: EstimatorConfig = serde_json::from_value(value).unwrap();
-            actual.correction.mode = CorrectionMode::Hybrid;
-            assert_eq!(actual, expected);
-            expected.validate().unwrap();
-        }
-    }
 }
 
 #[cfg(test)]

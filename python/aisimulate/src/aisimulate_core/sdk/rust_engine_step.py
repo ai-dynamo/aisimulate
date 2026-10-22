@@ -142,8 +142,7 @@ class ForwardPassPerfModelConfig:
     ``"online"`` by default, or explicit ``"frozen"`` (including independently
     usable hybrid calibration). Online adaptation requires ``checkpoint_path``;
     omitted ``estimator_config.correction.enabled`` defaults to ``False`` for
-    this mode. Its default FIFO window is 64 observations, with a fit after
-    each admitted observation and lazy derivative refresh. Rust owns all online
+    this mode. Rust owns all online
     defaults, validation, fitting, and checkpoint continuation. Learned models
     are never added to the automatic estimator search.
 
@@ -157,9 +156,6 @@ class ForwardPassPerfModelConfig:
     integers. Nondefault selector settings are invalid in other modes.
     Default selector settings are omitted from saved configurations; custom
     settings survive reload. Rust owns these defaults and validation.
-    The combined mode defaults to an 8-observation online window, fitting every
-    four admitted observations, and independent 64-observation hybrid stores
-    with ``bins_per_axis=[4, 4]``. Explicit fitting controls override these defaults.
     Use chronological estimate/tune pairs with complete iteration metrics;
     phase-only replay, prediction and Sweeper callers reject learned modes.
     ``learned_selector_diagnostics()`` exposes the per-key evidence. Combined

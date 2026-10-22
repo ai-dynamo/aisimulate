@@ -322,10 +322,9 @@ sample from the most populated cell when the store exceeds its budget.
 
 | Correction field | Default | Behavior |
 | --- | --- | --- |
-| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Online learned fitting uses the forest directly and rejects explicitly enabled correction. Frozen learned forests and the combined selector enable correction when omitted; the selector rejects explicitly disabled correction. |
+| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Standalone online learned mode requires disabled correction; the combined selector requires enabled correction. Explicit values override the default and are validated for the selected mode. |
 | `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
 | `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
-| `estimator_config.correction.sampling.bins_per_axis` | `[4, 4]` | Sixteen total buckets: a 4-by-4 decode/mixed grid or sixteen prefill intervals. Standalone hybrid calibration and the combined selector use the same default. |
 
 The fixed policy uses raw workload coordinates and the configured fixed limits.
 The dynamic local policy expands `log1p` bounds as valid feedback arrives, balances

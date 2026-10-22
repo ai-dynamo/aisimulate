@@ -332,13 +332,10 @@ ms = model.estimate_forward_pass_time_ms([query_rank0])
 model.tune_with_fpms([[observed_rank0]])  # reveal the measured target afterward
 ```
 
-For the gym's A-only or B-only frozen GBDT scenarios, train on that scenario's
-selected data, set `adaptation: frozen` and `correction.enabled: false`, and
-score the held-out observations without feedback. A-only fits the self-benchmark
-data; B-only fits its distributed training subset. The source can be an
-inference artifact or a checkpoint. Selecting frozen adaptation does not choose
-the training data or retrain the forest. The training defaults in the preceding
-table remain independent of the online update defaults.
+For A-only or B-only frozen GBDT evaluation, train on the scenario's selected
+data, set `adaptation: frozen` and `correction.enabled: false`, and score held-out
+observations without feedback. Training parameters remain independent of the
+online update defaults.
 
 ### Online correction
 
@@ -462,9 +459,9 @@ without supplying the required iteration and request features.
 
 Use the seed checkpoint and the same deployment identity to construct a
 standalone online forest. Exactly one of `artifact_path` and `checkpoint_path`
-may be supplied for explicit learned mode. Online adaptation requires the latter.
-Omitted adaptation selects `online`, and omitted correction resolves to disabled.
-The following example spells out those choices and the standalone W64 defaults:
+may be supplied for explicit learned mode. Online adaptation requires the latter
+and disabled correction. Adaptation defaults to `online` and correction to
+disabled; the example makes these choices explicit:
 
 ```python
 online_config = ForwardPassPerfModelConfig(
@@ -479,7 +476,6 @@ online_config = ForwardPassPerfModelConfig(
             "checkpoint_path": "models/decode_online_seed",
             "adaptation": "online",
             "recent_window": 64,
-            "recent_sampling": "fifo",
             "update_every": 1,
             "history_weight": 0.1,
             "history_weight_ramp_observations": 32,
@@ -496,14 +492,12 @@ online.tune_with_fpms([[observed_rank0]])
 print(online.learned_online_diagnostics())
 ```
 
-The standalone defaults retain a small recent window and balance historical
-loss mass. Consult the
+The settings show the standalone defaults for recent retention and historical
+mass balance. Consult the
 [complete field table](configuration.md#learned-forest-and-online-fitting-controls)
 and [mathematical explanation](online-gbdt-and-causal-selection.md#online-binned-tree-adaptation) before
-changing the fitting policy or applying it to another deployment. Omitted
-controls use Rust's defaults, including structural updates, lazy derivatives,
-split sampling rate 0.5, and split rank tolerance 0.01. These settings do not
-create a forest: the checkpoint still owns the training parameters and trees.
+changing the fitting policy. Omitted controls use Rust's defaults, including
+structural updates and lazy derivatives.
 
 Own one model instance per worker and fixed deployment identity. A `worker_id`
 inside telemetry does not select independent mutable state. Within an instance,
@@ -592,16 +586,15 @@ calibrating against an evolving forest would mix ratios measured against
 different predictors. Publishing an adaptive update never changes the stable
 forest or resets its calibration history.
 
-Selecting `causal_selector` applies a separate set of defaults to its online
-expert: an eight-observation FIFO, fitting after four admitted observations per
-store, and 25% historical loss mass after an eight-observation support ramp.
-The stable expert uses 64 calibration slots per policy and query kind, sixteen
-correction buckets (4-by-4 for decode/mixed), and factor bounds `[0.5, 2.0]`.
+The following default profile uses 64 calibration slots per policy and query
+kind, sixteen correction buckets (4-by-4 for decode/mixed), factor bounds
+`[0.5, 2.0]`, and an eight-observation online window with 25% historical loss
+mass after an eight-observation support ramp. Online fitting runs after four
+admitted observations per store.
 Selector defaults are `alpha=0.4`, `warmup=5`, `margin=0.05`, and `persistence=1`.
 Only omitted fields take these defaults; explicit overrides are preserved.
-The following example expands the default combined recipe. Validate it on
-disjoint chronological data for the deployment and feedback cadence where it
-will run.
+Validate the profile on disjoint chronological data for the deployment and
+feedback cadence where it will run.
 
 ```python
 selector_config = ForwardPassPerfModelConfig(
@@ -617,7 +610,6 @@ selector_config = ForwardPassPerfModelConfig(
             "adaptation": "causal_selector",
             "update_mode": "structural",
             "recent_window": 8,
-            "recent_sampling": "fifo",
             "update_every": 4,
             "history_weight": 0.25,
             "history_weight_ramp_observations": 8,

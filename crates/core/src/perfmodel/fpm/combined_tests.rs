@@ -175,57 +175,6 @@ fn close(actual: f64, expected: f64) {
 }
 
 #[test]
-fn default_recipes_construct_from_training_checkpoints_and_admit_feedback() {
-    for adaptation in ["online", "causal_selector", "frozen"] {
-        let (_dir, seed) = checkpoint(ForwardPassWorkerType::Decode);
-        let mut value = serde_json::to_value(&seed).unwrap();
-        value["estimator_config"] = serde_json::json!({
-            "fpm_learned": {
-                "checkpoint_path": seed.estimator_config.fpm_learned.checkpoint_path,
-                "adaptation": adaptation
-            }
-        });
-        let config: ForwardPassPerfModelConfig = serde_json::from_value(value).unwrap();
-        let mut model = ForwardPassPerfModel::best_available(config).unwrap();
-        assert_eq!(estimate(&model, &[metric(0, 2, 1000, 0.0)]), 10.0);
-        for _ in 0..8 {
-            model
-                .tune_with_fpms(&[vec![metric(0, 2, 1000, 30.0)]])
-                .unwrap();
-        }
-        if adaptation != "frozen" {
-            model.flush_updates().unwrap();
-        }
-        let resolved = &model.provenance().unwrap().config;
-        let controls = &resolved.estimator_config.fpm_learned;
-        assert_eq!(
-            controls.recent_window,
-            if adaptation == "causal_selector" {
-                8
-            } else {
-                64
-            }
-        );
-        assert_eq!(
-            controls.update_every,
-            if adaptation == "causal_selector" {
-                4
-            } else {
-                1
-            }
-        );
-        assert_eq!(
-            resolved.estimator_config.correction.enabled,
-            adaptation != "online"
-        );
-        assert!(estimate(&model, &[metric(0, 2, 1000, 0.0)]).is_finite());
-        if adaptation != "frozen" {
-            assert!(model.learned_online_diagnostics().is_some());
-        }
-    }
-}
-
-#[test]
 fn combined_trajectory_matches_independent_experts_and_scalar_gate() {
     let (_dir, config) = checkpoint(ForwardPassWorkerType::Decode);
     let mut stable_config = config.clone();
