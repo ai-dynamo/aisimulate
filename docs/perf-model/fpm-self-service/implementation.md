@@ -768,7 +768,9 @@ keeps the measured cache groups with their block sizes, and its
 `cache_layout_reason` says why import wrote the linear layout. A
 `cache_layout: linear` claim without `kv_bytes_per_token` also needs a whole
 number of measured bytes per token. Otherwise import keeps the grouped layout,
-and `cache_layout_reason` gives the reason.
+and `cache_layout_reason` gives the reason. In both cases, the result that
+`onboard import-observations` prints and writes to `import.json` gives the
+same `cache_layout_reason` for the configuration.
 
 A `cache_layout: grouped` or `cache_groups` claim keeps the grouped layout.
 Acceptance takes either layout, because both come from the probe evidence.

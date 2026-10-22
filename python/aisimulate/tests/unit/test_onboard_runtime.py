@@ -39,6 +39,7 @@ def _campaign(
     worker_type=None,
     model=None,
     resource_overrides=None,
+    page_bytes=128,
 ):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
@@ -111,6 +112,13 @@ def _campaign(
                         allocation["size"] *= capacity_multiplier
                     for view in cache["layer_tensors"].values():
                         view["shape"][view["block_axis"]] *= capacity_multiplier
+                    if page_bytes != 128:
+                        # The fixture gives each pool block one 128-byte page, which both cache groups share.
+                        pool = cache["num_blocks"] * page_bytes
+                        cache.update(available_cache_bytes=pool + 256, allocated_cache_bytes=pool)
+                        cache["storages"][0]["size_bytes"] = cache["tensor_allocations"][0]["size"] = pool
+                        for view in cache["layer_tensors"].values():
+                            view["stride_bytes"][view["block_axis"]] = page_bytes
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
             _write(path, value)
@@ -182,6 +190,8 @@ def test_import_keeps_partial_results_and_memory_is_independent_of_timing(tmp_pa
     result = json.loads(capsys.readouterr().out)
     assert result["configurations"]["tp2"]["status"] == "complete"
     assert result["configurations"]["incomplete"]["status"] == "incomplete"
+    # Without a cache layout claim, the result names no layout outcome.
+    assert "cache_layout_reason" not in result["configurations"]["tp2"]
     state = _load(checkpoint)
     request = SupportRequest.model_validate(state.configurations["tp2"].draft_request)
     assert request.profile_deployment().resources.runtime_memory.kv_cache_bytes == 93 * 128
@@ -696,6 +706,7 @@ def _imported(
     worker_type=None,
     model=None,
     resource_overrides=None,
+    page_bytes=128,
 ):
     checkpoint, index, _ = _campaign(
         tmp_path,
@@ -705,6 +716,7 @@ def _imported(
         worker_type=worker_type,
         model=model,
         resource_overrides=resource_overrides,
+        page_bytes=page_bytes,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -720,15 +732,37 @@ _LINEAR_CLAIM = {"kv_bytes_per_token": 16}
 def test_matching_linear_claim_is_imported_and_accepted_as_a_linear_profile(tmp_path, capsys):
     from aisimulate.support.runtime import runtime_probe_manifest, verify_runtime_profile
 
-    checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    checkpoint, _, request, result = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
     resources = request.profile_deployment().resources
     assert resources.cache_layout == "linear" and resources.kv_bytes_per_token == 16 and not resources.cache_groups
+    # The import result names the layout outcome of the claim with the reason that the profile provenance keeps.
+    assert result["cache_layout_reason"] == (
+        "linear: import wrote the linear layout because the supplied kv_bytes_per_token matched the measured "
+        "full-attention groups"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == result["cache_layout_reason"]
     # The probe manifest records the evidence, which stays grouped.
     assert runtime_probe_manifest(request)["observed_resources"]["cache_layout"] == "grouped"
     verify_runtime_profile(request)
     state = _load(checkpoint)
     state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_linear_layout_claim_with_a_fractional_measurement_is_imported_as_grouped(tmp_path, capsys):
+    # The probe measures two full-attention groups of 100 bytes per 16-token block: 25/4 bytes per token each, as
+    # the 25-byte page per 4-token block in test_support_config_profile.py, and 25/2 in all. A linear profile needs
+    # a whole number.
+    _, _, request, result = _imported(tmp_path, capsys, page_bytes=100, resource_overrides={"cache_layout": "linear"})
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied cache_layout matched the measured full-attention groups, but the measured bytes per "
+        "token, 25/2, are not a whole number"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    # The command exits 0. Its result names the grouped outcome, and import.json holds the same result.
+    assert result["cache_layout_reason"] == reason
+    assert json.loads((tmp_path / "drafts" / "import.json").read_text())["configurations"]["tp2"] == result
 
 
 def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):

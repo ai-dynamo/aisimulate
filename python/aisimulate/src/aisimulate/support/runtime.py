@@ -958,6 +958,10 @@ def import_observations(
             results[name].update(
                 request=str(directory / "request.yaml"), profile=str(directory / "fpm-model-profile.json")
             )
+            # The layout outcome of a cache_layout or kv_bytes_per_token claim; the profile provenance keeps it too.
+            reason = json.loads(request.fpm_profile.provenance).get("cache_layout_reason")
+            if reason is not None:
+                results[name]["cache_layout_reason"] = reason
     state, _ = save_checkpoint(
         checkpoint, patch={"configurations": patches}, expected_revision=state.revision, accept=[]
     )
