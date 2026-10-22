@@ -1235,13 +1235,29 @@ impl SglangCore {
                 }
                 let observed = observed.unwrap_or_default();
                 // `maybe_cache_unfinished_req`: the observed forward's prefixes enter the
-                // radix cache now, after this iteration's batch was selected.
+                // radix cache now, after this iteration's batch was selected. The commits
+                // are in batch order, which `running` keeps, so search on from the last match.
+                let mut cursor = 0;
                 for (request_id, tokens) in observed.cache_commits {
-                    let request = self
-                        .running
-                        .iter_mut()
-                        .chain(self.waiting.iter_mut())
-                        .find(|request| request.uuid == request_id);
+                    let index = self.running[cursor..]
+                        .iter()
+                        .position(|request| request.uuid == request_id)
+                        .map(|offset| cursor + offset)
+                        .or_else(|| {
+                            self.running[..cursor]
+                                .iter()
+                                .position(|request| request.uuid == request_id)
+                        });
+                    let request = match index {
+                        Some(index) => {
+                            cursor = index;
+                            Some(&mut self.running[index])
+                        }
+                        None => self
+                            .waiting
+                            .iter_mut()
+                            .find(|request| request.uuid == request_id),
+                    };
                     if let Some(request) = request {
                         cache_prefix_through(request, &mut self.kv_manager, &self.config, tokens);
                     }

@@ -3359,6 +3359,24 @@ mod host_loop_passes {
     }
 
     #[test]
+    fn prefix_cache_commits_reach_their_requests_in_any_running_order() {
+        let mut core = core(true);
+        core.receive(direct_request(vec![1, 2, 3, 4], 8));
+        core.receive(direct_request(vec![5, 6, 7, 8], 8));
+        // A prefill, then a decode whose commits are in flight.
+        let prefill = core.execute_hidden_pass(0.0);
+        let decode = core.execute_hidden_pass(prefill.end_ms);
+
+        // Observe them with the batch in the reverse of the order they were recorded in.
+        core.running.reverse();
+        let before: Vec<usize> = core.running.iter().map(|r| r.cached_tokens()).collect();
+        core.execute_hidden_pass(decode.end_ms);
+        let after: Vec<usize> = core.running.iter().map(|r| r.cached_tokens()).collect();
+        assert_eq!(before, vec![5, 5]);
+        assert_eq!(after, vec![6, 6]);
+    }
+
+    #[test]
     fn a_cancelled_request_emits_no_output_from_the_forward_in_flight() {
         let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 1));
