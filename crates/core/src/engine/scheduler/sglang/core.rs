@@ -1237,30 +1237,23 @@ impl SglangCore {
                 // `maybe_cache_unfinished_req`: the observed forward's prefixes enter the
                 // radix cache now, after this iteration's batch was selected. The commits
                 // are in batch order, which `running` keeps, so search on from the last match.
+                // A retracted or cancelled request's commits were discarded with its outputs.
                 let mut cursor = 0;
+                let len = self.running.len();
                 for (request_id, tokens) in observed.cache_commits {
-                    let index = self.running[cursor..]
-                        .iter()
-                        .position(|request| request.uuid == request_id)
-                        .map(|offset| cursor + offset)
-                        .or_else(|| {
-                            self.running[..cursor]
-                                .iter()
-                                .position(|request| request.uuid == request_id)
-                        });
-                    let request = match index {
-                        Some(index) => {
-                            cursor = index;
-                            Some(&mut self.running[index])
-                        }
-                        None => self
-                            .waiting
-                            .iter_mut()
-                            .find(|request| request.uuid == request_id),
+                    let Some(index) = (cursor..len)
+                        .chain(0..cursor)
+                        .find(|&index| self.running[index].uuid == request_id)
+                    else {
+                        continue;
                     };
-                    if let Some(request) = request {
-                        cache_prefix_through(request, &mut self.kv_manager, &self.config, tokens);
-                    }
+                    cursor = index;
+                    cache_prefix_through(
+                        &mut self.running[index],
+                        &mut self.kv_manager,
+                        &self.config,
+                        tokens,
+                    );
                 }
                 let mut terminals = self
                     .running

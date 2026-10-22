@@ -3377,6 +3377,33 @@ mod host_loop_passes {
     }
 
     #[test]
+    fn cached_prefix_grows_page_by_page_as_forwards_are_observed() {
+        // Four-token pages and a six-token prompt. Each forward's prefix enters the
+        // cache one iteration later, whole pages only: the prompt's first page, then
+        // the page each decode completes.
+        for (prefix_caching, expected) in [(true, [0, 4, 8, 8, 8, 8, 12, 12]), (false, [0; 8])] {
+            let mut args = test_args(128, 4, 8192);
+            args.enable_prefix_caching = prefix_caching;
+            args.sglang.as_mut().unwrap().host_loop = true;
+            args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+                timing: Arc::new(FixedTiming {
+                    prefill_ms: 20.0,
+                    decode_ms: 4.0,
+                }),
+            }
+            .into();
+            let mut core = SglangCore::new(args);
+            core.receive(direct_request((1..=6).collect(), 8));
+            let mut now_ms = 0.0;
+            let cached = expected.map(|_| {
+                now_ms = core.execute_hidden_pass(now_ms).end_ms;
+                core.running[0].cached_tokens()
+            });
+            assert_eq!(cached, expected, "prefix_caching={prefix_caching}");
+        }
+    }
+
+    #[test]
     fn a_cancelled_request_emits_no_output_from_the_forward_in_flight() {
         let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 1));

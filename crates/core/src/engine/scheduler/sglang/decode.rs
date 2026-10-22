@@ -105,7 +105,9 @@ fn allocate_ghost_slot(
 
 /// Make the prefix a forward materialized visible to admission. Under the host
 /// loop the scheduler learns it only when it observes that forward's result
-/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied.
+/// (`maybe_cache_unfinished_req`), so the commit is recorded, not applied. A
+/// request's cached prefix only grows until then, so a commit that adds no page
+/// now adds none when observed and is not recorded.
 fn commit_materialized_prefix(
     req: &mut SglangRequest,
     kv_manager: &mut SglangKvManager,
@@ -113,7 +115,9 @@ fn commit_materialized_prefix(
     deferred: &mut Vec<(Uuid, usize)>,
 ) {
     if config.host_loop {
-        deferred.push((req.uuid, req.materialized_tokens));
+        if uncached_aligned_prefix(req, config, req.materialized_tokens).is_some() {
+            deferred.push((req.uuid, req.materialized_tokens));
+        }
     } else {
         cache_materialized_prefix(req, kv_manager, config);
     }
@@ -152,10 +156,9 @@ pub(super) fn cache_prefix_through(
     config: &SglangConfig,
     tokens: usize,
 ) {
-    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
-    if aligned_tokens == 0 || aligned_tokens <= req.cached_tokens() {
+    let Some(aligned_tokens) = uncached_aligned_prefix(req, config, tokens) else {
         return;
-    }
+    };
 
     if !req.kv_lease.is_active() {
         panic!(
@@ -167,6 +170,20 @@ pub(super) fn cache_prefix_through(
     let sequence = &req.sequence_tokens[..aligned_tokens];
     kv_manager.extend_cached_prefix(sequence, &mut req.kv_lease);
     req.debug_assert_invariants(config.block_size);
+}
+
+/// The page-aligned length through `tokens` to cache, when it extends the
+/// request's cached prefix.
+fn uncached_aligned_prefix(
+    req: &SglangRequest,
+    config: &SglangConfig,
+    tokens: usize,
+) -> Option<usize> {
+    if !config.enable_prefix_caching {
+        return None;
+    }
+    let aligned_tokens = floor_to_block(tokens.min(req.materialized_tokens), config.block_size);
+    (aligned_tokens > req.cached_tokens()).then_some(aligned_tokens)
 }
 
 #[cfg(test)]
