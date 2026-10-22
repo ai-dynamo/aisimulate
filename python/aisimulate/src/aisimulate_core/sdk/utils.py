@@ -42,8 +42,10 @@ logger = logging.getLogger(__name__)
 
 _NEMOTRONH_LAYER_BLOCK_PATTERN = {
     "mamba": "M",
+    "linear_attention": "M",
     "moe": "E",
     "attention": "*",
+    "full_attention": "*",
     "mlp": "-",
     "dense": "-",
     "ffn": "-",
@@ -987,7 +989,7 @@ def _parse_hf_config_json(config: dict) -> dict:
 
     # Handle NemotronH-specific configuration (only fields unique to NemotronH)
     extra_params = None
-    if architecture == "NemotronHForCausalLM":
+    if ARCHITECTURE_TO_MODEL_FAMILY[architecture] == "NEMOTRONH":
         hybrid_override_pattern = _derive_nemotronh_hybrid_pattern(config)
         extra_params = common.NemotronHConfig(
             hybrid_override_pattern=hybrid_override_pattern,

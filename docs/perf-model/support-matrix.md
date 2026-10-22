@@ -25,6 +25,13 @@ adaptation and correction requirements are documented in
 [learned configuration](fpm_ml/configuration.md#selection-and-supported-execution).
 Explicit invalid configuration is not converted into a fallback estimator.
 
+Nemotron Super 3.5 checkpoints that declare `NemotronH_Omni_Reasoning_V3`
+use the NemotronH text model. AISimulate reads the nested `llm_config` and
+accepts `linear_attention` and `full_attention` layer names. Inferred
+`W4A16_NVFP4` MoE precision selects the vLLM `nvfp4` execution lane.
+Explicit precision overrides retain their values. This recognition does not
+add vision modeling or measured timing coverage.
+
 ## Published FPE matrix
 
 The [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/)
