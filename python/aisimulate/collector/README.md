@@ -370,6 +370,13 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 
 ## Runtime Behavior
 
+The CUDA vLLM attention metadata helper preserves the v0.24.0 private CPU
+fields when accepted by the installed constructor. v0.31.0 removed those
+arguments and derives computed-token counts from device sequence and query
+lengths; the helper keeps the CPU sequence-length upper bound in both versions.
+This API repair does not qualify all v0.31.0 operations: version guards remain
+in place until serving-path audits and GPU smoke collection pass.
+
 At collection time:
 1. `collect.py` reads the backend registry
 2. `build_collections()` resolves each op to the correct module for the detected framework version
