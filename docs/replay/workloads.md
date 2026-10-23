@@ -546,6 +546,19 @@ AgentX parity. Pinned revisions, licenses and known differences are listed in
 
 <a id="mooncake-and-mooncake-delta-jsonl"></a>
 
+### Authored Rust/JSON request reservation
+
+The low-level `ReplaySpec.requests` array and programmatic `DirectRequest`
+accept the following per-request reservation control. This is not a
+`traffic.source` YAML or Mooncake-row option.
+
+| Field | Default | Semantics |
+|---|---|---|
+| `ignore_eos` | `false` | For SGLang, reserve the clipped remaining output of running requests without the early-EOS discount. Match this to the native request's `sampling_params.ignore_eos`. Other backends ignore it. |
+
+The output limit and optional exact output IDs still determine generated
+tokens. Supplying exact IDs alone does not imply `ignore_eos: true`.
+
 ## Mooncake and Mooncake Delta JSONL
 
 Both formats use the same row schema. Rows with the same `session_id` are turns in file order.

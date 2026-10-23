@@ -76,6 +76,10 @@ pub(crate) struct DirectRequest {
     pub max_output_tokens: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<Token>>,
+    /// Preserve SGLang's fixed-length admission reservation instead of the early-EOS discount.
+    /// This controls reservation only; the replay output plan still determines generated tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_eos: bool,
     pub uuid: Option<Uuid>,
     pub arrival_timestamp_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

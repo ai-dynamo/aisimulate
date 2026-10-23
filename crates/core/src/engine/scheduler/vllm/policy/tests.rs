@@ -1034,6 +1034,7 @@ mod trtllm {
             tokens: tokens.collect(),
             max_output_tokens: max_output,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
             session_id: None,

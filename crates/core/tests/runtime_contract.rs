@@ -32,6 +32,7 @@ fn request(
         input_token_ids: None,
         output_tokens,
         output_token_ids: None,
+        ignore_eos: false,
         dp_rank: None,
         prefill_dp_rank: None,
         kv_hints: None,

@@ -34,7 +34,10 @@ pub(super) struct AdmitResult {
 /// `schedule_batch.py`, `schedule_policy.py`). Re-implemented; no SGLang source is copied. The
 /// admission-time radix match and KV lease, whose prefix-cache commit the core defers to the
 /// overlap iteration's result observation, were verified against v0.5.19 (`0bcd822`); the token
-/// budgets, chunking and batch selection keep the `5c8bd8b5` pin.
+/// chunking and batch selection otherwise keep the `5c8bd8b5` pin. Fixed-output
+/// running reservation and the chunked input-cap stop condition follow
+/// SGLang `baa9befa381511cd4d56f83980951e5a45fffc6d` (0.5.22),
+/// `python/sglang/srt/managers/schedule_policy.py`; see THIRD_PARTY_NOTICES.md.
 pub(super) fn get_new_batch_prefill(
     waiting: &mut WaitingQueue,
     kv_manager: &mut SglangKvManager,
@@ -49,7 +52,8 @@ pub(super) fn get_new_batch_prefill(
             let remaining_output = req
                 .remaining_output_tokens()
                 .min(config.clip_max_new_tokens);
-            remaining_output as f64 * new_token_ratio
+            let ratio = if req.ignore_eos { 1.0 } else { new_token_ratio };
+            remaining_output as f64 * ratio
         })
         .sum();
     // PagePool already removes the full physical footprint of every active
@@ -121,7 +125,10 @@ pub(super) fn get_new_batch_prefill(
             rejected.push_back(req);
             break;
         }
-        if charged_input_tokens > rem_input_tokens || charged_input_tokens > rem_chunk_tokens {
+        // Chunked prefill is bounded by its chunk budget. The input cap stops
+        // selection after an admitted chunk, rather than stranding a first
+        // request whose page-rounded input exceeds that cap.
+        if charged_input_tokens > rem_chunk_tokens {
             rejected.push_back(req);
             break;
         }
@@ -184,7 +191,7 @@ pub(super) fn get_new_batch_prefill(
         rem_chunk_tokens -= charged_input_tokens;
         can_run.push(req);
 
-        if rem_chunk_tokens <= 0.0 {
+        if rem_input_tokens <= 0.0 || rem_chunk_tokens <= 0.0 {
             break;
         }
     }

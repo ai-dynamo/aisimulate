@@ -2836,6 +2836,7 @@ impl WorkloadDriver {
                             (input_length, hash_ids, turn.output_token_ids.take())
                         };
                     let request_metadata = DirectRequest {
+                        ignore_eos: false,
                         tokens: Vec::new(),
                         max_output_tokens: if live_warmup {
                             1
@@ -2875,6 +2876,7 @@ impl WorkloadDriver {
                         tokens: request_tokens,
                         max_output_tokens: turn.max_output_tokens,
                         output_token_ids: turn.output_token_ids.clone(),
+                        ignore_eos: false,
                         uuid: Some(request_uuid),
                         dp_rank: 0,
                         preferred_dp_rank: None,

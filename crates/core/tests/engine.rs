@@ -62,6 +62,7 @@ fn request(
         input_token_ids: None,
         output_tokens,
         output_token_ids: None,
+        ignore_eos: false,
         dp_rank: None,
         prefill_dp_rank: None,
         kv_hints: None,
@@ -136,6 +137,67 @@ fn spec(config: ReplayEngineConfig) -> ReplaySpec {
         record_per_request: true,
         sla: Default::default(),
         requests: vec![request("request-a", 0.0, 4, 2)],
+    }
+}
+
+#[test]
+fn sglang_fixed_output_reservation_survives_replay_json_round_trip() {
+    for ignore_eos in [false, true] {
+        let mut config = engine_config(TimingModelConfig::Fixed {
+            prefill_ms: 1.0,
+            decode_ms: 1.0,
+        });
+        config.rank.backend = Backend::Sglang;
+        config.rank.num_gpu_blocks = 32;
+        config.rank.block_size = 128;
+        config.rank.max_num_seqs = 32;
+        config.rank.sglang.chunked_prefill_size = 4096;
+        config.rank.sglang.schedule_conservativeness = 0.3;
+        let mut replay = spec(config);
+        replay.requests = [0, 10000]
+            .into_iter()
+            .enumerate()
+            .map(|(i, start)| {
+                let mut req = request_with_tokens(
+                    &format!("fixed-{i}"),
+                    0.0,
+                    (start..start + 1792).collect(),
+                    288,
+                );
+                req.ignore_eos = ignore_eos;
+                req
+            })
+            .collect();
+        let mut value = serde_json::to_value(&replay).unwrap();
+        if !ignore_eos {
+            // Previously saved specs have no reservation flag.
+            for req in value["requests"].as_array_mut().unwrap() {
+                req.as_object_mut().unwrap().remove("ignore_eos");
+            }
+        }
+        let replay: ReplaySpec = serde_json::from_value(value).unwrap();
+        assert_eq!(replay.requests[0].ignore_eos, ignore_eos);
+        let report = run_engine_replay(replay).unwrap();
+        assert_eq!(report.request_counts.completed_requests, 2);
+        let first = report
+            .per_request
+            .iter()
+            .find(|r| r.request_id.as_deref() == Some("fixed-0"))
+            .unwrap();
+        let second = report
+            .per_request
+            .iter()
+            .find(|r| r.request_id.as_deref() == Some("fixed-1"))
+            .unwrap();
+        assert_eq!(first.output_length, 288);
+        assert_eq!(second.output_length, 288);
+        if ignore_eos {
+            assert!(second.first_admit_ms.unwrap() >= first.terminal_time_ms);
+            assert_eq!(first.readmission_count + second.readmission_count, 0);
+        } else {
+            assert!(second.first_admit_ms.unwrap() < first.terminal_time_ms);
+            assert_eq!(first.readmission_count + second.readmission_count, 1);
+        }
     }
 }
 
@@ -517,6 +579,7 @@ fn submit_interval_request(
                     tokens: vec![id as u32; input_tokens],
                     max_output_tokens: output_tokens,
                     output_token_ids: None,
+                    ignore_eos: false,
                     session_id: None,
                     images: Vec::new(),
                     kv_hint: None,
@@ -599,6 +662,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
                         tokens,
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        ignore_eos: false,
                         session_id: None,
                         images: Vec::new(),
                         kv_hint: None,
@@ -655,6 +719,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
                             tokens,
                             max_output_tokens: 0,
                             output_token_ids: None,
+                            ignore_eos: false,
                             session_id: None,
                             images: Vec::new(),
                             kv_hint: None,
@@ -1751,6 +1816,7 @@ fn native_images_require_sglang_even_with_vision_timing(
                 tokens: (0..8).collect(),
                 max_output_tokens: 1,
                 output_token_ids: None,
+                ignore_eos: false,
                 session_id: None,
                 images: vec![ImageSpec {
                     identity: 1,
