@@ -4177,7 +4177,7 @@ mod tests {
         config.model = "Qwen/Qwen3.8-2.4T-A95B-FP8".into();
         config.system = "gb300".into();
         config.backend = "sglang".into();
-        config.backend_version = Some("0.5.17".into());
+        config.backend_version = Some("next".into());
         config.tp = 16;
         config.moe_tp_size = Some(4);
         config.moe_ep_size = Some(4);

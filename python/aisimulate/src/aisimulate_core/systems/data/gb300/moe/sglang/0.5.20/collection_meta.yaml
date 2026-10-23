@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+provenance: collected
+# Runtime identity fields the schema-v2 reader does not admit:
+#   source_commit: 94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+runtime:
+  framework: sglang
+  version: 0.5.20
+  image: lmsysorg/sglang:v0.5.20
+  image_digest: sha256:06e4f2ed21afde4ff513cda65070124e727ba23ccaeff7712b8c40e1097d611f
+tables:
+  moe_perf:
+    # GLM-5.3-Flash W1: routed experts 288/top-8/4096/2048, fp8_block (zai-org) and nvfp4 (nvidia) checkpoints.
+    # GB300 (SM103, ocijhb), 4 GPUs/node, image arm64 child sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862 run via pyxis; launcher audits/ops-standalone-w1/launcher; Slurm job(s) 723897, 723898.
+    # data_sha256: 1d1b99779efd8b9a813524e1e9f2016c9bdb2988ff2fe1933dde7e4b8e4c49dd
+    rows: 5346
+    status: complete
+    collections:
+    - collector_ref: 04848d7d9f048af6c27b835290a29e8631368dd9
+      collector_hash: sha256:58e68462d894578ac51b45073327cfb1297d76517d50dbfcd6012243c17fb82f
+      case_plan_hash: sha256:2c46bce7b92e1086a069171ccb9f44c207851f19d1d8593a99b495cab5e55b80
+      collected_at: '2026-09-30'
+      rows: 2673
+      status: complete
+    - collector_ref: 04848d7d9f048af6c27b835290a29e8631368dd9
+      collector_hash: sha256:58e68462d894578ac51b45073327cfb1297d76517d50dbfcd6012243c17fb82f
+      case_plan_hash: sha256:e344917001a667986bb17c56debabdcef2e031f769731cffa9a7a865015bdecb
+      collected_at: '2026-09-30'
+      rows: 2673
+      status: complete
