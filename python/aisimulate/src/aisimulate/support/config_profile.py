@@ -795,6 +795,8 @@ def validate_overrides(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
         result[key] = value
     if "cache_groups" in result and ("kv_bytes_per_token" in result or result.get("cache_layout") == "linear"):
         raise ValueError("cache_groups cannot be combined with linear cache_layout or kv_bytes_per_token")
+    if "kv_bytes_per_token" in result and result.get("cache_layout") == "grouped":
+        raise ValueError("kv_bytes_per_token cannot be combined with grouped cache_layout")
     if sum(result.get(key, 0) for key in _BYTE_FIELDS - {"kv_bytes_per_token"}) > 2**53:
         raise ValueError("total non-KV resource bytes must not exceed 2**53")
     return result

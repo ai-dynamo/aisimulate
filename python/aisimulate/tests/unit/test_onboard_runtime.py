@@ -765,6 +765,18 @@ def test_linear_layout_claim_with_a_fractional_measurement_is_imported_as_groupe
     assert json.loads((tmp_path / "drafts" / "import.json").read_text())["configurations"]["tp2"] == result
 
 
+def test_grouped_layout_claim_with_kv_bytes_per_token_is_imported_as_incomplete(tmp_path, capsys):
+    # The campaign writes the overrides into the checkpoint without intake, as a hand-edited checkpoint does. The
+    # fixture measures 16 bytes per token, so each claim alone matches the probe.
+    overrides = {"cache_layout": "grouped", "kv_bytes_per_token": 16}
+    checkpoint, index, _ = _campaign(tmp_path, resource_overrides=overrides)
+    assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 1
+    result = json.loads(capsys.readouterr().out)["configurations"]["tp2"]
+    assert result["status"] == "incomplete"
+    assert "kv_bytes_per_token cannot be combined with grouped cache_layout" in result["diagnostics"]
+    assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
+
+
 def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):
     checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
     payload = request.model_dump(mode="json", exclude_none=True)

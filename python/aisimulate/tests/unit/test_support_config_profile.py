@@ -809,6 +809,21 @@ def test_without_a_linear_claim_the_profile_stays_grouped(tmp_path, claims):
     assert "cache_layout_reason" not in provenance and "measured_cache_groups" not in provenance
 
 
+def test_grouped_layout_claim_with_kv_bytes_per_token_is_refused_at_import(tmp_path):
+    # 512 bytes per 16-token block is 32 bytes per token.
+    observed = {**_GROUPED_OBSERVATION, "cache_groups": _groups([(512, 16)])}
+    config, request = _config(tmp_path), _request(tensor_parallel=2)
+    # Each claim alone matches the measurement, and the two give different layouts.
+    grouped = profile_from_observations(config, request, _LLAMA_PRECISION, observed, {"cache_layout": "grouped"})
+    linear = profile_from_observations(config, request, _LLAMA_PRECISION, observed, {"kv_bytes_per_token": 32})
+    assert grouped.deployments[0].resources.cache_layout == "grouped"
+    assert linear.deployments[0].resources.cache_layout == "linear"
+    with pytest.raises(ValueError, match="kv_bytes_per_token cannot be combined with grouped cache_layout"):
+        profile_from_observations(
+            config, request, _LLAMA_PRECISION, observed, {"cache_layout": "grouped", "kv_bytes_per_token": 32}
+        )
+
+
 def test_linear_and_grouped_profiles_of_one_measurement_differ_by_less_than_a_block(tmp_path, monkeypatch):
     from aisimulate_core.sdk import engine, memory
 
@@ -1084,11 +1099,34 @@ def test_runtime_resolved_layout_records_typed_geometry_as_a_claim(preview, memo
             {"cache_layout": "linear", "cache_groups": _GROUPED_OBSERVATION["cache_groups"]},
             "cache_groups cannot be combined with linear cache_layout",
         ),
+        (
+            {"cache_layout": "grouped", "kv_bytes_per_token": 6000},
+            "kv_bytes_per_token cannot be combined with grouped cache_layout",
+        ),
     ],
 )
 def test_runtime_resolved_layout_validates_typed_geometry_like_any_override(typed, message):
     with pytest.raises(ValueError, match=message):
         derive_profile(load_model_config(GLM), _glm_request(), typed)
+
+
+@pytest.mark.parametrize("groups", [False, True], ids=["no-cache-groups", "cache-groups"])
+@pytest.mark.parametrize("kv_bytes", [False, True], ids=["no-kv-bytes", "kv-bytes"])
+@pytest.mark.parametrize("layout", [None, "linear", "grouped"], ids=["no-layout", "linear-layout", "grouped-layout"])
+def test_overrides_that_state_different_cache_layouts_are_refused(layout, kv_bytes, groups):
+    overrides = {
+        **({"cache_layout": layout} if layout else {}),
+        **({"kv_bytes_per_token": 6000} if kv_bytes else {}),
+        **({"cache_groups": _GROUPED_OBSERVATION["cache_groups"]} if groups else {}),
+    }
+    # Each override states a layout: cache_layout its value, kv_bytes_per_token linear, cache_groups grouped.
+    stated = {state for state in (layout, "linear" if kv_bytes else None, "grouped" if groups else None) if state}
+    if len(stated) > 1:
+        with pytest.raises(ValueError, match="cannot be combined"):
+            validate_overrides(overrides)
+    else:
+        # The values are already in their validated form.
+        assert validate_overrides(overrides) == overrides
 
 
 @pytest.mark.parametrize("preview", [False, True])

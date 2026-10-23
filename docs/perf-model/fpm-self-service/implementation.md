@@ -730,6 +730,12 @@ that. The guidance then says that `onboard import-observations` checks each
 cache geometry override against the probe's measurement. For that check, keep
 the claim in the configuration's `resource_overrides` in the checkpoint.
 
+Overrides that state different cache layouts are an error, because
+`kv_bytes_per_token` describes a linear cache and `cache_groups` a grouped one.
+Intake and import refuse three pairs: `cache_groups` with
+`cache_layout: linear`, `cache_groups` with `kv_bytes_per_token`, and
+`kv_bytes_per_token` with `cache_layout: grouped`.
+
 The vLLM probe always reports a grouped cache. Without a matching
 `cache_layout: linear` or `kv_bytes_per_token` claim, the imported profile is
 grouped, and the [limits of grouped profiles](#create-the-request) apply to it:
