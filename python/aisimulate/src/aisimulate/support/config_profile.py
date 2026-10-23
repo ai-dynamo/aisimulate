@@ -1566,12 +1566,27 @@ def _linear_layout_gap(resources: Mapping[str, Any]) -> str | None:
     """Why a linear layout cannot describe measured resources; None when it can."""
     if resources.get("cache_layout") != "grouped":
         return f"the measurement's cache_layout is {resources.get('cache_layout')}, not grouped"
-    group = _windowed_group(_measured_groups(resources))
+    groups = _measured_groups(resources)
+    group = _windowed_group(groups)
     if group is not None:
         return _windowed_group_reason(group)
     measured = _measured_kv_bytes(resources)
     if measured is None:
         return "the measurement has no cache groups"
+    # Replay of a linear profile uses one block size, the measured one.
+    first = groups[0]
+    other = next((group for group in groups if group.block_size_tokens != first.block_size_tokens), None)
+    if other is not None:
+        return (
+            f"cache groups {first.name} and {other.name} have different block sizes, "
+            f"{first.block_size_tokens} and {other.block_size_tokens} tokens"
+        )
+    # The engine refuses vLLM blocks of fewer than 2 tokens: _validate_backend_block_sizes in config/engine.py.
+    if first.block_size_tokens < 2:
+        return (
+            f"cache group {first.name} has block_size_tokens={first.block_size_tokens}, and vLLM replay needs "
+            "blocks of at least 2 tokens"
+        )
     if measured.denominator != 1:
         return f"the measured bytes per token, {measured}, are not a whole number"
     return None
@@ -1580,15 +1595,23 @@ def _linear_layout_gap(resources: Mapping[str, Any]) -> str | None:
 def linear_runtime_resources(resources: Mapping[str, Any]) -> dict[str, Any] | None:
     """Measured grouped resources in the linear layout; None when a linear cache does not describe them exactly.
 
-    Every group must be an attention group without a window, and the exact sum of page_size_bytes /
-    block_size_tokens must be a whole number of bytes per token. Every other field, such as runtime_memory and
-    the resource provenance, is kept. Import, acceptance, finalization and validation all use this function.
+    Every group must be an attention group without a window, all groups must have one block size of at least 2
+    tokens, and the exact sum of page_size_bytes / block_size_tokens must be a whole number of bytes per token.
+    Every other field, such as runtime_memory and the resource provenance, is kept. Import, acceptance,
+    finalization and validation all use this function.
     """
     if _linear_layout_gap(resources) is not None:
         return None
     linear = {key: deepcopy(value) for key, value in resources.items() if key != "cache_groups"}
     linear.update(cache_layout="linear", kv_bytes_per_token=int(_measured_kv_bytes(resources)))
     return linear
+
+
+def linear_block_size(resources: Mapping[str, Any]) -> int | None:
+    """The measured block size, in tokens, that replay of the linear layout uses; None without a linear layout."""
+    if _linear_layout_gap(resources) is not None:
+        return None
+    return _measured_groups(resources)[0].block_size_tokens
 
 
 def linear_block_bytes(resources: Mapping[str, Any]) -> int | None:
@@ -1717,7 +1740,8 @@ def profile_from_observations(
     ):
         linear = linear_runtime_resources(resources)
         if linear is None:
-            # Only a cache_layout claim without kv_bytes_per_token can match a sum that is not a whole number.
+            # A claim can match groups that have no linear layout: groups with different or too small block sizes,
+            # or, for a cache_layout claim without kv_bytes_per_token, a sum that is not a whole number.
             layout_provenance["cache_layout_reason"] = (
                 f"grouped: the supplied {claimed} matched the measured full-attention groups, but "
                 f"{_linear_layout_gap(resources)}"

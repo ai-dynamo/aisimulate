@@ -26,6 +26,7 @@ from aisimulate.support.config_profile import (
     _runtime_layout,
     derive_profile,
     linear_block_bytes,
+    linear_block_size,
     linear_runtime_resources,
     load_model_config,
     profile_from_observations,
@@ -711,12 +712,32 @@ def test_linear_runtime_resources_sums_full_attention_groups(pages, expected):
             },
             "the measured bytes per token, 25/4, are not a whole number",
         ),
+        # 128 / 16 + 256 / 32 is 16 bytes per token, but replay of a linear profile uses one block size.
+        (
+            {**_GROUPED_OBSERVATION, "cache_groups": _groups([(128, 16), (256, 32)])},
+            "cache groups runtime_group_0 and runtime_group_1 have different block sizes, 16 and 32 tokens",
+        ),
+        (
+            {
+                **_GROUPED_OBSERVATION,
+                "cache_groups": [{**_RUNTIME_GROUP, "block_size_tokens": 1, "page_size_bytes": 64}],
+            },
+            "cache group runtime_group_0 has block_size_tokens=1, and vLLM replay needs blocks of at least 2 tokens",
+        ),
         (_LINEAR_OBSERVATION, "the measurement's cache_layout is linear, not grouped"),
     ],
-    ids=["sliding-window-group", "convolution-group", "fractional-sum", "linear-input"],
+    ids=[
+        "sliding-window-group",
+        "convolution-group",
+        "fractional-sum",
+        "different-block-sizes",
+        "one-token-blocks",
+        "linear-input",
+    ],
 )
 def test_linear_runtime_resources_has_no_linear_layout_for_other_measurements(resources, reason):
     assert linear_runtime_resources(resources) is None
+    assert linear_block_size(resources) is None
     # Finalization gives this reason when it refuses a linear profile.
     assert _linear_layout_gap(resources) == reason
 
@@ -726,8 +747,8 @@ def test_linear_runtime_resources_has_no_linear_layout_for_other_measurements(re
     [
         # One block size: 16 tokens fill one 128-byte page of each group.
         (_groups([(128, 16), (128, 16)]), 256),
-        # Block sizes of 16 and 32 tokens: 32 tokens fill two pages of the first group and one of the second.
-        (_groups([(128, 16), (128, 32)]), 384),
+        # Block sizes of 16 and 32 tokens: a linear layout has one block size, so it does not describe these groups.
+        (_groups([(128, 16), (128, 32)]), None),
         ([_RUNTIME_GROUP, _WINDOWED_GROUP], None),
     ],
     ids=["one-block-size", "two-block-sizes", "windowed-group"],

@@ -771,7 +771,8 @@ the measurement in the linear layout. Its `kv_bytes_per_token` is the measured
 bytes per token, and it has no `cache_groups`. The scheduler limits, the runtime
 memory and the resource provenance stay as measured. The profile provenance
 keeps the measured cache groups with their block sizes, and its
-`cache_layout_reason` says why import wrote the linear layout. A
+`cache_layout_reason` says why import wrote the linear layout. For the linear
+layout, all measured groups need one block size of at least 2 tokens. A
 `cache_layout: linear` claim without `kv_bytes_per_token` also needs a whole
 number of measured bytes per token. Otherwise import keeps the grouped layout,
 and `cache_layout_reason` gives the reason. In both cases, the result that
@@ -781,7 +782,9 @@ same `cache_layout_reason` for the configuration.
 A `cache_layout: grouped` or `cache_groups` claim keeps the grouped layout.
 Acceptance takes either layout, because both come from the probe evidence.
 Finalization keeps such an imported linear profile linear. The token capacity
-of the two layouts differs by less than one block.
+of the two layouts differs by less than one block. Replay of such a linear
+profile uses the measured block size, because the generated configurations set
+it as `kv_cache.block_size`.
 
 A `cache_block_sizes` override is an error for these layouts, at intake and at
 import. It names cache groups that intake derives from `config.json`, and these

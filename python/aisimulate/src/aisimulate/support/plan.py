@@ -22,6 +22,7 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 
+from .config_profile import linear_block_size
 from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
@@ -83,6 +84,16 @@ def _configs(
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
         if request.profile_deployment().resources.cache_layout == "grouped":
             worker.setdefault("kv_cache", {})["prefix_caching"] = False
+        else:
+            from .finalization import finalization_manifest
+            from .runtime import runtime_probe_manifest
+
+            # Replay of a linear profile with runtime probe evidence uses the measured block size. A finalized
+            # profile keeps that evidence in its finalization manifest.
+            probe = runtime_probe_manifest(request) or (finalization_manifest(request) or {}).get("runtime_probe")
+            block_size = None if probe is None else linear_block_size(probe["observed_resources"])
+            if block_size is not None:
+                worker.setdefault("kv_cache", {})["block_size"] = block_size
     if request.worker_type in {"prefill", "decode"}:
         # A role is independently collectable. A complete P/D serving config
         # also needs the independently accepted counterpart and runtime support.

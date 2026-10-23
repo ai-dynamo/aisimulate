@@ -580,12 +580,15 @@ def test_memory_fraction_survives_plan_compilation_and_replay_validation(tmp_pat
         assert config.engine.workers.aggregated.kv_cache.capacity.memory_fraction == fraction
         if grouped:
             assert not config.engine.workers.aggregated.kv_cache.prefix_caching
+        # Without runtime probe evidence, the configs set no block size, so replay keeps the vLLM default.
+        assert config.engine.workers.aggregated.kv_cache.block_size is None
         # Host RAM controls are independent of the simulated GPU budget.
         assert config.execution.resources.available_memory_fraction == 0.9
     for config in (prediction, replay):
         spec = prediction_to_replay_spec(config)
         args = spec.backend_deployment.agg_engine_args
         assert args["gpu_memory_utilization"] == fraction
+        assert args["block_size"] == 64
 
 
 def test_communication_override_is_retained_with_collection_compatibility_guidance(tmp_path, monkeypatch, capsys):

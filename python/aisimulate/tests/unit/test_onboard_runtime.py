@@ -40,6 +40,7 @@ def _campaign(
     model=None,
     resource_overrides=None,
     page_bytes=128,
+    block_tokens=(16, 16),
 ):
     index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
@@ -121,6 +122,13 @@ def _campaign(
                             view["stride_bytes"][view["block_axis"]] = page_bytes
                 else:
                     cache["initial_free_blocks"] = cache["num_blocks"] - cache["reserved_blocks"]
+                if block_tokens != (16, 16):
+                    # The fixture gives both cache groups 16-token blocks, one kernel block per pool block.
+                    for group, tokens in zip(cache["groups"], block_tokens, strict=True):
+                        group["block_size_tokens"] = tokens
+                        if value["kind"] == "worker":
+                            for name in group["layer_names"]:
+                                cache["layer_tensors"][name]["kernel_block_size_tokens"] = tokens
             _write(path, value)
             ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     _write(index, document)
@@ -707,6 +715,7 @@ def _imported(
     model=None,
     resource_overrides=None,
     page_bytes=128,
+    block_tokens=(16, 16),
 ):
     checkpoint, index, _ = _campaign(
         tmp_path,
@@ -717,6 +726,7 @@ def _imported(
         model=model,
         resource_overrides=resource_overrides,
         page_bytes=page_bytes,
+        block_tokens=block_tokens,
     )
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
@@ -777,6 +787,24 @@ def test_grouped_layout_claim_with_kv_bytes_per_token_is_imported_as_incomplete(
     assert not _load(checkpoint).configurations["tp2"].draft_request.get("fpm_profile")
 
 
+def test_linear_claim_on_groups_with_different_block_sizes_is_imported_as_grouped(tmp_path, capsys):
+    # The two groups have 128-byte pages of 16 and 32 tokens: 8 + 4 = 12 bytes per token, so the claim matches. A
+    # linear profile replays one block size, so import keeps the measured groups.
+    checkpoint, _, request, result = _imported(
+        tmp_path, capsys, block_tokens=(16, 32), resource_overrides={"kv_bytes_per_token": 12}
+    )
+    assert request.profile_deployment().resources.cache_layout == "grouped"
+    reason = (
+        "grouped: the supplied kv_bytes_per_token matched the measured full-attention groups, but cache groups "
+        "runtime_group_0 and runtime_group_1 have different block sizes, 16 and 32 tokens"
+    )
+    assert json.loads(request.fpm_profile.provenance)["cache_layout_reason"] == reason
+    assert result["cache_layout_reason"] == reason
+    state = _load(checkpoint)
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
 def test_linear_draft_with_a_changed_value_is_refused_at_acceptance(tmp_path, capsys):
     checkpoint, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
     payload = request.model_dump(mode="json", exclude_none=True)
@@ -807,6 +835,53 @@ def test_plan_names_the_cache_geometry_of_an_observed_profile(tmp_path, capsys, 
     assert prerequisite["detail"] == (
         f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope."
     )
+
+
+@pytest.mark.parametrize("claim", [False, True], ids=["grouped", "linear"])
+@pytest.mark.parametrize("block", [16, 256])
+def test_generated_configs_replay_a_linear_runtime_profile_with_the_measured_block_size(tmp_path, capsys, block, claim):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+    from aisimulate.support.validation import _prediction_config
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        block_tokens=(block, block),
+        resource_overrides={"cache_layout": "linear"} if claim else None,
+    )
+    assert request.profile_deployment().resources.cache_layout == ("linear" if claim else "grouped")
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    replay = CorePredictionConfig.model_validate(_prediction_config(request, root, tmp_path / "trace.jsonl"))
+    # A grouped profile keeps its configuration: replay allocates from its measured groups.
+    for config in (prediction, recommendation, replay):
+        assert config.engine.workers.aggregated.kv_cache.block_size == (block if claim else None)
+    for config in (prediction, replay):
+        args = prediction_to_replay_spec(config).backend_deployment.agg_engine_args
+        # 64 tokens is the vLLM default of replay.
+        assert args["block_size"] == args["timing_model"]["config"]["kv_block_size"] == (block if claim else 64)
+
+
+def test_role_config_of_a_linear_runtime_profile_has_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    _, _, request, files = _imported(
+        tmp_path,
+        capsys,
+        capacity_multiplier=10,
+        worker_type="prefill",
+        block_tokens=(256, 256),
+        resource_overrides={"cache_layout": "linear"},
+    )
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    root = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "--config", files["request"], "--output-dir", str(root)]) == 0
+    worker = yaml.safe_load((root / "worker.yaml").read_text())["engine"]["workers"]["prefill"]
+    assert worker["kv_cache"]["block_size"] == 256
 
 
 @pytest.mark.parametrize("extra_tokens", [-1, 0, 1], ids=["one-below", "exact-fit", "one-above"])
@@ -1082,7 +1157,9 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, model=None, resource_overrides=None):
+def _completed_runtime_collection(
+    tmp_path, capsys, *, tp=2, worker_type=None, model=None, resource_overrides=None, block_tokens=(16, 16)
+):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -1102,6 +1179,7 @@ def _completed_runtime_collection(tmp_path, capsys, *, tp=2, worker_type=None, m
         worker_type=worker_type,
         model=model,
         resource_overrides=resource_overrides,
+        block_tokens=block_tokens,
     )
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
@@ -1196,6 +1274,26 @@ def test_finalize_refuses_a_linear_profile_whose_collection_groups_have_no_linea
         "cache group runtime_group_1 has sliding_window=128"
     )
     assert not target.exists()
+
+
+def test_finalized_linear_runtime_profile_keeps_the_measured_block_size(tmp_path, capsys):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.plan import check_plan
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    target = tmp_path / "finalized"
+    finalize(request, root, target)
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().resources.cache_layout == "linear"
+    # The finalization manifest keeps the runtime probe evidence that gives the block size.
+    for name in ("predict/pilot.yaml", "recommend/pilot.yaml"):
+        worker = yaml.safe_load((target / name).read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+    check_plan(resolved, target)
 
 
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
