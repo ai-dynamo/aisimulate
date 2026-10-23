@@ -1296,6 +1296,42 @@ def test_finalized_linear_runtime_profile_keeps_the_measured_block_size(tmp_path
     check_plan(resolved, target)
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing-observed-resources", "probe-not-a-dict", "observed-resources-not-a-dict", "missing-cache-groups"],
+)
+def test_plan_refuses_finalized_probe_evidence_without_observed_cache_groups(tmp_path, capsys, corruption):
+    from aisimulate.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # A hand edit of the finalized request: its finalization manifest is the runtime memory provenance.
+    runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    manifest = json.loads(runtime["provenance"])
+    probe = manifest["runtime_probe"]
+    if corruption == "missing-observed-resources":
+        del probe["observed_resources"]
+    elif corruption == "probe-not-a-dict":
+        manifest["runtime_probe"] = "x"
+    elif corruption == "observed-resources-not-a-dict":
+        probe["observed_resources"] = ["x"]
+    else:
+        del probe["observed_resources"]["cache_groups"]
+    runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert error.value.code == 2
+    assert (
+        "invalid onboarding runtime probe provenance: the probe evidence has no observed_resources with cache_groups"
+        in capsys.readouterr().err
+    )
+
+
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
     from aisimulate.support.finalization import finalization_manifest
 

@@ -46,6 +46,31 @@ def validation_id(request: SupportRequest) -> str:
     return "validation-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
+    """The observed resources of the request's runtime probe evidence; None when the request has no such evidence.
+
+    A finalized request keeps the evidence in its finalization manifest. Evidence without observed cache groups is
+    invalid provenance, so a hand-edited request fails with a ValueError.
+    """
+    from .finalization import finalization_manifest
+    from .runtime import runtime_probe_manifest
+
+    probe = runtime_probe_manifest(request)
+    if probe is None:
+        finalized = finalization_manifest(request)
+        if finalized is None or "runtime_probe" not in finalized:
+            return None
+        probe = finalized["runtime_probe"]
+    observed = probe.get("observed_resources") if isinstance(probe, dict) else None
+    groups = observed.get("cache_groups") if isinstance(observed, dict) else None
+    if not isinstance(groups, list) or not groups:
+        raise ValueError(
+            "invalid onboarding runtime probe provenance: "
+            "the probe evidence has no observed_resources with cache_groups"
+        )
+    return observed
+
+
 def _configs(
     request: SupportRequest, root: Path
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[dict[str, int]]]:
@@ -85,13 +110,9 @@ def _configs(
         if request.profile_deployment().resources.cache_layout == "grouped":
             worker.setdefault("kv_cache", {})["prefix_caching"] = False
         else:
-            from .finalization import finalization_manifest
-            from .runtime import runtime_probe_manifest
-
-            # Replay of a linear profile with runtime probe evidence uses the measured block size. A finalized
-            # profile keeps that evidence in its finalization manifest.
-            probe = runtime_probe_manifest(request) or (finalization_manifest(request) or {}).get("runtime_probe")
-            block_size = None if probe is None else linear_block_size(probe["observed_resources"])
+            # Replay of a linear profile with runtime probe evidence uses the measured block size.
+            observed = _probe_observed_resources(request)
+            block_size = None if observed is None else linear_block_size(observed)
             if block_size is not None:
                 worker.setdefault("kv_cache", {})["block_size"] = block_size
     if request.worker_type in {"prefill", "decode"}:
