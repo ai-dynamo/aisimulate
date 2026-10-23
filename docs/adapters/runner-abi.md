@@ -103,6 +103,12 @@ per-request, telemetry, memory or timing diagnostics. A runner must reject
 unsupported capture combinations. The Engine JSON runner rejects telemetry
 capture even though native Rust observers support it.
 
+A factory that sets `supports_deferred_encoder_overlay` accepts
+`defer_encoder_overlay=True`: for an analytical EPD spec, the runner returns
+the normalized language report without the encoder overlay. Sweeper then
+replays each language deployment once and applies `apply_encoder_overlay` for
+every encoder pool that shares it.
+
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).
 It must return `ResourceEstimate` API version 1 with nonnegative byte counts,

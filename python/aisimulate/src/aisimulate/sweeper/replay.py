@@ -263,6 +263,8 @@ class ReplayOutputRequirements:
     telemetry_sample_interval_ms: float = 1000.0
     capture_memory_diagnostics: bool = False
     capture_performance_diagnostics: bool = False
+    # Return an analytical EPD replay's language report; the caller applies each pool's overlay.
+    defer_encoder_overlay: bool = False
 
     def __post_init__(self) -> None:
         interval = self.telemetry_sample_interval_ms
@@ -396,6 +398,7 @@ class RunnerCapabilities:
     supports_agentic_live_warmup: bool = False
     supports_generic_speculation: bool = False
     supports_tokenization: bool = False
+    supports_deferred_encoder_overlay: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.

@@ -384,6 +384,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_deferred_encoder_overlay=True,
             supports_native_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
@@ -643,7 +644,8 @@ class EngineReplayRunner:
         )
         if encoder is not None:
             if encoder.mode == "analytical":
-                normalized = apply_encoder_overlay(normalized, original_spec)
+                if not output_requirements.defer_encoder_overlay:
+                    normalized = apply_encoder_overlay(normalized, original_spec)
             else:
                 from .sweeper.epd import language_gpus
 

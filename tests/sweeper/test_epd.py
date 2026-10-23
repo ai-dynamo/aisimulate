@@ -5,6 +5,7 @@
 
 import json
 from dataclasses import asdict, replace
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -387,6 +388,82 @@ def test_complete_sweeper_selection_and_serialization(monkeypatch, gpu_budget, f
         ).run(config)
         assert not invalid.selected_candidates
         assert all("prediction-ready" in candidate.reason for candidate in invalid.candidates)
+
+
+@pytest.mark.parametrize("per_round", [1, 2])
+def test_encoder_pools_share_one_language_replay(monkeypatch, per_round):
+    parallel = ReplicaParallelConfig(ParallelShape(tp=2, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=(parallel,),
+        supported_backends={parallel: frozenset({"sglang"})},
+        knob_choices={"backend": ["sglang"]},
+    )
+    monkeypatch.setattr(search_mod, "enumerate_branches", lambda *a, **kw: [branch])
+    monkeypatch.setattr(
+        search_mod, "resolve_encoder_catalog", lambda c: {"one": _encoder(), "two": _encoder(workers=2)}
+    )
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda *a, systems_paths=None: "0.5.14")
+
+    class Sampler:
+        def __init__(self, branch, **kwargs):
+            self.keys = iter(branch.knob_choices["encoder_candidate"])
+
+        def suggest(self, count):
+            return [
+                Suggestion(
+                    selection=dict(
+                        deployment_mode="agg",
+                        backend="sglang",
+                        agg_max_num_batched_tokens=8192,
+                        agg_max_num_seqs=256,
+                        encoder_candidate=key,
+                    ),
+                    parallel_config=parallel,
+                    handle=key,
+                )
+                for key in islice(self.keys, count)
+            ]
+
+        def observe(self, *args):
+            pass
+
+        def observe_infeasible(self, *args):
+            pass
+
+    class Factory:
+        def __init__(self, deferred):
+            self.deferred = deferred
+            self.replays = 0
+
+        def capabilities(self):
+            return RunnerCapabilities(
+                supported_backend_topologies=(("sglang", "agg"),),
+                supports_analytical_epd=True,
+                supports_deferred_encoder_overlay=self.deferred,
+            )
+
+        def create(self, worker_id):
+            return self
+
+        def run(self, spec, output_requirements=None):
+            self.replays += 1
+            if output_requirements is not None and output_requirements.defer_encoder_overlay:
+                return _report()
+            return apply_encoder_overlay(_report(), spec)
+
+        def close(self):
+            pass
+
+    config = _config(sweep=_config().sweep.model_dump() | {"candidates_per_round": per_round, "max_rounds": 2})
+    candidates = {}
+    for deferred in (False, True):
+        factory = Factory(deferred)
+        result = Sweeper(runner_factory=factory, sampler_factory=Sampler, show_progress=False).run(config)
+        assert factory.replays == (1 if deferred else 2)
+        candidates[deferred] = [candidate.model_dump() for candidate in result.candidates]
+    assert [candidate["config"]["encoder_candidate"] for candidate in candidates[True]] == ["one", "two"]
+    assert candidates[True] == candidates[False]
 
 
 def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total():
