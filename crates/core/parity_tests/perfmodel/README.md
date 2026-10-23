@@ -216,6 +216,23 @@ using `pin_goldens.py --refresh`. Each refreshed record retains its source
 commit in `post_freeze_pins`; test matrices and tolerances are unchanged.
 These are prediction-regression baselines, not whole-model silicon validation.
 
+### MoE-family prefill logits GEMM
+
+`MOEModel` (Mixtral, GPT-OSS, Qwen2/Qwen3-MoE, MiniMax-M2) now emits
+`context_logits_gemm`, the prefill LM-head projection every other family
+already had. The selective refresh from
+`fdd84a8e9377dab2547e171f9ff126769fd51b1f` covers 21 engine-step records and
+six per-op cases. No compiled-engine reference moved outside its tolerance.
+
+Each per-op case gains exactly one `context_logits_gemm` entry of 0.0265 to
+0.0275 ms. All other per-op latencies, energies, and source labels are
+unchanged. The engine-step records are the Qwen3-235B-A22B and MiniMax-M2.5
+hybrid, empirical, and SOL cases, which use a 1e-4 relative tolerance. Their
+prefill-bearing metrics increase by 0.020 to 0.084 ms. Decode-only metrics are
+unchanged. MoE records compared at the 1% tolerance still pass and were not
+refreshed. The refreshed records are exactly the `post_freeze_pins` entries
+that name the commit above, each passed to `pin_goldens.py --refresh`.
+
 ### B200 SGLang dense-prefix correction in PR #303
 
 Four existing B200 cases change because `deepseek_v32._dense_mlp_groups` now honors `first_k_dense_replace=3` and the checkpoint's packed-linear quantization exclusions. Previously those three dense layers were counted as MoE layers. DeepSeek-V3.2 now has 58 MoE plus three FP8-block dense layers (61 total); both GLM-5 cases have 75 MoE plus three BF16 dense layers (78 total). GLM-5.2 also has 75 MoE plus three dense layers, with its excluded packed gate/up and down projections using BF16 instead of inheriting the global NVFP4 GEMM mode.
