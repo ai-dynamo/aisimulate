@@ -507,14 +507,17 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
     hopper_kv_rejection = (
         r"invalid engine config: GLM-5\.3-Flash on GPU [\w.-]+ \(SM9\d\) "
         r"cannot use FP8 sparse-MLA KV with (vllm|sglang): the "
-        r"requested backend_version=\S+ requires \1 >= (?:0\.32\.0|0\.5\.22)\. "
+        r"requested backend_version=\S+ requires \1 >= (0\.32\.0|0\.5\.22)\. "
         r"Select a supported runtime \(SGLang requires TileLang DSA prefill and decode\), "
         r'or pass kvcache_quant_mode="bfloat16"\.'
     )
-    if stage == "build" and any(
-        isinstance(item, ValueError) and re.fullmatch(hopper_kv_rejection, str(item).strip()) for item in chain
-    ):
-        return STATUS_FRAMEWORK_INCOMPATIBLE
+    if stage == "build":
+        for item in chain:
+            if not isinstance(item, ValueError):
+                continue
+            match = re.fullmatch(hopper_kv_rejection, str(item).strip())
+            if match and match.groups() in {("vllm", "0.32.0"), ("sglang", "0.5.22")}:
+                return STATUS_FRAMEWORK_INCOMPATIBLE
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
     # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
