@@ -547,6 +547,20 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
         for error_type, pattern in sdk_rejections
     ):
         return STATUS_SDK_UNREPRESENTABLE
+    # Native validate_glm53_kv_capability rejects a stock-runtime limitation,
+    # not FP8 hardware support. Keep query-time and unknown failures blocking.
+    if stage == "build" and any(
+        isinstance(item, ValueError)
+        and re.fullmatch(
+            r"invalid engine config: GLM-5\.3-Flash on GPU [A-Za-z0-9_.-]+ \(SM9\d\) "
+            r"cannot use FP8 sparse-MLA KV with (?:vllm|sglang): the stock SM90 runtimes "
+            r"\(vLLM 0\.31\.0, SGLang 0\.5\.20\) serve this model with BF16 KV only\. "
+            r'Pass kvcache_quant_mode="bfloat16" \(the FP8 default does not apply on SM90\)\.',
+            str(item).strip(),
+        )
+        for item in chain
+    ):
+        return STATUS_FRAMEWORK_INCOMPATIBLE
     names = " ".join(type(item).__name__ for item in chain).lower()
     messages = " ".join(str(item) for item in chain).lower()
     evidence = f"{names} {messages}"

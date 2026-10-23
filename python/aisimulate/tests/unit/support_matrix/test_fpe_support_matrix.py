@@ -474,6 +474,61 @@ def test_glm53flash_rejections_preserve_probe_evidence(message, expected, wrappe
     assert classify_failure(NotImplementedError(message + " unexpected failure"), stage="build") == STATUS_BUILD_FAILED
 
 
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_glm53_sm90_runtime_rejection_is_build_only(wrapped):
+    message = (
+        "invalid engine config: GLM-5.3-Flash on GPU h100_sxm (SM90) cannot use FP8 sparse-MLA KV with sglang: "
+        "the stock SM90 runtimes (vLLM 0.31.0, SGLang 0.5.20) serve this model with BF16 KV only. "
+        'Pass kvcache_quant_mode="bfloat16" (the FP8 default does not apply on SM90).'
+    )
+    rejection = ValueError(message)
+    error = rejection
+    if wrapped:
+        error = RuntimeError("engine construction failed")
+        error.__cause__ = rejection
+
+    assert classify_failure(error, stage="build") == STATUS_FRAMEWORK_INCOMPATIBLE
+    assert classify_failure(error, stage="query") == STATUS_QUERY_FAILED
+    assert classify_failure(RuntimeError(message), stage="build") == STATUS_BUILD_FAILED
+    assert classify_failure(ValueError(message + " unexpected failure"), stage="build") == STATUS_BUILD_FAILED
+    assert classify_failure(ValueError(message.replace("SM90", "SM100")), stage="build") == STATUS_BUILD_FAILED
+    assert (
+        classify_failure(ValueError("GLM-5.3-Flash unexpected construction failure"), stage="build")
+        == STATUS_BUILD_FAILED
+    )
+
+
+@pytest.mark.build
+@pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
+@pytest.mark.parametrize("backend,version", [("sglang", "0.5.20"), ("vllm", "0.31.0")])
+def test_native_glm53_sm90_rejection_preserves_requested_identity(system, backend, version):
+    plan = _plan(
+        model="zai-org/GLM-5.3-Flash",
+        architecture="Glm5NextForConditionalGeneration",
+        system=system,
+        backend=backend,
+        backend_version=version,
+        topology=ParallelTopology(1, 1, 1, 1, 1, 1),
+        gemm_quant_mode="fp8_block",
+        moe_quant_mode="fp8_block",
+        kvcache_quant_mode="fp8",
+        fmha_quant_mode="fp8",
+    )
+    results = probe_plan(plan, workload=ProbeWorkload(), source_version="0.13.0", source_sha="a" * 40)
+    assert {result.phase for result in results} == {"prefill", "decode_start", "decode_end", "mixed"}
+    assert {result.status for result in results} == {STATUS_FRAMEWORK_INCOMPATIBLE}
+    assert all(
+        result.error_type == "ValueError" and "cannot use FP8 sparse-MLA KV" in result.error_message
+        for result in results
+    )
+    assert all(result.latency_ms is None and result.failure_stage == "build" for result in results)
+    assert all(
+        (result.model, result.system, result.backend, result.backend_version, result.kvcache_quant_mode)
+        == (plan.model, system, backend, version, "fp8")
+        for result in results
+    )
+
+
 def test_result_outputs_are_deterministic_while_run_metrics_remain_separate(tmp_path):
     class FakeEngine:
         def predict_prefill_latency(self, **_kwargs):

@@ -97,6 +97,7 @@ def test_wrong_artifact_identity_or_plan_count_fails(tmp_path, payload, field, v
     [
         ("PERF_DATA_MISSING", "required known-good probes no longer pass"),
         ("SDK_UNREPRESENTABLE", "required known-good probes no longer pass"),
+        ("FRAMEWORK_INCOMPATIBLE", "required known-good probes no longer pass"),
         ("QUERY_FAILED", "unexpected native probe failure"),
         ("BUILD_FAILED", "unexpected native probe failure"),
         ("SKIP", "invalid probe result"),
@@ -160,14 +161,12 @@ def test_legitimate_prefill_only_topology_is_complete(tmp_path, payload):
     assert check(tmp_path, payload)["status_counts"] == {"PASS": 5}
 
 
-def test_exploratory_unsupported_case_is_visible_without_qualifying_it(tmp_path, payload):
-    extra = [
-        {**r, "model": "test/unsupported", "status": "MODEL_UNSUPPORTED", "latency_ms": None}
-        for r in payload["results"]
-    ]
+@pytest.mark.parametrize("status", ["MODEL_UNSUPPORTED", "FRAMEWORK_INCOMPATIBLE"])
+def test_exploratory_unsupported_case_is_visible_without_qualifying_it(tmp_path, payload, status):
+    extra = [{**r, "model": "test/unsupported", "status": status, "latency_ms": None} for r in payload["results"]]
     payload["results"].extend(extra)
     payload["metadata"]["plan_count"] = 2
-    assert check(tmp_path, payload)["status_counts"] == {"PASS": 4, "MODEL_UNSUPPORTED": 4}
+    assert check(tmp_path, payload)["status_counts"] == {"PASS": 4, status: 4}
 
 
 @pytest.fixture(params=[False, True], ids=["merged-roles", "distinct-roles"])
