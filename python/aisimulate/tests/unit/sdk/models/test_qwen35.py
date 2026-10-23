@@ -582,3 +582,199 @@ def test_qwen38max_memory_charges_kv_on_full_layers_and_constant_gdn_state(
     per_token_bytes = 2 * expected_elements_per_token  # bf16 kvcache
     assert model.get_kvcache_bytes_per_sequence(4096) == 4096 * per_token_bytes + expected_state_bytes
     assert model.get_kvcache_max_tokens(expected_state_bytes + 100 * per_token_bytes) == 100
+
+
+# Synthetic checkpoint metadata keeps these regression tests offline.
+@pytest.fixture
+def qwen_precision_model(tmp_path):
+    from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
+
+    def build(exclusions=(), *, override=None, moe=False):
+        name = "Qwen/Qwen3.5-35B-A3B" if moe else "Qwen/Qwen3.5-27B"
+        raw = copy.deepcopy(_load_pre_downloaded_hf_config(name))
+        raw["quantization_config"] = {
+            "quant_method": "fp8",
+            "activation_scheme": "dynamic",
+            "weight_block_size": [128, 128],
+            "modules_to_not_convert": list(exclusions),
+        }
+        # Unique paths avoid the process-local model-config cache.
+        folder = tmp_path / str(len(list(tmp_path.iterdir())))
+        folder.mkdir()
+        (folder / "config.json").write_text(json.dumps(raw))
+        cfg = sdk_config.ModelConfig(tp_size=2, moe_tp_size=2, moe_ep_size=1, gemm_quant_mode=override)
+        return core_models.get_model(str(folder), cfg, "sglang")
+
+    return build
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize(
+    "moe, exclusion",
+    [
+        (False, r"re:.*self_attn\.q_norm$"),
+        (False, r"re:^model\.visual\.blocks\..*\.mlp\..*"),
+        (False, r"re:^model\.layers\.9999\.mlp\..*"),
+        (False, r"re:^model\.layers\.\D+\.mlp\..*"),
+        (False, "model.visual.layers.*.mlp.*"),
+        (False, "mtp.layers.0*"),
+        (False, "model.layers.*.self_attn.q_norm"),
+        (False, "model.layers.*.linear_attn.conv1d"),
+        (False, "model.layers.*.mlp.gate"),
+        (False, "model.visual.blocks.*.mlp.*"),
+        (True, "model.layers.*.mlp.shared_expert_gate"),
+        (True, "model.visual.blocks.*.mlp.*"),
+    ],
+)
+def test_qwen_auxiliary_exclusions_preserve_fp8_matrices(qwen_precision_model, phase, moe, exclusion):
+    baseline = qwen_precision_model(moe=moe)
+    candidate = qwen_precision_model([exclusion], moe=moe)
+    assert [op._spec_json() for op in getattr(candidate, f"{phase}_ops")] == [
+        op._spec_json() for op in getattr(baseline, f"{phase}_ops")
+    ]
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize(
+    "moe, exclusion, suffixes",
+    [
+        (False, "model.language_model.layers.*.linear_attn.in_proj_ba", ("gdn_in_proj_ba_gemm",)),
+        (False, "model.language_model.layers.*.mlp.*", ("gate_ffn1_gemm", "ffn2_gemm")),
+        (True, "model.language_model.layers.*.mlp.shared_expert.*", ("shared_gate_up_gemm", "shared_down_gemm")),
+        (True, "model.layers.*.mlp", ("shared_gate_up_gemm", "shared_down_gemm")),
+        (False, r"re:^model\.layers\.1\.mlp\.(gate|up|down)_proj$", ("gate_ffn1_gemm", "ffn2_gemm")),
+        (True, r"re:^model\.language_model\.layers\.1\.mlp$", ("shared_gate_up_gemm", "shared_down_gemm")),
+        (False, r"re:.*linear_attn\.in_proj_ba$", ("gdn_in_proj_ba_gemm",)),
+        (False, r"re:.*self_attn\..*", ("gdn_in_proj_gemm", "gdn_out_proj_gemm", "qkv_gemm", "proj_gemm")),
+        (False, "*.gate_proj", ("gate_ffn1_gemm", "ffn2_gemm")),
+        (True, "*.gate_proj", ("shared_gate_up_gemm", "shared_down_gemm")),
+        (True, "*.shared_expert", ("shared_gate_up_gemm", "shared_down_gemm")),
+        (False, "*.mlp", ("gate_ffn1_gemm", "ffn2_gemm")),
+        *[
+            (
+                False,
+                exclusion,
+                (
+                    "gdn_in_proj_gemm",
+                    "gdn_in_proj_ba_gemm",
+                    "gdn_out_proj_gemm",
+                    "qkv_gemm",
+                    "proj_gemm",
+                    "gate_ffn1_gemm",
+                    "ffn2_gemm",
+                ),
+            )
+            for exclusion in ("model.layers.*", "layers.*", r"re:^model\.layers\.1$", r"re:^model$")
+        ],
+    ],
+)
+def test_qwen_matrix_exclusions_preserve_bf16_and_weight_sizes(qwen_precision_model, phase, moe, exclusion, suffixes):
+    baseline = qwen_precision_model(moe=moe)
+    candidate = qwen_precision_model([exclusion], moe=moe)
+    before = {op._name: op for op in _flatten_ops(getattr(baseline, f"{phase}_ops"))}
+    weight_delta = 0
+    for op in _flatten_ops(getattr(candidate, f"{phase}_ops")):
+        original = before[op._name]
+        if op._name.endswith(suffixes):
+            assert original._quant_mode == common.GEMMQuantMode.fp8_block
+            assert op._quant_mode == common.GEMMQuantMode.bfloat16
+            assert op.get_weights() == 2 * original.get_weights()
+            weight_delta += original.get_weights()
+        else:
+            assert op._spec_json() == original._spec_json()
+    assert weight_delta > 0
+    if phase == "context":
+        assert candidate.get_resident_weights_bytes() - baseline.get_resident_weights_bytes() == weight_delta
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize("moe", [False, True])
+def test_qwen_explicit_gemm_override_remains_authoritative(qwen_precision_model, phase, moe):
+    baseline = qwen_precision_model(override=common.GEMMQuantMode.fp8_block, moe=moe)
+    candidate = qwen_precision_model(
+        ["model.layers.*.linear_attn*", "model.layers.*.mlp.*", r"re:.*linear_attn\..*", r"re:.*mlp\..*"],
+        override=common.GEMMQuantMode.fp8_block,
+        moe=moe,
+    )
+    assert [op._spec_json() for op in getattr(candidate, f"{phase}_ops")] == [
+        op._spec_json() for op in getattr(baseline, f"{phase}_ops")
+    ]
+
+
+@pytest.mark.parametrize(
+    "source", ["modules_to_not_convert", "exclude_modules", "ignore", "text_config", "hf_quant_config"]
+)
+def test_qwen_regex_exclusion_sources_and_explicit_metadata(source):
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    quant = {"ignore": [r"re:^model\.layers\.1\.linear_attn\.in_proj_ba$"]}
+    raw = {"num_hidden_layers": 2}
+    if source == "hf_quant_config":
+        raw[source] = {"quantization": quant}
+    elif source == "text_config":
+        raw = {
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "text_config": {"num_hidden_layers": 2, "quantization_config": quant},
+        }
+    else:
+        quant[source] = quant.pop("ignore")
+        raw["quantization_config"] = quant
+    fp8 = common.GEMMQuantMode.fp8_block
+
+    def resolve():
+        return _qwen35_mixed_precision_gemm_modes(raw, fp8, allow_checkpoint_split=True)
+
+    assert resolve() == (fp8, fp8, fp8, common.GEMMQuantMode.bfloat16)
+    quant["quantized_layers"] = {"model.layers.1.linear_attn.in_proj_ba": {"quant_algo": "fp8"}}
+    assert resolve() == (fp8, fp8, fp8, common.GEMMQuantMode.fp8_static)
+
+
+def test_qwen_invalid_regex_reports_configuration_error():
+    from aisimulate_core.sdk.models.qwen35 import _qwen35_mixed_precision_gemm_modes
+
+    raw = {"quantization_config": {"ignore": ["re:["]}}
+    with pytest.raises(ValueError, match="Invalid Qwen quantization exclusion"):
+        _qwen35_mixed_precision_gemm_modes(raw, common.GEMMQuantMode.fp8_block, allow_checkpoint_split=True)
+    # An explicit override bypasses checkpoint interpretation entirely.
+    assert (
+        _qwen35_mixed_precision_gemm_modes(raw, common.GEMMQuantMode.fp8_block, allow_checkpoint_split=False)
+        == (common.GEMMQuantMode.fp8_block,) * 4
+    )
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize(
+    "prefix, regex_prefix",
+    [
+        ("model.layers", r"model\.layers"),
+        ("model.language_model.layers", r"model\.language_model\.layers"),
+        ("language_model.layers", r"language_model\.layers"),
+        ("layers", "layers"),
+        ("*.layers", r".*\.layers"),
+    ],
+)
+@pytest.mark.parametrize(
+    "selector, regex_selector, matches",
+    [
+        ("1", "1", True),
+        ("*", r"\d+", True),
+        ("[01]", "[01]", True),
+        ("9999", "9999", False),
+        ("999?", "999[0-9]", False),
+        ("01", "01", False),
+    ],
+)
+def test_qwen_glob_and_regex_layer_selectors_agree(
+    qwen_precision_model, phase, prefix, regex_prefix, selector, regex_selector, matches
+):
+    expected = qwen_precision_model(["linear_attn.in_proj_ba"] if matches else [])
+    patterns = (
+        f"{prefix}.{selector}.linear_attn.in_proj_ba",
+        rf"re:^{regex_prefix}\.{regex_selector}\.linear_attn\.in_proj_ba$",
+    )
+    for pattern in patterns:
+        candidate = qwen_precision_model([pattern])
+        assert [op._spec_json() for op in getattr(candidate, f"{phase}_ops")] == [
+            op._spec_json() for op in getattr(expected, f"{phase}_ops")
+        ], pattern
+        assert candidate.get_resident_weights_bytes() == expected.get_resident_weights_bytes(), pattern
