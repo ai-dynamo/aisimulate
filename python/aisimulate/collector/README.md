@@ -44,7 +44,10 @@ with rc29 in one container.
 DeepSeek-V4 attention uses rc29's `aux_stream_dict` constructor argument,
 with separate attention, compressor, indexer, and auxiliary-indexer streams,
 matching the native model. The removed single `aux_stream` argument fails
-before measurement. Qualify all four CSA/HCA context/decode paths after this change.
+before measurement. Cache construction also calls the native model-default
+selector: Hopper requires the packed `fp8_ds_mla` layout, while Blackwell
+keeps the native default. Both layouts use FP8 quantization. Qualify all four
+CSA/HCA context/decode paths after these changes.
 
 GDN remains blocked: rc29's default recurrent-state cache is BF16, while
 the existing TRT-LLM data reader assumes FP32 state-sensitive rows. Its native

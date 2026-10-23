@@ -279,7 +279,7 @@ class _CapturingMetadata:
         self.prepared = True
 
 
-def _install_trtllm_stubs(monkeypatch, module):
+def _install_trtllm_stubs(monkeypatch, module, cache_defaults=None):
     captured = {"kv_cache_config": []}
 
     def _mod(name):
@@ -292,12 +292,21 @@ def _install_trtllm_stubs(monkeypatch, module):
     iface = _mod("tensorrt_llm._torch.attention.backends.interface")
     _mod("tensorrt_llm._torch.attention.backends")
     utils_mod = _mod("tensorrt_llm._torch.attention.backends.utils")
+    model_mod = _mod("tensorrt_llm._torch.models.modeling_deepseekv4")
+    if cache_defaults is None:
+        cache_defaults = {"tokens_per_block": 128, "enable_swa_scratch_reuse": True}
+
+    def model_defaults(llm_args):
+        assert llm_args is None  # No user override in the stock collection.
+        return {"kv_cache_config": cache_defaults.copy()}
+
+    model_mod.DeepseekV4ForCausalLM = SimpleNamespace(get_model_defaults=model_defaults)
     bindings = _mod("tensorrt_llm.bindings")
     _mod("tensorrt_llm.bindings.internal")
     bm = _mod("tensorrt_llm.bindings.internal.batch_manager")
     llm_args = _mod("tensorrt_llm.llmapi.llm_args")
     _mod("tensorrt_llm.llmapi")
-    tl.__version__ = "1.3.0rc23"
+    tl.__version__ = "1.3.0rc29"
 
     iface.AttentionRuntimeFeatures = lambda **kw: SimpleNamespace(**kw)
     iface.KVCacheParams = lambda **kw: SimpleNamespace(**kw)
@@ -338,10 +347,10 @@ def _fake_model_config():
     )
 
 
-def _run_create(module, monkeypatch, **kw):
+def _run_create(module, monkeypatch, cache_defaults=None, **kw):
     _CapturingManager.instances.clear()
     _CapturingMetadata.instances.clear()
-    captured = _install_trtllm_stubs(monkeypatch, module)
+    captured = _install_trtllm_stubs(monkeypatch, module, cache_defaults=cache_defaults)
     manager, metadata, attention_cls = module.create_dsv4_kv_cache_and_metadata(
         model_config=_fake_model_config(),
         attn_module=SimpleNamespace(indexer=None),
@@ -349,6 +358,24 @@ def _run_create(module, monkeypatch, **kw):
         **kw,
     )
     return manager, metadata, captured
+
+
+@pytest.mark.parametrize("packed_fp8", [True, False], ids=["hopper", "blackwell"])
+def test_cache_constructor_preserves_native_model_defaults(monkeypatch, packed_fp8):
+    # rc29 modeling_deepseekv4.py:2552-2562 supplies the architecture-specific
+    # layout; the collector must forward it rather than bypassing the selector.
+    defaults = {"tokens_per_block": 128, "enable_swa_scratch_reuse": True}
+    if packed_fp8:
+        defaults["dtype"] = "fp8_ds_mla"
+    module = _load_module_with_torch_stub(monkeypatch)
+    manager, _, captured = _run_create(
+        module, monkeypatch, cache_defaults=defaults, batch_size=1, seq_len=64, is_context=True
+    )
+    config = captured["kv_cache_config"][0]
+    assert {key: config[key] for key in defaults} == defaults
+    if not packed_fp8:
+        assert "dtype" not in config
+    assert manager.ctor_kwargs["dtype"] == "FP8"
 
 
 def test_context_metadata_constructor_args_match_serving(monkeypatch):

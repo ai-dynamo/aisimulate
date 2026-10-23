@@ -490,6 +490,7 @@ def create_dsv4_kv_cache_and_metadata(
         KVCacheParams,
     )
     from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
+    from tensorrt_llm._torch.models.modeling_deepseekv4 import DeepseekV4ForCausalLM
     from tensorrt_llm.bindings import DataType
     from tensorrt_llm.bindings.internal.batch_manager import CacheType
 
@@ -511,11 +512,13 @@ def create_dsv4_kv_cache_and_metadata(
     qk_rope_head_dim = config.qk_rope_head_dim
     head_dim = kv_lora_rank + qk_rope_head_dim
 
-    # DeepSeek-V4 serving default page size ("TensorRT LLM defaults
-    # DeepSeek-V4 to tokens_per_block=128",
-    # examples/models/core/deepseek_v4/README.md:66-67 @v1.3.0rc23;
-    # DeepseekV4CacheManager asserts 128/256).
-    tokens_per_block = 128
+    # Use serving's model defaults directly: rc29 selects fp8_ds_mla on
+    # Hopper and enables SWA scratch reuse (modeling_deepseekv4.py:2552-2562
+    # @c76f4a856). None means no user cache override. Both packed and ordinary
+    # FP8 layouts resolve to QuantAlgo.FP8 (llm_args.py:6911-6912), so the
+    # existing fp8 row identity still describes the quantization correctly.
+    cache_defaults = DeepseekV4ForCausalLM.get_model_defaults(None)["kv_cache_config"]
+    tokens_per_block = cache_defaults["tokens_per_block"]
 
     prefix_len = int(prefix_len) if is_context else 0
     if is_context:
@@ -554,7 +557,7 @@ def create_dsv4_kv_cache_and_metadata(
     # B200 smoke round 1 2026-08-06).
     free_bytes, _ = torch.cuda.mem_get_info(torch.device(device))
     kv_cache_config = KvCacheConfig(
-        tokens_per_block=tokens_per_block,
+        **cache_defaults,
         max_gpu_total_bytes=int(free_bytes * 0.5),
         enable_block_reuse=False,
     )
