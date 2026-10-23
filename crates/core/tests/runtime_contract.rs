@@ -103,6 +103,102 @@ impl ReplayTelemetryObserver for FailingTelemetryObserver {
     }
 }
 
+#[cfg(feature = "python")]
+#[test]
+fn native_composition_uses_canonical_workload_tokenization_and_report() {
+    for disaggregated in [false, true] {
+        let mut spec = aggregated_spec(Backend::Vllm, 1, 0.0, Vec::new());
+        if disaggregated {
+            spec.topology = ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec::default(),
+                decode: WorkerPoolSpec::default(),
+                handoff_latency_ms: 0.0,
+            };
+        }
+        let mut payload = serde_json::json!({
+            "spec": spec, "determinism": "canonical_v1",
+            "traffic": {"source_type": "synthetic", "load_type": "constant_rate", "isl": 4, "osl": 2,
+                "request_count": 2, "arrival_interval_ms": 100.0}
+        });
+        let run = |payload: &serde_json::Value| {
+            aisimulate_core::execute_replay_with_composition(
+                &payload.to_string(),
+                |resolved| {
+                    assert_eq!(resolved.engine["rank"]["block_size"], 4);
+                    Ok(GeneralRoundRobinComposition::fixed_capacity())
+                },
+                ReplayCaptureOptions::default(),
+                None,
+            )
+            .unwrap()
+        };
+        let baseline = run(&payload);
+        payload["tokenization"] = serde_json::json!({"base_ms": 5.0, "per_input_token_ms": 0.5});
+        let result = run(&payload);
+        assert_eq!(result.report.request_counts.completed_requests, 2);
+        assert_eq!(result.report.per_request.len(), 2);
+        for (index, (actual, plain)) in result
+            .report
+            .per_request
+            .iter()
+            .zip(&baseline.report.per_request)
+            .enumerate()
+        {
+            assert_eq!(actual.uuid, Uuid::from_u128(index as u128 + 1).to_string());
+            // Five milliseconds per request plus 0.5 ms for each of four tokens.
+            assert_eq!(actual.ttft_ms.unwrap() - plain.ttft_ms.unwrap(), 7.0);
+        }
+        let json: serde_json::Value = serde_json::from_str(&result.into_json().unwrap()).unwrap();
+        assert_eq!(json["completed_requests"], 2);
+        assert_eq!(json["per_request"].as_array().unwrap().len(), 2);
+        assert!(json["prediction_provenance"].is_object());
+    }
+}
+
+#[cfg(feature = "python")]
+#[test]
+fn native_composition_retains_scaling_capture_and_optional_telemetry() {
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![request("running", 0.0, 4, 3)]);
+    let result = aisimulate_core::execute_replay_with_composition(
+        &serde_json::to_string(&spec).unwrap(),
+        |_| {
+            Ok(GeneralRoundRobinComposition::with_scaling(
+                AddThenRemoveWorker {
+                    step: 0,
+                    removal_at_ms: 1.0,
+                    scale_prefill: false,
+                },
+            ))
+        },
+        ReplayCaptureOptions {
+            capture_lifecycle_evidence: true,
+            ..Default::default()
+        },
+        Some((
+            1.0,
+            Box::new(RecordingTelemetryObserver {
+                samples: Arc::clone(&samples),
+            }),
+        )),
+    )
+    .unwrap();
+    assert_eq!(result.report.request_counts.completed_requests, 1);
+    // The compact JSON intentionally excludes this evidence; native consumers
+    // must retain the typed report to finalize planner/lifecycle results.
+    assert!(
+        !result
+            .report
+            .runtime_evidence
+            .lifecycle_operations
+            .is_empty()
+    );
+    assert!(samples.lock().unwrap().len() > 1);
+    let json: serde_json::Value = serde_json::from_str(&result.into_json().unwrap()).unwrap();
+    assert_eq!(json["completed_requests"], 1);
+    assert!(json.get("runtime_evidence").is_none());
+}
+
 #[test]
 fn grouped_cache_replay_emits_physical_bytes_without_scalar_block_capacity() {
     let samples = Arc::new(Mutex::new(Vec::new()));

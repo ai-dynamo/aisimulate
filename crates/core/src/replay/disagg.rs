@@ -38,10 +38,11 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
-    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready, settle_internal_work,
+    DispatchFailure, ReplayStepOutcome, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_transfer_complete, pop_ready_worker_completions, pop_ready_worker_ready,
+    push_scaling_tick, push_telemetry_tick, push_transfer_complete, push_worker_completions,
+    push_worker_ready, settle_internal_work, validate_policy_wakeup,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -936,6 +937,7 @@ where
     PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
 {
     now_ms: f64,
+    dispatch_failure: DispatchFailure,
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
     admission: AdmissionQueue<Metadata>,
@@ -1087,6 +1089,7 @@ where
 
         Ok(Self {
             now_ms: 0.0,
+            dispatch_failure: DispatchFailure::default(),
             next_event_seq: 0,
             next_scaling_tick_ordinal: 0,
             admission,
@@ -1394,6 +1397,9 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.prefill_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(self.dispatch_failure.record(error, Ok(()), Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1402,8 +1408,22 @@ where
                 return Ok(());
             }
         };
-        if !matches!(effects.result, CommandResult::Submitted(id) if id == uuid) {
-            bail!("offline disagg replay prefill submission returned an unexpected result");
+        let commit = if matches!(effects.result, CommandResult::Submitted(id) if id == uuid) {
+            self.prefill_placement.dispatch_committed(uuid, self.now_ms)
+        } else {
+            Err(anyhow!(
+                "offline disagg replay prefill submission returned an unexpected result"
+            ))
+        };
+        if let Err(error) = commit {
+            let rollback = self.prefill_engine.rollback_dispatch(
+                worker_idx,
+                uuid,
+                Command::CancelSource { handoff_id },
+                self.now_ms,
+            );
+            let abort = self.prefill_placement.dispatch_aborted(uuid, self.now_ms);
+            return Err(self.dispatch_failure.record(error, rollback, abort));
         }
         self.flow.finish_prefill_submission(
             uuid,
@@ -1434,6 +1454,9 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                if let Err(abort) = self.decode_placement.dispatch_aborted(uuid, self.now_ms) {
+                    return Err(self.dispatch_failure.record(error, Ok(()), Err(abort)));
+                }
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1442,11 +1465,23 @@ where
                 return Ok(());
             }
         };
-        if !matches!(
-            effects.result,
-            CommandResult::DestinationAccepted { request_id } if request_id == uuid
-        ) {
-            bail!("offline disagg replay destination acceptance returned an unexpected result");
+        let commit = if matches!(effects.result, CommandResult::DestinationAccepted { request_id } if request_id == uuid)
+        {
+            self.decode_placement.dispatch_committed(uuid, self.now_ms)
+        } else {
+            Err(anyhow!(
+                "offline disagg replay destination acceptance returned an unexpected result"
+            ))
+        };
+        if let Err(error) = commit {
+            let rollback = self.decode_engine.rollback_dispatch(
+                worker_idx,
+                uuid,
+                Command::CancelDestination { handoff_id },
+                self.now_ms,
+            );
+            let abort = self.decode_placement.dispatch_aborted(uuid, self.now_ms);
+            return Err(self.dispatch_failure.record(error, rollback, abort));
         }
         let stored_hashes = self
             .flow
@@ -2089,16 +2124,21 @@ where
         } else {
             next_event_ms
         };
-        // Host transfers and frontend deliveries are engine-internal deadlines
-        // for either role; the encoder pool delivers embeddings on its own clock.
+        // Engine, encoder and placement deadlines all advance replay semantics.
         let next_internal_deadline_ms = choose_next_timestamp(
             choose_next_timestamp(
                 self.prefill_engine.next_internal_deadline_ms(),
                 self.decode_engine.next_internal_deadline_ms(),
             ),
-            self.encoder
-                .as_ref()
-                .and_then(EncoderPool::next_deadline_ms),
+            choose_next_timestamp(
+                self.encoder
+                    .as_ref()
+                    .and_then(EncoderPool::next_deadline_ms),
+                choose_next_timestamp(
+                    self.prefill_placement.next_wakeup_ms(),
+                    self.decode_placement.next_wakeup_ms(),
+                ),
+            ),
         );
         (
             choose_next_timestamp(
@@ -2732,12 +2772,25 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> Result<()> {
+        self.dispatch_failure.ensure_healthy()?;
         #[cfg(test)]
         {
             self.stats.semantic_drain_count += 1;
         }
         let mut consecutive_internal_steps = 0usize;
         loop {
+            validate_policy_wakeup(
+                self.prefill_placement.next_wakeup_ms(),
+                self.now_ms,
+                "prefill",
+                false,
+            )?;
+            validate_policy_wakeup(
+                self.decode_placement.next_wakeup_ms(),
+                self.now_ms,
+                "decode",
+                false,
+            )?;
             let now_ms = self.now_ms;
             let mut settle = |runtime: &mut Self| {
                 settle_internal_work(now_ms, &mut consecutive_internal_steps, || {
@@ -2748,6 +2801,11 @@ where
             // request to an idle prefill worker at this same timestamp.
             let mut changed = settle(self)?;
             changed |= self.prune_stale_transfer_events();
+            let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
+            let decode = self.decode_placement.advance_clock(self.now_ms)?;
+            changed |= !prefill.is_empty() || !decode.is_empty();
+            self.dispatch_prefill_placements(prefill)?;
+            self.dispatch_decode_placements(decode)?;
             let completed = self.apply_worker_completions()?;
             changed |= completed;
             if completed {
@@ -2873,6 +2931,18 @@ where
                 changed |= self.apply_scaling_ticks()?;
             }
 
+            validate_policy_wakeup(
+                self.prefill_placement.next_wakeup_ms(),
+                self.now_ms,
+                "prefill",
+                !changed,
+            )?;
+            validate_policy_wakeup(
+                self.decode_placement.next_wakeup_ms(),
+                self.now_ms,
+                "decode",
+                !changed,
+            )?;
             if !changed {
                 break;
             }
@@ -3656,6 +3726,7 @@ where
     }
 
     fn ensure_drive_started(&mut self) -> Result<bool> {
+        self.dispatch_failure.ensure_healthy()?;
         if self.drive_started {
             return Ok(false);
         }

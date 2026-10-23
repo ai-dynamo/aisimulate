@@ -46,6 +46,13 @@ check their exact signatures in [engine construction](../../../crates/core/src/r
 The [composition ABI](../../adapters/native-composition.md) describes policy
 lifecycle and time units.
 
+With the `python` feature, `aisimulate_core::execute_replay_with_composition`
+accepts the runner's canonical JSON payload and a native composition factory,
+plus existing capture options and optional telemetry. It shares input preparation
+and report finalization with the built-in executor. Its `ReplayExecutionResult`
+exposes the full typed report and `into_json()` for the canonical summary; see
+the [shared execution entry](../../adapters/native-composition.md#shared-execution-entry).
+
 ## Serializable spec
 
 `CURRENT_REPLAY_SPEC_VERSION` is `1`. The

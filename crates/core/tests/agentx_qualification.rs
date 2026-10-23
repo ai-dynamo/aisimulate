@@ -614,6 +614,72 @@ fn snapshot_pin_report(
     run_g2(spec, driver)
 }
 
+fn assert_snapshot_lineage(name: &str, report: &ReplayReport) {
+    let identities = report
+        .agentic_snapshots
+        .as_ref()
+        .unwrap()
+        .iter()
+        .flat_map(|snapshot| snapshot.requests.iter().map(|request| &request.identity))
+        .chain(
+            report
+                .agentic_phases
+                .iter()
+                .flat_map(|phase| phase.requests.iter().map(|request| &request.identity)),
+        )
+        .chain(
+            report
+                .per_request
+                .iter()
+                .map(|request| request.agentic.as_ref().expect("agentic request identity")),
+        );
+    for identity in identities {
+        let prefix = format!("{}:conversation:", identity.play_id);
+        let conversation = identity.conversation_id.strip_prefix(&prefix).unwrap();
+        // Derive the expected ancestry from the authored fixtures, independently
+        // of the graph/snapshot lineage implementation, including historical roots.
+        let (root, child) = match name {
+            "g2" => {
+                assert!(matches!(conversation, "parent" | "child"));
+                ("parent".to_string(), conversation == "child")
+            }
+            "two-plays" => {
+                if let Some(play) = conversation.strip_suffix(":session:subagent:1:worker") {
+                    (format!("{play}:session:root"), true)
+                } else {
+                    assert!(conversation.ends_with(":session:root"));
+                    (conversation.to_string(), false)
+                }
+            }
+            _ => unreachable!("unknown fixture"),
+        };
+        let root = format!("{prefix}{root}");
+        let lineage = identity.lineage.as_ref().expect("conversation lineage");
+        assert_eq!(lineage.schema, "aisimulate.agentic.conversation-lineage.v1");
+        assert_eq!(lineage.root_conversation_id, root);
+        assert_eq!(lineage.parent_conversation_id, child.then_some(root));
+    }
+}
+
+// Keep the existing report/lifecycle pins: lineage is additive metadata whose
+// values are checked independently above, and every previous field must stay unchanged.
+fn remove_lineage(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            fields.remove("lineage");
+            for field in fields.values_mut() {
+                remove_lineage(field);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                remove_lineage(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Snapshot, warmup and recycling-profile replays must stay byte-identical
 /// across changes to how snapshot plays are built and retained.
 #[test]
@@ -630,20 +696,20 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         for mode in ["snapshot", "warmup", "profile", "profile-cold"] {
             for disaggregated in [false, true] {
                 let report = snapshot_pin_report(graph, mode, disaggregated);
+                assert_snapshot_lineage(name, &report);
                 if mode.starts_with("profile") {
                     let profile = report.agentic_profile.as_ref().unwrap();
                     assert!(profile.plays_started >= 6, "{name}: {profile:?}");
                 }
-                let report_json = serde_json::to_value(report.clone().with_wall_time_ms(0.0))
-                    .unwrap()
-                    .to_string();
-                let per_request = serde_json::to_value(&report.per_request)
-                    .unwrap()
-                    .to_string();
+                let mut report_json =
+                    serde_json::to_value(report.clone().with_wall_time_ms(0.0)).unwrap();
+                let mut per_request = serde_json::to_value(&report.per_request).unwrap();
+                remove_lineage(&mut report_json);
+                remove_lineage(&mut per_request);
                 let lifecycle = report.agentic_lifecycle.as_ref().unwrap();
                 let mut hasher = blake3::Hasher::new();
-                hasher.update(report_json.as_bytes());
-                hasher.update(per_request.as_bytes());
+                hasher.update(report_json.to_string().as_bytes());
+                hasher.update(per_request.to_string().as_bytes());
                 hasher.update(&lifecycle.to_jsonl().unwrap());
                 let topology = if disaggregated { "disagg" } else { "agg" };
                 actual.push(format!(

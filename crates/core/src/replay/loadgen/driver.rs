@@ -2236,7 +2236,8 @@ impl WorkloadDriver {
         let mut identities = trace
             .nodes
             .iter()
-            .map(|node| {
+            .enumerate()
+            .map(|(node_index, node)| {
                 let parent_id = node
                     .dependencies
                     .iter()
@@ -2251,6 +2252,7 @@ impl WorkloadDriver {
                     root_id: root_id_by_play.get(&node.play_id).cloned().flatten(),
                     parent_id,
                     cache_id: None,
+                    lineage: trace.conversation_lineage[node_index].clone(),
                 }
             })
             .collect::<Vec<_>>();
@@ -3629,6 +3631,7 @@ mod tests {
                 digest: "fixture".into(),
             },
             graph_digest: "fixture".into(),
+            conversation_lineage: super::super::lineage::conversation_lineage(&nodes),
             nodes,
             plays,
             hash_values: (0..hash_id_count).collect(),

@@ -11,6 +11,33 @@ The built-in `RoundRobinComposition` has fixed workers. Dynamo constructs its
 own Router/Planner policies against the same neutral contracts.
 These are Rust crate interfaces, not a stable dynamically loaded binary ABI.
 
+## Shared execution entry
+
+With the `python` crate feature, Rust integrations can call
+`aisimulate_core::execute_replay_with_composition(payload, composition, capture, telemetry)`.
+It accepts the canonical JSON execution payload used by the AISimulate runner,
+including traffic, tokenization and determinism. The composition factory receives
+the resolved `ReplaySpec` and returns a native `ReplayComposition`; optional
+scaling belongs to that composition. AISimulate retains timing resolution,
+workload preparation, the event loop and report finalization.
+
+`capture` is the existing `ReplayCaptureOptions`; the payload supplies its
+determinism setting. `telemetry` is optional
+`(sample_interval_ms, Box<dyn ReplayTelemetryObserver>)`. Both use the existing
+Replayer contracts, so integrations can preserve lifecycle evidence and
+observation without a second execution path.
+
+The returned `ReplayExecutionResult.report` retains the full typed
+`ReplayReport`, including `runtime_evidence`. Its `into_json()` method emits the
+same summary, provenance and requested per-request records as the built-in
+entry point. Runtime evidence remains deliberately outside the compact JSON;
+consumers that need it must use the typed report before serialization.
+
+The factory is called once during setup. Placement, observations and clock hooks
+remain direct Rust calls; no Python policy callback or runtime provider loader
+is introduced. Downstream native modules must build against a compatible
+`aisimulate-core` version.
+
 ## Composition construction
 
 The trait is defined in
@@ -43,6 +70,10 @@ into stable user APIs. Public input/report contracts are in the
 - `observe(observation, now_ms)`, `request_terminal(request_id, now_ms)` and
   `prefill_completed(request_id, now_ms)`, returning newly releasable placements.
 - `cancel_pending(request_id) -> bool` and `pending_count()` for queued ownership.
+- Default no-op `dispatch_committed` / `dispatch_aborted` hooks distinguish
+  engine acceptance from tentative placement. `advance_clock` / `next_wakeup_ms`
+  drive policy-owned work on simulated time; see the
+  [lineage and lifecycle contract](../replay/agentic/conversation-lineage.md).
 - `worker_ready`, `worker_draining`, `worker_removed`, and `topology_settled`
   lifecycle callbacks, also returning releasable placements.
 

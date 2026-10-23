@@ -867,3 +867,166 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
     assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
     assert!(stepped.next_timestamps().1.unwrap() > 0.0);
 }
+
+fn hook_runtime(
+    backend: crate::engine::Backend,
+    policy: crate::replay::runtime_utils::hook_test_policy::HookPlacement,
+) -> AggRuntimeImpl<
+    crate::replay::runtime_utils::hook_test_policy::HookPlacement,
+    NoEngineEvents,
+    NoReplayMetadata,
+> {
+    let config = ReplayEngineConfig {
+        rank: EngineConfig {
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ..ReplayEngineConfig::default()
+    };
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    AggRuntimeImpl::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| Ok(policy),
+    )
+    .unwrap()
+    .into_steppable()
+}
+
+#[rstest::rstest]
+fn placement_hooks_follow_engine_ownership(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+    #[values(0.0, 7.0)] wakeup_ms: f64,
+    #[values(0.0, 3.0)] tokenization_ms: f64,
+) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let mut runtime = hook_runtime(backend, HookPlacement::new(Some(wakeup_ms), true))
+        .with_tokenization(TokenizationLatency::new(1, tokenization_ms, 0.0));
+    runtime.submit_dynamic(request(1, 0.0)).unwrap();
+    // A dynamic step stops at one semantic boundary; the caller resumes it.
+    for _ in 0..8 {
+        if runtime.is_workload_done() {
+            break;
+        }
+        runtime.step_dynamic_until(100.0).unwrap();
+        runtime.take_step_tokens();
+    }
+    assert!(runtime.is_workload_done());
+    let calls = &runtime.placement.calls;
+    assert_eq!(calls.len(), 4);
+    assert_eq!(
+        &calls[..3],
+        &[
+            ("selected", 0.0),
+            ("released", wakeup_ms),
+            ("commit", wakeup_ms + tokenization_ms)
+        ]
+    );
+    assert_eq!(calls[3].0, "terminal");
+    assert_eq!(runtime.engine.in_flight(), 0);
+}
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn agg_rejects_invalid_policy_wakeup_before_advancing_clock(#[case] wakeup_ms: f64) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let mut runtime = hook_runtime(
+        crate::engine::Backend::Vllm,
+        HookPlacement::new(Some(wakeup_ms), false),
+    );
+    runtime.submit_dynamic(request(1, 0.0)).unwrap();
+    let error = runtime.step_dynamic_until(10.0).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("aggregated placement policy wakeup"),
+        "{error:#}"
+    );
+    assert_eq!(runtime.now_ms, 0.0, "invalid policy corrupted replay time");
+}
+
+#[rstest::rstest]
+fn dispatch_failure_cleans_up_and_prevents_runtime_reuse(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+    #[values(false, true)] fail_commit: bool,
+    #[values(false, true)] fail_abort: bool,
+    #[values(0.0, 3.0)] tokenization_ms: f64,
+) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let mut policy = HookPlacement::new(None, false);
+    policy.fail_commit = fail_commit;
+    policy.fail_abort = fail_abort;
+    let mut runtime = hook_runtime(backend, policy).with_tokenization(TokenizationLatency::new(
+        1,
+        tokenization_ms,
+        0.0,
+    ));
+    if !fail_commit {
+        // The rejected duplicate must not cancel the original engine request.
+        runtime
+            .engine
+            .dispatch(0, request(1, 0.0), None, 0.0)
+            .unwrap();
+    }
+    let error = if tokenization_ms == 0.0 {
+        runtime.submit_dynamic(request(1, 0.0)).unwrap_err()
+    } else {
+        runtime.submit_dynamic(request(1, 0.0)).unwrap();
+        // Advance tokenization directly so the seeded duplicate stays active.
+        runtime.now_ms = tokenization_ms;
+        runtime.release_tokenized().unwrap_err()
+    };
+    assert_eq!(runtime.engine.in_flight(), usize::from(!fail_commit));
+    assert!(runtime.requests.is_empty());
+    let expected_error = if fail_commit {
+        "injected commit failure"
+    } else {
+        "already active"
+    };
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains(expected_error)),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    let calls = runtime
+        .placement
+        .calls
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls,
+        if fail_commit {
+            vec!["selected", "commit", "abort"]
+        } else {
+            vec!["selected", "abort"]
+        }
+    );
+    for error in [
+        runtime.submit_dynamic(request(2, 0.0)).unwrap_err(),
+        runtime.step_dynamic_until(10.0).unwrap_err(),
+        runtime.take_report_dynamic(0.0).unwrap_err(),
+        runtime.step().unwrap_err(),
+        runtime.run().err().unwrap(),
+    ] {
+        assert!(error.to_string().contains("poisoned"), "{error:#}");
+    }
+}

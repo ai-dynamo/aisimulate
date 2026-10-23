@@ -24,6 +24,9 @@ pub mod perfmodel;
 mod python;
 pub mod replay;
 
+#[cfg(feature = "python")]
+pub use python::{ReplayExecutionResult, execute_replay_with_composition};
+
 pub use engine::{
     EngineConfig as ReplayEngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
