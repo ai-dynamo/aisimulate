@@ -336,6 +336,7 @@ def create_dsv4_attention_module(
     import tensorrt_llm._torch.configs  # noqa: F401
     from tensorrt_llm._torch.model_config import ModelConfig
     from tensorrt_llm._torch.models.modeling_deepseekv4 import DeepseekV4Attention
+    from tensorrt_llm._torch.utils import AuxStreamType
     from tensorrt_llm.mapping import Mapping
     from tensorrt_llm.models.modeling_utils import QuantConfig
 
@@ -405,11 +406,21 @@ def create_dsv4_attention_module(
         )
     )
 
-    aux_stream = torch.cuda.Stream(device=device)
+    # rc29 modeling_deepseekv4.py:2382-2393 @c76f4a856 gives these four
+    # attention roles distinct streams. The standalone module has no MoE/Engram.
+    aux_stream_dict = {
+        role: torch.cuda.Stream(device=device)
+        for role in (
+            AuxStreamType.Attention,
+            AuxStreamType.MlaCompressor,
+            AuxStreamType.MlaIndexer,
+            AuxStreamType.MlaIndexerAux,
+        )
+    }
     attn_module = DeepseekV4Attention(
         model_config=model_config,
         layer_idx=0,
-        aux_stream=aux_stream,
+        aux_stream_dict=aux_stream_dict,
     )
 
     # Serving applies QuantConfig.exclude_modules before weight creation

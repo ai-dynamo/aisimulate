@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -22,6 +23,46 @@ DSV4_MODULE_OPS = {
     "dsv4_csa_generation_module": (PerfFile.DSV4_CSA_GENERATION_MODULE, "get_dsv4_csa_generation_test_cases"),
     "dsv4_hca_generation_module": (PerfFile.DSV4_HCA_GENERATION_MODULE, "get_dsv4_hca_generation_test_cases"),
 }
+
+
+def test_rc29_attention_constructor_receives_distinct_native_stream_roles():
+    # Exercise the CUDA-free construction block against rc29's keyword-only
+    # contract (modeling_deepseekv4.py:1372-1379, 2382-2393 @c76f4a856).
+    source = REPO_ROOT / "collector" / "trtllm" / "collect_dsv4_attn.py"
+    tree = ast.parse(source.read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "create_dsv4_attention_module")
+    body = []
+    for node in function.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in {"aux_stream", "aux_stream_dict", "attn_module"}
+            for target in node.targets
+        ):
+            body.append(node)
+    roles = SimpleNamespace(
+        Attention="attention", MlaCompressor="compressor", MlaIndexer="indexer", MlaIndexerAux="indexer_aux"
+    )
+    devices = []
+
+    def stream(*, device):
+        devices.append(device)
+        return object()
+
+    def construct(*, model_config, layer_idx, aux_stream_dict):
+        assert layer_idx == 0
+        assert set(aux_stream_dict) == {"attention", "compressor", "indexer", "indexer_aux"}
+        assert len({id(value) for value in aux_stream_dict.values()}) == 4
+        return model_config
+
+    namespace = {
+        "torch": SimpleNamespace(cuda=SimpleNamespace(Stream=stream)),
+        "AuxStreamType": roles,
+        "DeepseekV4Attention": construct,
+        "model_config": object(),
+        "device": "cuda:3",
+    }
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(source), "exec"), namespace)
+    assert namespace["attn_module"] is namespace["model_config"]
+    assert devices == ["cuda:3"] * 4
 
 
 def _load_module_with_torch_stub(monkeypatch):

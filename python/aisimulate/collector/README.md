@@ -41,6 +41,19 @@ Full stock runs must select stock registry ops from the retained model plan:
 that plan still names WideEP `moe_ep`, whose independent runtime cannot be mixed
 with rc29 in one container.
 
+DeepSeek-V4 attention uses rc29's `aux_stream_dict` constructor argument,
+with separate attention, compressor, indexer, and auxiliary-indexer streams,
+matching the native model. The removed single `aux_stream` argument fails
+before measurement. Qualify all four CSA/HCA context/decode paths after this change.
+
+GDN remains blocked: rc29's default recurrent-state cache is BF16, while
+the existing TRT-LLM data reader assumes FP32 state-sensitive rows. Its native
+packed-QKV convolution and recurrence APIs also differ. Resolve the producer
+and consumer contract before publishing these rows. Likewise, current mHC
+collection measures unfused pre/post mapping, while rc29 enables fused HC by
+default. The existing rc23 exception does not cover rc29; an unfused smoke
+result alone does not qualify rc29's default serving path.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
