@@ -15,7 +15,10 @@ import math
 import os
 import random
 
-import pkg_resources
+# Current upstream SGLang images ship setuptools without the legacy package-resources
+# API; the stdlib reads the same installed distribution metadata.
+from importlib.metadata import version as _dist_version
+
 import sglang.srt.layers.dp_attention
 import sglang.srt.server_args
 import torch
@@ -628,7 +631,7 @@ def run_mla(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=f"mla_{'context' if is_context_phase else 'generation'}",
         kernel_source=kernel_source,

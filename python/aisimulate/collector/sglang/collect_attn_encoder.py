@@ -14,9 +14,11 @@ Quant: bf16 only. SGLang upstream does not support fp8 ViT FMHA.
 
 __compat__ = "sglang==0.5.14"
 
+# Current upstream SGLang images ship setuptools without the legacy package-resources
+# API; the stdlib reads the same installed distribution metadata.
+from importlib.metadata import version as _dist_version
 from typing import NamedTuple
 
-import pkg_resources
 import torch
 from collector.case_generator import get_attention_encoder_head_configs, get_attention_encoder_shape_sweeps
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
@@ -193,7 +195,7 @@ def run_encoder_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name="encoder_attention",
         kernel_source=backend_tag,

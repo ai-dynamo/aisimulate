@@ -13,10 +13,13 @@ __compat__ = "sglang==0.5.14"
 
 import math
 import os
+
+# Current upstream SGLang images ship setuptools without the legacy package-resources
+# API; the stdlib reads the same installed distribution metadata.
+from importlib.metadata import version as _dist_version
 from types import SimpleNamespace
 from typing import NamedTuple
 
-import pkg_resources
 import torch
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
@@ -707,7 +710,7 @@ def run_attention_torch(
             }
         ],
         framework="SGLang",
-        version=pkg_resources.get_distribution("sglang").version,
+        version=_dist_version("sglang"),
         device_name=torch.cuda.get_device_name(device),
         op_name=op_name,
         kernel_source=attn_backend_name,
