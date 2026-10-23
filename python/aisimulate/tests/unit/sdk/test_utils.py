@@ -811,6 +811,8 @@ class TestParseHFConfig:
         [
             pytest.param({}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="default"),
             pytest.param({"no_rope_layers": []}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="empty_no_rope_layers"),
+            pytest.param({"no_rope_layers": ()}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="empty_tuple_no_rope_layers"),
+            pytest.param({"no_rope_layers": None}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="null_no_rope_layers"),
             pytest.param({"no_rope_layers": LLAMA4_NO_ROPE_LAYERS}, [0, 10, 47], id="no_rope_layers"),
             pytest.param({"no_rope_layer_interval": 6}, [5, 11, 17, 23, 29, 35, 41, 47], id="no_rope_layer_interval"),
             pytest.param(
@@ -858,6 +860,15 @@ class TestParseHFConfig:
                 id="no_rope_layers_length",
             ),
             pytest.param({"no_rope_layers": "1"}, "no_rope_layers must be a list, got str", id="no_rope_layers_type"),
+            # Falsy values that are not a list or tuple are malformed, not unset.
+            pytest.param({"no_rope_layers": 0}, "no_rope_layers must be a list, got int", id="no_rope_layers_zero"),
+            pytest.param(
+                {"no_rope_layers": False}, "no_rope_layers must be a list, got bool", id="no_rope_layers_false"
+            ),
+            pytest.param({"no_rope_layers": {}}, "no_rope_layers must be a list, got dict", id="no_rope_layers_dict"),
+            pytest.param(
+                {"no_rope_layers": ""}, "no_rope_layers must be a list, got str", id="no_rope_layers_empty_str"
+            ),
             pytest.param(
                 {"no_rope_layers": [1] * 47 + [2]},
                 "no_rope_layers must contain only 0/1 values, got 2 at layer 47",
@@ -869,11 +880,18 @@ class TestParseHFConfig:
             pytest.param(
                 {"no_rope_layer_interval": None}, "no_rope_layer_interval must be a positive", id="interval_null"
             ),
+            pytest.param(
+                {"no_rope_layer_interval": True}, "no_rope_layer_interval must be a positive", id="interval_true"
+            ),
+            pytest.param(
+                {"no_rope_layer_interval": False}, "no_rope_layer_interval must be a positive", id="interval_false"
+            ),
         ],
     )
-    def test_llama4_invalid_attention_pattern_fields_raise(self, text_fields, match):
+    @pytest.mark.parametrize("flat", [False, True], ids=["nested", "flat"])
+    def test_llama4_invalid_attention_pattern_fields_raise(self, text_fields, match, flat):
         with pytest.raises(ValueError, match=match):
-            _parse_hf_config_json(self._llama4_config(**text_fields))
+            _parse_hf_config_json(self._llama4_config(flat, **text_fields))
 
     @staticmethod
     def _gemma4_text_config(layer_types):

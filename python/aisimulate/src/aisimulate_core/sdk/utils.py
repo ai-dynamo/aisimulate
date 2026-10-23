@@ -1065,12 +1065,13 @@ def _parse_hf_config_json(config: dict) -> dict:
         if not isinstance(step, int) or step <= 0:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
         no_rope_interval = config.get("no_rope_layer_interval", 4)
-        if not isinstance(no_rope_interval, int) or no_rope_interval <= 0:
+        if not isinstance(no_rope_interval, int) or isinstance(no_rope_interval, bool) or no_rope_interval <= 0:
             raise ValueError(f"no_rope_layer_interval must be a positive integer, got {no_rope_interval}")
-        no_rope_layers = config.get("no_rope_layers") or None
+        no_rope_layers = config.get("no_rope_layers")
+        if no_rope_layers is not None and not isinstance(no_rope_layers, (list, tuple)):
+            raise ValueError(f"Llama 4 no_rope_layers must be a list, got {type(no_rope_layers).__name__}")
+        no_rope_layers = no_rope_layers or None  # an empty list or tuple means unset, as in transformers
         if no_rope_layers is not None:
-            if not isinstance(no_rope_layers, (list, tuple)):
-                raise ValueError(f"Llama 4 no_rope_layers must be a list, got {type(no_rope_layers).__name__}")
             if len(no_rope_layers) != layers:
                 raise ValueError(f"Llama 4 no_rope_layers length {len(no_rope_layers)} != num_hidden_layers {layers}")
             bad = next(((i, v) for i, v in enumerate(no_rope_layers) if v not in (0, 1)), None)
