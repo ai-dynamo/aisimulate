@@ -2061,6 +2061,15 @@ def test_construction_rejects_unsupported_serving_mode_before_model_resolution(m
     assert ("aisimulate recommend" in str(caught.value)) is (mode == "afd")
 
 
+def test_from_yaml_rejects_null_serving_mode_before_model_resolution(monkeypatch):
+    def unexpected_model_resolution(_self):
+        pytest.fail("null serving_mode reached model identity resolution")
+
+    monkeypatch.setattr(Task, "_resolve_model_identity", unexpected_model_resolution)
+    with pytest.raises(ValueError, match="Invalid serving_mode: None"):
+        Task.from_yaml({"serving_mode": None, "model_path": "Qwen/Qwen3-32B", "system_name": "h200_sxm"})
+
+
 def test_validate_invalid_serving_mode_raises():
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
     t.serving_mode = "weird"  # type: ignore[assignment]
