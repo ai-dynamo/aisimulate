@@ -849,11 +849,20 @@ impl EstimatorConfig {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("online");
         let enabled = adaptation != "online";
-        if adaptation == "causal_selector" {
-            if let Some(learned) = estimator
-                .get_mut("fpm_learned")
-                .and_then(serde_json::Value::as_object_mut)
+        let selector = adaptation == "causal_selector";
+        if let Some(learned) = estimator
+            .get_mut("fpm_learned")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            if learned
+                .get("history_weight")
+                .is_some_and(serde_json::Value::is_null)
             {
+                learned
+                    .entry("history_weight_ramp_observations")
+                    .or_insert(serde_json::json!(0));
+            }
+            if selector {
                 for (key, value) in [
                     ("recent_window", serde_json::json!(8)),
                     ("history_weight", serde_json::json!(0.25)),
@@ -1545,6 +1554,31 @@ pub(super) fn validate_rebuild_interval(interval: Option<usize>) -> Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_history_weight_defaults_only_an_omitted_ramp_to_zero() {
+        for adaptation in ["online", "frozen", "causal_selector"] {
+            for ramp in [None, Some(0), Some(8)] {
+                let mut value = serde_json::json!({"fpm_learned": {
+                    "adaptation": adaptation, "history_weight": null
+                }});
+                if let Some(ramp) = ramp {
+                    value["fpm_learned"]["history_weight_ramp_observations"] = ramp.into();
+                }
+                EstimatorConfig::apply_context_defaults(
+                    &mut value,
+                    super::super::EstimationMode::FpmLearned,
+                );
+                let config: EstimatorConfig = serde_json::from_value(value).unwrap();
+                assert_eq!(config.fpm_learned.history_weight, None);
+                assert_eq!(
+                    config.fpm_learned.history_weight_ramp_observations,
+                    ramp.unwrap_or(0)
+                );
+                assert_eq!(config.validate().is_ok(), ramp != Some(8));
+            }
+        }
+    }
 
     #[test]
     fn default_selector_controls_preserve_previous_reader_configuration() {

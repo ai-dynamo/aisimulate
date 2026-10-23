@@ -92,12 +92,25 @@ impl ForwardPassSpeculationConfig {
     }
 }
 
+// Keep one field list for the public schema and its private wire decoder.
+// A remote derive on the public type would shadow Deserialize::deserialize.
+macro_rules! define_config {
+    ($(#[$attr:meta])* pub struct $name:ident { $($fields:tt)* }) => {
+        $(#[$attr])*
+        #[derive(Clone, Debug, PartialEq, Serialize)]
+        pub struct $name { $($fields)* }
+
+        #[derive(Deserialize)]
+        #[serde(remote = "ForwardPassPerfModelConfig", rename = "ForwardPassPerfModelConfig", deny_unknown_fields)]
+        struct ConfigFields { $($fields)* }
+    };
+}
+
+define_config! {
 /// Immutable model identity and selection policy for a forward-pass estimator.
 ///
 /// This is the one public construction schema shared by Rust, Python, Replay,
 /// Sweeper, and Planner. Estimator-specific tuning controls live in `estimator_config`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ForwardPassPerfModelConfig {
     pub model: String,
     pub system: String,
@@ -187,33 +200,44 @@ pub struct ForwardPassPerfModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoder_parallel: Option<EncoderParallel>,
 }
-
-impl Serialize for ForwardPassPerfModelConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Self::serialize(self, serializer)
-    }
 }
 
 impl<'de> Deserialize<'de> for ForwardPassPerfModelConfig {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if !deserializer.is_human_readable() {
-            return Self::deserialize(deserializer);
+            return ConfigFields::deserialize(deserializer);
         }
-        let mut value = serde_json::Value::deserialize(deserializer)?;
+        // YAML's value decoder rejects duplicate keys recursively, even when
+        // the input deserializer is JSON. Reject ambiguity before normalizing.
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        fn finite(value: &serde_yaml::Value) -> bool {
+            match value {
+                serde_yaml::Value::Number(n) => n.as_f64().is_some_and(f64::is_finite),
+                serde_yaml::Value::Sequence(values) => values.iter().all(finite),
+                serde_yaml::Value::Mapping(values) => values.values().all(finite),
+                _ => true,
+            }
+        }
+        if !finite(&value) {
+            return Err(serde::de::Error::custom(
+                "configuration numbers must be finite",
+            ));
+        }
+        let mut value = serde_json::Value::deserialize(value).map_err(serde::de::Error::custom)?;
         let mode = value
             .get("estimation_mode")
             .or_else(|| value.get("forward_model"));
-        if mode == Some(&serde_json::json!("fpm_learned")) {
-            if let Some(config) = value.as_object_mut() {
-                let estimator = config
-                    .entry("estimator_config")
-                    .or_insert_with(|| serde_json::json!({}));
-                EstimatorConfig::apply_context_defaults(estimator, EstimationMode::FpmLearned);
-            }
+        if mode == Some(&serde_json::json!("fpm_learned"))
+            && let Some(config) = value.as_object_mut()
+        {
+            let estimator = config
+                .entry("estimator_config")
+                .or_insert_with(|| serde_json::json!({}));
+            EstimatorConfig::apply_context_defaults(estimator, EstimationMode::FpmLearned);
         }
         #[derive(Deserialize)]
         #[serde(transparent)]
-        struct Fields(#[serde(with = "ForwardPassPerfModelConfig")] ForwardPassPerfModelConfig);
+        struct Fields(#[serde(with = "ConfigFields")] ForwardPassPerfModelConfig);
         serde_path_to_error::deserialize(value)
             .map(|Fields(config)| config)
             .map_err(serde::de::Error::custom)
@@ -749,8 +773,16 @@ mod tests {
             let restored: ForwardPassPerfModelConfig = serde_json::from_value(saved).unwrap();
             assert_eq!(restored, cfg);
         }
-        let nonlearned = config(serde_json::json!({}));
-        assert!(nonlearned.estimator_config.correction.enabled);
+        let mut typed = config(serde_json::json!({}));
+        assert!(typed.estimator_config.correction.enabled);
+        // Typed fields are already explicit: selecting learned mode must not
+        // silently rewrite correction, even when it equals the legacy default.
+        typed.estimation_mode = EstimationMode::FpmLearned;
+        typed.estimator_config.fpm_learned.checkpoint_path = Some("/seed".into());
+        let error = typed.validate().unwrap_err();
+        assert!(error.to_string().contains("correction.enabled=false"));
+        typed.estimator_config.correction.enabled = false;
+        typed.validate().unwrap();
     }
 
     #[test]

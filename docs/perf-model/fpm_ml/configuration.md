@@ -58,8 +58,11 @@ JSON/YAML select the standalone or `causal_selector` defaults listed below;
 explicit values remain overrides. Configuration normalization and validation
 happen in Rust; Python passes the complete configuration through.
 
-Rust typed configurations already contain field values. Changing `adaptation`
-on an existing typed configuration retains those values.
+Typed Rust configurations already contain field values. Changing `estimation_mode`
+or `adaptation` retains those values; a typed online config must explicitly set
+`estimator_config.correction.enabled = false`. Deserialize a sparse canonical
+config to apply omission-based defaults. Explicit correction choices are never
+rewritten during validation.
 
 When every learned control has its default value, serialization omits the
 `fpm_learned` block to preserve existing non-learned configurations. Any
@@ -79,7 +82,7 @@ nondefault control preserves the complete block, even without a source path.
 | `split_sampling_rate` | `0.5` | Finite fraction in `(0, 1]` of fitted numeric thresholds considered per feature for structural split search. The incumbent and missing-only boundary remain eligible. This is candidate sampling, not observation sampling. |
 | `split_rank_tolerance` | `0.01` | Finite fraction in `[0, 1]` defining the acceptable rank of the incumbent split among valid candidates. Zero requires a best-ranked split; larger values can retain a lower-ranked incumbent. Invalid child populations always trigger rebuilding. |
 | `seed` | `0` | Unsigned integer seed for deterministic split-candidate sampling. It does not change the offline artifact's fitted thresholds or training random state. |
-| `history_weight` | `0.1`; selector: `0.25` | Optional finite historical loss-mass fraction in `[0, 1]`. `null` gives every logical observation unit weight and requires `history_weight_ramp_observations: 0`. A number balances total historical and recent mass independently of their population sizes after the ramp. |
+| `history_weight` | `0.1`; selector: `0.25` | Optional finite historical loss-mass fraction in `[0, 1]`. `null` gives every logical observation unit weight and defaults an omitted ramp to `0`; an explicit positive ramp is invalid. A number balances total historical and recent mass independently of their population sizes after the ramp. |
 | `history_weight_ramp_observations` | `32`; selector: `8` | Number of retained recent observations needed to reach the configured history/recent mass balance. Zero applies it immediately; a positive value requires `history_weight`. This is retained support, not lifetime admissions. A ramp longer than `recent_window` is valid but cannot reach the final mass balance while the window remains smaller. |
 | `history_bin_grouping` | `true` | Compress immutable history by complete fitted-feature-bin vectors, preserving target sums and original multiplicities. Changes storage and fitting work, not the intended weighted objective. |
 | `mutable_tree_tail` | `null` | Optional positive number of final seed trees allowed to change. `null` permits all trees. A value above the forest size also permits all trees; the prefix remains frozen. |
