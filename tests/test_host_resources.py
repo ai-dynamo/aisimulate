@@ -380,6 +380,84 @@ def test_recommendation_passes_isolated_workload_context_to_subscribers(monkeypa
     assert searched[0].isl == received[0][1].isl
 
 
+@pytest.mark.parametrize("failure", [False, True], ids=["success", "failure"])
+def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failure):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    events = []
+    search_error = RuntimeError("search failed")
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            return RecommendationOutputCallbacks(
+                on_candidate=lambda candidate: events.append(("candidate", candidate)),
+                on_complete=lambda: events.append(("complete",)),
+                on_failure=lambda error: events.append(("failure", error)),
+            )
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    candidate = SimpleNamespace(candidate_id="candidate-000001")
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_round
+            assert on_candidate is not None
+            on_candidate(candidate)
+            if failure:
+                events.append(("search_failure", search_error))
+                raise search_error
+            events.append(("search_return",))
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+    if failure:
+        with pytest.raises(RuntimeError, match="search failed") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"dgd": {}},
+                output_adapters={"dgd": LifecycleAdapter()},
+            )
+
+        assert raised.value is search_error
+        assert events == [
+            ("candidate", candidate),
+            ("search_failure", search_error),
+            ("failure", search_error),
+        ]
+    else:
+        result = recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+        events.append(("final_write", result))
+
+        assert events == [
+            ("candidate", candidate),
+            ("search_return",),
+            ("complete",),
+            ("final_write", "result"),
+        ]
+
+
 def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
     import aisimulate.recommend as recommendation
     import aisimulate.sweeper.search as search

@@ -117,6 +117,8 @@ def test_output_adapter_subscribes_to_live_recommendation_callbacks() -> None:
             return RecommendationOutputCallbacks(
                 on_candidate=lambda record: received.append(("candidate", record)),
                 on_round=lambda round_no, candidates: received.append(("round", round_no, candidates)),
+                on_complete=lambda: received.append(("complete",)),
+                on_failure=lambda error: received.append(("failure", error)),
             )
 
     callbacks = resolve_output_callbacks(
@@ -138,8 +140,18 @@ def test_output_adapter_subscribes_to_live_recommendation_callbacks() -> None:
     callbacks.on_candidate(record)
     assert callbacks.on_round is not None
     callbacks.on_round(2, [candidate])
+    assert callbacks.on_complete is not None
+    callbacks.on_complete()
+    error = RuntimeError("search failed")
+    assert callbacks.on_failure is not None
+    callbacks.on_failure(error)
 
-    assert received == [("candidate", record), ("round", 2, [candidate])]
+    assert received == [
+        ("candidate", record),
+        ("round", 2, [candidate]),
+        ("complete",),
+        ("failure", error),
+    ]
 
 
 def test_output_adapter_callbacks_are_isolated_between_subscribers() -> None:
@@ -213,3 +225,28 @@ def test_output_adapter_callback_failure_identifies_adapter_and_event() -> None:
     assert callbacks.on_candidate is not None
     with pytest.raises(OutputAdapterExecutionError, match="dgd.*on_candidate.*ValueError: closed"):
         callbacks.on_candidate(record)
+
+
+@pytest.mark.parametrize("event", ["on_complete", "on_failure"])
+def test_output_adapter_terminal_callback_failure_identifies_adapter_and_event(event) -> None:
+    class FailingAdapter(_Adapter):
+        def subscribe(self, config):
+            del config
+
+            def fail(*args):
+                del args
+                raise ValueError("closed")
+
+            return RecommendationOutputCallbacks(**{event: fail})
+
+    callbacks = resolve_output_callbacks(
+        {"dgd": {}},
+        injected={"dgd": FailingAdapter("dgd")},
+        entry_points=[],
+    )
+
+    callback = getattr(callbacks, event)
+    assert callback is not None
+    args = (RuntimeError("search failed"),) if event == "on_failure" else ()
+    with pytest.raises(OutputAdapterExecutionError, match=rf"dgd.*{event}.*ValueError: closed"):
+        callback(*args)
