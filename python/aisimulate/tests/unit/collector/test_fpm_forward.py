@@ -1867,6 +1867,17 @@ def test_native_validation_rejects_pure_tp_without_real_kv_warmup(tmp_path, kvwa
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
 
+def test_pure_tp_moe_skip_explains_required_runtime_without_publishing(tmp_path):
+    plan, cell, cell_dir = _synthetic_decode_cell(
+        tmp_path,
+        kvwarm={"enabled": True, "warm_eligible": False, "skip_reason": "moe_tp_balanced_by_construction"},
+        markers=("kvwarm_fake_fallback", "kvwarm_fake_fallback"),
+        parallel_strategy="pure_tp",
+    )
+    with pytest.raises(ValueError, match="Use a Dynamo runtime that performs real-KV warm-up"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
 @pytest.mark.parametrize("skip_reason", ["prefix_caching_disabled", "unknown_architecture"])
 def test_non_protocol_kvwarm_skips_remain_fake_fallback(tmp_path, skip_reason):
     plan, cell, cell_dir = _synthetic_decode_cell(

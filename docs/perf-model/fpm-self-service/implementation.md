@@ -929,7 +929,7 @@ Execution saves `fpm-readiness.json` in the onboarding output directory and retu
 | --- | --- |
 | Frozen runtime/launch identity and observed backend | Verify the exact planned deployment and current attempt. Requested settings do not independently attest every runtime component. |
 | Native KV warm-up metadata | Inspect `enabled`, `warm_eligible`, `skip_reason` and per-rank diagnostics. Missing or contradictory required protocol evidence cannot qualify the cell. |
-| Native and formal seed-regime counts | Formal conversion applies the selected strategy's protocol, including approved `skip:moe_tp_balanced_by_construction` and the narrowly verified dense full-attention skip described below. Inspect native evidence and the publication's classification; do not decide usability from a raw stamp alone. |
+| Native and formal seed-regime counts | Formal conversion applies the selected strategy's protocol. `pure_tp`, `tep` and `dep` require real-KV warm-up and reject `moe_tp_balanced_by_construction`; the historical skip is accepted only outside those strategies. The narrowly verified dense full-attention exception is described below. Inspect native evidence and the publication's classification; do not decide usability from a raw stamp alone. |
 | Direct-eligible point counts | Formal `fake_fallback` rows are excluded. Zero eligible decode points blocks full collection and direct prediction. Mixed usable/fallback data covers only the reported samples and is not complete query coverage. |
 | Available execution-worker observations | Inspect observed attention groups, resolved cache settings and graph configuration. Contradictions in these checked observations are blockers. Missing optional observations remain unqualified without requiring completed memory sizing or serving validation before timing collection. Referenced `fpm-memory-*.json` files are unvalidated sources retained for separate runtime import/finalization checks; their presence does not qualify allocation or memory. |
 | CPU allocation and affinity | For new Slurm campaigns, inspect `execution.cpu_affinity` and the per-node launcher, per-rank worker and scheduler sidecars. The actual step must expose the requested CPU pool; local schedulers must have sufficient distinct CPUs available, and observed threads must stay within that pool. Missing evidence is incomplete; contradictions or insufficient capacity block full collection. A shared pool does not mean dedicated per-rank pinning. |
@@ -1195,6 +1195,18 @@ Direct collector callers can set the same shared runtime flags. Omitting `--fpm-
 New collection campaigns request KV preparation in both phases by default: `DYN_BENCH_PREFILL_REAL_SEED=on` for cached prefill and `DYN_BENCH_KV_WARMUP=on` for decode. Cached prefill computes the required prefix before timing the forward pass; prefill with no existing KV has no prefix to seed. Requested prefill seeding requires a compatible runtime and is checked before model loading. Explicit deployment environment overrides remain explicit, subject to the existing collection protocol checks. These defaults are part of the collection identity; preserve old campaigns and use a fresh campaign when changing the policy.
 
 Decode warm-up still depends on the deployed runtime's eligibility and available cache capacity. An enabled switch does not prove real KV was used for every point: inspect raw `kv_seed_regime`, warm-up eligibility, skip reasons and fallback evidence. The current formal table labels ordinary prefill seeding `n/a`; retain the raw artifacts to distinguish `real_prefix` from `fake_prefix`. No successful collection establishes prediction accuracy by itself.
+
+MiniMax-M2.7 TP4 uses the `pure_tp` protocol. A runtime that reports
+`moe_tp_balanced_by_construction` is incompatible with this collection even if
+its benchmark reports `complete` or `usable: true`. Tensor parallelism balances
+each expert across ranks, but expert activation still depends on input content.
+Use a Dynamo build that performs real-KV warm-up for pure-TP MoE and provide the
+required seeding inputs. Shared-chain warm-up requires prefix caching; native
+exact-context warm-up does not. Repeat the smoke in a fresh campaign.
+The tested Dynamo 1.6.0-rc.6 / vLLM 0.31.0 combination skips this warm-up and does
+not qualify. Do not change the requested topology, disable validation, or relabel
+`fake_fallback` rows to make the example pass. Verify `warm_eligible: true`, real-KV
+point provenance and AIS readiness before proceeding to full collection.
 
 Benchmark prefix seeding and replay cache reuse have different purposes. The collector may retain prefixes to prepare timing points outside the measured forward pass. Cold replay starts from an empty cache, and grouped replay retains `prefix_caching: false` for cross-request reuse. Do not copy that replay flag into benchmark launches. Smoke sampling is diagnostic and uses small caps; it does not establish the formal runtime capture list or point count.
 
