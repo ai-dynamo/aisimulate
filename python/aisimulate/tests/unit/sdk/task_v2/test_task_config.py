@@ -2237,8 +2237,8 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
     the overhead tables have no transfer ladder, so HYBRID must NOT admit it via
     profile transfer on combos without quantize data — validate keeps failing
     fast instead of the sweep dying late in query_compute_scale."""
-    # Vehicle: b60/vllm 0.20.0 (frozen-baseline current slot) ships fp8 GEMM
-    # data but no quantize family. vllm/b200 stopped qualifying when 0.24
+    # Vehicle: b60/vllm 0.28.0 (current slot) ships fp8 GEMM data but no
+    # quantize family at any version. vllm/b200 stopped qualifying when 0.24
     # collected computescale, and sglang is no vehicle at all — its fp8_static
     # is native (no overhead-table subtraction), so it lists the mode as
     # supported without quantize data.
@@ -2247,7 +2247,7 @@ def test_validate_fp8_static_not_transfer_admitted_in_hybrid():
         model_path="Qwen/Qwen3-32B",
         system_name="b60",
         backend_name="vllm",
-        backend_version="0.20.0",
+        backend_version="0.28.0",
         database_mode="HYBRID",
     )
     t.gemm_quant_mode = common.GEMMQuantMode.fp8_static
