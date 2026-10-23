@@ -40,3 +40,72 @@ sequences, with no production prompts, outputs, model weights or credentials.
 Related work: [native radix-core integration #363](https://github.com/ai-dynamo/aisimulate/pull/363)
 also proposes whole-leaf LRU as part of a larger cache replacement. This patch
 aligns the current implementation without adding a native-tree dependency.
+
+## Review follow-up: input-cap crossing
+
+The native input-cap rejection before admission is explicitly guarded by
+`rem_chunk_tokens is None`. With chunking enabled, native selection admits
+the candidate and `budget_state()` stops further selection after the cap is
+exhausted. This also applies when the batch already contains work: cap256 and
+inputs128/256/128 select the first two inputs (384 tokens), then stop. Adding
+an empty-batch-only exception would disagree with the pinned native version.
+
+`probe_input_cap.py` executes `_select_prefill_admission` and `budget_state`
+directly from the immutable native Git blob, with sufficient-capacity and
+tile gates supplied by a CPU harness. It is a source-level control check,
+not a new full-server measurement. It includes a non-chunked negative control.
+
+```sh
+python benchmarks/evidence/sglang-native-boundaries/probe_input_cap.py \
+  --sglang-checkout /path/to/sglang
+```
+
+The expected source SHA-256 is
+`03ba021fdd225cc4e7d0d5eb822a725fe6e3907e40157ec6461390f23b7f2cb9`.
+Source and license: [SGLang schedule_policy.py](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py),
+Copyright SGLang Team and contributors, Apache-2.0. The harness is a modified
+behavioral adaptation; native serving implementation is not vendored.
+
+## Review follow-up: disaggregated consumers
+
+`disagg_adapter_preserves_fixed_output_reservation_at_the_decode_consumer`
+passes both flag values through the production `direct_to_native` conversion
+and a real SGLang **decode worker**, asserting the second admission and final
+retraction count. It exercises fresh-KV admission, which a decode worker also
+uses after retraction. This is not a mock or a field-only assertion.
+
+`disaggregated_replay_accepts_fixed_output_flags_through_both_handoff_roles`
+additionally round-trips the authored JSON and runs complete destination-first
+PD handoffs for both values, checking routing, output lengths and retractions.
+PD destination reservation currently reserves physical prompt pages without
+the new-token discount. Both values therefore have the same initial destination
+admission in that fixture. The test does not invent a flag-sensitive destination
+policy or claim to fix the separately documented native PD headroom gap.
+
+Mutation check: replacing `ignore_eos: request.ignore_eos` with
+`ignore_eos: false` in `direct_to_native` makes the real-consumer regression
+fail on its second-admission assertion. The production conversion was restored
+before rerunning the normal suite. This verifies that the regression detects
+metadata loss at that adapter rather than merely exercising the unchanged
+physical destination-reservation behavior.
+
+## Dynamo adoption dependency
+
+At [Dynamo 123d667](https://github.com/ai-dynamo/dynamo/tree/123d667df9d8f85a7859c52dba5761135d4d0452),
+`Cargo.toml` pins `aisimulate-core =0.13.0-dev.202610160000000073`, which does
+not contain this new field. This AISimulate change does not silently upgrade
+that dependency. Its eventual release/pin update must include both adapters:
+
+| Consumer | Required change when the dependency advances |
+| --- | --- |
+| `lib/mocker/servers/sglang/src/server_request.rs` | Retain `sampling_params.ignore_eos.unwrap_or(false)` in `PreparedRequest`; copy it explicitly into `DirectRequest.ignore_eos`. The existing EOS-stopping check alone does not preserve reservation metadata. |
+| `lib/mocker/src/grouped_scheduler/compatibility.rs` | Forward `DirectRequest.ignore_eos` into native `engine::Request`; update other newly required request members when adopting the newer core. |
+
+The companion server-entrypoint regression should submit otherwise identical
+requests with omitted/false/true flags, verify the parsed flag reaches the
+core conversion, then compare admission/retraction on the real consumer.
+For decode-role PD handoffs, test metadata preservation independently of the
+physical destination-reservation policy, as above. A downstream patch that
+uses the field before upgrading the exact core pin would not compile; that
+cross-repository release work remains explicitly pending rather than being
+reported as completed by this PR.

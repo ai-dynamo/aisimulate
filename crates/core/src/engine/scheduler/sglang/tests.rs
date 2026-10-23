@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Synthetic boundary expectations adapt SGLang's schedule_policy.py at
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py
+// and its UnifiedRadixCache at the same revision. Copyright SGLang Team and
+// contributors, Apache-2.0. Modified as Rust regressions; see THIRD_PARTY_NOTICES.md.
+
 use super::request::WaitingQueue;
 
 use uuid::Uuid;
@@ -98,6 +103,23 @@ fn native_chunked_prefill_progresses_above_the_input_cap() {
             1
         );
     }
+}
+
+#[test]
+fn native_chunked_prefill_checks_input_cap_after_admitting_each_chunk() {
+    let mut args = test_args(32, 128, 4096);
+    args.sglang.as_mut().unwrap().max_prefill_tokens = Some(256);
+    let mut core = SglangCore::new(args);
+    for (start, len) in [(0, 128), (1000, 256), (2000, 128)] {
+        core.receive(direct_request((start..start + len).collect(), 1));
+    }
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let first = core.execute_pass(&mut collector, 0.0);
+    // Native's pre-admission input-cap guard is only for non-chunked prefill.
+    // With chunking enabled, budget_state() stops after this crossing chunk.
+    assert_eq!(first.admissions.len(), 2);
+    assert_eq!(first.fpm.unwrap().sum_prefill_tokens, 384);
+    assert_eq!(core.execute_pass(&mut collector, 1.0).admissions.len(), 1);
 }
 
 #[test]

@@ -49,7 +49,9 @@ upstream serving implementation is vendored.
 Repository-root `crates/core/src/engine/scheduler/sglang/prefill.rs` and
 `request.rs`, `crates/core/src/engine/cache/radix_cache.rs`, and the regression
 tests in `crates/core/src/engine/scheduler/sglang/tests.rs`,
-`crates/core/tests/engine.rs` and `crates/core/src/engine/cache/radix_cache.rs`
+`crates/core/src/replay/disagg_tests.rs`, `crates/core/tests/engine.rs` and
+`crates/core/src/engine/cache/radix_cache.rs`, plus the source-execution harness
+`benchmarks/evidence/sglang-native-boundaries/probe_input_cap.py`
 contain modified, independently implemented behavioral adaptations of SGLang
 at commit `baa9befa381511cd4d56f83980951e5a45fffc6d`:
 

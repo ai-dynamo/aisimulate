@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Fixed-output reservation metadata adapts SGLang's schedule_policy.py at
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py
+// Copyright SGLang Team and contributors, Apache-2.0. Modified for Rust request
+// leases; see THIRD_PARTY_NOTICES.md.
+
 use std::collections::VecDeque;
 use std::ops::{Deref, RangeFull};
 

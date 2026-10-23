@@ -125,9 +125,10 @@ pub(super) fn get_new_batch_prefill(
             rejected.push_back(req);
             break;
         }
-        // Chunked prefill is bounded by its chunk budget. The input cap stops
-        // selection after an admitted chunk, rather than stranding a first
-        // request whose page-rounded input exceeds that cap.
+        // With chunking enabled, native checks the input cap after each
+        // admission, even for a nonempty batch. Its pre-admission input-cap
+        // guard applies only when chunking is disabled; adding that guard
+        // here would change the selected SGLang version's batch membership.
         if charged_input_tokens > rem_chunk_tokens {
             rejected.push_back(req);
             break;
