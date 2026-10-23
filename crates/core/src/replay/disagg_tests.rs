@@ -2492,8 +2492,7 @@ fn test_source_first_handoff_waits_for_decode_scale_up() {
     assert_eq!(stats.request_snapshots[&uuid].phase, DisaggPhase::Done);
 }
 
-#[test]
-fn shared_g2_outlives_a_prefill_role_scaled_to_zero_and_back() {
+fn shared_g2_disagg_config() -> TestDisaggConfig {
     use crate::engine::{NativeHostOffloadConfig, TimingModelConfig};
     let args = |worker_type| MockEngineArgs {
         block_size: 4,
@@ -2516,14 +2515,19 @@ fn shared_g2_outlives_a_prefill_role_scaled_to_zero_and_back() {
             .with_bandwidths(1.0, 1.0)
             .cluster_shared("tp1"),
     );
-    let config = TestDisaggConfig {
+    TestDisaggConfig {
         prefill_args,
         decode_args: args(WorkerType::Decode),
         prefill_dp_size: 1,
         decode_dp_size: 1,
         num_prefill_workers: 1,
         num_decode_workers: 1,
-    };
+    }
+}
+
+#[test]
+fn shared_g2_outlives_a_prefill_role_scaled_to_zero_and_back() {
+    let config = shared_g2_disagg_config();
     let prompt = |id, arrival_ms| DirectRequest {
         tokens: (1..=9).collect(),
         max_output_tokens: 1,
@@ -3847,6 +3851,217 @@ mod agentic_pd_qualification {
             }
         }
     }
+}
+
+type HookDisaggRuntime = DisaggRuntimeImpl<
+    crate::replay::runtime_utils::hook_test_policy::HookPlacement,
+    NoEngineEvents,
+    NoReplayMetadata,
+>;
+
+fn hook_disagg_runtime(
+    backend: EngineType,
+    prefill: crate::replay::runtime_utils::hook_test_policy::HookPlacement,
+    decode: crate::replay::runtime_utils::hook_test_policy::HookPlacement,
+) -> HookDisaggRuntime {
+    let config = match backend {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => unreachable!(),
+    }
+    .runtime_config(false)
+    .unwrap();
+    DisaggRuntimeImpl::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| Ok((prefill, decode)),
+    )
+    .unwrap()
+}
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn disagg_rejects_invalid_policy_wakeup_before_advancing_clock(
+    #[case] wakeup_ms: f64,
+    #[values(true, false)] invalid_prefill: bool,
+) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let mut runtime = hook_disagg_runtime(
+        EngineType::Vllm,
+        HookPlacement::new(invalid_prefill.then_some(wakeup_ms), false),
+        HookPlacement::new((!invalid_prefill).then_some(wakeup_ms), false),
+    );
+    let error = runtime.run_to_completion().unwrap_err();
+    let role = if invalid_prefill { "prefill" } else { "decode" };
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("{role} placement policy wakeup")),
+        "{error:#}"
+    );
+    assert!(runtime.now_ms.is_finite() && runtime.now_ms >= 0.0);
+}
+
+#[rstest::rstest]
+#[case::coincident(0.5)]
+#[case::later(0.75)]
+fn disagg_internal_deadline_settles_before_policy_wakeup(#[case] delay_ms: f64) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let config = shared_g2_disagg_config().runtime_config(false).unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(
+            VecDeque::from([request(1, 9, 1, 0.0), request(2, 9, 1, 2.5)]),
+            ReplayMode::Trace,
+        ),
+        false,
+        |_, _, _, _| {
+            Ok((
+                HookPlacement::new(None, true),
+                HookPlacement::new(None, true),
+            ))
+        },
+    )
+    .unwrap()
+    .with_per_request_records(true);
+    // Seed two host blocks: the 1 ms prefill starts a 2 ms D2H transfer.
+    // Request 1 finishes at 2 ms, while the prefill worker is busy until 3 ms.
+    for expected_ms in [0.0, 1.0, 2.0] {
+        assert_eq!(
+            runtime.step().unwrap(),
+            ReplayStepOutcome::Settled {
+                now_ms: expected_ms
+            }
+        );
+    }
+    runtime.prefill_placement = HookPlacement::new(Some(delay_ms), true);
+    let report = runtime.run().unwrap().0.finish();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let released = report
+        .per_request
+        .iter()
+        .find(|request| request.uuid == Uuid::from_u128(2).to_string())
+        .unwrap();
+    assert_eq!(released.prefill_admit_ms, Some(2.5 + delay_ms));
+    assert!(
+        report
+            .per_request
+            .iter()
+            .all(|request| { request.terminal_status == ReplayTerminalStatus::Completed })
+    );
+}
+
+#[rstest::rstest]
+fn disagg_consumes_same_now_and_future_policy_wakeups(
+    #[values(0.0, 7.0)] wakeup_ms: f64,
+    #[values(true, false)] queued_prefill: bool,
+) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let report = hook_disagg_runtime(
+        EngineType::Vllm,
+        HookPlacement::new(queued_prefill.then_some(wakeup_ms), true),
+        HookPlacement::new((!queued_prefill).then_some(wakeup_ms), true),
+    )
+    .with_per_request_records(true)
+    .run()
+    .unwrap()
+    .0
+    .finish();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert!(report.per_request[0].terminal_time_ms >= wakeup_ms);
+}
+
+#[rstest::rstest]
+#[case::commit(true, false)]
+#[case::commit_and_abort(true, true)]
+#[case::rejection_and_abort(false, true)]
+fn disagg_dispatch_failure_cleans_up_and_prevents_runtime_reuse(
+    #[values(EngineType::Vllm, EngineType::Sglang)] backend: EngineType,
+    #[values(false, true)] fail_prefill: bool,
+    #[case] fail_commit: bool,
+    #[case] fail_abort: bool,
+) {
+    use crate::replay::runtime_utils::hook_test_policy::HookPlacement;
+    let mut runtime =
+        hook_disagg_runtime(backend, HookPlacement::default(), HookPlacement::default());
+    let (engine, policy) = if fail_prefill {
+        (&mut runtime.prefill_engine, &mut runtime.prefill_placement)
+    } else {
+        (&mut runtime.decode_engine, &mut runtime.decode_placement)
+    };
+    policy.fail_commit = fail_commit;
+    policy.fail_abort = fail_abort;
+    if !fail_commit {
+        if fail_prefill {
+            engine
+                .dispatch(0, request(1, 64, 2, 0.0), None, 0.0)
+                .unwrap();
+        } else {
+            // Park the duplicate destination until its reservation is attempted.
+            engine
+                .apply_command(
+                    0,
+                    Command::ReserveDestination {
+                        handoff_id: HandoffId::new(Uuid::from_u128(999)),
+                        request: direct_to_native(request(1, 64, 2, 0.0), None).unwrap(),
+                    },
+                    0.0,
+                )
+                .unwrap();
+        }
+    }
+    let error = runtime.run_to_completion().unwrap_err();
+    let (engine, policy) = if fail_prefill {
+        (&runtime.prefill_engine, &runtime.prefill_placement)
+    } else {
+        (&runtime.decode_engine, &runtime.decode_placement)
+    };
+    if fail_commit {
+        assert_eq!(engine.in_flight(), 0);
+        assert!(!engine.has_runnable_worker());
+    }
+    let expected_error = if fail_commit {
+        "injected commit failure"
+    } else {
+        "already active"
+    };
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains(expected_error)),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    let calls = policy
+        .calls
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls,
+        if fail_commit {
+            vec!["selected", "commit", "abort"]
+        } else {
+            vec!["selected", "abort"]
+        }
+    );
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
 }
 
 /// Admission metadata that carries replay hashes through unchanged, so each
