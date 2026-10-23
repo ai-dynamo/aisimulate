@@ -63,6 +63,7 @@ pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
 /// latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
 pub const FPM_NATIVE_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_fpm_model_step_cuda_v1";
+const FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY: &str = "vllm_native_ar_model_step_cuda_v1";
 const FPM_ROW_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_median_of_3";
 const FPM_FULL_GRID_MEASUREMENT_POLICY: &str = "per_row_single_sample_or_full_grid_median_v1";
 
@@ -80,6 +81,7 @@ enum MeasurementPolicy {
     /// A genuine native CUDA observation, optionally selected as an actual
     /// upper-median source sample with that sample's own workload coordinates.
     NativeCudaActualSample,
+    NativeArCudaActualSample,
 }
 
 impl MeasurementPolicy {
@@ -91,6 +93,7 @@ impl MeasurementPolicy {
             Self::VllmNativeFpmMedian => "vllm_native_fpm_prefix_seed_median_v1",
             Self::SglangNativeFpmMedian => "sglang_native_fpm_radix_seed_median_v1",
             Self::NativeCudaActualSample => FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
+            Self::NativeArCudaActualSample => FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY,
         }
     }
 
@@ -101,7 +104,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::VllmNativeFpmMedian
             | Self::SglangNativeFpmMedian
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
         }
     }
 
@@ -110,7 +114,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::PerRow
             | Self::PerRowFullGrid
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("glm53flash_prefix_cache_real_seed_v1"),
             Self::SglangNativeFpmMedian => Some("glm53flash_sglang_radix_real_seed_v1"),
         }
@@ -121,7 +126,8 @@ impl MeasurementPolicy {
             Self::SingleSample
             | Self::PerRow
             | Self::PerRowFullGrid
-            | Self::NativeCudaActualSample => None,
+            | Self::NativeCudaActualSample
+            | Self::NativeArCudaActualSample => None,
             Self::VllmNativeFpmMedian => Some("dynamo_vllm_instrumented_scheduler_fpm_wall_time"),
             Self::SglangNativeFpmMedian => Some("sglang_native_fpm_rank0_device_timer_wall_time"),
         }
@@ -580,13 +586,24 @@ fn validate_sidecar(
         (Some("sglang_native_fpm_radix_seed_median_v1"), Some(7), "sglang") => {
             MeasurementPolicy::SglangNativeFpmMedian
         }
-        (Some(FPM_NATIVE_CUDA_MEASUREMENT_POLICY), Some(7), "vllm") => {
+        (
+            Some(
+                policy @ (FPM_NATIVE_CUDA_MEASUREMENT_POLICY
+                | FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY),
+            ),
+            Some(7),
+            "vllm",
+        ) => {
             if metadata.get("timing_scope").and_then(|v| v.as_str()) != Some("model_step_cuda") {
                 return Err(structural(
                     "native CUDA FPM sidecar requires timing_scope=model_step_cuda".into(),
                 ));
             }
-            MeasurementPolicy::NativeCudaActualSample
+            if policy == FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY {
+                MeasurementPolicy::NativeArCudaActualSample
+            } else {
+                MeasurementPolicy::NativeCudaActualSample
+            }
         }
         _ => {
             return Err(structural(format!(
@@ -790,7 +807,10 @@ fn load_pair(
     } else {
         None
     };
-    let native_cuda_columns = if measurement_policy == MeasurementPolicy::NativeCudaActualSample {
+    let native_cuda_columns = if matches!(
+        measurement_policy,
+        MeasurementPolicy::NativeCudaActualSample | MeasurementPolicy::NativeArCudaActualSample
+    ) {
         Some([
             reader.col("timing_scope")?,
             reader.col("measurement_reduction")?,
@@ -1003,6 +1023,13 @@ fn load_pair(
             .collect::<Result<_, _>>()?;
         let speculative = crate::FpmExecutionBinding::parse_selector(&match_identity[16])
             .map_err(|error| structural(format!("FPM row {index}: {error}")))?;
+        if measurement_policy == MeasurementPolicy::NativeArCudaActualSample
+            && match_identity[15..19] != LEGACY_EXECUTION_IDENTITY
+        {
+            return Err(structural(format!(
+                "FPM row {index}: AR native CUDA policy requires full text autoregressive execution"
+            )));
+        }
         if speculative.is_some()
             != (measurement_policy == MeasurementPolicy::NativeCudaActualSample)
         {
@@ -1558,6 +1585,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) struct NativeCudaSampleSpec {
+        pub policy: &'static str,
         pub scope: &'static str,
         pub reduction: &'static str,
         pub source_sample_count: u32,
@@ -1961,12 +1989,7 @@ pub(crate) mod tests {
             for field in 0..3 {
                 let values = str_col(&|r| {
                     let sample = r.native_cuda.as_ref().unwrap();
-                    [
-                        FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
-                        sample.scope,
-                        sample.reduction,
-                    ][field]
-                        .to_owned()
+                    [sample.policy, sample.scope, sample.reduction][field].to_owned()
                 });
                 let mut col = rg.next_column().unwrap().unwrap();
                 col.typed::<ByteArrayType>()
@@ -2019,7 +2042,7 @@ pub(crate) mod tests {
         if has_native_cuda {
             sidecar.insert(
                 "measurement_policy".into(),
-                FPM_NATIVE_CUDA_MEASUREMENT_POLICY.into(),
+                rows[0].native_cuda.as_ref().unwrap().policy.into(),
             );
             sidecar.insert("timing_scope".into(), "model_step_cuda".into());
         }
@@ -2054,6 +2077,7 @@ pub(crate) mod tests {
                 row.execution = Some(["", selector, "none", "text"]);
                 row.kv_seed_regime = Some("real_kv");
                 row.native_cuda = Some(NativeCudaSampleSpec {
+                    policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                     scope: "model_step_cuda",
                     reduction: "actual_upper_median",
                     source_sample_count: 20,
@@ -2061,6 +2085,58 @@ pub(crate) mod tests {
                 row
             })
             .collect()
+    }
+
+    #[test]
+    fn autoregressive_native_cuda_policy_preserves_samples_and_rejects_relabeling() {
+        for mutation in [
+            "none",
+            "single_sample",
+            "speculation",
+            "phase",
+            "modality",
+            "row_clock",
+            "sidecar_clock",
+            "zero_count",
+            "bad_reduction",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = speculative_rows();
+            for row in &mut rows {
+                let speculative_execution = row.execution.unwrap();
+                row.execution = Some(LEGACY_EXECUTION_IDENTITY);
+                let sample = row.native_cuda.as_mut().unwrap();
+                sample.policy = FPM_NATIVE_AR_CUDA_MEASUREMENT_POLICY;
+                match mutation {
+                    "single_sample" => {
+                        sample.reduction = "single_sample";
+                        sample.source_sample_count = 1;
+                    }
+                    "speculation" => row.execution = Some(speculative_execution),
+                    "phase" => row.execution.as_mut().unwrap()[0] = "prefill",
+                    "modality" => row.execution.as_mut().unwrap()[3] = "image",
+                    "row_clock" => sample.scope = "scheduler_wall_time",
+                    "zero_count" => sample.source_sample_count = 0,
+                    "bad_reduction" => sample.reduction = "mean",
+                    _ => {}
+                }
+            }
+            write_pair_with(tmp.path(), &rows, |metadata| {
+                if mutation == "sidecar_clock" {
+                    metadata.insert("timing_scope".into(), "scheduler_wall_time".into());
+                }
+            });
+            let table = loaded_table(tmp.path());
+            if matches!(mutation, "none" | "single_sample") {
+                let cell = table
+                    .select_cell(&default_identity(4), "org/model-a", None)
+                    .unwrap();
+                // The fixture records 7 ms at B8/KV4096, including for an actual median sample.
+                assert_eq!(cell.direct_decode[&8][&4096], 7.0);
+            } else {
+                assert!(table.cells().is_err(), "accepted {mutation}");
+            }
+        }
     }
 
     #[test]
@@ -2100,6 +2176,7 @@ pub(crate) mod tests {
         let mut rows = speculative_rows();
         for row in &mut rows {
             row.native_cuda = Some(NativeCudaSampleSpec {
+                policy: FPM_NATIVE_CUDA_MEASUREMENT_POLICY,
                 scope: "model_step_cuda",
                 reduction: "single_sample",
                 source_sample_count: 1,
