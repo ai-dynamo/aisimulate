@@ -374,10 +374,14 @@ def pick_load_match(
     Returns:
         Dict with keys:
         - ``best_config_df``: Top-N configurations DataFrame with
-          ``replicas_needed``, ``total_gpus_needed``, ``load_served_pct``
-          columns.
+          ``replicas_needed``, ``total_gpus_needed``, ``sla_satisfied``,
+          ``load_satisfied`` and ``gpu_budget_satisfied`` columns, plus
+          ``load_served_pct`` for budget-capped results. Closest-SLA
+          diagnostics have ``sla_satisfied=False``; an empty frame means
+          no replica fits the budget.
         - ``best_throughput``: Comparison metric (``1/total_gpus_needed``
-          normally, ``tokens/s/gpu_cluster`` when GPU-capped).
+          for full-load matches, ``tokens/s/gpu_cluster`` when GPU-capped
+          or returning an SLA diagnostic under a GPU budget).
         - ``best_latencies``: Dict with latency + load-match fields.
         - ``pareto_frontier_df``: Pareto frontier DataFrame.
     """
@@ -419,8 +423,8 @@ def pick_load_match(
     best_throughput = 0.0
     if not best_config_df.empty:
         row = best_config_df.iloc[0]
-        gpu_capped = "load_served_pct" in row.index and pd.notna(row["load_served_pct"])
-        if gpu_capped:
+        full_match = row["load_satisfied"] and (row["sla_satisfied"] or max_total_gpus is None)
+        if not full_match:
             best_throughput = float(row.get("tokens/s/gpu_cluster", 0.0))
         else:
             gpus = row.get("total_gpus_needed", 1)

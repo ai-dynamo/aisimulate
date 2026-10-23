@@ -48,3 +48,83 @@ def test_load_match_comparison_score_uses_actual_fallback(
     else:
         assert row["load_served_pct"] == expected_load_pct
         assert row["tokens/s/gpu_cluster"] == expected_score
+
+
+def _load_frame(tpots, gpus):
+    return pd.DataFrame(
+        {
+            "parallel": [f"config-{i}" for i in range(len(tpots))],
+            "tpot": tpots,
+            "request_latency": tpots,
+            "tokens/s/user": [40.0] * len(tpots),
+            "tokens/s/gpu": [100.0] * len(tpots),
+            "seq/s": [1.0] * len(tpots),
+            "concurrency": [1.0] * len(tpots),
+            "num_total_gpus": gpus,
+        }
+    )
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("sla_target", ["target_tpot", "target_request_latency"])
+def test_load_match_sla_fallback_respects_gpu_cap(load_target, sla_target):
+    result = pick_load_match(
+        _load_frame([40.0, 50.0], [2, 3]),
+        serving_mode="agg",
+        max_total_gpus=4,
+        **{load_target: 10.0, sla_target: 30.0},
+    )
+
+    configs = result["best_config_df"]
+    assert (configs["total_gpus_needed"] <= 4).all()
+    assert configs["tpot"].tolist() == [40.0, 50.0]
+    assert not configs["sla_satisfied"].any()
+    assert not configs["load_satisfied"].any()
+    assert configs["gpu_budget_satisfied"].all()
+    assert result["best_throughput"] == 100.0
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("tpot", [25.0, 40.0])
+@pytest.mark.parametrize("gpu_cap", [0, 1])
+def test_load_match_rejects_single_replica_over_budget(load_target, tpot, gpu_cap):
+    result = pick_load_match(
+        _load_frame([tpot], [2]),
+        serving_mode="agg",
+        target_tpot=30.0,
+        max_total_gpus=gpu_cap,
+        **{load_target: 10.0},
+    )
+
+    assert result["best_config_df"].empty
+    assert result["best_throughput"] == 0.0
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+def test_load_match_keeps_budget_feasible_sla_diagnostic(load_target):
+    result = pick_load_match(
+        _load_frame([25.0, 40.0], [8, 2]),
+        serving_mode="agg",
+        target_tpot=30.0,
+        max_total_gpus=4,
+        **{load_target: 1.0},
+    )
+
+    row = result["best_config_df"].iloc[0]
+    assert row["total_gpus_needed"] == 2
+    assert not row["sla_satisfied"]
+    assert row["load_satisfied"]
+    assert row["gpu_budget_satisfied"]
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("tpot", [25.0, 40.0])
+def test_load_match_without_budget_preserves_sizing(load_target, tpot):
+    result = pick_load_match(_load_frame([tpot], [2]), serving_mode="agg", target_tpot=30.0, **{load_target: 10.0})
+
+    row = result["best_config_df"].iloc[0]
+    assert row["total_gpus_needed"] == 20
+    assert result["best_throughput"] == 0.05
+    assert row["sla_satisfied"] == (tpot <= 30.0)
+    assert row["load_satisfied"]
+    assert row["gpu_budget_satisfied"]

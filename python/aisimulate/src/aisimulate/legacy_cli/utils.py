@@ -154,8 +154,8 @@ def _merge_into_top_n(
     best_throughput = 0.0
     if not df_best_configs.empty:
         row = df_best_configs.iloc[0]
-        gpu_capped = "load_served_pct" in row.index and pd.notna(row["load_served_pct"])
-        if load_match and not gpu_capped:
+        full_match = load_match and row["load_satisfied"] and (row["sla_satisfied"] or max_total_gpus is None)
+        if full_match:
             gpus = row["total_gpus_needed"]
             best_throughput = 1.0 / gpus if gpus > 0 else 0.0
         else:
@@ -208,8 +208,9 @@ def merge_experiment_results_by_mode(
         tuple:
             - best_configs: Dictionary containing the best configs of the merged experiments.
             - best_throughputs: Dictionary of objective-specific comparison scores: inverse GPU count for
-                full-target load matches, or cluster token throughput for GPU-capped fallbacks and runs
-                without a load target.
+                full-target load matches, or cluster token throughput for GPU-capped fallbacks, SLA
+                diagnostics under a GPU budget, and runs without a load target. Unbudgeted sizing
+                retains inverse-GPU scores for diagnostic results.
             - pareto_fronts: Dictionary containing the pareto fronts of the merged experiments.
             - pareto_x_axis: Dictionary containing the pareto x-axis of the merged experiments.
     """

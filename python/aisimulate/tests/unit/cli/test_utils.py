@@ -785,3 +785,83 @@ def test_merge_load_match_preserves_constraints_and_backend_choices(
     assert configs[mode]["backend"].tolist() == expected_backends
     assert configs[mode]["total_gpus_needed"].tolist() == expected_gpus
     assert scores[mode] == expected_score
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+@pytest.mark.parametrize("multiple_backends", [False, True])
+@pytest.mark.parametrize("sla_fallback_fits_load", [False, True])
+@pytest.mark.parametrize("gpu_cap", [0, 1, 4])
+def test_load_match_prefers_sla_compliant_partial_load(
+    monkeypatch, load_target, multiple_backends, sla_fallback_fits_load, gpu_cap
+):
+    from aisimulate.legacy_cli import main as cli_main
+
+    monkeypatch.setattr(cli_main, "log_final_summary", lambda **kwargs: None)
+    tasks = {}
+    for mode in ("agg", "disagg"):
+        for backend in range(2 if multiple_backends else 1):
+            capacity = (10.0 if sla_fallback_fits_load else 1.0) if mode == "agg" else 3.0
+            task = MagicMock(
+                primary_backend_name=f"backend{backend}",
+                serving_mode=mode,
+                total_gpus=4,
+                tpot=30.0,
+                request_latency=None,
+            )
+            task.to_yaml.return_value = "test config"
+            task.run.return_value = pd.DataFrame(
+                {
+                    "parallel": ["shared"],
+                    "(d)parallel": ["shared"],
+                    "tpot": [40.0 if mode == "agg" else 25.0],
+                    "tokens/s/user": [40.0],
+                    "tokens/s/gpu": [200.0 if mode == "agg" else 150.0],
+                    "seq/s": [capacity],
+                    "concurrency": [capacity],
+                    "num_total_gpus": [2],
+                }
+            )
+            tasks[f"{mode}_{backend}" if multiple_backends else mode] = task
+
+    chosen, configs, _, _, _, _ = cli_main._execute_tasks(
+        tasks, mode="default", top_n=1, max_total_gpus=gpu_cap, **{load_target: 10.0}
+    )
+
+    if gpu_cap < 2:
+        assert chosen == "none"
+        assert all(frame.empty for frame in configs.values())
+        return
+    assert chosen == "disagg"
+    assert all((frame["total_gpus_needed"] <= 4).all() for frame in configs.values())
+    assert configs["disagg"].iloc[0]["sla_satisfied"]
+    assert not configs["disagg"].iloc[0]["load_satisfied"]
+    assert not configs["agg"].iloc[0]["sla_satisfied"]
+
+
+@pytest.mark.parametrize("load_target", ["target_request_rate", "target_concurrency"])
+def test_merge_load_match_recomputes_fallback_state(load_target):
+    tasks = {
+        "backend": SimpleNamespace(serving_mode="agg", primary_backend_name="backend", tpot=30.0, request_latency=None)
+    }
+    stale = pd.DataFrame(
+        {
+            "tpot": [25.0],
+            "tokens/s/gpu": [100.0],
+            "seq/s": [10.0],
+            "concurrency": [10.0],
+            "num_total_gpus": [2],
+            "load_served_pct": [10.0],
+            "sla_satisfied": [False],
+            "load_satisfied": [False],
+            "gpu_budget_satisfied": [False],
+        }
+    )
+
+    configs, scores, _, _ = merge_experiment_results_by_mode(
+        tasks, {"backend": stale}, {}, {}, top_n=1, max_total_gpus=4, **{load_target: 10.0}
+    )
+
+    row = configs["agg"].iloc[0]
+    assert row["sla_satisfied"] and row["load_satisfied"] and row["gpu_budget_satisfied"]
+    assert "load_served_pct" not in row.index
+    assert scores["agg"] == 0.5

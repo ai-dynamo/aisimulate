@@ -100,15 +100,22 @@ class CLIResult:
     """Result from running CLI default or exp mode."""
 
     chosen_exp: str
-    """Chosen experiment, preferring results that serve the full load target.
+    """Chosen experiment, preferring SLA-compliant results within the GPU budget.
 
-    Load matching maximizes inverse-GPU scores among nonempty full-target
-    results. Only when all candidates are GPU-capped does it maximize capped
-    throughput. Throughput mode selects the highest throughput.
+    Load matching first prefers SLA-compliant full-target results, then
+    SLA-compliant partial-load results, then closest-SLA diagnostics. An empty
+    candidate set produces ``"none"``. Throughput mode selects the highest
+    throughput.
     """
 
     best_configs: dict[str, pd.DataFrame]
-    """Best configurations per experiment, filtered by latency constraints."""
+    """Best configurations per experiment.
+
+    Load-match rows expose ``sla_satisfied``, ``load_satisfied`` and
+    ``gpu_budget_satisfied``; closest-SLA diagnostics are explicitly marked.
+    No row exceeds an explicit GPU budget. No replica fitting the budget
+    produces an empty frame.
+    """
 
     pareto_fronts: dict[str, pd.DataFrame]
     """Pareto frontier data per experiment."""
@@ -117,8 +124,9 @@ class CLIResult:
     """Objective-specific comparison score per experiment.
 
     Throughput mode uses ``tokens/s/gpu_cluster``. Load-match mode uses
-    ``1 / total_gpus_needed``; a GPU-capped fallback (a non-null
-    ``load_served_pct`` in the selected row) uses ``tokens/s/gpu_cluster``.
+    ``1 / total_gpus_needed`` for full-load matches. GPU-capped results and
+    SLA diagnostics under a GPU budget use ``tokens/s/gpu_cluster``.
+    Unbudgeted sizing retains inverse-GPU scores, including diagnostic results.
     Full-target and capped scores have different units; chosen_exp compares
     them only within the preferred group described above.
     Read throughput values from ``best_configs`` when sizing for a load target.

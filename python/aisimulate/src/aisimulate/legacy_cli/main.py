@@ -2389,14 +2389,18 @@ def _execute_tasks(
     eligible_scores = best_throughputs
     if target_request_rate is not None or target_concurrency is not None:
         nonempty_scores = {name: score for name, score in best_throughputs.items() if not best_configs[name].empty}
+        sla_scores = {
+            name: score for name, score in nonempty_scores.items() if best_configs[name].iloc[0]["sla_satisfied"]
+        }
+        # A feasible partial load takes priority over an SLA-failing diagnostic.
+        eligible_scores = sla_scores or nonempty_scores
         full_target_scores = {
             name: score
-            for name, score in nonempty_scores.items()
-            if "load_served_pct" not in best_configs[name].columns
-            or pd.isna(best_configs[name].iloc[0]["load_served_pct"])
+            for name, score in sla_scores.items()
+            if best_configs[name].iloc[0]["load_satisfied"] and best_configs[name].iloc[0]["gpu_budget_satisfied"]
         }
         # Inverse-GPU scores and capped-throughput scores have different units.
-        eligible_scores = full_target_scores or nonempty_scores
+        eligible_scores = full_target_scores or eligible_scores
     if not eligible_scores:
         logger.warning("No nonempty configuration found for the target load.")
         return "none", best_configs, pareto_fronts, best_throughputs, best_latencies, outcomes
