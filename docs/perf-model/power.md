@@ -33,6 +33,20 @@ Operation energy uses watt-milliseconds (`energy_wms`). Operation and phase
 latency use milliseconds (`latency_ms`). Dividing summed `energy_wms` by summed
 `latency_ms` therefore yields watts without a unit conversion.
 
+AFD execution plans sum energy and active GPU time across the participating
+ranks, then divide both totals by the pool pair's GPU count for per-GPU
+evidence. Uneven token slices use each nonempty rank's actual operation time.
+The pipeline latency still uses the slowest rank; it is not the denominator
+for active-operation power. Uncovered operations retain their active time in
+the coverage calculation.
+
+AFD timing and energy use the same operator queries and
+[batch-pricing rules](../sweeper/afd-topology.md#batch-pricing): embedding joins a
+dense prefix once at full replica batch, otherwise it runs per microbatch;
+logits always run per microbatch. Fixed synthetic decode reuses a stride-averaged
+timing/evidence pair, contributing it on every pass. Prefill uses actual batch
+and uncached tokens for both timing and evidence.
+
 These values are modeling evidence. They must retain the timing provider,
 performance-data identity, operation source, backend/version, hardware, and
 role topology needed to interpret them. They are not a replacement for

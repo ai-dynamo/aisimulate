@@ -120,11 +120,12 @@ The `optimization` section is required, even when its target uses a default.
 |---|---:|---|---|---|
 | `optimization.target` | `throughput` | `x` | `-` | Maximize `throughput`, `throughput_per_gpu`, `throughput_per_user`, `goodput`, or `goodput_per_gpu`; minimize `ttft`, `e2e_latency`, or `min_gpus`; or compute `pareto`. |
 | `optimization.hardware` | `null` | `x` | `-` | One nonempty hardware identifier; required for `engine.hardware: auto`. |
+| `optimization.max_topology_candidates` | `10000` | `x` | `-` | Positive integer. Limits each AFD role domain and complete legal compositions in branches containing AFD; overflow is an error, never truncation. Ordinary branches retain their current search behavior. |
 | `optimization.strict_sla` | `false` | `x` | `-` | When true, reject candidates whose aggregate mean metrics exceed any configured SLA bound before ranking or Pareto analysis. |
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
 | `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with request-rate traffic and cannot exceed the offered rate. Optional with fixed concurrency. |
 
 `optimization.hardware` is one fallback SKU, never a list or inventory.
-Concrete P/D role SKUs can override it. `optimizer` controls execution of the
+Concrete P/D role SKUs can override it. `max_topology_candidates` bounds topology preparation for AFD branches, separately from `optimizer.max_trials`, which bounds evaluated trials. `optimizer` controls execution of the
 search and is described in [search space](../sweeper/search-space.md#optimizer-controls).

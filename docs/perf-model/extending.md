@@ -135,20 +135,28 @@ required-data coverage, native execution, replay/generator compatibility, and
 accuracy against measured hardware. A support check or numerical parity test
 alone does not prove end-to-end predictive accuracy.
 
-### AFD Operation Partitioning Compatibility
+### AFD execution-plan compatibility
 
-Attention-FFN Disaggregated (AFD) estimate mode has one additional maintenance contract beyond the normal aggregated and P/D-disaggregated paths. [`python/aisimulate/src/aisimulate_core/sdk/afd_partition.py`](../../python/aisimulate/src/aisimulate_core/sdk/afd_partition.py) splits a model's `context_ops` / `generation_ops` into A-worker and F-worker pools by operation name. When adding a new model family or new operation, make sure the generated operation names can be classified by the AFD partitioner.
+AFD compiles pool-specific operations and a source-ordered layer plan through
+the canonical FPM constructor. [`models/afd.py`](../../python/aisimulate/src/aisimulate_core/sdk/models/afd.py)
+composes the graph; [native validation](../../crates/core/src/perfmodel/afd/validation.rs)
+and the execution-plan validator reject unsupported architectures and invalid
+pool/layer/op coverage before prediction.
 
-The current AFD partitioning contract is:
+When extending a model:
 
-1. **A-worker ops**: operations that belong to the embedding / attention side, such as `embedding`, `add_norm_1`, attention norms, `qkv`, MLA, BMM, RoPE, attention kernels, and projection GEMMs.
-2. **F-worker ops**: operations that belong to the FFN / MoE side, such as router GEMMs, dense `ffn` / `mlp` ops, routed expert ops, shared expert ops, and activation / gate / up / down GEMMs.
-3. **Boundary ops**: operations that naturally sit at the A/F boundary, such as `add_norm_2`, FFN/MoE/MLP norms, `logits_gemm`, `reduce_add`, and `*_combine`. These default to the A-worker and can be moved to the F-worker with the AFD boundary placement option.
-4. **Skipped model-internal communication ops**: communication or dispatch operations already represented by the AFD communication model, such as `CustomAllReduce`, `P2P`, `NCCL`, TP all-gather / reduce-scatter, and MoE dispatch ops. These should not be counted again in either compute pool because AFD adds its own cross-pool and intra-pool communication through `AFDTransfer`, `AFDFAllGather`, `AFDFReduceScatter`, and `AFDCombine`.
-5. **Overlap ops**: an `OverlapOp` can stay atomic only when every non-skipped inner op belongs to the same side. If an overlap group spans the A/F boundary, the partitioner must fail or be extended to split / rebuild that overlap explicitly.
-6. **Layer families that need explicit rules**: Mamba and GDN layers are not covered by the current attention/FFN partition rules. Until a dedicated partitioning rule, operation model, and communication / memory accounting are added, the partitioner raises an explicit `AFDPartitionError` for these ops instead of falling back to an unknown-op side assignment.
-
-If a new operation cannot be classified, do not rely on an unknown-op fallback for production use. Update `python/aisimulate/src/aisimulate_core/sdk/afd_partition.py` with an explicit classification rule and add a focused unit test in `tests/unit/sdk/test_afd_partition.py`.
+- Preserve source layer order and identity in both plans. Support only a contiguous
+  dense prefix followed by routed layers until native execution supports more.
+- Assign operations using the [existing ownership contract](../sweeper/afd-topology.md#performance-model).
+  F must not validate unused attention heads. Preserve A-local TP reductions,
+  replace aggregate dispatch with native AFD communication, and expand overlap
+  groups before assigning ownership.
+- Reject unknown operations and unsupported attention/state stages or routing.
+  Add source composition, native timing, physical residency and independent
+  regression coverage before declaring support.
+- Extend the existing plan rather than adding a classifier or executor. Timing,
+  energy and memory must agree on layer/endpoint counts, dense-prefix batch size
+  and one-time work; see [pass execution](../sweeper/afd-topology.md#staged-evaluation).
 
 ## SOL-assisted FPM checks
 
