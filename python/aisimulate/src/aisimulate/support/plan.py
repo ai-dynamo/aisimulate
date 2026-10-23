@@ -22,7 +22,7 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 
-from .config_profile import linear_block_size
+from .config_profile import _cache_group_shapes, linear_block_size, linear_runtime_resources
 from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
@@ -49,18 +49,22 @@ def validation_id(request: SupportRequest) -> str:
 def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
     """The observed resources of the request's runtime probe evidence; None when the request has no such evidence.
 
-    A finalized request keeps the evidence in its finalization manifest. Evidence without observed cache groups is
-    invalid provenance, so a hand-edited request fails with a ValueError.
+    A finalized request keeps the evidence in its finalization manifest, and planning cannot verify it against the
+    source collection. So the evidence must agree with the profile, as finalization wrote them: its cache groups are
+    the measured_cache_groups of the profile provenance, and their linear layout has the profile's
+    kv_bytes_per_token. Evidence without observed cache groups is invalid provenance. A hand-edited request that
+    breaks either rule fails with a ValueError.
     """
     from .finalization import finalization_manifest
     from .runtime import runtime_probe_manifest
 
     probe = runtime_probe_manifest(request)
-    if probe is None:
-        finalized = finalization_manifest(request)
-        if finalized is None or "runtime_probe" not in finalized:
+    finalized = probe is None
+    if finalized:
+        manifest = finalization_manifest(request)
+        if manifest is None or "runtime_probe" not in manifest:
             return None
-        probe = finalized["runtime_probe"]
+        probe = manifest["runtime_probe"]
     observed = probe.get("observed_resources") if isinstance(probe, dict) else None
     groups = observed.get("cache_groups") if isinstance(observed, dict) else None
     if not isinstance(groups, list) or not groups:
@@ -68,6 +72,24 @@ def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
             "invalid onboarding runtime probe provenance: "
             "the probe evidence has no observed_resources with cache_groups"
         )
+    if finalized:
+        differs = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
+        try:
+            provenance = json.loads(request.fpm_profile.provenance)
+        except ValueError:
+            provenance = None
+        measured = provenance.get("measured_cache_groups") if isinstance(provenance, dict) else None
+        if not isinstance(measured, list) or _cache_group_shapes(groups) != _cache_group_shapes(measured):
+            raise ValueError(differs + "differ from measured_cache_groups in the profile provenance")
+        linear = linear_runtime_resources(observed)
+        if linear is None:
+            raise ValueError(differs + "have no linear layout, and the profile is linear")
+        expected = request.profile_deployment().resources.kv_bytes_per_token
+        if linear["kv_bytes_per_token"] != expected:
+            raise ValueError(
+                differs + f"give kv_bytes_per_token={linear['kv_bytes_per_token']}, and the profile has "
+                f"kv_bytes_per_token={expected}"
+            )
     return observed
 
 

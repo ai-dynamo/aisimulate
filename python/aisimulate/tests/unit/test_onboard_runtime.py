@@ -1332,6 +1332,80 @@ def test_plan_refuses_finalized_probe_evidence_without_observed_cache_groups(tmp
     )
 
 
+_DIFFERS = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
+_GROUPS_DIFFER = _DIFFERS + "differ from measured_cache_groups in the profile provenance"
+
+
+def _set_block_sizes(groups, block_tokens, *, scale_pages=False):
+    for group, tokens in zip(groups, block_tokens, strict=True):
+        if scale_pages:
+            group["page_size_bytes"] = group["page_size_bytes"] * tokens // group["block_size_tokens"]
+        group["block_size_tokens"] = tokens
+
+
+@pytest.mark.parametrize(
+    "edit,error",
+    [
+        ("none", None),
+        ("every-group", _GROUPS_DIFFER),
+        ("one-group", _GROUPS_DIFFER),
+        ("every-group-with-scaled-pages", _GROUPS_DIFFER),
+        ("profile-kv-bytes", _DIFFERS + "give kv_bytes_per_token=1, and the profile has kv_bytes_per_token=2"),
+        ("evidence-and-measured-groups", _DIFFERS + "have no linear layout, and the profile is linear"),
+    ],
+    ids=[
+        "unedited",
+        "every-group",
+        "one-group",
+        "every-group-with-scaled-pages",
+        "profile-kv-bytes",
+        "evidence-and-measured-groups",
+    ],
+)
+def test_plan_checks_finalized_probe_evidence_against_the_profile(tmp_path, capsys, edit, error):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Hand edits of the finalized request. The profile says linear, 1 byte per token, and 256-token measured groups.
+    resources = payload["fpm_profile"]["deployments"][0]["resources"]
+    manifest = json.loads(resources["runtime_memory"]["provenance"])
+    groups = manifest["runtime_probe"]["observed_resources"]["cache_groups"]
+    if edit == "every-group":
+        _set_block_sizes(groups, (16, 16))
+    elif edit == "one-group":
+        _set_block_sizes(groups, (16, 256))
+    elif edit == "every-group-with-scaled-pages":
+        # The evidence then still gives the profile's 1 byte per token.
+        _set_block_sizes(groups, (16, 16), scale_pages=True)
+    elif edit == "profile-kv-bytes":
+        resources["kv_bytes_per_token"] = 2
+    elif edit == "evidence-and-measured-groups":
+        # Both copies of the groups agree, but groups with different block sizes have no linear layout.
+        _set_block_sizes(groups, (16, 256))
+        provenance = json.loads(payload["fpm_profile"]["provenance"])
+        provenance["measured_cache_groups"] = copy.deepcopy(groups)
+        payload["fpm_profile"]["provenance"] = json.dumps(provenance)
+    resources["runtime_memory"]["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if error is None:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert error in capsys.readouterr().err
+
+
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
     from aisimulate.support.finalization import finalization_manifest
 
