@@ -1269,8 +1269,13 @@ _LENGTH_ERROR = "attn_type_list must have one entry per num_hidden_layers"
         ({**_GDN_LAYERS, "attn_type_list": [0]}, _LENGTH_ERROR),
         ({**_GDN_LAYERS, "attn_type_list": [0, "bad"]}, "attn_type_list entries must be integers"),
         ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1, 1]}, _LENGTH_ERROR),
+        # One entry per layer, but a boolean is not an integer entry.
+        (
+            {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, True]},
+            "attn_type_list entries must be integers",
+        ),
     ],
-    ids=["one-entry-for-two-layers", "string-entry", "three-entries-for-two-layers"],
+    ids=["one-entry-for-two-layers", "string-entry", "three-entries-for-two-layers", "boolean-entry"],
 )
 @pytest.mark.parametrize("native", [False, True])
 def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, declarations, error, native):
@@ -1342,6 +1347,68 @@ def test_detected_layout_reads_every_layer_count_field_of_intake(tmp_path):
         assert str(collector.value) == str(intake.value) == "layer_types must have one entry per num_hidden_layers"
 
 
+# Config intake's message for a window field that is not an integer of at least 0.
+_WINDOW_ERROR = "{field} must be an integer >=0, not a boolean, float or numeric string"
+
+
+@pytest.mark.parametrize(
+    "layer_count,window,error",
+    [
+        (None, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window_size": 128.0}, _WINDOW_ERROR.format(field="sliding_window_size")),
+        (None, {"sliding_window": -1}, _WINDOW_ERROR.format(field="sliding_window")),
+        (None, {"sliding_window": True}, _WINDOW_ERROR.format(field="sliding_window")),
+        (
+            None,
+            {"sliding_window": 128, "sliding_window_size": 256},
+            "conflicting sliding-window fields: {'sliding_window': 128, 'sliding_window_size': 256}",
+        ),
+        # Intake checks the window fields before the layer count: here the layer_types list is also short.
+        ({"num_hidden_layers": 3}, {"sliding_window": "128"}, _WINDOW_ERROR.format(field="sliding_window")),
+    ],
+    ids=["string", "float", "negative", "boolean", "conflicting-values", "window-before-the-layer-count"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_checks_the_window_fields_as_intake_does(tmp_path, layer_count, window, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, {**_GDN_LAYERS, **window}, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize(
+    "declarations,reasons",
+    [
+        # Intake ignores a null window field and takes an integer of at least 0 that the other field agrees with.
+        ({**_GDN_LAYERS, "sliding_window": None}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 0}, "layer_types linear_attention x1"),
+        ({**_GDN_LAYERS, "sliding_window": 128, "sliding_window_size": 128}, "layer_types linear_attention x1"),
+        # A well-formed attn_type_list, one entry per layer, with an integer other than 1.
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1]}, "attn_type_list 0 x1"),
+    ],
+    ids=["null-window", "zero-window", "agreeing-windows", "attn-type-list-marker"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_well_formed_marker_layout_needs_a_flag_for_the_native_runtime(tmp_path, declarations, reasons, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations)
+    # Intake accepts the config and leaves its cache layout to the runtime probe, for the same reasons.
+    assert load_intake_config(path).runtime_layout == (reasons,)
+    if native:
+        _assert_native_runtime(_layout_capability(path, native=True), reasons, is_moe=False)
+    else:
+        with pytest.raises(ValueError) as refusal:
+            _layout_capability(path, native=False)
+        architecture = declarations["architectures"][0]
+        assert str(refusal.value) == _LAYOUT_REFUSAL.format(architecture=architecture, reasons=reasons)
+
+
 @pytest.mark.parametrize(
     "layer_count,declarations",
     [
@@ -1349,12 +1416,21 @@ def test_detected_layout_reads_every_layer_count_field_of_intake(tmp_path):
         (None, {"attn_type_list": [1, "bad"]}),
         ({"num_layers": 2}, {"layer_types": ["full_attention"]}),
         ({"num_hidden_layers": 2, "n_layer": 3}, {}),
+        (None, {"sliding_window": "128"}),
+        (None, {"sliding_window": 128, "sliding_window_size": 256}),
     ],
-    ids=["three-entries-for-two-layers", "string-entry", "num-layers-with-short-layer-types", "conflicting-counts"],
+    ids=[
+        "three-entries-for-two-layers",
+        "string-entry",
+        "num-layers-with-short-layer-types",
+        "conflicting-counts",
+        "string-window",
+        "conflicting-windows",
+    ],
 )
-def test_config_without_markers_keeps_the_layer_checks_of_main(tmp_path, layer_count, declarations):
-    # Main's collector read only num_hidden_layers and never checked attn_type_list. The checks above apply to the
-    # marker path only.
+def test_config_without_markers_keeps_the_checks_of_main(tmp_path, layer_count, declarations):
+    # Main's collector read only num_hidden_layers and checked neither attn_type_list nor the window fields. The
+    # checks above apply to the marker path only.
     path = _layer_config(tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], **declarations}, layer_count)
     capability = _layout_capability(path, native=True)
     assert (capability.support_level, capability.template_id) == ("bootstrap_template", "generic:dense_gqa")

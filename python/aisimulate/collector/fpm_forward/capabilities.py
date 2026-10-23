@@ -23,8 +23,10 @@ from .model_capability import ResolvedModelConfig, load_model_config, resolve_at
 TEMPLATE_VERSION = 1
 # A cache layout that config.json cannot describe gets no FPM attention template; the native runtime measures it.
 GENERIC_RUNTIME_TEMPLATE_ID = "generic:native_runtime"
-# Config intake's layer count fields, in its order (_INT_ALIASES in aisimulate/support/config_profile.py). The
-# collector does not import the onboarding package, so a test pins this copy to intake.
+# Config intake's window and layer count fields, in its order (_cache_window and _INT_ALIASES in
+# aisimulate/support/config_profile.py). The collector does not import the onboarding package, so tests pin these
+# copies to intake.
+_WINDOW_FIELDS = ("sliding_window", "sliding_window_size")
 _LAYER_COUNT_FIELDS = ("num_hidden_layers", "n_layer", "num_layers")
 
 
@@ -44,23 +46,31 @@ def _is_moe(config: dict[str, object]) -> bool:
     return any(int(config.get(key) or 0) > 1 for key in ("n_routed_experts", "num_local_experts", "num_experts"))
 
 
+def _intake_integer(value: object, field: str, minimum: int) -> int:
+    """Config intake's integer check (_integer in aisimulate/support/config_profile.py), with its message."""
+    if type(value) is not int or value < minimum:
+        raise ValueError(f"{field} must be an integer >={minimum}, not a boolean, float or numeric string")
+    return value
+
+
 def _check_layer_declarations(config: dict[str, object], *, marker_layout: bool = False) -> None:
     """Config intake's layer structure checks. A cache layout marker never excuses a malformed declaration.
 
-    For a marker layout, all of intake's checks apply: the layer count comes from every field that intake reads,
-    with intake's messages, and attn_type_list is checked too. A config without markers keeps main's checks, which
-    read only num_hidden_layers and never checked attn_type_list.
+    For a marker layout, the checks are those of intake's runtime-layout block, in its order and with its messages:
+    the window fields sliding_window and sliding_window_size, the layer count from every field that intake reads,
+    layer_types and attn_type_list. A config without markers keeps main's checks, which read only num_hidden_layers
+    and checked neither the window fields nor attn_type_list.
     """
     layer_types = config.get("layer_types")
     if marker_layout:
-        # Intake's rule: each layer count field present is an integer of at least 1, and all of them agree.
-        counts: dict[str, int] = {}
-        for field in _LAYER_COUNT_FIELDS:
-            if field in config:
-                value = config[field]
-                if type(value) is not int or value < 1:
-                    raise ValueError(f"{field} must be an integer >=1, not a boolean, float or numeric string")
-                counts[field] = value
+        # Intake's rules: each window field that is present and not null is an integer of at least 0, each layer
+        # count field present is an integer of at least 1, and the fields of each kind agree.
+        windows = {
+            field: _intake_integer(config[field], field, 0) for field in _WINDOW_FIELDS if config.get(field) is not None
+        }
+        if len(set(windows.values())) > 1:
+            raise ValueError(f"conflicting sliding-window fields: {windows}")
+        counts = {field: _intake_integer(config[field], field, 1) for field in _LAYER_COUNT_FIELDS if field in config}
         if len(set(counts.values())) > 1:
             raise ValueError(f"conflicting num_hidden_layers fields: {counts}")
         layers = next(iter(counts.values()), None)
