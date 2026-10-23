@@ -392,6 +392,12 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 
 ## Runtime Behavior
 
+`compute_scale` produces both `computescale_perf` and its static-quantization
+companion `scale_matrix_perf`. Finalization and recovery bind both tables to
+the same registered producer and checkpoint. Both staging files are required
+before either is published; the attempted ledger closes only after both tables
+and their provenance commit.
+
 TRT-LLM quantized MoE construction uses the BF16 model dtype and selects weight
 quantization through `QuantConfig`, matching rc29 serving. Passing FP8 as the
 model dtype is rejected by rc29's CUTLASS implementation resolver.
