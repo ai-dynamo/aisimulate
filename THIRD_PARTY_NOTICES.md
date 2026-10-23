@@ -1432,3 +1432,22 @@ https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a06
 
 The AISimulate files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
+
+## AIConfigurator PR #1612 migration
+
+The following repository-root paths contain modified adaptations of the
+AIConfigurator contribution at immutable commit `bff1492d4f668232b9dd411f9b28d849a2776000`:
+
+- `docs/aic-backward-compatibility/cli.md` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/bff1492d4f668232b9dd411f9b28d849a2776000/docs/cli_user_guide.md
+- `docs/sweeper/optimization-goals.md` from
+  https://github.com/ai-dynamo/aiconfigurator/blob/bff1492d4f668232b9dd411f9b28d849a2776000/docs/dynamo_deployment_guide.md
+
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+The contribution was submitted by xinjun.jiang. Licensed under Apache-2.0;
+the license text is included in the repository and Python distribution.
+Upstream license:
+https://github.com/ai-dynamo/aiconfigurator/blob/bff1492d4f668232b9dd411f9b28d849a2776000/LICENSE
+
+Modified for AISimulate's current layout and contracts; source links are
+preserved beside the adapted content.

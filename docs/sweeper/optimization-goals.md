@@ -5,6 +5,10 @@ title: Sweeper Optimization Goals
 subtitle: Objective metrics, SLA constraints, and Pareto-front scoring
 ---
 
+<!-- Documentation corrections adapted and modified from AIConfigurator PR #1612:
+https://github.com/ai-dynamo/aiconfigurator/blob/bff1492d4f668232b9dd411f9b28d849a2776000/docs/dynamo_deployment_guide.md
+-->
+
 > [!WARNING]
 > **Experimental.** Sweeper is intended for evaluation and feedback, not production capacity
 > planning. Its API, configuration schema, search results, and deployment output may change
@@ -52,8 +56,9 @@ absent, but `ttft` and `e2e_latency` default to `+inf` when their metric is miss
 no qualifying samples. Such a latency report scores worst-possible (`-inf` after negation)
 rather than best.
 
-The `*_per_user` metric is already a rate (mean of per-token-gap `1000/itl`), so it gets
-**no** GPU/time normalization — it is the InferenceX x-axis (tok/s/user).
+The `*_per_user` metric is already a rate, so it gets **no** GPU/time
+normalization — it is the InferenceX x-axis (tok/s/user). Its aggregation depends
+on the executor; see the [Pareto metric definitions](#pareto).
 
 ### `avg_gpu` — the per-GPU divisor
 
@@ -147,6 +152,28 @@ tradeoff between the scalar targets in `pareto_objectives`.
   unset (`None`) — the **InferenceX tok/s/gpu (y) vs tok/s/user (x) frontier**. An
   explicit list is kept as-is so the validator can reject it: `>= 2` entries, distinct, no
   `pareto` among them, and `pareto_objectives` is only legal under a `pareto` target.
+
+For a single positive inter-token latency, `TPOT_ms <= limit_ms` is equivalent to
+`1000 / TPOT_ms >= 1000 / limit_ms`. Thus a 10 ms limit includes the 100 tokens/s/user
+boundary, and feasible points are at or to the right of that threshold when the
+x-axis is the reciprocal of the same TPOT value.
+
+With native text Replay, the Sweeper's `throughput_per_user` objective is the
+**mean of positive per-token-gap reciprocals**, `mean(1000 / ITL_ms)`. It is not generally
+`1000 / mean_tpot_ms`: averaging and reciprocation do not commute. For example,
+5 ms and 15 ms gaps have a 10 ms mean latency but a mean reciprocal rate of
+about 133.3 tokens/s/user.
+
+Analytical AFD replay uses a different aggregation: `1000 / mean_tpot_ms`,
+where `mean_tpot_ms` averages request TPOT values. Two requests with TPOTs of
+5 ms and 15 ms therefore produce 100 tokens/s/user in that executor. Check the
+executor's report rather than assuming these two aggregation rules are
+interchangeable. For native Replay, do not use an x-axis cutoff as a substitute
+for the aggregate TPOT SLA. Configure `goal.sla.itl_ms` with `goal.strict_sla: true` in the SDK
+(or `evaluation.sla.itl_ms` with `optimization.strict_sla: true` in
+the unified CLI) to apply the inclusive aggregate-mean constraint before the
+Pareto front is selected. Choose a feasible candidate from that filtered front
+for [deployment generation](deployment-generation.md#3-render-the-selected-candidate).
 
 - **optimizer selection** — the historical SDK path (`sweep.max_trials: null`)
   creates round-based Vizier studies. Its default algorithm is `DEFAULT`, subject
