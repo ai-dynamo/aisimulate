@@ -1285,6 +1285,17 @@ https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c1800
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
 the repository Apache-2.0 license text applies to these adaptations.
 
+The Hopper SGLang FP8-KV attention precision in
+`crates/core/src/perfmodel/operators/glm53flash.rs` and its arithmetic tests
+is a modified, independently expressed analytical adaptation of
+`python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py` at
+https://github.com/sgl-project/sglang/tree/9336681310c7a7153c4fbd7c2b9ae62011899014
+(Copyright SGLang contributors, Apache-2.0). Changes: express the raw-FP8
+TileLang QK/PV precision as a tensor-core roofline rate on SM90 and verify
+the mathematical work with hand-calculated examples; no kernel source is
+vendored. The upstream license is preserved by the repository and packaged
+Apache-2.0 `LICENSE` text.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype

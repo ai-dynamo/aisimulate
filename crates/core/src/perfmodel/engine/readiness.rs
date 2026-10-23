@@ -91,13 +91,13 @@ fn validate_compute_capability(db: &PerfDatabase, quant: QuantMapping) -> Result
     Ok(())
 }
 
-/// GLM-5.3-Flash sparse MLA on SM9x: the modelled stock runtimes serve the
-/// latent KV only in BF16. SGLang 0.5.20's IndexPool DSA backends cannot read
-/// FP8 KV there, and vLLM 0.31.0 `FLASHINFER_MLA_SPARSE_SM90` hands an FP8
-/// cache to FlashInfer 0.7.0.post1 `plan()` as uint8 storage, which it
-/// rejects. An FP8-KV request (including the FP8 default) fails here in every
-/// database mode instead of pricing a deployment the runtimes cannot serve;
-/// the requested dtype is never switched.
+/// Hopper FP8 KV requires a runtime that implements the GLM IndexPool path.
+/// vLLM 0.32.0 fixes the SM90 FlashInfer plan dtype (#55222, c37f86e5721f),
+/// and SGLang 0.5.22 enables CUDA TileLang FP8 KV (#42957, 9336681310c7).
+/// The latter requires TileLang for both DSA prefill and decode. These are
+/// runtime restrictions, not a hardware prohibition or measured-data coverage.
+/// Sources: https://github.com/vllm-project/vllm/pull/55222
+///          https://github.com/sgl-project/sglang/pull/42957
 fn validate_glm53_kv_capability(
     db: &PerfDatabase,
     op: &crate::operators::glm53flash::Glm53AttentionOp,
@@ -107,12 +107,24 @@ fn validate_glm53_kv_capability(
         && let Some(sm) = db.system_spec.gpu.sm_version
         && (90..100).contains(&sm)
     {
+        let minimum = match op.backend.as_str() {
+            "vllm" => "0.32.0",
+            "sglang" => "0.5.22",
+            _ => return Ok(()),
+        };
+        if db
+            .version
+            .parse::<pep440_rs::Version>()
+            .is_ok_and(|version| version >= minimum.parse::<pep440_rs::Version>().unwrap())
+        {
+            return Ok(());
+        }
         return Err(AicError::InvalidEngineConfig(format!(
             "GLM-5.3-Flash on GPU {} (SM{sm}) cannot use FP8 sparse-MLA KV with {}: the \
-             stock SM90 runtimes (vLLM 0.31.0, SGLang 0.5.20) serve this model with BF16 KV \
-             only. Pass kvcache_quant_mode=\"bfloat16\" (the FP8 default does not apply on \
-             SM90).",
-            db.system, op.backend,
+             requested backend_version={} requires {} >= {}. Select a supported runtime \
+             (SGLang requires TileLang DSA prefill and decode), or pass \
+             kvcache_quant_mode=\"bfloat16\".",
+            db.system, op.backend, db.version, op.backend, minimum,
         )));
     }
     Ok(())
@@ -832,6 +844,65 @@ mod tests {
     }
 
     #[test]
+    fn glm53_hopper_fp8_kv_admission_tracks_runtime_fixes() {
+        let root = systems();
+        let path = root.path().join("b200_sxm.yaml");
+        let mut spec: serde_yaml::Value =
+            serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        spec["gpu"]["sm_version"] = serde_yaml::to_value(90).unwrap();
+        std::fs::write(path, serde_yaml::to_string(&spec).unwrap()).unwrap();
+
+        // Stable upstream release boundaries; prereleases of the first fixed
+        // version and unknown labels do not establish that the fix is present.
+        for (backend, version, supported) in [
+            ("vllm", "0.31.0", false),
+            ("vllm", "0.32.0rc1", false),
+            ("vllm", "0.32.0", true),
+            ("vllm", "0.32.0+cu130", true),
+            ("vllm", "0.33.0", true),
+            ("sglang", "0.5.20", false),
+            ("sglang", "0.5.21", false),
+            ("sglang", "0.5.22.dev1", false),
+            ("sglang", "0.5.22", true),
+            ("sglang", "0.5.22.post1", true),
+            ("sglang", "main", false),
+        ] {
+            for mode in [
+                DatabaseMode::Silicon,
+                DatabaseMode::Hybrid,
+                DatabaseMode::Sol,
+            ] {
+                let mut db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                    .unwrap()
+                    .with_mode(mode, TransferPolicy::ALL);
+                db.tables_mut().version = version.into();
+                let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
+                sparse.backend = backend.into();
+                sparse.checkpoint_format = "fp8".into();
+                let op = Op::TokenScale(crate::operators::op::TokenScaleOp {
+                    op: Box::new(Op::Glm53Attention(sparse.clone())),
+                    numerator: 1,
+                    denominator: 1,
+                });
+                let result = validate_glm53_kv(&db, [&op].into_iter());
+                assert_eq!(result.is_ok(), supported, "{backend} {version}: {result:?}");
+                if supported {
+                    let ready = validate(&db, [&op].into_iter());
+                    if mode == DatabaseMode::Silicon {
+                        // Reopening the runtime path must not supply missing
+                        // measurements or silently switch the FP8 identity.
+                        assert!(matches!(ready, Err(AicError::PerfDatabase(_))), "{ready:?}");
+                    } else {
+                        ready.unwrap();
+                    }
+                }
+                sparse.kv_cache_dtype = KvCacheQuantMode::Bfloat16;
+                validate_glm53_kv_capability(&db, &sparse).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn glm53_fp8_sparse_kv_is_rejected_on_sm90_in_every_mode() {
         let root = systems();
         for (sm, rejected) in [
@@ -850,10 +921,15 @@ mod tests {
                 DatabaseMode::Hybrid,
                 DatabaseMode::Sol,
             ] {
-                let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                let mut db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
                     .unwrap()
                     .with_mode(mode, TransferPolicy::ALL);
                 for backend in ["vllm", "sglang"] {
+                    db.tables_mut().version = match backend {
+                        "vllm" => "0.31.0",
+                        _ => "0.5.20",
+                    }
+                    .into();
                     let mut sparse = crate::operators::glm53flash::tests::attention("sparse_mla");
                     sparse.backend = backend.into();
                     sparse.checkpoint_format = "fp8".into();
