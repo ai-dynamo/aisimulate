@@ -12,6 +12,7 @@ Module-specific fixtures are located in their respective conftest.py files:
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -36,6 +37,22 @@ def pytest_configure(config: pytest.Config) -> None:
     engine_step_backend = config.getoption("--aic-engine-step-backend")
     if engine_step_backend:
         os.environ["AICONFIGURATOR_ENGINE_STEP_BACKEND"] = engine_step_backend
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logger():
+    """Undo root logger changes, such as those from an in-process CLI ``main()``.
+
+    The CLI ``setup_logging`` replaces the root handlers with a handler bound to
+    the current ``sys.stdout`` and lowers the root level. Under ``capsys`` that
+    stream is closed after the test, so a handler left behind turns every later
+    INFO record in the same process into "--- Logging error ---" on stderr.
+    """
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    yield
+    root.handlers[:] = handlers
+    root.setLevel(level)
 
 
 @pytest.fixture
