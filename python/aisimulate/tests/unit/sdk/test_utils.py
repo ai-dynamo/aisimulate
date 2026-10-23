@@ -10,14 +10,15 @@ Tests HuggingFace config parsing and model config retrieval.
 import io
 import json
 import logging
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from aisimulate.sdk import common, config, utils
+from aisimulate.sdk import common, config, operations, utils
 from aisimulate.sdk.backends.base_backend import BaseBackend
-from aisimulate.sdk.models import Gemma4MixModel, HybridMoEModel
+from aisimulate.sdk.models import Gemma4MixModel, HybridMoEModel, get_model
 from aisimulate.sdk.utils import (
     _parse_hf_config_json,
     enumerate_parallel_config,
@@ -74,6 +75,13 @@ def test_hf_metadata_can_disable_implicit_credentials(monkeypatch, tmp_path):
     assert token.read_text() == "cached-token"
     monkeypatch.delenv("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     assert utils._get_hf_auth_headers() == {"Authorization": "Bearer environment-token"}
+
+
+# Llama 4 attention fields over the 48 packaged layers. The no_rope_layers name is inverted:
+# 0 marks a NoPE layer, which has global attention, and 1 a RoPE layer with chunked local attention.
+LLAMA4_DEFAULT_GLOBAL_LAYERS = [3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43, 47]
+LLAMA4_NO_ROPE_LAYERS = [0 if i in (0, 10, 47) else 1 for i in range(48)]
+LLAMA4_LAYER_TYPES = ["full_attention" if i in (1, 2, 40) else "chunked_attention" for i in range(48)]
 
 
 class TestParseHFConfig:
@@ -568,7 +576,7 @@ class TestParseHFConfig:
         assert extra_params.shared_expert_inter_size == 2048
 
     def test_parse_llama4_scout_config(self):
-        """Test Llama 4 Scout (VLM, step=1: all-MoE) → HybridMoEConfig with alternating attn pattern."""
+        """Test Llama 4 Scout (VLM, step=1: all-MoE) → HybridMoEConfig with a global layer every fourth layer."""
         config = {
             "architectures": ["Llama4ForConditionalGeneration"],
             "model_type": "llama4",
@@ -617,8 +625,8 @@ class TestParseHFConfig:
         assert cfg is not None
         # step=1: all layers MoE
         assert all(m == 1 for m in cfg.moe_layer_freq)
-        # alternating local(0)/global(1): even=0, odd=1
-        assert cfg.attn_layer_pattern == tuple(i % 2 for i in range(48))
+        # No no_rope_layers or layer_types: every fourth layer is a NoPE layer with global (1) attention.
+        assert cfg.attn_layer_pattern == tuple(1 if (i + 1) % 4 == 0 else 0 for i in range(48))
         assert cfg.sliding_window_size == 8192
         assert cfg.dense_inter_size == 16384
         assert cfg.vision_config is not None
@@ -711,7 +719,8 @@ class TestParseHFConfig:
         assert result["layers"] == 10
         cfg = result["extra_params"]
         assert cfg is not None
-        assert cfg.attn_layer_pattern == tuple(hybrid_pattern)
+        # hybrid_layer_pattern uses 1 for sliding-window layers; attn_layer_pattern uses 1 for global layers.
+        assert cfg.attn_layer_pattern == tuple(1 - v for v in hybrid_pattern)
         assert cfg.moe_layer_freq == tuple(moe_freq)
         assert cfg.swa_num_kv_heads == 8
         assert cfg.swa_head_dim == 192
@@ -762,6 +771,89 @@ class TestParseHFConfig:
         }
         with pytest.raises(ValueError, match="positive integer"):
             _parse_hf_config_json(hf_config)
+
+    def test_parse_packaged_mimov2flash_config_global_layers(self):
+        """The full-attention layers (hybrid_layer_pattern 0) of the packaged config are the global layers."""
+        cfg = get_model_config_from_model_path("XiaomiMiMo/MiMo-V2-Flash")["extra_params"]
+        assert len(cfg.attn_layer_pattern) == 48
+        assert [i for i, v in enumerate(cfg.attn_layer_pattern) if v == 1] == [0, 5, 11, 17, 23, 29, 35, 41, 47]
+
+    def test_mimo_pattern_non_binary_value_raises(self):
+        """The 0/1 check applies to the raw hybrid_layer_pattern, before the parser inverts it."""
+        hf_config = deepcopy(get_model_config_from_model_path("XiaomiMiMo/MiMo-V2-Flash")["raw_config"])
+        hf_config["hybrid_layer_pattern"][1] = 2
+        with pytest.raises(ValueError, match="must contain only 0/1 values"):
+            _parse_hf_config_json(hf_config)
+
+    @pytest.mark.parametrize(
+        "model_id", ["meta-llama/Llama-4-Scout-17B-16E-Instruct", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"]
+    )
+    def test_parse_packaged_llama4_config_global_layers(self, model_id):
+        """The packaged configs set no no_rope_layers or layer_types, so every fourth layer is global."""
+        cfg = get_model_config_from_model_path(model_id)["extra_params"]
+        assert len(cfg.attn_layer_pattern) == 48
+        assert [i for i, v in enumerate(cfg.attn_layer_pattern) if v == 1] == LLAMA4_DEFAULT_GLOBAL_LAYERS
+
+    @staticmethod
+    def _llama4_config(flat=False, **text_fields):
+        """Packaged Llama 4 Scout config with text_config fields set; flat moves text_config to the top level."""
+        hf_config = deepcopy(
+            get_model_config_from_model_path("meta-llama/Llama-4-Scout-17B-16E-Instruct")["raw_config"]
+        )
+        hf_config["text_config"].update(text_fields)
+        if flat:
+            hf_config.update(hf_config.pop("text_config"))
+        return hf_config
+
+    @pytest.mark.parametrize("flat", [False, True], ids=["nested", "flat"])
+    @pytest.mark.parametrize(
+        "text_fields,expected_global",
+        [
+            pytest.param({}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="default"),
+            pytest.param({"no_rope_layers": []}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="empty_no_rope_layers"),
+            pytest.param({"no_rope_layers": LLAMA4_NO_ROPE_LAYERS}, [0, 10, 47], id="no_rope_layers"),
+            pytest.param({"no_rope_layer_interval": 6}, [5, 11, 17, 23, 29, 35, 41, 47], id="no_rope_layer_interval"),
+            pytest.param({"layer_types": LLAMA4_LAYER_TYPES}, [1, 2, 40], id="layer_types"),
+            pytest.param(
+                {"layer_types": LLAMA4_LAYER_TYPES, "no_rope_layers": LLAMA4_NO_ROPE_LAYERS},
+                [1, 2, 40],
+                id="layer_types_wins",
+            ),
+        ],
+    )
+    def test_llama4_attention_pattern_fields(self, text_fields, expected_global, flat):
+        """Global layers follow layer_types, else no_rope_layers == 0, else every no_rope_layer_interval-th layer."""
+        cfg = _parse_hf_config_json(self._llama4_config(flat, **text_fields))["extra_params"]
+        assert [i for i, v in enumerate(cfg.attn_layer_pattern) if v == 1] == expected_global
+
+    @pytest.mark.parametrize(
+        "text_fields,match",
+        [
+            pytest.param(
+                {"layer_types": ["chunked_attention"] * 47 + ["sliding_attention"]},
+                "only 'full_attention' or 'chunked_attention'",
+                id="unknown_layer_type",
+            ),
+            pytest.param(
+                {"layer_types": ["chunked_attention"] * 47}, "layer_types must have 48 entries", id="layer_types_length"
+            ),
+            pytest.param(
+                {"no_rope_layers": [1] * 47}, "no_rope_layers must have 48 entries", id="no_rope_layers_length"
+            ),
+            pytest.param(
+                {"no_rope_layers": [1] * 47 + [2]}, "no_rope_layers must contain only 0/1", id="no_rope_layers_value"
+            ),
+            pytest.param(
+                {"no_rope_layer_interval": 0}, "no_rope_layer_interval must be a positive", id="interval_zero"
+            ),
+            pytest.param(
+                {"no_rope_layer_interval": None}, "no_rope_layer_interval must be a positive", id="interval_null"
+            ),
+        ],
+    )
+    def test_llama4_invalid_attention_pattern_fields_raise(self, text_fields, match):
+        with pytest.raises(ValueError, match=match):
+            _parse_hf_config_json(self._llama4_config(**text_fields))
 
     @staticmethod
     def _gemma4_text_config(layer_types):
@@ -1329,6 +1421,41 @@ class TestHybridMoEModelBuilder:
         op_names = [op._name for op in model.context_ops]
         assert any("global" in n and "moe" in n for n in op_names)
         assert any("dense" in n for n in op_names), "Maverick needs dense FFN ops"
+
+    @pytest.mark.parametrize(
+        "model_id,layer_types,attention_layers",
+        [
+            # MiMo-V2-Flash: the 9 full-attention layers keep num_key_value_heads=4 and no window; the 39
+            # sliding-window layers use swa_num_key_value_heads=8 over sliding_window_size=128 tokens.
+            (
+                "XiaomiMiMo/MiMo-V2-Flash",
+                {"global_moe": 8, "swa_moe": 39, "swa_dense": 0, "global_dense": 1},
+                {(4, 192, 0): 9, (8, 192, 128): 39},
+            ),
+            # Llama 4: 12 global layers and 36 chunked local layers over attention_chunk_size=8192 tokens.
+            (
+                "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+                {"global_moe": 12, "swa_moe": 36, "swa_dense": 0, "global_dense": 0},
+                {(8, 128, 0): 12, (8, 128, 8192): 36},
+            ),
+            (
+                "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+                {"global_moe": 12, "swa_moe": 12, "swa_dense": 24, "global_dense": 0},
+                {(8, 128, 0): 12, (8, 128, 8192): 36},
+            ),
+        ],
+    )
+    def test_packaged_config_attention_follows_layer_type(self, model_id, layer_types, attention_layers):
+        """Each layer type of the built model takes its KV heads, head dim and window from the parsed pattern."""
+        model = get_model(model_id, self._make_model_config(), "trtllm")
+        assert model._count_layer_types() == layer_types
+        # (KV heads, Q/K head dim, window) -> number of layers, from the context attention ops.
+        layers = {}
+        for op in model.context_ops:
+            if isinstance(op, operations.ContextAttention):
+                key = (op._n_kv, op._head_size, op._window_size)
+                layers[key] = layers.get(key, 0) + op._scale_factor
+        assert layers == attention_layers
 
 
 class TestGetModelConfigFromHFID:
