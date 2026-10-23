@@ -1,0 +1,560 @@
+{
+  "baseline": "6b57265e03a3844503b6a9f77f29f1f2dd8eea02",
+  "measured_source": "4849d6676280aafe963d795a757d087a24d8f8a7",
+  "generation_source": "7392d688601c99c5048fba27c70547a586495c2c",
+  "runtime_inputs_identical": true,
+  "candidate_binary_sha256": "ffd6f19910670a32001382c5cba7490e3bfe540b7308df406dedb648b682812e",
+  "baseline_binary_sha256": "89deab3f20038c3cbb9d18e47f62eed56cda6df4f28f8b97ed72e31446d06218",
+  "forward": {
+    "cases": 64,
+    "points": {
+      "IMPROVEMENT": 31,
+      "OK": 47,
+      "UNSTABLE": 50
+    },
+    "blocking": false,
+    "run_errors": []
+  },
+  "replay": [
+    {
+      "case": "ordinary_fixed",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 0.09600003249943256,
+          "candidate_median_ms": 0.08466606959700584,
+          "median_pair_ratio": 0.8789062784216998,
+          "pair_ratio_range": [
+            0.8315407879188448,
+            0.9970565775962644
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 0.280959066003561,
+          "candidate_median_ms": 0.2705829683691263,
+          "median_pair_ratio": 0.9900626496838512,
+          "pair_ratio_range": [
+            0.3106560794494981,
+            1.1053253530340044
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 2.4858330143615603,
+          "candidate_median_ms": 2.4297500494867563,
+          "median_pair_ratio": 0.9883490200541785,
+          "pair_ratio_range": [
+            0.9488436901303007,
+            2.1527284658920136
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 0.8493330096825957,
+          "candidate_median_ms": 0.8879579836502671,
+          "median_pair_ratio": 1.040032539648273,
+          "pair_ratio_range": [
+            0.9443368969276327,
+            1.074521867767405
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 684.8330409266055,
+          "candidate_median_ms": 671.9012089306489,
+          "median_pair_ratio": 0.9806034399374475,
+          "pair_ratio_range": [
+            0.8446746880240438,
+            1.008712772964659
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 0.673916,
+          "candidate_median_ms": 0.680583,
+          "median_pair_ratio": 1.0227287071460558,
+          "pair_ratio_range": [
+            0.9199524133242692,
+            1.2371884700665188
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_op_level",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 0.21591689437627792,
+          "candidate_median_ms": 0.22725004237145185,
+          "median_pair_ratio": 0.9648759483952225,
+          "pair_ratio_range": [
+            0.8561999021893361,
+            1.2475948251692233
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 7.605624967254698,
+          "candidate_median_ms": 7.432374986819923,
+          "median_pair_ratio": 0.9577743502741878,
+          "pair_ratio_range": [
+            0.9455123484889139,
+            1.0340124852277515
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 192.02354096341878,
+          "candidate_median_ms": 189.10641700495034,
+          "median_pair_ratio": 0.9722471371877239,
+          "pair_ratio_range": [
+            0.9511420395599304,
+            1.0265367957303386
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 14.55420907586813,
+          "candidate_median_ms": 14.44966602139175,
+          "median_pair_ratio": 0.9955061770064065,
+          "pair_ratio_range": [
+            0.9383686715280037,
+            1.011129046125122
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2006.9655829574913,
+          "candidate_median_ms": 1962.5397919444367,
+          "median_pair_ratio": 0.977864198873013,
+          "pair_ratio_range": [
+            0.9655100513602372,
+            1.0265955985954354
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 1.251417,
+          "candidate_median_ms": 1.202875,
+          "median_pair_ratio": 0.9547279503105589,
+          "pair_ratio_range": [
+            0.8263901144883888,
+            1.0365913200795578
+          ]
+        }
+      }
+    },
+    {
+      "case": "ordinary_op_level",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 0.21870795171707869,
+          "candidate_median_ms": 0.21729106083512306,
+          "median_pair_ratio": 0.9927624984896366,
+          "pair_ratio_range": [
+            0.8250131520888753,
+            1.237836518525906
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 7.554458919912577,
+          "candidate_median_ms": 7.54616700578481,
+          "median_pair_ratio": 1.0002818194931873,
+          "pair_ratio_range": [
+            0.9213896510883399,
+            1.0203096152031468
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 233.6589579936117,
+          "candidate_median_ms": 234.48325006756932,
+          "median_pair_ratio": 1.0096339840834483,
+          "pair_ratio_range": [
+            0.9468665490759606,
+            1.0349363781574068
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 57.844707975164056,
+          "candidate_median_ms": 58.29349998384714,
+          "median_pair_ratio": 1.01180989563273,
+          "pair_ratio_range": [
+            0.9946608190820634,
+            1.0204772576122048
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2080.4567920276895,
+          "candidate_median_ms": 2021.2697910610586,
+          "median_pair_ratio": 0.9707503435558765,
+          "pair_ratio_range": [
+            0.9675588268749509,
+            0.9988882032086818
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 43.292291,
+          "candidate_median_ms": 44.45075,
+          "median_pair_ratio": 1.0267590135158244,
+          "pair_ratio_range": [
+            0.9674384451932898,
+            1.0674013831387146
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_four_stage_low",
+      "requests": 16,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.975541981868446,
+          "candidate_median_ms": 3.0470420606434345,
+          "median_pair_ratio": 1.0136518448991199,
+          "pair_ratio_range": [
+            0.9924410518144031,
+            1.0671585449459895
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1337.722250027582,
+          "candidate_median_ms": 1315.1766250375658,
+          "median_pair_ratio": 0.981503898904077,
+          "pair_ratio_range": [
+            0.9757746796705816,
+            0.9965023799713043
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 200.9897909592837,
+          "candidate_median_ms": 203.5047080134973,
+          "median_pair_ratio": 1.008171878781195,
+          "pair_ratio_range": [
+            0.9512987469483098,
+            1.0418074199415115
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 22.961542010307312,
+          "candidate_median_ms": 22.65229099430144,
+          "median_pair_ratio": 0.9878256459359098,
+          "pair_ratio_range": [
+            0.9565411902174838,
+            1.0250731008649414
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2206.7267920356244,
+          "candidate_median_ms": 2206.785540911369,
+          "median_pair_ratio": 0.999880686584971,
+          "pair_ratio_range": [
+            0.9843531181283741,
+            1.0165310450034148
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 2.8628329999999997,
+          "candidate_median_ms": 2.9884999999999997,
+          "median_pair_ratio": 1.0386606651225803,
+          "pair_ratio_range": [
+            1.0224809997881805,
+            1.0650232605214034
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_four_stage_busy",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.877332968637347,
+          "candidate_median_ms": 2.914584008976817,
+          "median_pair_ratio": 1.0306307239539843,
+          "pair_ratio_range": [
+            0.944588931787387,
+            1.0394897221252768
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1342.4033750779927,
+          "candidate_median_ms": 1315.0442499900237,
+          "median_pair_ratio": 0.9840253059771534,
+          "pair_ratio_range": [
+            0.9751044777796676,
+            1.0035270191711254
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 247.45133297983557,
+          "candidate_median_ms": 251.47000001743436,
+          "median_pair_ratio": 1.0250703417591884,
+          "pair_ratio_range": [
+            0.9695721456031079,
+            1.0461686250739652
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 68.6426250031218,
+          "candidate_median_ms": 71.26287498977035,
+          "median_pair_ratio": 1.035216421133269,
+          "pair_ratio_range": [
+            1.0308530458128211,
+            1.047114944829565
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2241.980499937199,
+          "candidate_median_ms": 2260.767834028229,
+          "median_pair_ratio": 1.0083797937098722,
+          "pair_ratio_range": [
+            0.9903723953292486,
+            1.0148650040810767
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 46.187875000000005,
+          "candidate_median_ms": 49.728333,
+          "median_pair_ratio": 1.0783177912743926,
+          "pair_ratio_range": [
+            1.0633476338486794,
+            1.1124903120972387
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_two_stage",
+      "requests": 1024,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.9109170427545905,
+          "candidate_median_ms": 3.00587504170835,
+          "median_pair_ratio": 1.056376532190222,
+          "pair_ratio_range": [
+            0.9480307169187806,
+            1.15864105253968
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1359.3765000114217,
+          "candidate_median_ms": 1326.761458069086,
+          "median_pair_ratio": 0.9751694098821259,
+          "pair_ratio_range": [
+            0.9072695305024736,
+            1.0002226930194902
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 250.85941690485924,
+          "candidate_median_ms": 243.45337506383657,
+          "median_pair_ratio": 0.9992555555599951,
+          "pair_ratio_range": [
+            0.908308276541999,
+            1.016496335538248
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 67.43850000202656,
+          "candidate_median_ms": 69.42387495655566,
+          "median_pair_ratio": 1.027841104814794,
+          "pair_ratio_range": [
+            1.0045498509325848,
+            1.0362611848961307
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2286.755583016202,
+          "candidate_median_ms": 2258.289917022921,
+          "median_pair_ratio": 0.9891432323185252,
+          "pair_ratio_range": [
+            0.9649088490102159,
+            0.998514995052077
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 46.596208,
+          "candidate_median_ms": 48.075542,
+          "median_pair_ratio": 1.0531090673453474,
+          "pair_ratio_range": [
+            0.9916994582859291,
+            1.0612536563446204
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_ragged",
+      "requests": 64,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 3.236791002564132,
+          "candidate_median_ms": 2.866458031348884,
+          "median_pair_ratio": 0.8821236921267985,
+          "pair_ratio_range": [
+            0.8574655409727776,
+            1.0218922881654025
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1354.273375007324,
+          "candidate_median_ms": 1346.0564580745995,
+          "median_pair_ratio": 0.9817596525032442,
+          "pair_ratio_range": [
+            0.9510499483618486,
+            1.0390015022312895
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 206.93424995988607,
+          "candidate_median_ms": 199.40645806491375,
+          "median_pair_ratio": 0.9522570496608966,
+          "pair_ratio_range": [
+            0.9457178388856148,
+            0.9956342799355765
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.515834007412195,
+          "candidate_median_ms": 23.189582978375256,
+          "median_pair_ratio": 1.000391271990737,
+          "pair_ratio_range": [
+            0.9772901798022402,
+            1.0123103363945187
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2243.210667045787,
+          "candidate_median_ms": 2232.521791011095,
+          "median_pair_ratio": 1.0086612806278297,
+          "pair_ratio_range": [
+            0.9672390076120208,
+            1.0143447087411703
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 2.951125,
+          "candidate_median_ms": 3.335541,
+          "median_pair_ratio": 1.1164958623514953,
+          "pair_ratio_range": [
+            1.0622651176653897,
+            1.1570940113185235
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_depth16",
+      "requests": 64,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 2.9518749797716737,
+          "candidate_median_ms": 3.040333976969123,
+          "median_pair_ratio": 1.0299670540939683,
+          "pair_ratio_range": [
+            0.9542478478833029,
+            1.139725654661133
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1356.8390829022974,
+          "candidate_median_ms": 1325.0969169894233,
+          "median_pair_ratio": 0.9731874063925574,
+          "pair_ratio_range": [
+            0.9572299489291053,
+            0.984976842073107
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 206.0416250023991,
+          "candidate_median_ms": 199.22270893584937,
+          "median_pair_ratio": 0.966905152944361,
+          "pair_ratio_range": [
+            0.9099095244786082,
+            0.9890907049875182
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.214207962155342,
+          "candidate_median_ms": 23.392457980662584,
+          "median_pair_ratio": 1.0064811109989793,
+          "pair_ratio_range": [
+            0.9919676852812833,
+            1.0268799436420766
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2242.0411671046168,
+          "candidate_median_ms": 2234.3704579398036,
+          "median_pair_ratio": 0.9934010732212464,
+          "pair_ratio_range": [
+            0.9738848322369683,
+            1.041272317091865
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 2.871292,
+          "candidate_median_ms": 3.4715420000000003,
+          "median_pair_ratio": 1.2072751938444317,
+          "pair_ratio_range": [
+            1.1436905791537,
+            1.2402810302818383
+          ]
+        }
+      }
+    },
+    {
+      "case": "afd_restore",
+      "requests": 32,
+      "metrics": {
+        "compile_ms": {
+          "baseline_median_ms": 3.009667037986219,
+          "candidate_median_ms": 3.0832079937681556,
+          "median_pair_ratio": 1.024434914179458,
+          "pair_ratio_range": [
+            0.9687587035883705,
+            1.0873642837511968
+          ]
+        },
+        "empty_native_ms": {
+          "baseline_median_ms": 1752.153959008865,
+          "candidate_median_ms": 1739.4924159161747,
+          "median_pair_ratio": 0.9993574092065312,
+          "pair_ratio_range": [
+            0.981175694673747,
+            1.0093866230405693
+          ]
+        },
+        "first_runner_ms": {
+          "baseline_median_ms": 448.63937492482364,
+          "candidate_median_ms": 447.3329170141369,
+          "median_pair_ratio": 0.986672195093736,
+          "pair_ratio_range": [
+            0.9653206050092535,
+            1.0142281139394733
+          ]
+        },
+        "warm_runner_ms": {
+          "baseline_median_ms": 23.465791950002313,
+          "candidate_median_ms": 23.625207948498428,
+          "median_pair_ratio": 1.0052941179559352,
+          "pair_ratio_range": [
+            0.983608729643874,
+            1.3384315989862898
+          ]
+        },
+        "cli_ms": {
+          "baseline_median_ms": 2926.0614160448313,
+          "candidate_median_ms": 2910.031000035815,
+          "median_pair_ratio": 0.986819626766784,
+          "pair_ratio_range": [
+            0.9587796051934819,
+            1.0188525624036626
+          ]
+        },
+        "last_native_wall_ms": {
+          "baseline_median_ms": 1.7098339999999999,
+          "candidate_median_ms": 2.072625,
+          "median_pair_ratio": 1.216061606160616,
+          "pair_ratio_range": [
+            1.120067045088055,
+            1.339165088540759
+          ]
+        }
+      }
+    }
+  ]
+}

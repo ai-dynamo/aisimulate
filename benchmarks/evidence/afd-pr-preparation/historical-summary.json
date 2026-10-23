@@ -1,0 +1,629 @@
+{
+  "schema_version": 1,
+  "status": "historical_provenance_only",
+  "archive_revision": "baff0871ff5495d76ed3ddf8c0f45f461932bff4",
+  "archive_recovery": "git show ARCHIVE_REVISION:PATH; the original branch, backup ref and full Git bundle retain all original objects. This summary does not bundle the original source trees or native binaries used by the historical experiments.",
+  "scope": "These receipts describe historical snapshots, not current candidate validation or serving accuracy. Original recorded identities are preserved without relabeling.",
+  "campaigns": [
+    {
+      "record": "benchmarks/evidence/afd-unification/identity.json",
+      "recorded_identities": {
+        "arms.baseline.binary_sha256": "b024f60ccdda0c1a1fc2943edc41051903bbc05b74831ec41c54eddfbd602b43",
+        "arms.baseline.revision": "23d21fa4f62ff47e742c48c26d3ed202f97308d2",
+        "arms.baseline.source_manifest_sha256": "56551ffb58a952c52c67e8d84dcafc5bdf19ad0bc7244b63ddd16f2487805cf8",
+        "arms.candidate.binary_sha256": "859de4317fc4bd98da82085c0ceebfa08d625d3c87a71545969d18c9e2c8b2de",
+        "arms.candidate.revision": "23d21fa4f62ff47e742c48c26d3ed202f97308d2",
+        "arms.candidate.source_manifest_sha256": "63f136d69571127d6ce8d1a19dd7854a897c0ef7733eff25a9367931b3e35264"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-local-ffn-tp/identity.json",
+      "recorded_identities": {
+        "baseline.sha": "4a934b0756c28b53b42027b955c23148ee1f738c",
+        "baseline.runtime_sha256": "441d41a8b3336d8547e7ef6b4af7fa72eb426ff6d33ea22b43f28eea920870f3",
+        "candidate.base_sha": "4a934b0756c28b53b42027b955c23148ee1f738c",
+        "candidate.source_manifest_sha256": "b7a8cbf4f3e9aa1dfc30a97da75222f934806011b043a44af676c10530c8e4ec",
+        "candidate.runtime_sha256": "ce25a2563d5a7aa7d8303edc534887c25159a37b76ffcca75bd42b7259575055"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-config-resolution/results.json",
+      "recorded_identities": {
+        "baseline_revision": "4ed29151f6dc28219f0c9b223b13c33e203918d6"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-dense-prefix/performance.json",
+      "recorded_identities": {
+        "baseline_revision": "5b668b9873664db042e20711ea31a348d607b625",
+        "baseline_binary.runtime_sha256": "f183880fe410ab90ea0122075b6f897ef64b2841cfc8998005e03dcb3a53f7cd",
+        "candidate_binary.runtime_sha256": "99a22ecc694bf630ca856413c72f2bcab71ca65834e9f3b76195c5577a14ac2a"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-dp-ep-restriction/validation.json",
+      "recorded_identities": {
+        "baseline_revision": "138338d10035bd59947e5d3845b6947565dd3a4d",
+        "candidate_identity.base_revision": "138338d10035bd59947e5d3845b6947565dd3a4d"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-routing-location.json",
+      "recorded_identities": {
+        "identity.base_revision": "af61a7e9f2080a4914f3be12dbdde7381e0b6e5c",
+        "identity.candidate_source_diff_sha256": "3703ee5140cc320fe79b808b71acd88f1be920dd3c730e4ea0eaa0bbaf705d2a"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-worker-roles.json",
+      "recorded_identities": {
+        "metadata.baseline_native_sha256": "9ac01051c4f71b4d905e48a33ab7a5a806b7f635ba9c893f5c1a6e3460c3cf9b",
+        "metadata.baseline_revision": "0f344f77abd1094b03a264313b26f7238a8d57d0",
+        "metadata.candidate_native_sha256": "010f4d038a8cdae10cfd6cf7019ac60a870df475e1326f5ac052e7b55bbc2f5d",
+        "metadata.candidate_validation_snapshot_revision": "6cbba3f950201bcb9fb63bfd79748df00f8cdf00",
+        "metadata.final_runtime_patch_sha256": "1995b41ec023e8a288727810dccbb46f3aab86605a378063621d7d48900f6e06",
+        "metadata.final_validation_native_sha256": "45c08767341a25f5c8e1467be59e1df8ffb7f4aa83d9b7b0ecc11052c68c7748",
+        "metadata.parity_runner_candidate_revision": "4ed2a57de3374e612f5d8954cc825a2e8308fefd; Rust sources are byte-identical to the final validation snapshot",
+        "metadata.trace_source.revision": "dedfbde5daa3d5bc020adfd1d6e01c1d544f2098"
+      }
+    },
+    {
+      "record": "benchmarks/evidence/afd-heter-supernode-validation.json",
+      "recorded_identities": {
+        "baseline_revision": "7836ce9a9b1a56cfe6f3244ae12870060022d286",
+        "implementation_revision": "9062f4d89036e33bee8e999e4f8d33598c80a498",
+        "reference_revision": "af56328c4ba7ffa1b8c42c8375244568c2e7bb8c",
+        "semantic_comparison.repetitions_per_revision": 2
+      }
+    }
+  ],
+  "retired_e2e_cases": [
+    {
+      "case": "qwen3-32b-h200-sglang-chunked-prefill",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "Chunked prefill: engine.afd.chunked_prefill_size=256 < isl=1024 splits each prompt into 4 chunks on SGLang's native chunked-prefill path. Each prefill pass is priced by the aic-afd provider at its actual (chunk tokens, prefix) geometry (attention grows with the real prefix, F-pool cost tracks chunk tokens) — never a full frozen prompt step. The caliber change is physical, not an error: TTFT pays one full pipeline step per chunk (fill included, conservative per-pass fill — see the fill-amortized case), and decode interleaves with chunk passes (mean_tpot_ms roughly doubles vs the pinned single-pass case). Default behavior is unchanged: without an explicit chunked_prefill_size the window stays pinned at the prompt length.",
+      "source_record_sha256": "2e6b6ebf0164bbd4ecd4fe2b88e64b9b3aa578e5217691c5b39f385f5b432dc2"
+    },
+    {
+      "case": "qwen3-32b-h200-sglang-pd-decode",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "afd+pd on the continuous SGLang core: the AFD pool serves one phase as a disagg role (aic-afd provider injected via PerfModel::External) paired with a monolithic companion on the generic DestinationFirst handoff surface (backend sglang 0.5.14, h200_sxm). Caliber note: the generic destination convention produces ALL osl tokens at the destination (the source-side first-token signal marks TTFT/conformance only and is not counted in report totals), so an AFD decode role runs one more decode pass per request than the retired Python island's osl-1 convention; TTFT includes the first destination decode pass. Per-worker GPU accounting reports the A/F pool-pair total (16) on the AFD role and tp (8) on the companion. Same data caveat as the pure case: h200_sxm sglang lacks mla_bmm rows (trtllm 1.3.0rc20 fallback, warned at load).",
+      "source_record_sha256": "62d4770bed38a3212660f49936dd64fd089c31bccbbf37a3a5c1a4999c188ebe"
+    },
+    {
+      "case": "qwen3-32b-h200-sglang-pd-prefill",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "afd+pd on the continuous SGLang core: the AFD pool serves one phase as a disagg role (aic-afd provider injected via PerfModel::External) paired with a monolithic companion on the generic DestinationFirst handoff surface (backend sglang 0.5.14, h200_sxm). Caliber note: the generic destination convention produces ALL osl tokens at the destination (the source-side first-token signal marks TTFT/conformance only and is not counted in report totals), so an AFD decode role runs one more decode pass per request than the retired Python island's osl-1 convention; TTFT includes the first destination decode pass. Per-worker GPU accounting reports the A/F pool-pair total (16) on the AFD role and tp (8) on the companion. Same data caveat as the pure case: h200_sxm sglang lacks mla_bmm rows (trtllm 1.3.0rc20 fallback, warned at load).",
+      "source_record_sha256": "293573a1b427fd98f7880eb4847fd1d66b1b3637d08a6c139f3d7ba4f08db986"
+    },
+    {
+      "case": "qwen3-32b-h200-sglang-pure-both",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "Continuous-batching rebuild: the AFD pool now runs on the SGLang continuous scheduler (mid-flight admission + retraction) with the aic-afd timing provider injected, anchoring the sglang perf-DB family (0.5.14); the retired batch-locked AfdCore + trtllm anchor is not comparable and was dropped (mean_ttft_ms 422.1866311464918 / mean_tpot_ms 11.846695674852583 at a_batch_size=18). The afd+pd cases (pd-decode / pd-prefill) run on the same continuous core with a monolithic companion. One data caveat: the h200_sxm sglang family lacks mla_bmm rows, so that op family falls back to trtllm 1.3.0rc20 data (framework-implicit, warned at load).",
+      "source_record_sha256": "f45cbcef3a0c71050a5784935736c318e352a13b47846a264e1fc2f575964c3d"
+    },
+    {
+      "case": "qwen3-32b-h200-sglang-pure-both-saturated",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "Saturated admission anchor: identical topology, backend_version and perf-DB family to qwen3-32b-h200-sglang-pure-both, with concurrency 24 pushed above the pool's in-flight cap (max_num_seqs = n_a_workers 1 * a_batch_size 18 = 18) and 64 total requests, so every pass has work queued. Pins the saturated side of the admission boundary that the unsaturated case cannot reach: the radix memory reserve must not bind below max_num_seqs, each 1024-token prompt must pre-fill in a single pass at the derived prompt window (the AFD timing identity charges one frozen prefill step per pass), and no retraction may fire across the whole run. Companion scheduler-level evidence: continuous_afd_derivation_keeps_max_num_seqs_as_the_only_binding_limit in crates/core/src/engine/scheduler/sglang/tests.rs. Not an anchor for the microbatch geometry clamp: a_batch_size 18 / num_microbatches 3 divides evenly, so the saturated short-circuit and the legacy clamp path price this workload identically.",
+      "source_record_sha256": "fc88440e0d6f59b1d3b2da912145b787207a75b1f0ba066f01b69c9e3a85c879"
+    },
+    {
+      "case": "qwen3-32b-h200-sglang-two-stage",
+      "source_path": "crates/core/parity_tests/perfmodel/goldens/afd_e2e.json",
+      "attribution": "Two shared resources execute A + A_to_F and F + F_to_A continuously per microbatch. Every pass includes startup, waiting and drain time. This case replaces the retired fill-amortized fixture; its original description is retained as historical attribution.",
+      "source_record_sha256": "5b5560dfbe62cb03deac8db03bb8f2a28dcc48a8326a4bb54ecd15d6c0786b7f"
+    }
+  ],
+  "archived_files": [
+    {
+      "path": "benchmarks/evidence/afd-config-resolution/README.md",
+      "git_blob": "b6668cf206c207224da8f7b3d5b560fec66c1a37",
+      "sha256": "3b7c6411ce68a04cf46519a39e6ff606b44421d2762c1d3baa69582584e19292",
+      "bytes": 4281
+    },
+    {
+      "path": "benchmarks/evidence/afd-config-resolution/measure.py",
+      "git_blob": "64a51318ef7d59f6097cb420c6c868117fc0a31b",
+      "sha256": "c1f6d60b85b834894ebc9896be8006e2f2d41400ea76bee9cdd8e7d2a53fbef0",
+      "bytes": 3371
+    },
+    {
+      "path": "benchmarks/evidence/afd-config-resolution/results.json",
+      "git_blob": "87ce2ca34807b5ee8dc1c7f7c26e3396c47635cc",
+      "sha256": "53eda5ef1e89f11dd40f85077e981bbfd994ce30ab263c7cc126a984a936eb47",
+      "bytes": 12834
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/README.md",
+      "git_blob": "80f490de51fae73dbc77b14384f4d4ba39d3e8a2",
+      "sha256": "8d2f6bdeb96875271b869ea7a8cb804925537ab0ee770565e54a8166e8f45cca",
+      "bytes": 2684
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/golden-deltas.json",
+      "git_blob": "e7b1c9276cf24f46992c231034740f32121976d9",
+      "sha256": "87b29508e2f5be34bdbb09d378e85fd4ed4c78f16d1f6430564977b9558951e1",
+      "bytes": 4188
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/measure.py",
+      "git_blob": "16377d65d02f182c643db130a840b525806a8045",
+      "sha256": "3d1ed20bfe0030f0464ddfbe0cddfcaea4bf25facd2331937b7141117cd77c6c",
+      "bytes": 5472
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/performance.json",
+      "git_blob": "2d8190bf582247d97d678b1503b92b53373c5463",
+      "sha256": "db200b6ffe597c4546072690bf16132286ffab19c14ed0d706bdc9b3bc3b9d7e",
+      "bytes": 21097
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/refresh_goldens.py",
+      "git_blob": "0223c6b4dfadda2cb2451a1d8708c479af5cf60e",
+      "sha256": "d3a4542b603e1bce52c02090484ca2996188fbd9594d54c037c2802338693d1d",
+      "bytes": 2874
+    },
+    {
+      "path": "benchmarks/evidence/afd-dense-prefix/validation.json",
+      "git_blob": "b2331e9bd571ec4793be2b71948e745fa464d4f2",
+      "sha256": "6442243dfcc063cc08b818c1d553c4801634df5320928300b664b2bd690541dc",
+      "bytes": 2353
+    },
+    {
+      "path": "benchmarks/evidence/afd-dp-ep-restriction/README.md",
+      "git_blob": "288f697d0688616eaf9b8aa86ad6b1bd4c0c572a",
+      "sha256": "89d0b2ea227fbf7aaacccd04cdd46ade1e451d6da36ff67a183580edd2803c68",
+      "bytes": 2775
+    },
+    {
+      "path": "benchmarks/evidence/afd-dp-ep-restriction/validation.json",
+      "git_blob": "2c4af1fd71f523fc60821b7723268ac224192e31",
+      "sha256": "ce8679523d868e49eb9504a1240c0b08e7d09d1c45e1fa366b4756275980990b",
+      "bytes": 220122
+    },
+    {
+      "path": "benchmarks/evidence/afd-heter-supernode-benchmark.py",
+      "git_blob": "43741ae496d18434daef6b6d0c9809888f998d92",
+      "sha256": "b4111ce8dddb1c3cdd83526c5ff6e3e3d9cc79e71db1c4932ab373186d8ff3a0",
+      "bytes": 6629
+    },
+    {
+      "path": "benchmarks/evidence/afd-heter-supernode-cli.json",
+      "git_blob": "bb66071e6c0626ab9bbb3e393e85c6f82a5dd155",
+      "sha256": "402d730fedf0c574c092c2eb5745e2ebc371e12b4053c54313c2f66185b86a24",
+      "bytes": 25496
+    },
+    {
+      "path": "benchmarks/evidence/afd-heter-supernode-preparation.json",
+      "git_blob": "f6e50916b5507b3d1ac750cdcc0711a309aacb5f",
+      "sha256": "337d28cc921f54b1cbfc187a8e98492cb33990d77f872e53ca02188816df30c8",
+      "bytes": 155609
+    },
+    {
+      "path": "benchmarks/evidence/afd-heter-supernode-validation.json",
+      "git_blob": "b4629aa3ce647b256c9df2da334d0df0cd7d0f87",
+      "sha256": "6f2d20753a6c32b2b67bb34d592c02596c1919fb376d4605be5e4ab4b884b385",
+      "bytes": 16961
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/README.md",
+      "git_blob": "538fd0f5cc3b8dd259ecf2862f05053744d95013",
+      "sha256": "5252e54bb8a4e1c01783133850950c9588a44a4af7fb32eeb9b5557ca441a064",
+      "bytes": 5336
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/feature-additional-results.json",
+      "git_blob": "5386f08e53ed130924adb23daeb8cdb87f76e511",
+      "sha256": "af1bde2d7278821a8f872f1acb450f6d376a1b054a314f8f8331a3af83a8d6c3",
+      "bytes": 84832
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/feature-results.json",
+      "git_blob": "a67519455b91f08aeeba75a2ae3605d41649fb44",
+      "sha256": "1c2f00a32ed0a8df8306d0b094d73c0ff906e858662472af446edd1db2f90ebc",
+      "bytes": 17469
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/forward-gate/annotations.txt",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/forward-gate/comparison.csv",
+      "git_blob": "60c8a2fd794a861dabf64686ce958c0f9532c42a",
+      "sha256": "4a2e8fcb72757efbb6022f5421edead7e7fcc29cf031a88484f4dc1d306b4d39",
+      "bytes": 2157
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/forward-gate/comparison.json",
+      "git_blob": "29780efc384dcf2ab5dcf42ca74015f8f057105e",
+      "sha256": "ee4cfe2815febee4a323ce102ebf8c0dfef2e815464760c1ee5bf8d1a6eb3ce6",
+      "bytes": 19609
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/forward-gate/raw-results.json",
+      "git_blob": "fb9470962d51796c679db84f4883994a964f1fed",
+      "sha256": "907f33c0a7edd8941e2ec1c35c77135053ddcdb8c0cb4569ebe1ac183d31d9ec",
+      "bytes": 222183
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/forward-gate/summary.md",
+      "git_blob": "c5a094133a7392e1930fef4e0699036f7274c2aa",
+      "sha256": "3e8768e9d7241388bc25e83edd775ec13d37f501c32a11209ef1a68d1963adf2",
+      "bytes": 1714
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/host-performance-two-stage-repeat.json",
+      "git_blob": "049c2805cec2a1a2dd42d6ac5f65f542f44030d3",
+      "sha256": "0c0ab0f5d8ee63a64253b3cf105db430e778fc0aaeb21287148f12efb07aea83",
+      "bytes": 10024
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/host-performance.json",
+      "git_blob": "8d50631b577441152053c52f67f5f81070e850e2",
+      "sha256": "0131a16285dbd6b377f4155e5ff3c22a41020e63415d450ca8c147f37ef1d176",
+      "bytes": 18915
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/identity.json",
+      "git_blob": "c9ae0fa976a8b2cfa3b16698b8935c8ded5b9aa6",
+      "sha256": "2bf45dcfc7bedb8dd2e652e2431df59b35b97610f5f98c1264f35d96397ddc86",
+      "bytes": 1921
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/measure_forward.py",
+      "git_blob": "792769be70387dc0d05adf5381836820c7090ff0",
+      "sha256": "abe132599f8eb42c74ca0aaef420813bdf74b04f4622b697935709f8b6c06682",
+      "bytes": 3689
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/measure_new_replay.py",
+      "git_blob": "b4083ca3e7236701c85b7d33c5a1690a663b1e7f",
+      "sha256": "e662b0a339d352ec286e7e28bbfd2f7def847332a34f0624fe7b9f3b324e2d5a",
+      "bytes": 4794
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/measure_prepared_pools.py",
+      "git_blob": "51005853f08513b6bb51476c5f3509678f9d3906",
+      "sha256": "14dae3fc74f8a88805965f4299d0f76a6b40dad85babdeb96f0676c55ced12eb",
+      "bytes": 4111
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/new-replay-scaling.json",
+      "git_blob": "786e77e1926865606207b3fa94306ba048e16d53",
+      "sha256": "bf9620b6a08a50c636b1c641998f4c7ee12f1a4d87d1e6f3d71a061e686368ec",
+      "bytes": 14685
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/padding-expectation-deltas.json",
+      "git_blob": "ef4f2b13453255ab8d5cd54ee210788e94f196a1",
+      "sha256": "6dd3f4e6633457ab32d6de7016e6ecade7ab2473b7802ca5afdd5808de7ccc4c",
+      "bytes": 2912
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/padding-oracle.json",
+      "git_blob": "f96594f0812c0ae94435c2f7d3b12526bca98239",
+      "sha256": "a109eaa81ea30eac1d6094bf124d228d36894c77d024456b254530cc4b99783a",
+      "bytes": 2730
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/pre-padding-new-layout-expectations.json",
+      "git_blob": "010ca5c2d7be31676c01a3e6bc3f7ba51c13e46c",
+      "sha256": "f58af2e44d5709355a4c0426f4f3de12b0ef6acccbda520a527735da768ff98a",
+      "bytes": 1188
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/prepared-pools.json",
+      "git_blob": "b1b74645bb70f9e793aa905b4b29e76e65ad81e1",
+      "sha256": "d0820d5c1c308d1ab301f1fe19105667ccd4798a6512559c447d86773a24e691",
+      "bytes": 236359
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/production-source-manifest.json",
+      "git_blob": "821835bf7f4b9e6557e0628add489eb0a724d8f2",
+      "sha256": "1a60b4ca2436d4581ed72fc88fabecb344af006f374f4ccea9211ad653b7dfca",
+      "bytes": 65531
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/recommendations/0001.yaml",
+      "git_blob": "5bf82a305cf46dc61a2c5acd21cf5646152b4ba7",
+      "sha256": "6087c5d541f1f5b59d0b9571f0254aa124facb9f5975fe2fc3c9aad1e554b1ce",
+      "bytes": 1204
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/recommendations/0002.yaml",
+      "git_blob": "863d96e30dc62f8748d9fde518f0c2aecb94cfa3",
+      "sha256": "2675592df93631750490e928eca1cef04d6ce22e52036492b8a7e4252595ddd2",
+      "bytes": 1204
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/recommendations/0003.yaml",
+      "git_blob": "ce64007e7906b0632456a0d37cc3f30c09068ef4",
+      "sha256": "8460ca0d9e47cb75dcd0291d6e3716d300d12fc421fe3c335a7e67e0dbfe26db",
+      "bytes": 1204
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/recommendations/result.json",
+      "git_blob": "fbba1ca6e2ede078852380257daa29b78bad85f2",
+      "sha256": "4dca23e33b6049a8cd33a516343bc304df2c6f4d701ff8932a5d78704cd224d2",
+      "bytes": 48422
+    },
+    {
+      "path": "benchmarks/evidence/afd-local-ffn-tp/recommendations/search.yaml",
+      "git_blob": "c50b501e27adffa5e35c470d25bcacd6e8e0252c",
+      "sha256": "8e71fd7d6091c4d8ee01337ef7003d4fc4428f7e9164342f3adc781cbb441023",
+      "bytes": 737
+    },
+    {
+      "path": "benchmarks/evidence/afd-mtp-comm/README.md",
+      "git_blob": "e7990936a4be11b1513412e5789087c8fa5e6e8d",
+      "sha256": "6312dcac85ba295f15ba7492001b309af74e9f3ace64673dc5ed1e09b6937179",
+      "bytes": 4391
+    },
+    {
+      "path": "benchmarks/evidence/afd-pipeline-count.json",
+      "git_blob": "9e0be7cee041f6ad37967fd1ff98f6a5cff2e802",
+      "sha256": "ab31c127123ce178a21f8bdce307ce9a6ffabc5f19d5ca552e9a980776417e33",
+      "bytes": 22315
+    },
+    {
+      "path": "benchmarks/evidence/afd-pipeline-layout-baseline.patch.gz",
+      "git_blob": "3a34740a6dc38f1aafa49e2648a2053105297971",
+      "sha256": "39f7fdb9fb9287325e314440cec8ecc4abcd1dfd8c437c1843fe9406f9542228",
+      "bytes": 28315
+    },
+    {
+      "path": "benchmarks/evidence/afd-pipeline-layout.json",
+      "git_blob": "b24be3e65afb806570860b24e770690cde086c05",
+      "sha256": "1e56f18c8599880a7306aebcc187a8d8ef2405a6bf4d3e5f7d201c668a62effc",
+      "bytes": 76661
+    },
+    {
+      "path": "benchmarks/evidence/afd-routing-location-benchmark.py",
+      "git_blob": "b11cedd56cd2f33664dc921404addd1ccd307443",
+      "sha256": "20b9161a5261499810b76ae1e2808c95fe0cf7b4135ddf2744283b260a64cdf0",
+      "bytes": 8449
+    },
+    {
+      "path": "benchmarks/evidence/afd-routing-location.json",
+      "git_blob": "1e5b5e0a4ddeff3228cc42995a65cf076be94b34",
+      "sha256": "a6403f46eb00ad56e599b46f7cb2a542cf4bb2efe032944b3b222dc95e12f40c",
+      "bytes": 607770
+    },
+    {
+      "path": "benchmarks/evidence/afd-routing-location.md",
+      "git_blob": "b714cfe7639999d57bdc79904c79d3b6d1cbc115",
+      "sha256": "db1ceedbcbc4078a43897c5daebc8a33fbea8ff008eb0557bb094ce181d26c6b",
+      "bytes": 3478
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/README.md",
+      "git_blob": "2f10caea13af7e9ba93af06f2a641b4a1baebb13",
+      "sha256": "6f84476b9f6fdd79c2077ac9a6825e7a6ef79b294bf7c634dcb05a866bbf91c6",
+      "bytes": 6581
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/forward-gate/annotations.txt",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/forward-gate/comparison.csv",
+      "git_blob": "a6832a6da74ae8e30e293a2c5a15c545a1394632",
+      "sha256": "1dfe9d11883c3e3e72ad202f8bc05907afb779dcff6f151bbd3f41ea5851e084",
+      "bytes": 2175
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/forward-gate/comparison.json",
+      "git_blob": "89485188ddf1b52f84aad5176564f8bebf53850f",
+      "sha256": "65bf24e58c35702f9f9e77cf9756a511dd831aeed6632842e2eaff8e786c0374",
+      "bytes": 19643
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/forward-gate/raw-results.json",
+      "git_blob": "38982dfc15cc9fab19432d61bd00ced298de7ce8",
+      "sha256": "68f96d695bf0240970a9f96bdff7900df9728e2c25157452f46347c9b0506d9d",
+      "bytes": 221991
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/forward-gate/summary.md",
+      "git_blob": "91382615aa38b642fd68fc323eef65422a59ed67",
+      "sha256": "34ad16d27727b68886f0e2b16fecdd49c8d5c4cfa3b17955af3b0e89d3ccd9a8",
+      "bytes": 1880
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/identity.json",
+      "git_blob": "96c689a8994b4ea7b3faca75ee6844050ebcdcd6",
+      "sha256": "3e764517302f2dd447b979b700422738e1124871db129db9abb6f0c59bf86c44",
+      "bytes": 811340
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/measure.py",
+      "git_blob": "1dd0379068feb7e435630adc9583a57f472c60bd",
+      "sha256": "cb96298bb88b3cd0791341173b312b5dc84e6ff40ef3cc2c3082b4d115a908cb",
+      "bytes": 10439
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/measure_forward.py",
+      "git_blob": "b5c9c738d0c774652378ae7941455b1d86a17509",
+      "sha256": "262d84977ef5e9e9aff5c71fcaf0f2037f5fc44de3227271d853b205aa801a43",
+      "bytes": 3695
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/performance.json",
+      "git_blob": "8e644a7cddfade37b1e0528eb61a047e24f36bdb",
+      "sha256": "27a7704ff8012a17aed8ab31c388b75dee2ec5234d55b747edddbc92dd912d49",
+      "bytes": 33077
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/qualify.py",
+      "git_blob": "584b202da4dc575a9dcbc6068e4c0e1157641115",
+      "sha256": "cd0e223471b73e604421264a776d8b9c57b2329902454a1e3a6ed14282a8de16",
+      "bytes": 5427
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/record_identity.py",
+      "git_blob": "147469a41e73eeca490b271175fe55537b60fefc",
+      "sha256": "6b0faa97f0e346e7e52d6c69c06a022accee2aa2a1a7216f01e70acc32a1a853",
+      "bytes": 6159
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/repeatability.json",
+      "git_blob": "9e340edf2616758dd77518e5f7a13cdeee63e167",
+      "sha256": "f058bedae164c2df76966738c49928a1cc32ec38c243c566c9eee2cf8db4199d",
+      "bytes": 31456
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/repeatability.py",
+      "git_blob": "51093de38105b7945d34c06fe8781ba467b8e7aa",
+      "sha256": "39743c2f2ae3c341fe6934ba18ff78b6a2575be57a37c0a8ae8eae84c36773a4",
+      "bytes": 4789
+    },
+    {
+      "path": "benchmarks/evidence/afd-unification/semantic-deltas.json",
+      "git_blob": "50f64544c8a33d4b7c4ca1885c683303e6096ddd",
+      "sha256": "dcfc2ea9613f49c7ddd0be8888ec34e7e166b7d9b05fb379c9406be11b8e04ae",
+      "bytes": 258804
+    },
+    {
+      "path": "benchmarks/evidence/afd-worker-roles.json",
+      "git_blob": "524cf094c2985e8748534c77fcf5db0cea4bd9a9",
+      "sha256": "6742dcbccced4542ecc759da783e43bd6b01f57987fb2c2ba82d4783c2517aa9",
+      "bytes": 155783
+    },
+    {
+      "path": "benchmarks/evidence/afd-worker-roles.md",
+      "git_blob": "67b21fd7a618eb9310f95811dc1638dc1e90457b",
+      "sha256": "c2d6d685ac7e521867518d2c51f1f3a8daf877b89cecaf487d700228ef245d1f",
+      "bytes": 5729
+    }
+  ],
+  "historical_result_summary": [
+    {
+      "record": "afd-unification/performance.json",
+      "outcome": "Source-ordered execution unification: historical measured CLI and forward comparisons used DeepSeek TP2 and Qwen TP1 controls, 3 rounds, 10 warmups and 30 iterations. Raw timings remain in the archive; their source was a working tree."
+    },
+    {
+      "record": "afd-local-ffn-tp/padding-oracle.json",
+      "outcome": "Historical local-FFN/A-side-TP and padding oracle. Candidate was an uncommitted snapshot identified by source-manifest and binary hashes; original numerical deltas and pre-padding expectations remain archived."
+    },
+    {
+      "record": "afd-config-resolution/results.json",
+      "outcome": "Historical configuration-resolution experiment separated full native-call timing from Python lowering/startup and excluded three wall-clock fields from report comparison. Candidate identity is a per-file source manifest, not a committed revision."
+    },
+    {
+      "record": "afd-dense-prefix/performance.json",
+      "outcome": "Historical dense-prefix pricing experiment: six paired runs with one warmup per arm; changed simulated work must be interpreted using the archived configuration and expectations, not as a host speedup."
+    },
+    {
+      "record": "afd-dp-ep-restriction/validation.json",
+      "numerical_result": "all non-wall-clock summary fields exactly equal in every matched pair",
+      "timing_medians_ms": {
+        "2": {
+          "baseline": {
+            "full_cli_ms": 2256.80495898996,
+            "native_replay_ms": 186.6265
+          },
+          "candidate": {
+            "full_cli_ms": 2152.7666250040056,
+            "native_replay_ms": 182.556208
+          }
+        },
+        "32": {
+          "baseline": {
+            "full_cli_ms": 2194.6914170111995,
+            "native_replay_ms": 179.82320900000002
+          },
+          "candidate": {
+            "full_cli_ms": 2201.879915999598,
+            "native_replay_ms": 178.059625
+          }
+        }
+      }
+    },
+    {
+      "record": "afd-routing-location.json",
+      "behavior_checks": {
+        "forward_values_equal": true,
+        "dense_simulated_metrics_equal": true,
+        "completed_requests_per_cli_run": 8,
+        "distinct_stable_release_binaries": true,
+        "source_diff_matches_recorded_identity": true,
+        "serving_accuracy": "not_assessed"
+      },
+      "gate_summary": [
+        {
+          "case_id": "Qwen3-32B-context",
+          "base_median_us": 9.584,
+          "candidate_median_us": 9.333,
+          "paired_median_change_percent": -3.450059483784196,
+          "regression_votes": 0
+        },
+        {
+          "case_id": "Qwen3-32B-generation",
+          "base_median_us": 10.208,
+          "candidate_median_us": 10.0,
+          "paired_median_change_percent": -2.0376175548589393,
+          "regression_votes": 0
+        },
+        {
+          "case_id": "Qwen3-30B-A3B-context",
+          "base_median_us": 8.7915,
+          "candidate_median_us": 8.7915,
+          "paired_median_change_percent": 0.0,
+          "regression_votes": 0
+        },
+        {
+          "case_id": "Qwen3-30B-A3B-generation",
+          "base_median_us": 9.75,
+          "candidate_median_us": 9.875,
+          "paired_median_change_percent": 1.2820512820512775,
+          "regression_votes": 0
+        }
+      ]
+    },
+    {
+      "record": "afd-worker-roles.json",
+      "outcome": "Historical worker-role qualification included a 48-GPU asymmetric AFD P/D matrix (42 tests) and native AFD CLI parity (19 tests). The record explicitly does not claim a clean full-repository unit run; Collector cwd/PYTHONPATH and timeout collection caveats are retained in the archive. Long-corpus measurements and their trace/binary identities belong only to this old snapshot."
+    },
+    {
+      "record": "afd-heter-supernode-validation.json",
+      "semantic_comparison": {
+        "scope": "synthetic 1000-request AFD role matrix and ordinary fixed-timing control; not a long-corpus qualification",
+        "repetitions_per_revision": 2,
+        "requests_per_repetition": 1000,
+        "cases": [
+          {
+            "case": "afd:both:large",
+            "sha256": "6e797ad319f736d6eff1b93de640ea0e840b76fc85e6b9ce5845f5abf8d414a4"
+          },
+          {
+            "case": "afd:prefill:large",
+            "sha256": "7f9b80c3c4741c3addcd2da7b9712be6ba4072966e44bc8253c66e25e5b4e50a"
+          },
+          {
+            "case": "afd:decode:large",
+            "sha256": "e62ce896eb7131396d80060243d62f898e1f6a2134395ef4e25c9824500dd6ee"
+          },
+          {
+            "case": "afd:dual:large",
+            "sha256": "7de8248fbc5b50b8f6911eb77762faa7818d3bea6fec28446c0ff31d6d334182"
+          },
+          {
+            "case": "ordinary:fixed:large",
+            "sha256": "5378984a3d37c20de6a83de3bf813c425b7532850d21797abd309c22c7ad2687"
+          }
+        ],
+        "result": "all per-request + non-wall-clock metric digests identical within and between revisions; complete token counts and P/D handoffs verified"
+      },
+      "goldens": {
+        "numerical_changed": false,
+        "qualification_fixture_changed": "schema 6, explicit F width, receiver-map label and resulting replay hash"
+      },
+      "performance_assessment": "No material integrated overhead observed in these matched samples. Full CLI paired medians are within 1% of baseline; AFD preparation paired medians are 0.95-0.99x. Native replay timer shows wider variation and is reported separately; no formal statistical non-regression gate is claimed."
+    }
+  ]
+}
