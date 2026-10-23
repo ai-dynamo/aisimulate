@@ -95,6 +95,72 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### MiMo-V2-Flash and Llama 4 attention layer types
+
+The op-level SDK now reads which layers use full (global) attention as the
+reference models define them. MiMo-V2-Flash marks a sliding-window layer with
+`hybrid_layer_pattern[i] == 1`. Its packaged config has 9 full-attention
+layers (0, 5, 11, ..., 47) and 39 sliding-window layers. The SDK used to model
+39 full-attention layers and 9 sliding-window layers. In Llama 4, layers 3, 7,
+11, ..., 47 use full attention (12 layers). The other 36 layers use chunked
+attention. The SDK used to model every odd layer (24 layers) as full
+attention.
+
+Only the four `mimo-v2-flash-b200-vllm-hybrid-attn-xshape` records failed.
+They were refreshed from `38e518543f18e53c6c8a127ddb2c1d5830fa5a58` with a
+matching native build:
+
+| Metric (ms) | Before | After |
+| --- | ---: | ---: |
+| Static context | 22.335 | 20.785 |
+| Static generation | 4.416 | 4.421 |
+| Static total | 26.751 | 25.206 |
+| Mixed step | 23.678 | 22.132 |
+| Aggregated TTFT | 69.838 | 68.098 |
+| Aggregated TPOT | 23.678 | 22.132 |
+| Aggregated request | 93.517 | 90.230 |
+| Disaggregated TTFT | 44.224 | 41.153 |
+| Disaggregated TPOT | 6.149 | 6.096 |
+| Disaggregated request | 50.373 | 47.249 |
+
+Only attention changes. At TP 8, both layer types have one KV head per GPU and
+the same projection shapes. Every other operation therefore keeps its total.
+Only the split of that total between the `global_*` and `swa_*` operations
+changes. Every layer changes type: 39 layers move to the 128-token window, and
+9 layers, with the dense layer 0, move to full attention. The net change is 30
+window layers. Each layer type emits one attention operation, scaled by its
+layer count. The two layer plans therefore give the cost of one layer of each
+type:
+
+- Static context: a layer costs 97.873 µs with full attention over 1,024
+  tokens and 46.177 µs with the window, so the phase falls by
+  30 × 51.696 µs = 1.551 ms.
+- Static generation: in the decode step at batch 1, a window layer costs
+  0.14 µs more (13.034 against 12.896 µs), so the phase rises by 0.004 ms.
+- Mixed step: the 1,024-token prefill plus one decode token, −1.547 ms.
+- Aggregated: TPOT is the mixed step. TTFT is (mixed step + 48 layers ×
+  0.8 ms dispatch) × 1.125, the vLLM queueing factor at batch 2. Request
+  latency is TTFT + TPOT.
+- Disaggregated: TTFT is static context × 1.1 (prefill correction) × 1.8
+  (TTFT correction). TPOT is the batch-4 decode step × 1.08 (decode
+  correction). In that step, a window layer costs 1.650 µs less
+  (13.311 against 14.961 µs), which is −0.0495 ms for 30 layers. Request
+  latency is TTFT + TPOT.
+
+The `llama4-scout-b200-vllm-isl1024-osl2` records still pass within their 1%
+tolerance, so they were not refreshed. At ISL 1024, the 8,192-token chunk
+never limits attention. The largest live change is −0.22%, in disaggregated
+TPOT. Memory predictions do not change, because HybridMoE KV-cache memory is
+the same for every layer type.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh mimo-v2-flash-b200-vllm-hybrid-attn-xshape::static \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::mixed \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg \
+  mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg
+```
+
 ### GLM-5.3-Flash Ops data and the fleet `next` slot
 
 Packaging the GLM-5.3-Flash Ops tables makes SGLang 0.5.20 and vLLM 0.31.0

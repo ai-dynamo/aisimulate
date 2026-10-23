@@ -1560,7 +1560,9 @@ HYBRID_CASES = [
     # Attention cross-head_size xshape: MiMo-V2-Flash queries head_dim=192
     # with bf16 KV, collected at 0.24 for fp8 KV only — SILICON raises, HYBRID
     # borrows the nearest collected head_size (`attention.py` ctx + gen
-    # reference grids). Probed: 33.253/3.499 ms, tags {xshape}.
+    # reference grids). Golden static ctx/gen: 20.785/4.421 ms. Note: the
+    # case sets no KV mode, so this fp8 checkpoint runs with fp8 KV, which
+    # silicon covers; the static run records no xshape tag.
     pytest.param(
         EngineStepParityCase(
             model_path="XiaomiMiMo/MiMo-V2-Flash",
