@@ -498,7 +498,6 @@ def test_glm53_sm90_runtime_rejection_is_build_only(wrapped):
     )
 
 
-@pytest.mark.build
 @pytest.mark.parametrize("system", ["h100_sxm", "h200_sxm"])
 @pytest.mark.parametrize("backend,version", [("sglang", "0.5.20"), ("vllm", "0.31.0")])
 def test_native_glm53_sm90_rejection_preserves_requested_identity(system, backend, version):
