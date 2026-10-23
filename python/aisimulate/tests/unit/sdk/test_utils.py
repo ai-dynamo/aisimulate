@@ -779,7 +779,7 @@ class TestParseHFConfig:
         assert [i for i, v in enumerate(cfg.attn_layer_pattern) if v == 1] == [0, 5, 11, 17, 23, 29, 35, 41, 47]
 
     def test_mimo_pattern_non_binary_value_raises(self):
-        """The 0/1 check applies to the raw hybrid_layer_pattern, before the parser inverts it."""
+        """A hybrid_layer_pattern value other than 0 or 1 still raises the existing error."""
         hf_config = deepcopy(get_model_config_from_model_path("XiaomiMiMo/MiMo-V2-Flash")["raw_config"])
         hf_config["hybrid_layer_pattern"][1] = 2
         with pytest.raises(ValueError, match="must contain only 0/1 values"):
@@ -813,6 +813,16 @@ class TestParseHFConfig:
             pytest.param({"no_rope_layers": []}, LLAMA4_DEFAULT_GLOBAL_LAYERS, id="empty_no_rope_layers"),
             pytest.param({"no_rope_layers": LLAMA4_NO_ROPE_LAYERS}, [0, 10, 47], id="no_rope_layers"),
             pytest.param({"no_rope_layer_interval": 6}, [5, 11, 17, 23, 29, 35, 41, 47], id="no_rope_layer_interval"),
+            pytest.param(
+                {"no_rope_layers": LLAMA4_NO_ROPE_LAYERS, "no_rope_layer_interval": 6},
+                [0, 10, 47],
+                id="no_rope_layers_wins_over_interval",
+            ),
+            pytest.param(
+                {"no_rope_layers": [], "no_rope_layer_interval": 6},
+                [5, 11, 17, 23, 29, 35, 41, 47],
+                id="empty_no_rope_layers_uses_interval",
+            ),
             pytest.param({"layer_types": LLAMA4_LAYER_TYPES}, [1, 2, 40], id="layer_types"),
             pytest.param(
                 {"layer_types": LLAMA4_LAYER_TYPES, "no_rope_layers": LLAMA4_NO_ROPE_LAYERS},
@@ -831,17 +841,27 @@ class TestParseHFConfig:
         [
             pytest.param(
                 {"layer_types": ["chunked_attention"] * 47 + ["sliding_attention"]},
-                "only 'full_attention' or 'chunked_attention'",
+                "only 'full_attention' or 'chunked_attention', got 'sliding_attention' at layer 47",
                 id="unknown_layer_type",
             ),
             pytest.param(
-                {"layer_types": ["chunked_attention"] * 47}, "layer_types must have 48 entries", id="layer_types_length"
+                {"layer_types": ["chunked_attention"] * 47},
+                "layer_types length 47 != num_hidden_layers 48",
+                id="layer_types_length",
             ),
             pytest.param(
-                {"no_rope_layers": [1] * 47}, "no_rope_layers must have 48 entries", id="no_rope_layers_length"
+                {"layer_types": "full_attention"}, "layer_types must be a list, got str", id="layer_types_type"
             ),
             pytest.param(
-                {"no_rope_layers": [1] * 47 + [2]}, "no_rope_layers must contain only 0/1", id="no_rope_layers_value"
+                {"no_rope_layers": [1] * 47},
+                "no_rope_layers length 47 != num_hidden_layers 48",
+                id="no_rope_layers_length",
+            ),
+            pytest.param({"no_rope_layers": "1"}, "no_rope_layers must be a list, got str", id="no_rope_layers_type"),
+            pytest.param(
+                {"no_rope_layers": [1] * 47 + [2]},
+                "no_rope_layers must contain only 0/1 values, got 2 at layer 47",
+                id="no_rope_layers_value",
             ),
             pytest.param(
                 {"no_rope_layer_interval": 0}, "no_rope_layer_interval must be a positive", id="interval_zero"
@@ -1314,9 +1334,10 @@ class TestHybridMoEModelBuilder:
         )
 
     def test_mimov2flash_model_builds_all_three_layer_types(self):
-        """MiMo-V2-Flash config produces context/generation ops for global_moe, swa_moe, swa_dense."""
+        """MiMo-V2-Flash's layer plan in the SDK convention builds global_moe, swa_moe and global_dense ops."""
+        hf_pattern = (0, 1, 1, 1, 1, 0, 1, 1, 1, 1)  # hybrid_layer_pattern: 1 = sliding window, 0 = full attention
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=(0, 1, 1, 1, 1, 0, 1, 1, 1, 1),
+            attn_layer_pattern=tuple(1 - v for v in hf_pattern),  # SDK convention: 1 = global
             moe_layer_freq=(0, 1, 1, 1, 1, 1, 1, 1, 1, 1),
             swa_num_kv_heads=8,
             swa_head_dim=192,
@@ -1346,16 +1367,21 @@ class TestHybridMoEModelBuilder:
 
         assert len(model.context_ops) > 0
         assert len(model.generation_ops) > 0
+        # Layer 0 is dense with full attention, layer 5 is MoE with full attention, the rest are MoE with SWA.
+        assert model._count_layer_types() == {"global_moe": 1, "swa_moe": 8, "swa_dense": 0, "global_dense": 1}
         op_names = [op._name for op in model.context_ops]
-        assert any("global" in n for n in op_names), "Missing global attention ops"
-        assert any("swa" in n and "moe" in n for n in op_names), "Missing swa_moe ops"
-        assert any("swa" in n and "dense" in n for n in op_names), "Missing swa_dense ops"
+        assert "context_global_moe" in op_names, "Missing global_moe ops"
+        assert "context_swa_moe" in op_names, "Missing swa_moe ops"
+        assert "context_global_dense_gate_up_gemm" in op_names, "Missing global_dense ops"
+        assert "generation_global_dense_gate_up_gemm" in [op._name for op in model.generation_ops]
+        assert not any("swa_dense" in n for n in op_names), "The dense layer has full attention, not SWA"
 
     def test_llama4_scout_model_builds_global_and_swa_moe(self):
-        """Llama 4 Scout (step=1, all MoE) produces global_moe + swa_moe ops."""
-        layers = 8
+        """Llama 4 Scout (step=1, all MoE; a global layer every fourth layer) produces global_moe + swa_moe ops."""
+        layers = 48
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            # Without no_rope_layers, every fourth layer is a NoPE layer with global attention.
+            attn_layer_pattern=tuple(1 if (i + 1) % 4 == 0 else 0 for i in range(layers)),
             moe_layer_freq=tuple(1 for _ in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,
@@ -1382,17 +1408,19 @@ class TestHybridMoEModelBuilder:
 
         assert len(model.context_ops) > 0
         assert len(model.generation_ops) > 0
+        assert model._count_layer_types() == {"global_moe": 12, "swa_moe": 36, "swa_dense": 0, "global_dense": 0}
         op_names = [op._name for op in model.context_ops]
         assert any("global" in n for n in op_names)
         assert any("swa" in n for n in op_names)
         assert not any("dense" in n for n in op_names), "Scout has no dense layers"
 
     def test_llama4_maverick_model_builds_global_moe_and_swa_dense(self):
-        """Llama 4 Maverick (step=2) produces global_moe + swa_dense ops."""
-        layers = 8
+        """Llama 4 Maverick (step=2; a global layer every fourth layer) produces global_moe, swa_moe and swa_dense."""
+        layers = 48
         step = 2
         hybrid_cfg = common.HybridMoEConfig(
-            attn_layer_pattern=tuple(i % 2 for i in range(layers)),
+            # Without no_rope_layers, every fourth layer is a NoPE layer with global attention.
+            attn_layer_pattern=tuple(1 if (i + 1) % 4 == 0 else 0 for i in range(layers)),
             moe_layer_freq=tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers)),
             sliding_window_size=8192,
             dense_inter_size=16384,
@@ -1418,8 +1446,10 @@ class TestHybridMoEModelBuilder:
         model.set_hybrid_config(hybrid_cfg)
 
         assert len(model.context_ops) > 0
+        assert model._count_layer_types() == {"global_moe": 12, "swa_moe": 12, "swa_dense": 24, "global_dense": 0}
         op_names = [op._name for op in model.context_ops]
         assert any("global" in n and "moe" in n for n in op_names)
+        assert "context_swa_moe" in op_names, "Maverick has MoE layers with chunked local attention"
         assert any("dense" in n for n in op_names), "Maverick needs dense FFN ops"
 
     @pytest.mark.parametrize(

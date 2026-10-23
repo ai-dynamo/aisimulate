@@ -1057,7 +1057,8 @@ def _parse_hf_config_json(config: dict) -> dict:
         # and 0 marks a NoPE layer with full attention. As in transformers v4.57.1
         # configuration_llama4.py:372-393, layer_types wins, then a nonempty no_rope_layers ([] means
         # unset), then a NoPE layer every no_rope_layer_interval layers (default 4). vLLM v0.31.0
-        # (db9527a4) vllm/model_executor/models/llama4.py:184-185 and :251-252 builds the same layers.
+        # (db9527a4) derives the same layers from no_rope_layers alone and ignores layer_types
+        # (vllm/model_executor/models/llama4.py:184-185 and :251-252).
         # These fields are read after the text_config flatten, so nested and flat configs agree.
         # FFN: layer i is MoE (1) if (i+1) % interleave_moe_layer_step == 0, else dense (0).
         step = config.get("interleave_moe_layer_step", 1)
@@ -1068,18 +1069,28 @@ def _parse_hf_config_json(config: dict) -> dict:
             raise ValueError(f"no_rope_layer_interval must be a positive integer, got {no_rope_interval}")
         no_rope_layers = config.get("no_rope_layers") or None
         if no_rope_layers is not None:
-            if not isinstance(no_rope_layers, (list, tuple)) or len(no_rope_layers) != layers:
-                raise ValueError(f"Llama 4 no_rope_layers must have {layers} entries, got {no_rope_layers!r}")
-            if any(v not in (0, 1) for v in no_rope_layers):
-                raise ValueError(f"Llama 4 no_rope_layers must contain only 0/1 values, got {no_rope_layers!r}")
+            if not isinstance(no_rope_layers, (list, tuple)):
+                raise ValueError(f"Llama 4 no_rope_layers must be a list, got {type(no_rope_layers).__name__}")
+            if len(no_rope_layers) != layers:
+                raise ValueError(f"Llama 4 no_rope_layers length {len(no_rope_layers)} != num_hidden_layers {layers}")
+            bad = next(((i, v) for i, v in enumerate(no_rope_layers) if v not in (0, 1)), None)
+            if bad is not None:
+                raise ValueError(
+                    f"Llama 4 no_rope_layers must contain only 0/1 values, got {bad[1]!r} at layer {bad[0]}"
+                )
         layer_types = config.get("layer_types")
         if layer_types is not None:
-            if not isinstance(layer_types, (list, tuple)) or len(layer_types) != layers:
-                raise ValueError(f"Llama 4 layer_types must have {layers} entries, got {layer_types!r}")
-            unknown = [t for t in layer_types if t not in ("full_attention", "chunked_attention")]
-            if unknown:
+            if not isinstance(layer_types, (list, tuple)):
+                raise ValueError(f"Llama 4 layer_types must be a list, got {type(layer_types).__name__}")
+            if len(layer_types) != layers:
+                raise ValueError(f"Llama 4 layer_types length {len(layer_types)} != num_hidden_layers {layers}")
+            bad = next(
+                ((i, t) for i, t in enumerate(layer_types) if t not in ("full_attention", "chunked_attention")), None
+            )
+            if bad is not None:
                 raise ValueError(
-                    f"Llama 4 layer_types must contain only 'full_attention' or 'chunked_attention', got {unknown!r}"
+                    "Llama 4 layer_types must contain only 'full_attention' or 'chunked_attention', "
+                    f"got {bad[1]!r} at layer {bad[0]}"
                 )
             attn_pattern = tuple(1 if t == "full_attention" else 0 for t in layer_types)
         elif no_rope_layers is not None:
