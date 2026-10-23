@@ -72,10 +72,14 @@ def _install_trtllm_stubs(monkeypatch):
     )
     _stub_module(
         monkeypatch,
-        "tensorrt_llm._torch.modules.fused_moe",
+        "tensorrt_llm._torch.moe.fused_moe",
         RenormalizeMoeRoutingMethod=_Dummy,
+        SimpleActivation=_Dummy,
+        SwigluActivation=_Dummy,
+        SwigluBiasActivation=_Dummy,
         create_moe=_noop,
     )
+    _stub_module(monkeypatch, "tensorrt_llm._torch.utils", ActivationType=types.SimpleNamespace(Relu2="relu2"))
     _stub_module(monkeypatch, "tensorrt_llm.mapping", Mapping=_Dummy)
     _stub_module(
         monkeypatch,
@@ -680,3 +684,18 @@ def test_canonical_routed_scaling_factor_of_zero_is_preserved(monkeypatch):
     # Neither declared -> 1.0.
     monkeypatch.setattr(module, "_load_model_moe_config", lambda _model_name: {})
     assert module._resolve_moe_runtime_config("test/neither", {})["routed_scaling_factor"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("openai/gpt-oss-120b", {"gate_sigmoid_scale": 1.702, "linear_offset": 1.0, "clamp": 7.0}),
+        ("openai/gpt-oss-20b", {"gate_sigmoid_scale": 1.702, "linear_offset": 1.0, "clamp": 7.0}),
+        ("nvidia/Nemotron-3-Nano-30B-A3B-BF16", {"kind": "relu2"}),
+        ("deepseek-ai/DeepSeek-V3", {}),
+    ],
+)
+def test_trtllm_rc29_serving_activation_constants(monkeypatch, model, expected):
+    _install_trtllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "trtllm_activation_target", "collector/trtllm/collect_moe.py")
+    assert vars(module._moe_activation(model)) == expected

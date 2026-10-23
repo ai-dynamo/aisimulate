@@ -77,7 +77,7 @@ def _install_trtllm_stubs(monkeypatch):
     trtllm = _stub_module(monkeypatch, "tensorrt_llm", __version__="1.3.0rc23")
     for package in (
         "tensorrt_llm._torch",
-        "tensorrt_llm._torch.attention_backend",
+        "tensorrt_llm._torch.attention.backends",
         "tensorrt_llm._torch.models",
         "tensorrt_llm._torch.pyexecutor",
         "tensorrt_llm.bindings",
@@ -87,8 +87,8 @@ def _install_trtllm_stubs(monkeypatch):
         "tensorrt_llm.quantization",
     ):
         _stub_module(monkeypatch, package)
-    _stub_module(monkeypatch, "tensorrt_llm._torch.attention_backend.interface", AttentionRuntimeFeatures=_Dummy)
-    _stub_module(monkeypatch, "tensorrt_llm._torch.attention_backend.utils", get_attention_backend=_noop)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.attention.backends.interface", AttentionRuntimeFeatures=_Dummy)
+    _stub_module(monkeypatch, "tensorrt_llm._torch.attention.backends.utils", get_attention_backend=_noop)
     _stub_module(monkeypatch, "tensorrt_llm._torch.metadata", KVCacheParams=_Dummy)
     _stub_module(monkeypatch, "tensorrt_llm._torch.model_config", ModelConfig=_Dummy)
     _stub_module(

@@ -45,7 +45,7 @@
 
 # 1.3.0rc20 renamed the cache-manager sparse kwargs and moved attention
 # metadata to lowered SparseMetadataParams; this module follows those APIs.
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 """
 MLA Module Collector for TRT-LLM — unified MLA and DSA benchmarking.
@@ -87,8 +87,8 @@ import weakref
 
 import tensorrt_llm
 import torch
-from tensorrt_llm._torch.attention_backend.interface import AttentionRuntimeFeatures
-from tensorrt_llm._torch.attention_backend.utils import get_attention_backend
+from tensorrt_llm._torch.attention.backends.interface import AttentionRuntimeFeatures
+from tensorrt_llm._torch.attention.backends.utils import get_attention_backend
 from tensorrt_llm._torch.metadata import KVCacheParams
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import (

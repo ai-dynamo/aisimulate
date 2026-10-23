@@ -9,7 +9,7 @@ Shared MoE shapes come from YAML; this file owns TRT-LLM version quirks and
 kernel-specific filters.
 """
 
-__compat__ = "trtllm>=1.3.0rc20"
+__compat__ = "trtllm==1.3.0rc29"
 
 import gc
 import glob
@@ -26,15 +26,17 @@ import torch
 from tensorrt_llm._torch.autotuner import AutoTuner, autotune
 from tensorrt_llm._torch.model_config import ModelConfig
 from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
-from tensorrt_llm._torch.modules.fused_moe import RenormalizeMoeRoutingMethod, create_moe
+from tensorrt_llm._torch.moe.fused_moe import (
+    RenormalizeMoeRoutingMethod,
+    SimpleActivation,
+    SwigluActivation,
+    SwigluBiasActivation,
+    create_moe,
+)
+from tensorrt_llm._torch.utils import ActivationType
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
-
-try:
-    from tensorrt_llm._torch.utils import ActivationType
-except ImportError:
-    ActivationType = None
 
 # Models that use non-gated MoE (Relu2 activation instead of SwiGLU)
 # These are substring patterns that will be matched against the full model name
@@ -70,6 +72,19 @@ def _moe_model_behavior(model_name: str) -> str:
     if model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}:
         return "swigluoai"
     return "swiglu"
+
+
+def _moe_activation(model_name: str):
+    """Use rc29 serving activation payloads, including model constants."""
+    behavior = _moe_model_behavior(model_name)
+    if behavior == "relu2":
+        # modeling_nemotron_h.py:180 at rc29.
+        return SimpleActivation(kind=ActivationType.Relu2)
+    if behavior == "swigluoai":
+        # modeling_gpt_oss.py:179-181 at rc29. The framework broadcasts
+        # scalar constants to its resolved local expert slots.
+        return SwigluBiasActivation(gate_sigmoid_scale=1.702, linear_offset=1.0, clamp=7.0)
+    return SwigluActivation()
 
 
 def _moe_execution_key(common_moe_testcase, moe_type: str, min_latency_mode: bool):
@@ -298,18 +313,18 @@ def run_moe_torch(
         print("MOE Allocated GDRAM:", torch.cuda.memory_allocated(device.index) / 1024**2, "MB")
         print("MOE Reserved GDRAM:", torch.cuda.memory_reserved(device) / 1024**2, "MB")
     # moe type support bfloat16, fp8_qdq, fp8_block, w4a8, nvfp4(not implemented yet)
+    # rc29 modeling_qwen3_moe.py:114-124 passes config.torch_dtype; FP8
+    # storage is selected by QuantConfig, not by the layer's model dtype
+    # (fused_moe_cutlass.py:133-140, c76f4a8).
     dtype = torch.bfloat16
     quant_group_size = 128
     quant_algo = None
     if moe_type == "fp8_block":
         quant_algo = QuantAlgo.FP8_BLOCK_SCALES
-        dtype = torch.float8_e4m3fn
     elif moe_type == "w4afp8":
         quant_algo = QuantAlgo.W4A8_AWQ
-        dtype = torch.float8_e4m3fn
     elif moe_type == "fp8":
         quant_algo = QuantAlgo.FP8
-        dtype = torch.float8_e4m3fn
     elif moe_type == "int4_wo":
         quant_algo = QuantAlgo.W4A16
         int4_config = get_moe_quantization_module_config("trtllm", moe_type, model_name=model_name)
@@ -358,24 +373,7 @@ def run_moe_torch(
     model_config.quant_config = quant_config
     model_config.moe_max_num_tokens = num_tokens_lists[-1]  # to avoid multi-chunk auxi stream in cuda-graph mode.
     is_gpt_oss = model_name in {"openai/gpt-oss-120b", "openai/gpt-oss-20b"}
-    swiglu_alpha = None
-    swiglu_beta = None
-    swiglu_limit = None
-
-    # Determine activation type based on model
-    # Nemotron-3 Nano uses non-gated MoE with Relu2 activation
-    # Other models (DeepSeek, Qwen, Mixtral) use gated MoE with SwiGLU activation
-    if any(pattern in model_name for pattern in NON_GATED_MOE_MODELS):
-        if ActivationType is None:
-            raise RuntimeError(
-                f"TensorRT-LLM {_TRTLLM_VERSION} does not expose ActivationType; "
-                f"cannot collect non-gated MoE model {model_name}"
-            )
-        activation_type = ActivationType.Relu2
-        is_gated = False
-    else:
-        activation_type = ActivationType.Swiglu if ActivationType is not None else None
-        is_gated = True
+    is_gated = _moe_model_behavior(model_name) != "relu2"
 
     sm_version = get_sm_version()
 
@@ -433,11 +431,6 @@ def run_moe_torch(
         )
 
     if is_gpt_oss:
-        swiglu_alpha = torch.tensor([1.702] * (num_experts // moe_ep_size), dtype=torch.float32).to(
-            torch.device(device)
-        )
-        swiglu_beta = torch.tensor([1.0] * (num_experts // moe_ep_size), dtype=torch.float32).to(torch.device(device))
-        swiglu_limit = torch.tensor([7.0] * (num_experts // moe_ep_size), dtype=torch.float32).to(torch.device(device))
         if 90 <= get_sm_version() < 100:
             # Hopper only: serving's AUTO resolution returns TRITON exactly
             # for 90<=sm<100 (resolve_moe_backend, model_config.py:334-335
@@ -528,16 +521,12 @@ def run_moe_torch(
         # inside op.
         "reduce_results": False,
         "model_config": model_config,
+        "activation": _moe_activation(model_name),
+        # rc29 can substitute another backend when the requested one rejects
+        # the layer. Our persisted labels describe the requested backend, so
+        # retain the rejection instead of timing a silently substituted kernel.
+        "allow_backend_degradation": False,
     }
-    create_moe_params = inspect.signature(create_moe).parameters
-    if "swiglu_alpha" in create_moe_params:
-        create_moe_kwargs["swiglu_alpha"] = swiglu_alpha
-    if "swiglu_beta" in create_moe_params:
-        create_moe_kwargs["swiglu_beta"] = swiglu_beta
-    if "swiglu_limit" in create_moe_params:
-        create_moe_kwargs["swiglu_limit"] = swiglu_limit
-    if "activation_type" in create_moe_params and activation_type is not None:
-        create_moe_kwargs["activation_type"] = activation_type
     moe = create_moe(**create_moe_kwargs)
     moe.to(torch.device(device))
 
@@ -726,7 +715,7 @@ def run_moe_torch(
     del hidden_states_max_tokens, logits_max_tokens
     if moe_type == "fp8_block":
         try:
-            from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+            from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 
             DeepGemmFusedMoE.buffers.buffers.clear()
         except (ImportError, AttributeError):
@@ -848,7 +837,7 @@ def run_moe_torch(
         del hidden_states
         if moe_type == "fp8_block" and num_tokens != max_tokens:
             try:
-                from tensorrt_llm._torch.modules.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
+                from tensorrt_llm._torch.moe.fused_moe.fused_moe_deepgemm import DeepGemmFusedMoE
 
                 DeepGemmFusedMoE.buffers.buffers.clear()
             except (ImportError, AttributeError):

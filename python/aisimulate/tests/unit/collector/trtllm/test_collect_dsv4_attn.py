@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -22,6 +23,46 @@ DSV4_MODULE_OPS = {
     "dsv4_csa_generation_module": (PerfFile.DSV4_CSA_GENERATION_MODULE, "get_dsv4_csa_generation_test_cases"),
     "dsv4_hca_generation_module": (PerfFile.DSV4_HCA_GENERATION_MODULE, "get_dsv4_hca_generation_test_cases"),
 }
+
+
+def test_rc29_attention_constructor_receives_distinct_native_stream_roles():
+    # Exercise the CUDA-free construction block against rc29's keyword-only
+    # contract (modeling_deepseekv4.py:1372-1379, 2382-2393 @c76f4a856).
+    source = REPO_ROOT / "collector" / "trtllm" / "collect_dsv4_attn.py"
+    tree = ast.parse(source.read_text())
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "create_dsv4_attention_module")
+    body = []
+    for node in function.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id in {"aux_stream", "aux_stream_dict", "attn_module"}
+            for target in node.targets
+        ):
+            body.append(node)
+    roles = SimpleNamespace(
+        Attention="attention", MlaCompressor="compressor", MlaIndexer="indexer", MlaIndexerAux="indexer_aux"
+    )
+    devices = []
+
+    def stream(*, device):
+        devices.append(device)
+        return object()
+
+    def construct(*, model_config, layer_idx, aux_stream_dict):
+        assert layer_idx == 0
+        assert set(aux_stream_dict) == {"attention", "compressor", "indexer", "indexer_aux"}
+        assert len({id(value) for value in aux_stream_dict.values()}) == 4
+        return model_config
+
+    namespace = {
+        "torch": SimpleNamespace(cuda=SimpleNamespace(Stream=stream)),
+        "AuxStreamType": roles,
+        "DeepseekV4Attention": construct,
+        "model_config": object(),
+        "device": "cuda:3",
+    }
+    exec(compile(ast.Module(body=body, type_ignores=[]), str(source), "exec"), namespace)
+    assert namespace["attn_module"] is namespace["model_config"]
+    assert devices == ["cuda:3"] * 4
 
 
 def _load_module_with_torch_stub(monkeypatch):
@@ -238,7 +279,7 @@ class _CapturingMetadata:
         self.prepared = True
 
 
-def _install_trtllm_stubs(monkeypatch, module):
+def _install_trtllm_stubs(monkeypatch, module, cache_defaults=None):
     captured = {"kv_cache_config": []}
 
     def _mod(name):
@@ -248,15 +289,24 @@ def _install_trtllm_stubs(monkeypatch, module):
 
     tl = _mod("tensorrt_llm")
     _mod("tensorrt_llm._torch")
-    iface = _mod("tensorrt_llm._torch.attention_backend.interface")
-    _mod("tensorrt_llm._torch.attention_backend")
-    utils_mod = _mod("tensorrt_llm._torch.attention_backend.utils")
+    iface = _mod("tensorrt_llm._torch.attention.backends.interface")
+    _mod("tensorrt_llm._torch.attention.backends")
+    utils_mod = _mod("tensorrt_llm._torch.attention.backends.utils")
+    model_mod = _mod("tensorrt_llm._torch.models.modeling_deepseekv4")
+    if cache_defaults is None:
+        cache_defaults = {"tokens_per_block": 128, "enable_swa_scratch_reuse": True}
+
+    def model_defaults(llm_args):
+        assert llm_args is None  # No user override in the stock collection.
+        return {"kv_cache_config": cache_defaults.copy()}
+
+    model_mod.DeepseekV4ForCausalLM = SimpleNamespace(get_model_defaults=model_defaults)
     bindings = _mod("tensorrt_llm.bindings")
     _mod("tensorrt_llm.bindings.internal")
     bm = _mod("tensorrt_llm.bindings.internal.batch_manager")
     llm_args = _mod("tensorrt_llm.llmapi.llm_args")
     _mod("tensorrt_llm.llmapi")
-    tl.__version__ = "1.3.0rc23"
+    tl.__version__ = "1.3.0rc29"
 
     iface.AttentionRuntimeFeatures = lambda **kw: SimpleNamespace(**kw)
     iface.KVCacheParams = lambda **kw: SimpleNamespace(**kw)
@@ -297,10 +347,10 @@ def _fake_model_config():
     )
 
 
-def _run_create(module, monkeypatch, **kw):
+def _run_create(module, monkeypatch, cache_defaults=None, **kw):
     _CapturingManager.instances.clear()
     _CapturingMetadata.instances.clear()
-    captured = _install_trtllm_stubs(monkeypatch, module)
+    captured = _install_trtllm_stubs(monkeypatch, module, cache_defaults=cache_defaults)
     manager, metadata, attention_cls = module.create_dsv4_kv_cache_and_metadata(
         model_config=_fake_model_config(),
         attn_module=SimpleNamespace(indexer=None),
@@ -308,6 +358,24 @@ def _run_create(module, monkeypatch, **kw):
         **kw,
     )
     return manager, metadata, captured
+
+
+@pytest.mark.parametrize("packed_fp8", [True, False], ids=["hopper", "blackwell"])
+def test_cache_constructor_preserves_native_model_defaults(monkeypatch, packed_fp8):
+    # rc29 modeling_deepseekv4.py:2552-2562 supplies the architecture-specific
+    # layout; the collector must forward it rather than bypassing the selector.
+    defaults = {"tokens_per_block": 128, "enable_swa_scratch_reuse": True}
+    if packed_fp8:
+        defaults["dtype"] = "fp8_ds_mla"
+    module = _load_module_with_torch_stub(monkeypatch)
+    manager, _, captured = _run_create(
+        module, monkeypatch, cache_defaults=defaults, batch_size=1, seq_len=64, is_context=True
+    )
+    config = captured["kv_cache_config"][0]
+    assert {key: config[key] for key in defaults} == defaults
+    if not packed_fp8:
+        assert "dtype" not in config
+    assert manager.ctor_kwargs["dtype"] == "FP8"
 
 
 def test_context_metadata_constructor_args_match_serving(monkeypatch):

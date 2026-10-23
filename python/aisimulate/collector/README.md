@@ -19,6 +19,44 @@ platform alignment ledger, a local campaign record kept outside the repo
 (`docs/perf_database/sglang-0.5.14-hopper-blackwell-ledger.md` in the
 campaign workspace).
 
+# Dynamo 1.6 refresh candidate
+
+The stock TensorRT-LLM collector runtime is pinned to `1.3.0rc29`, including
+MoE and MSA. WideEP retains its independent runtime. This declaration enables
+qualification; it does not promote queryable data versions or establish GPU
+coverage. Collect and validate each target system before promoting its data.
+
+The rc29 source (`c76f4a856447820aa1f994b053da7580d69b657d`) moves attention
+submodules to `_torch.attention.backends` and MoE to `_torch.moe.fused_moe`.
+The affected stock collectors use those paths and declare exact rc29
+compatibility. The old attention package only re-exports selected public names;
+it does not preserve imports such as `attention_backend.interface`. These
+source fixes still require GPU qualification of inputs and kernel dispatch.
+MoE also uses rc29's explicit activation payload: GPT-OSS preserves its
+`1.702 / 1.0 / 7.0` SwiGLU constants, and Nemotron-3 preserves ReLU². The removed
+activation keyword arguments must not silently fall back to ordinary SwiGLU.
+Explicit MoE backend requests reject rc29 backend substitution, preserving a
+failure record instead of labeling a replacement kernel as the requested one.
+Full stock runs must select stock registry ops from the retained model plan:
+that plan still names WideEP `moe_ep`, whose independent runtime cannot be mixed
+with rc29 in one container.
+
+DeepSeek-V4 attention uses rc29's `aux_stream_dict` constructor argument,
+with separate attention, compressor, indexer, and auxiliary-indexer streams,
+matching the native model. The removed single `aux_stream` argument fails
+before measurement. Cache construction also calls the native model-default
+selector: Hopper requires the packed `fp8_ds_mla` layout, while Blackwell
+keeps the native default. Both layouts use FP8 quantization. Qualify all four
+CSA/HCA context/decode paths after these changes.
+
+GDN remains blocked: rc29's default recurrent-state cache is BF16, while
+the existing TRT-LLM data reader assumes FP32 state-sensitive rows. Its native
+packed-QKV convolution and recurrence APIs also differ. Resolve the producer
+and consumer contract before publishing these rows. Likewise, current mHC
+collection measures unfused pre/post mapping, while rc29 enables fused HC by
+default. The existing rc23 exception does not cover rc29; an unfused smoke
+result alone does not qualify rc29's default serving path.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
@@ -369,6 +407,20 @@ When upstream framework `X.Y.Z` changes an API that a collector depends on:
 6. Run tests to validate
 
 ## Runtime Behavior
+
+`compute_scale` produces both `computescale_perf` and its static-quantization
+companion `scale_matrix_perf`. Finalization and recovery bind both tables to
+the same registered producer and checkpoint. Both staging files are required
+before either is published; the attempted ledger closes only after both tables
+and their provenance commit.
+
+TRT-LLM quantized MoE construction uses the BF16 model dtype and selects weight
+quantization through `QuantConfig`, matching rc29 serving. Passing FP8 as the
+model dtype is rejected by rc29's CUTLASS implementation resolver.
+
+The TRT-LLM all-to-all Slurm launcher uses the same rc29 image digest as the
+stock runtime manifest. Explicit image overrides must match that runtime's
+package-version gate; the launcher default is covered by the network tests.
 
 At collection time:
 1. `collect.py` reads the backend registry
