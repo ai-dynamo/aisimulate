@@ -41,8 +41,12 @@ def _is_moe(config: dict[str, object]) -> bool:
     return any(int(config.get(key) or 0) > 1 for key in ("n_routed_experts", "num_local_experts", "num_experts"))
 
 
-def _check_layer_declarations(config: dict[str, object]) -> None:
-    """Config intake's layer structure checks. A cache layout marker never excuses a malformed declaration."""
+def _check_layer_declarations(config: dict[str, object], *, check_attn_type_list: bool = False) -> None:
+    """Config intake's layer structure checks. A cache layout marker never excuses a malformed declaration.
+
+    With check_attn_type_list, intake's attn_type_list checks apply too. Only the marker path sets it: main's
+    collector never checked attn_type_list, and a config without markers keeps main's behavior.
+    """
     layer_types = config.get("layer_types")
     layers = config.get("num_hidden_layers")
     if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
@@ -53,6 +57,12 @@ def _check_layer_declarations(config: dict[str, object]) -> None:
         raise ValueError("layer_types must have one entry per num_hidden_layers")
     if isinstance(layer_types, list) and any(not isinstance(value, str) or not value.strip() for value in layer_types):
         raise ValueError("layer_types entries must be nonempty strings")
+    attn_types = config.get("attn_type_list")
+    if check_attn_type_list and "attn_type_list" in config:
+        if not isinstance(attn_types, list) or (layers is not None and len(attn_types) != layers):
+            raise ValueError("attn_type_list must have one entry per num_hidden_layers")
+        if any(type(value) is not int for value in attn_types):
+            raise ValueError("attn_type_list entries must be integers")
 
 
 def _attention_template(
@@ -230,7 +240,7 @@ def resolve_model_capability(
     layout_markers = () if model_family == "DEEPSEEKV41" else cache_layout_markers(config, architecture)
     if layout_markers:
         # No FPM attention template represents this cache, at any support level.
-        _check_layer_declarations(config)
+        _check_layer_declarations(config, check_attn_type_list=True)
         reasons = ", ".join(layout_markers)
         if not checkpoint_native_dtypes:
             raise ValueError(

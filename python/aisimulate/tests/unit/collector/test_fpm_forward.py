@@ -1229,6 +1229,64 @@ def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_lay
         _layout_capability(path, "NewMoeDsaForCausalLM", native=native)
 
 
+def _attn_type_list_config(tmp_path, declarations):
+    config = {
+        "num_hidden_layers": 2,
+        "hidden_size": 128,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 32,
+        "intermediate_size": 256,
+        "vocab_size": 1024,
+        "max_position_embeddings": 4096,
+        "torch_dtype": "bfloat16",
+        **declarations,
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+_GDN_LAYERS = {
+    "architectures": ["Qwen3_5ForConditionalGeneration"],
+    "layer_types": ["linear_attention", "full_attention"],
+}
+_LENGTH_ERROR = "attn_type_list must have one entry per num_hidden_layers"
+
+
+@pytest.mark.parametrize(
+    "declarations,error",
+    [
+        ({**_GDN_LAYERS, "attn_type_list": [0]}, _LENGTH_ERROR),
+        ({**_GDN_LAYERS, "attn_type_list": [0, "bad"]}, "attn_type_list entries must be integers"),
+        ({"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0, 1, 1]}, _LENGTH_ERROR),
+    ],
+    ids=["one-entry-for-two-layers", "string-entry", "three-entries-for-two-layers"],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _attn_type_list_config(tmp_path, declarations)
+    # Intake refuses each config with this message, and the collector must give the same one.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+@pytest.mark.parametrize("attn_types", [[1, 1, 1], [1, "bad"]], ids=["three-entries-for-two-layers", "string-entry"])
+def test_config_without_markers_keeps_the_attn_type_list_handling_of_main(tmp_path, attn_types):
+    # Main's collector never checked attn_type_list, and the checks above apply to the marker path only.
+    path = _attn_type_list_config(
+        tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": attn_types}
+    )
+    capability = _layout_capability(path, native=True)
+    assert (capability.support_level, capability.template_id) == ("bootstrap_template", "generic:dense_gqa")
+
+
 # Captured with resolve_model_capability(...).to_dict() at 4cb2b7d6, before the collector checked cache layout
 # markers. These configs have none, so their template selection and precision stay unchanged. The native path
 # loads no AIC timing tables, so a table update does not change these fields.
