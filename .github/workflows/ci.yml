@@ -617,6 +617,17 @@ jobs:
       - run: python -m pip install --require-hashes -r scripts/release/requirements.txt
       - name: Build the application test wheel once
         run: python scripts/release/build_manylinux_wheel.py --output-dir application-test-dist
+      - name: Check exact wheel configuration provenance
+        run: |
+          python scripts/ci/check_bundled_configs.py \
+            --wheel application-test-dist/aisimulate-*.whl \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-application"
+      - name: Preserve wheel configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-application-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bundled-configs-application/*
+          if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: application-test-wheel-${{ matrix.arch }}

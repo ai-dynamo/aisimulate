@@ -409,6 +409,9 @@ jobs:
           sparse-checkout: |
             /scripts/release/apply_dev_version.py
             /scripts/release/build_release_artifacts.py
+            /scripts/ci/check_bundled_configs.py
+            /scripts/ci/bundled_configs.json
+            /scripts/ci/bundled_config_legacy.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -527,6 +530,27 @@ jobs:
           # The .crate is arch-independent source; the amd64 leg's copy is
           # canonical, so drop this leg's duplicate before upload.
           rm "${DIST_DIR}"/aisimulate-core-*.crate
+
+      - name: Check exact wheel configuration provenance
+        run: |
+          set -euo pipefail
+          inventory_args=()
+          if [[ ! -f scripts/ci/bundled_configs.json ]]; then
+            # Historical sources may use only the byte-identical subset of
+            # the trusted workflow's catalog. Unknown or changed bytes fail.
+            inventory_args=(--inventory release-tooling/scripts/ci/bundled_configs.json --allow-subset)
+          fi
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/ci/check_bundled_configs.py \
+            --root . "${inventory_args[@]}" --wheel "${DIST_DIR}"/aisimulate-*.whl \
+            --output-dir "${RUNNER_TEMP}/bundled-configs-nightly"
+      - name: Preserve wheel configuration inventory
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundled-configs-nightly-${{ matrix.arch }}
+          path: ${{ runner.temp }}/bundled-configs-nightly/*
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
 
       # The wheel's name is a contract: stamped dev version (catches a
       # silent stamping failure) and cp311-abi3-manylinux_2_28 tags for this
@@ -806,6 +830,11 @@ jobs:
         with:
           name: nightly-crate-inventory
           path: ${{ runner.temp }}/license-artifacts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bundled-configs-nightly-*
+          merge-multiple: false
+          path: ${{ runner.temp }}/license-artifacts/bundled
       - name: Generate license compliance evidence
         env:
           GH_API_TOKEN: ${{ github.token }}
@@ -825,6 +854,19 @@ jobs:
                                    "version": r["Version"], "spdx_license": r["License"]})
           if not rows:
               raise SystemExit("missing Python dependency inventories")
+          bundled = sorted(glob.glob(f"{outdir}/bundled/**/bundled-deps.csv", recursive=True))
+          expected_bundled = [
+              f"{outdir}/bundled/bundled-configs-nightly-{arch}/bundled-deps.csv"
+              for arch in ("amd64", "arm64")
+          ]
+          if bundled != expected_bundled:
+              raise SystemExit("missing or duplicate architecture-specific bundled configuration inventories")
+          for filename in bundled:
+              with open(filename, newline="") as f:
+                  inventory = list(csv.DictReader(f))
+              if not inventory or any(r["dependency_type"] != "bundled_model_config" for r in inventory):
+                  raise SystemExit("invalid bundled configuration inventory")
+              rows.extend(inventory)
           with open(f"{outdir}/cargo-metadata.json") as f:
               meta = json.load(f)
           workspace = set(meta.get("workspace_members") or [])
