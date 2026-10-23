@@ -109,7 +109,9 @@ class TestHybridMoEBlocksViaBuilder:
         ]
 
     def test_mimo_context_sequence_unchanged(self):
-        """>=128-expert models already emitted the router: byte-identical emission."""
+        """>=128-expert models already emitted the router, so A8 adds no op here. The
+        sequence follows the corrected layer plan: 8 global MoE layers, 39 sliding-window
+        MoE layers and the dense layer 0 with full attention (global_dense)."""
         model = _build(MIMO)
         assert _names(model.context_ops) == [
             "context_embedding",
