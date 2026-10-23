@@ -368,11 +368,13 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
     let mut latency = sol_math.max(sol_mem);
     if op.use_qk_norm {
-        let q_num = op.n as f64 * h;
-        let k_num = n_kv * h;
-        let qk_norm =
-            2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
-        latency += qk_norm * 2.0 * 1.1;
+        // Same four-pass bf16 traffic allowance as the op-level decode extra. FPM keeps
+        // fractional coordinates; speculative widths count new Q/K tokens,
+        // while DCP does not multiply the local heads being normalized.
+        let query_tokens =
+            b / op.scale_num_tokens.max(1) as f64 * op.verify_query_tokens.max(1) as f64;
+        let qk_bytes = query_tokens * (op.n as f64 + n_kv) * h * 2.0 * 4.0;
+        latency += mem_op_sol_ms(spec, qk_bytes) * 1.1;
     }
     latency * op.scale_factor
 }
@@ -959,15 +961,24 @@ mod tests {
 
         let mut normalized = op;
         normalized.use_qk_norm = true;
-        let q_num = 48.0 * 128.0;
-        let k_num = 8.0 * 128.0;
-        let expected_extra = (2.0 * mem_op_sol_ms(&s, q_num * 2.0)
-            + 2.0 * mem_op_sol_ms(&s, k_num * 2.0))
-            * 2.0
-            * 1.1;
+        // 56 heads * 128 bf16 elements * four passes = 57,344 B/token;
+        // all 256 query tokens are normalized, independently of KV length.
+        let expected_extra = 57_344.0 * 256.0 * 1.1 / s.gpu.mem_bw * 1000.0;
         approx(
             generation_attention_sol(&normalized, &s, b, sq),
             expected + expected_extra,
+        );
+
+        // Preserve fractional FPM coordinates and the actual block width:
+        // 7.5 materialized tokens / width 5 * 3 real queries = 4.5 tokens.
+        normalized.scale_num_tokens = 5;
+        normalized.verify_query_tokens = 3;
+        let mut plain = normalized.clone();
+        plain.use_qk_norm = false;
+        approx(
+            generation_attention_sol(&normalized, &s, 7.5, sq)
+                - generation_attention_sol(&plain, &s, 7.5, sq),
+            57_344.0 * 4.5 * 1.1 / s.gpu.mem_bw * 1000.0,
         );
     }
 

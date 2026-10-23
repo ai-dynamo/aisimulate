@@ -648,140 +648,140 @@
     "minimax-m25-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 83.25348049077573,
-          "agg_tpot": 28.22151881043245,
-          "agg_ttft": 55.03196168034327
+          "agg_request": 78.42515460277573,
+          "agg_tpot": 26.58479817043245,
+          "agg_ttft": 51.84035643234328
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 59.654,
-          "disagg_tpot": 9.501,
+          "disagg_request": 57.887,
+          "disagg_tpot": 7.734,
           "disagg_ttft": 50.153
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 28.09828061363558
+          "mixed_step": 26.461480613635583
         }
       },
       "static": {
         "values": {
           "static_ctx": 25.33,
-          "static_gen": 7.413,
-          "static_total": 32.742999999999995
+          "static_gen": 5.776,
+          "static_total": 31.105999999999998
         }
       }
     },
     "minimax-m25-b200-vllm-empirical": {
       "agg": {
         "values": {
-          "agg_request": 107.93990632676808,
-          "agg_tpot": 24.53642650671439,
-          "agg_ttft": 83.40347982005369
+          "agg_request": 104.46170632676808,
+          "agg_tpot": 22.899626506714387,
+          "agg_ttft": 81.5620798200537
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 51.654,
-          "disagg_tpot": 7.696,
+          "disagg_request": 49.886,
+          "disagg_tpot": 5.928,
           "disagg_ttft": 43.958
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 24.536426506714385
+          "mixed_step": 22.899626506714384
         }
       },
       "static": {
         "values": {
           "static_ctx": 22.201,
-          "static_gen": 8.172,
-          "static_total": 30.373
+          "static_gen": 6.535,
+          "static_total": 28.736
         }
       }
     },
     "minimax-m25-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 109.35539911717132,
-          "agg_tpot": 25.202540761021798,
-          "agg_ttft": 84.15285835614952
+          "agg_request": 105.87719911717132,
+          "agg_tpot": 23.565740761021797,
+          "agg_ttft": 82.31145835614952
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 51.619,
-          "disagg_tpot": 8.259,
+          "disagg_request": 49.851,
+          "disagg_tpot": 6.491,
           "disagg_ttft": 43.36
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 25.202540761021798
+          "mixed_step": 23.565740761021797
         }
       },
       "static": {
         "values": {
           "static_ctx": 21.899,
-          "static_gen": 6.957,
-          "static_total": 28.856
+          "static_gen": 5.32,
+          "static_total": 27.219
         }
       }
     },
     "minimax-m25-b200-vllm-sampled-prefix": {
       "agg": {
         "values": {
-          "agg_request": 166.24926626789278,
-          "agg_tpot": 18.148929624879287,
-          "agg_ttft": 93.65354776837562
+          "agg_request": 157.8608567318928,
+          "agg_tpot": 16.51217724087929,
+          "agg_ttft": 91.81214776837562
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 93.863,
-          "disagg_tpot": 8.383,
+          "disagg_request": 86.795,
+          "disagg_tpot": 6.616,
           "disagg_ttft": 60.331
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 33.61569835698758
+          "mixed_step": 31.97897771698758
         }
       },
       "static": {
         "values": {
           "static_ctx": 48.247,
-          "static_gen": 31.266,
-          "static_total": 79.513
+          "static_gen": 24.719,
+          "static_total": 72.96600000000001
         }
       }
     },
     "minimax-m25-b200-vllm-shape-decode-heavy": {
       "agg": {
         "values": {
-          "agg_request": 581.4586824211743,
-          "agg_tpot": 8.041279057956958,
-          "agg_ttft": 74.85810176988599
+          "agg_request": 476.5037258611743,
+          "agg_tpot": 6.404555937956957,
+          "agg_ttft": 73.016701769886
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 548.23,
-          "disagg_tpot": 8.264,
+          "disagg_request": 436.909,
+          "disagg_tpot": 6.497,
           "disagg_ttft": 27.598
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 16.94053490656533
+          "mixed_step": 15.30373490656533
         }
       },
       "static": {
         "values": {
           "static_ctx": 13.938,
-          "static_gen": 430.162,
-          "static_total": 444.09999999999997
+          "static_gen": 327.044,
+          "static_total": 340.98199999999997
         }
       }
     },
@@ -802,15 +802,15 @@
     "minimax-m25-nvfp4-h200-vllm-hybrid-xprofile": {
       "agg": {
         "values": {
-          "agg_request": 141.41954389326563,
-          "agg_tpot": 40.29155006741912,
-          "agg_ttft": 101.1279938258465
+          "agg_request": 137.9413438932656,
+          "agg_tpot": 38.654750067419116,
+          "agg_ttft": 99.2865938258465
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 85.957,
-          "disagg_tpot": 11.567,
+          "disagg_request": 84.19,
+          "disagg_tpot": 9.8,
           "disagg_ttft": 74.39
         }
       },
@@ -820,36 +820,36 @@
       "static": {
         "values": {
           "static_ctx": 37.571,
-          "static_gen": 280.442,
-          "static_total": 318.01300000000003
+          "static_gen": 278.806,
+          "static_total": 316.37699999999995
         }
       }
     },
     "minimax-m27-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 109.35539911717132,
-          "agg_tpot": 25.202540761021798,
-          "agg_ttft": 84.15285835614952
+          "agg_request": 105.87719911717132,
+          "agg_tpot": 23.565740761021797,
+          "agg_ttft": 82.31145835614952
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 51.619,
-          "disagg_tpot": 8.259,
+          "disagg_request": 49.851,
+          "disagg_tpot": 6.491,
           "disagg_ttft": 43.36
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 25.202540761021798
+          "mixed_step": 23.565740761021797
         }
       },
       "static": {
         "values": {
           "static_ctx": 21.899,
-          "static_gen": 6.957,
-          "static_total": 28.856
+          "static_gen": 5.32,
+          "static_total": 27.219
         }
       }
     },
@@ -1192,98 +1192,98 @@
     "qwen3-235b-a22b-b200-sglang-cp8": {
       "mixed": {
         "values": {
-          "mixed_step": 42.160205183447744
+          "mixed_step": 39.67860518344774
         }
       }
     },
     "qwen3-235b-a22b-b200-vllm-empirical": {
       "agg": {
         "values": {
-          "agg_request": 159.98137995897213,
-          "agg_tpot": 35.47359056892807,
-          "agg_ttft": 124.50778939004407
+          "agg_request": 154.70797995897215,
+          "agg_tpot": 32.99199056892807,
+          "agg_ttft": 121.71598939004409
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 74.885,
-          "disagg_tpot": 11.763,
+          "disagg_request": 72.206,
+          "disagg_tpot": 9.084,
           "disagg_ttft": 63.122
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 35.47359056892807
+          "mixed_step": 32.99199056892807
         }
       },
       "static": {
         "values": {
           "static_ctx": 31.88,
-          "static_gen": 9.061,
-          "static_total": 40.941
+          "static_gen": 6.58,
+          "static_total": 38.46
         }
       }
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xprofile": {
       "agg": {
         "values": {
-          "agg_request": 139.61237092888715,
-          "agg_tpot": 25.888174554770423,
-          "agg_ttft": 113.72419637411673
+          "agg_request": 134.33897092888714,
+          "agg_tpot": 23.406574554770422,
+          "agg_ttft": 110.93239637411672
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 54.863,
-          "disagg_tpot": 10.837,
+          "disagg_request": 52.183,
+          "disagg_tpot": 8.157,
           "disagg_ttft": 44.026
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 25.888174554770423
+          "mixed_step": 23.406574554770422
         }
       },
       "static": {
         "values": {
           "static_ctx": 22.236,
-          "static_gen": 335.478,
-          "static_total": 357.714
+          "static_gen": 332.996,
+          "static_total": 355.23199999999997
         }
       }
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xquant": {
       "agg": {
         "values": {
-          "agg_request": 285.5999684263735,
-          "agg_tpot": 94.58822043594047,
-          "agg_ttft": 191.01174799043304
+          "agg_request": 280.3265684263735,
+          "agg_tpot": 92.10662043594047,
+          "agg_ttft": 188.21994799043304
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 198.068,
-          "disagg_tpot": 17.893,
+          "disagg_request": 195.389,
+          "disagg_tpot": 15.214,
           "disagg_ttft": 180.175
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 94.58822043594046
+          "mixed_step": 92.10662043594046
         }
       },
       "static": {
         "values": {
           "static_ctx": 90.997,
-          "static_gen": 13.615,
-          "static_total": 104.612
+          "static_gen": 11.133,
+          "static_total": 102.13
         }
       }
     },
     "qwen3-235b-a22b-b200-vllm-sol": {
       "mixed": {
         "values": {
-          "mixed_step": 12.623676833141841
+          "mixed_step": 12.623800590856128
         }
       },
       "static": {
@@ -1297,175 +1297,175 @@
     "qwen3-235b-b200-sglang-adp8-etp4ep2": {
       "agg": {
         "values": {
-          "agg_request": 293.51180688067546,
-          "agg_tpot": 99.49552775616118,
-          "agg_ttft": 194.01627912451428
+          "agg_request": 286.19453490810406,
+          "agg_tpot": 97.01509657901832,
+          "agg_ttft": 189.1794383290857
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 209.344,
-          "disagg_tpot": 21.053,
+          "disagg_request": 206.667,
+          "disagg_tpot": 18.376,
           "disagg_ttft": 188.291
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 99.4312316777034
+          "mixed_step": 96.9496316777034
         }
       },
       "static": {
         "values": {
           "static_ctx": 95.096,
-          "static_gen": 15.698,
-          "static_total": 110.79400000000001
+          "static_gen": 13.216,
+          "static_total": 108.312
         }
       }
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 70.63108608776001,
-          "agg_tpot": 12.908746394240001,
-          "agg_ttft": 57.722339693520006
+          "agg_request": 67.93828608776,
+          "agg_tpot": 11.64154639424,
+          "agg_ttft": 56.29673969352001
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 26.883,
-          "disagg_tpot": 4.914,
+          "disagg_request": 25.515,
+          "disagg_tpot": 3.546,
           "disagg_ttft": 21.969
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 12.908746394240001
+          "mixed_step": 11.64154639424
         }
       },
       "static": {
         "values": {
           "static_ctx": 11.096,
-          "static_gen": 4.203,
-          "static_total": 15.299
+          "static_gen": 2.936,
+          "static_total": 14.032
         }
       }
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage": {
       "agg": {
         "values": {
-          "agg_request": 363.06971567185485,
-          "agg_tpot": 131.90508338922265,
-          "agg_ttft": 231.16463228263223
+          "agg_request": 361.6412884779975,
+          "agg_tpot": 130.63788338922268,
+          "agg_ttft": 231.0034050887748
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 283.632,
-          "disagg_tpot": 19.844,
+          "disagg_request": 282.271,
+          "disagg_tpot": 18.483,
           "disagg_ttft": 263.788
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 135.78121124198853
+          "mixed_step": 134.51401124198853
         }
       },
       "static": {
         "values": {
           "static_ctx": 133.227,
-          "static_gen": 9.784,
-          "static_total": 143.011
+          "static_gen": 8.517,
+          "static_total": 141.744
         }
       }
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy": {
       "agg": {
         "values": {
-          "agg_request": 332.6348959415858,
-          "agg_tpot": 112.75759184460534,
-          "agg_ttft": 219.87730409698042
+          "agg_request": 327.6508866524429,
+          "agg_tpot": 111.06809717031963,
+          "agg_ttft": 216.58278948212327
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 224.732,
-          "disagg_tpot": 6.527,
+          "disagg_request": 222.907,
+          "disagg_tpot": 4.702,
           "disagg_ttft": 218.205
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 112.75463880551956
+          "mixed_step": 111.06503880551956
         }
       },
       "static": {
         "values": {
           "static_ctx": 110.205,
-          "static_gen": 5.985,
-          "static_total": 116.19
+          "static_gen": 4.295,
+          "static_total": 114.5
         }
       }
     },
     "qwen3-32b-b200-vllm-empirical": {
       "agg": {
         "values": {
-          "agg_request": 99.91150328586713,
-          "agg_tpot": 19.911295663937473,
-          "agg_ttft": 80.00020762192966
+          "agg_request": 96.32110328586714,
+          "agg_tpot": 18.221695663937474,
+          "agg_ttft": 78.09940762192966
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 41.175,
-          "disagg_tpot": 6.572,
+          "disagg_request": 39.351,
+          "disagg_tpot": 4.748,
           "disagg_ttft": 34.603
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 19.911295663937473
+          "mixed_step": 18.22169566393747
         }
       },
       "static": {
         "values": {
           "static_ctx": 17.476,
-          "static_gen": 6.038,
-          "static_total": 23.514
+          "static_gen": 4.348,
+          "static_total": 21.823999999999998
         }
       }
     },
     "qwen3-32b-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 100.16069959345067,
-          "agg_tpot": 20.028564514565023,
-          "agg_ttft": 80.13213507888565
+          "agg_request": 96.57029959345067,
+          "agg_tpot": 18.33896451456502,
+          "agg_ttft": 78.23133507888565
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 41.106,
-          "disagg_tpot": 6.623,
+          "disagg_request": 39.282,
+          "disagg_tpot": 4.799,
           "disagg_ttft": 34.483
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 20.02856451456502
+          "mixed_step": 18.33896451456502
         }
       },
       "static": {
         "values": {
           "static_ctx": 17.416,
-          "static_gen": 6.074,
-          "static_total": 23.490000000000002
+          "static_gen": 4.385,
+          "static_total": 21.801000000000002
         }
       }
     },
     "qwen3-32b-b200-vllm-sol": {
       "mixed": {
         "values": {
-          "mixed_step": 7.140447469398811
+          "mixed_step": 7.14053172997024
         }
       },
       "static": {
@@ -1479,21 +1479,21 @@
     "qwen3-32b-gb200-vllm-power": {
       "agg": {
         "values": {
-          "agg_request": 105.43294487570216,
-          "agg_tpot": 22.509621117977495,
-          "agg_ttft": 82.92332375772467
+          "agg_request": 101.8425448757022,
+          "agg_tpot": 20.820021117977497,
+          "agg_ttft": 81.0225237577247
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 45.486,
-          "disagg_tpot": 6.336,
+          "disagg_request": 43.662,
+          "disagg_tpot": 4.512,
           "disagg_ttft": 39.15
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 22.509621117977495
+          "mixed_step": 20.820021117977497
         }
       },
       "static": {
@@ -1501,346 +1501,346 @@
           "static_ctx": 19.773,
           "static_ctx_energy": 0.0,
           "static_ctx_power": 0.0,
-          "static_gen": 5.923,
+          "static_gen": 4.234,
           "static_gen_energy": 0.0,
           "static_gen_power": 0.0,
-          "static_total": 25.695999999999998
+          "static_total": 24.006999999999998
         }
       }
     },
     "qwen35-27b-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 53.861683978054856,
-          "agg_tpot": 18.258197958662663,
-          "agg_ttft": 35.60348601939219
+          "agg_request": 52.61567302491199,
+          "agg_tpot": 17.835821364376947,
+          "agg_ttft": 34.779851660535044
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 41.387,
-          "disagg_tpot": 4.797,
+          "disagg_request": 40.931,
+          "disagg_tpot": 4.341,
           "disagg_ttft": 36.59
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 18.245276002012936
+          "mixed_step": 17.822876002012936
         }
       },
       "static": {
         "values": {
           "static_ctx": 18.48,
-          "static_gen": 4.288,
-          "static_total": 22.768
+          "static_gen": 3.865,
+          "static_total": 22.345
         }
       }
     },
     "qwen35-27b-b200-sglang-lanes-trtllm-mha": {
       "agg": {
         "values": {
-          "agg_request": 51.86159899378114,
-          "agg_tpot": 17.58020304873937,
-          "agg_ttft": 34.28139594504177
+          "agg_request": 50.61558804063828,
+          "agg_tpot": 17.157826454453655,
+          "agg_ttft": 33.457761586184624
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 40.11,
-          "disagg_tpot": 4.657,
+          "disagg_request": 39.654,
+          "disagg_tpot": 4.201,
           "disagg_ttft": 35.453
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 17.569065432450543
+          "mixed_step": 17.146665432450543
         }
       },
       "static": {
         "values": {
           "static_ctx": 17.906,
-          "static_gen": 4.186,
-          "static_total": 22.092
+          "static_gen": 3.764,
+          "static_total": 21.669999999999998
         }
       }
     },
     "qwen35-27b-b200-trtllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 60.35596426004173,
-          "agg_tpot": 20.459648901709063,
-          "agg_ttft": 39.89631535833267
+          "agg_request": 59.10995330689887,
+          "agg_tpot": 20.037272307423347,
+          "agg_ttft": 39.07268099947552
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 42.7,
-          "disagg_tpot": 4.378,
+          "disagg_request": 42.244,
+          "disagg_tpot": 3.922,
           "disagg_ttft": 38.322
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 20.466371308794358
+          "mixed_step": 20.043971308794358
         }
       },
       "static": {
         "values": {
           "static_ctx": 19.355,
-          "static_gen": 4.024,
-          "static_total": 23.379
+          "static_gen": 3.601,
+          "static_total": 22.956
         }
       }
     },
     "qwen35-27b-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 95.2575458007199,
-          "agg_tpot": 17.721198023868183,
-          "agg_ttft": 77.53634777685171
+          "agg_request": 94.3599458007199,
+          "agg_tpot": 17.298798023868184,
+          "agg_ttft": 77.06114777685171
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 39.196,
-          "disagg_tpot": 5.669,
+          "disagg_request": 38.74,
+          "disagg_tpot": 5.213,
           "disagg_ttft": 33.527
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 17.721198023868187
+          "mixed_step": 17.298798023868187
         }
       },
       "static": {
         "values": {
           "static_ctx": 16.932,
-          "static_gen": 4.617,
-          "static_total": 21.549
+          "static_gen": 4.195,
+          "static_total": 21.127
         }
       }
     },
     "qwen35-397b-a17b-b200-sglang-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 86.36441622703778,
-          "agg_tpot": 29.276073297300943,
-          "agg_ttft": 57.08834292973684
+          "agg_request": 85.1962971413235,
+          "agg_tpot": 28.88010072587237,
+          "agg_ttft": 56.316196415451124
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 62.571,
-          "disagg_tpot": 6.339,
+          "disagg_request": 62.144,
+          "disagg_tpot": 5.912,
           "disagg_ttft": 56.232
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 29.26673474741132
+          "mixed_step": 28.87073474741132
         }
       },
       "static": {
         "values": {
           "static_ctx": 28.4,
-          "static_gen": 4.661,
-          "static_total": 33.061
+          "static_gen": 4.265,
+          "static_total": 32.665
         }
       }
     },
     "qwen35-397b-a17b-b200-trtllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 108.35052598438767,
-          "agg_tpot": 36.728991859114466,
-          "agg_ttft": 71.6215341252732
+          "agg_request": 107.18240689867338,
+          "agg_tpot": 36.33301928768589,
+          "agg_ttft": 70.84938761098749
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 79.456,
-          "disagg_tpot": 8.417,
+          "disagg_request": 79.028,
+          "disagg_tpot": 7.989,
           "disagg_ttft": 71.039
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 36.71495262111538
+          "mixed_step": 36.31895262111538
         }
       },
       "static": {
         "values": {
           "static_ctx": 35.878,
-          "static_gen": 6.291,
-          "static_total": 42.169
+          "static_gen": 5.895,
+          "static_total": 41.772999999999996
         }
       }
     },
     "qwen35-397b-a17b-b200-vllm-isl1024-osl2": {
       "agg": {
         "values": {
-          "agg_request": 115.1621591057056,
-          "agg_tpot": 28.78219252033205,
-          "agg_ttft": 86.37996658537355
+          "agg_request": 114.9306905922364,
+          "agg_tpot": 28.67326616105242,
+          "agg_ttft": 86.25742443118398
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 62.364,
-          "disagg_tpot": 6.523,
+          "disagg_request": 61.937,
+          "disagg_tpot": 6.096,
           "disagg_ttft": 55.841
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 28.782192520332046
+          "mixed_step": 28.673266161052418
         }
       },
       "static": {
         "values": {
           "static_ctx": 28.203,
-          "static_gen": 4.979,
-          "static_total": 33.182
+          "static_gen": 4.583,
+          "static_total": 32.786
         }
       }
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage": {
       "agg": {
         "values": {
-          "agg_request": 111.46023274741765,
-          "agg_tpot": 37.78312974488734,
-          "agg_ttft": 73.67710300253032
+          "agg_request": 110.29207947541764,
+          "agg_tpot": 37.387145584887335,
+          "agg_ttft": 72.9049338905303
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 84.795,
-          "disagg_tpot": 11.756,
+          "disagg_request": 84.367,
+          "disagg_tpot": 11.328,
           "disagg_ttft": 73.039
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 37.78512803807906
+          "mixed_step": 37.38912803807906
         }
       },
       "static": {
         "values": {
           "static_ctx": 36.888,
-          "static_gen": 10.145,
-          "static_total": 47.033
+          "static_gen": 9.749,
+          "static_total": 46.637
         }
       }
     },
     "qwen38-max-gb300-sglang-0517-fp8-agg": {
       "agg": {
         "values": {
-          "agg_request": 375.4711109205067,
-          "agg_tpot": 84.37553054393409,
-          "agg_ttft": 291.0955803765726
+          "agg_request": 372.76925105650673,
+          "agg_tpot": 83.7683710239341,
+          "agg_ttft": 289.00088003257264
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 187.275,
-          "disagg_tpot": 23.88,
+          "disagg_request": 186.619,
+          "disagg_tpot": 23.224,
           "disagg_ttft": 163.395
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 84.29838953331857
+          "mixed_step": 83.69118953331856
         }
       },
       "static": {
         "values": {
           "static_ctx": 82.523,
-          "static_gen": 18.435,
-          "static_total": 100.958
+          "static_gen": 17.827,
+          "static_total": 100.35
         }
       }
     },
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg": {
       "agg": {
         "values": {
-          "agg_request": 199.22753487292346,
-          "agg_tpot": 67.53475758404186,
-          "agg_ttft": 131.69277728888162
+          "agg_request": 197.43650982172352,
+          "agg_tpot": 66.92763044804187,
+          "agg_ttft": 130.50887937368165
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 147.062,
-          "disagg_tpot": 18.07,
+          "disagg_request": 146.407,
+          "disagg_tpot": 17.415,
           "disagg_ttft": 128.992
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 67.51132142772754
+          "mixed_step": 66.90412142772753
         }
       },
       "static": {
         "values": {
           "static_ctx": 65.147,
-          "static_gen": 12.024,
-          "static_total": 77.171
+          "static_gen": 11.417,
+          "static_total": 76.56400000000001
         }
       }
     },
     "qwen38-max-gb300-vllm-0271-bf16-disagg": {
       "agg": {
         "values": {
-          "agg_request": 278.0287458028032,
-          "agg_tpot": 91.87235096602501,
-          "agg_ttft": 186.15639483677816
+          "agg_request": 276.70616094471814,
+          "agg_tpot": 91.24995809163205,
+          "agg_ttft": 185.45620285308607
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 203.624,
-          "disagg_tpot": 24.699,
-          "disagg_ttft": 178.925
+          "disagg_request": 202.96,
+          "disagg_tpot": 24.04,
+          "disagg_ttft": 178.92
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 91.872350966025
+          "mixed_step": 91.24995809163204
         }
       },
       "static": {
         "values": {
-          "static_ctx": 90.366,
-          "static_gen": 16.235,
-          "static_total": 106.601
+          "static_ctx": 90.363,
+          "static_gen": 15.615,
+          "static_total": 105.978
         }
       }
     },
     "qwen38-max-gb300-vllm-0271-fp8-agg": {
       "agg": {
         "values": {
-          "agg_request": 339.16178073166265,
-          "agg_tpot": 83.64258313587148,
-          "agg_ttft": 255.51919759579116
+          "agg_request": 337.6192617795715,
+          "agg_tpot": 83.05495686840817,
+          "agg_ttft": 254.5643049111633
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 179.624,
-          "disagg_tpot": 19.386,
-          "disagg_ttft": 160.238
+          "disagg_request": 178.972,
+          "disagg_tpot": 18.729,
+          "disagg_ttft": 160.243
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 82.40403709077053
+          "mixed_step": 81.80349220824142
         }
       },
       "static": {
         "values": {
-          "static_ctx": 80.928,
-          "static_gen": 16.451,
-          "static_total": 97.37899999999999
+          "static_ctx": 80.931,
+          "static_gen": 15.847,
+          "static_total": 96.77799999999999
         }
       }
     }
@@ -2251,83 +2251,83 @@
     },
     "minimax-m25-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-empirical::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-empirical::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-empirical::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-empirical::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-sampled-prefix::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-sampled-prefix::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-sampled-prefix::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-sampled-prefix::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-shape-decode-heavy::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-shape-decode-heavy::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-shape-decode-heavy::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-b200-vllm-shape-decode-heavy::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-nvfp4-h200-vllm-hybrid-balanced-miss::agg": {
       "engine": "rust",
@@ -2347,11 +2347,11 @@
     },
     "minimax-m25-nvfp4-h200-vllm-hybrid-xprofile::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-nvfp4-h200-vllm-hybrid-xprofile::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m25-nvfp4-h200-vllm-hybrid-xprofile::mixed": {
       "engine": "rust",
@@ -2359,23 +2359,23 @@
     },
     "minimax-m25-nvfp4-h200-vllm-hybrid-xprofile::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m27-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "minimax-m3-b200-sglang-hybrid-xop::agg": {
       "engine": "rust",
@@ -2571,59 +2571,59 @@
     },
     "qwen3-235b-a22b-b200-sglang-cp8::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-empirical::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-empirical::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-empirical::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-empirical::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xprofile::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xprofile::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xprofile::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xprofile::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xquant::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xquant::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xquant::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-hybrid-xquant::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-sol::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-a22b-b200-vllm-sol::static": {
       "engine": "rust",
@@ -2631,103 +2631,103 @@
     },
     "qwen3-235b-b200-sglang-adp8-etp4ep2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-b200-sglang-adp8-etp4ep2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-b200-sglang-adp8-etp4ep2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-235b-b200-sglang-adp8-etp4ep2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-30b-a3b-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::agg": {
       "engine": "rust",
-      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
+      "git_head": "173a390abbb25269e6bd74267ec415f54e2f1ea7"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::disagg": {
       "engine": "rust",
-      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
+      "git_head": "173a390abbb25269e6bd74267ec415f54e2f1ea7"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::mixed": {
       "engine": "rust",
-      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
+      "git_head": "173a390abbb25269e6bd74267ec415f54e2f1ea7"
     },
     "qwen3-30b-a3b-b60-vllm-scan-coverage::static": {
       "engine": "rust",
-      "git_head": "8f6faf712d0d6288b31aa41714a4ddb2fa590095"
+      "git_head": "173a390abbb25269e6bd74267ec415f54e2f1ea7"
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-empirical::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-empirical::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-empirical::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-empirical::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-sol::mixed": {
       "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-b200-vllm-sol::static": {
       "engine": "rust",
@@ -2735,211 +2735,211 @@
     },
     "qwen3-32b-gb200-vllm-power::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-gb200-vllm-power::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-gb200-vllm-power::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen3-32b-gb200-vllm-power::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-lanes-trtllm-mha::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-lanes-trtllm-mha::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-lanes-trtllm-mha::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-sglang-lanes-trtllm-mha::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-trtllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-trtllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-trtllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-27b-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-sglang-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-sglang-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-sglang-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-trtllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-trtllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-trtllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-trtllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-vllm-isl1024-osl2::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-vllm-isl1024-osl2::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-vllm-isl1024-osl2::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-b200-vllm-isl1024-osl2::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::agg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::disagg": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::mixed": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen35-397b-a17b-gb200-sglang-0514-tp16-scan-coverage::static": {
       "engine": "rust",
-      "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-fp8-agg::agg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-fp8-agg::disagg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-fp8-agg::mixed": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-fp8-agg::static": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg::agg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg::disagg": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg::mixed": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-sglang-0517-nvfp4-disagg::static": {
       "engine": "rust",
-      "git_head": "0a890a4922d5533e5b754954a534b0654c8a4c68"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-bf16-disagg::agg": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-bf16-disagg::disagg": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-bf16-disagg::mixed": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-bf16-disagg::static": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-fp8-agg::agg": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-fp8-agg::disagg": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-fp8-agg::mixed": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     },
     "qwen38-max-gb300-vllm-0271-fp8-agg::static": {
       "engine": "rust",
-      "git_head": "036bcee7d996a74e02e3483c4d9d4ca7c1359e1d"
+      "git_head": "88a4f8b40ee7370174e5c6ef13304d418a056432"
     }
   }
 }

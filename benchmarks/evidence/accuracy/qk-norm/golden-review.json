@@ -1,0 +1,192 @@
+{
+  "base_revision": "c9e7363bf5983b980fe6622f7b064ee7adff5f5d",
+  "corrected_model_revision": "88a4f8b40ee7370174e5c6ef13304d418a056432",
+  "per_op_generation_attention_changes": [
+    {
+      "case": "minimax-m25-b200-sglang-isl1024-osl2",
+      "before_ms": 2.551590493426754,
+      "after_ms": 0.9147904934267539
+    },
+    {
+      "case": "minimax-m25-b200-vllm-isl1024-osl2",
+      "before_ms": 2.3136602801521837,
+      "after_ms": 0.6768602801521837
+    },
+    {
+      "case": "minimax-m25-b200-vllm-sampled-prefix",
+      "before_ms": 8.94131490870533,
+      "after_ms": 2.3944323487053305
+    },
+    {
+      "case": "minimax-m27-b200-vllm-isl1024-osl2",
+      "before_ms": 2.3136602801521837,
+      "after_ms": 0.6768602801521837
+    },
+    {
+      "case": "qwen3-30b-a3b-b200-vllm-isl1024-osl2",
+      "before_ms": 1.7847456839086753,
+      "after_ms": 0.5175456839086752
+    }
+  ],
+  "compile_engine_records": 21,
+  "engine_step_records": 118,
+  "engine_step_refreshed_records": 119,
+  "unchanged_rounded_afd_control": "qwen3-30b-a3b-h200-vllm-afd::afd",
+  "engine_step_changed_metrics": {
+    "agg_request": 29,
+    "agg_tpot": 29,
+    "agg_ttft": 29,
+    "disagg_request": 29,
+    "disagg_tpot": 29,
+    "mixed_step": 31,
+    "static_gen": 29,
+    "static_total": 29,
+    "disagg_ttft": 2,
+    "static_ctx": 2
+  },
+  "preexisting_prefill_golden_discrepancies": [
+    {
+      "case": "qwen38-max-gb300-vllm-0271-bf16-disagg",
+      "metric": "disagg_ttft",
+      "old_golden_ms": 178.925,
+      "original_native_ms": 178.92,
+      "corrected_native_ms": 178.92
+    },
+    {
+      "case": "qwen38-max-gb300-vllm-0271-bf16-disagg",
+      "metric": "static_ctx",
+      "old_golden_ms": 90.366,
+      "original_native_ms": 90.363,
+      "corrected_native_ms": 90.363
+    },
+    {
+      "case": "qwen38-max-gb300-vllm-0271-fp8-agg",
+      "metric": "disagg_ttft",
+      "old_golden_ms": 160.238,
+      "original_native_ms": 160.243,
+      "corrected_native_ms": 160.243
+    },
+    {
+      "case": "qwen38-max-gb300-vllm-0271-fp8-agg",
+      "metric": "static_ctx",
+      "old_golden_ms": 80.928,
+      "original_native_ms": 80.931,
+      "corrected_native_ms": 80.931
+    }
+  ],
+  "native_sha256": {
+    "original_debug": "a559e2c6b5c563967ce94f20aed03080358e0f742dbec6b500aed9c1661742c8",
+    "corrected_release": "617dab43d46c8b14f306e8a9b884fcd278f4067e08ab513704f19b4f3a9b1ebb"
+  },
+  "validation": {
+    "rust_operator_tests": 318,
+    "python_focused_tests": 100,
+    "python_canonical_tests": 26,
+    "parity_tests": 390
+  },
+  "b60_merge_refresh": {
+    "upstream_revision": "4730b2c1006ec19b9513f09e4c9ad93e67c41265",
+    "pin_source_revision": "173a390abbb25269e6bd74267ec415f54e2f1ea7",
+    "validated_model_revision": "d6722c4a9bec8101946f4a63cc1de94b72283067",
+    "case": "qwen3-30b-a3b-b60-vllm-scan-coverage",
+    "surfaces": [
+      "agg",
+      "disagg",
+      "mixed",
+      "static"
+    ],
+    "reason": "Combine upstream vLLM 0.28.0/XPU calibration with unchanged bandwidth-only Q/K normalization.",
+    "static_context_ms": 133.227,
+    "upstream_static_generation_ms": 9.784,
+    "combined_static_generation_ms": 8.517
+  },
+  "native_prediction_sentinels": {
+    "previous_source_revision": "d066e918705b98e2d55eed55743ce8d225f129ea",
+    "source_revision": "d6722c4a9bec8101946f4a63cc1de94b72283067",
+    "native_release_sha256": "44e2621e10ede5fc0434cf094b1060b87bd648ef7eabd245218995391d55a8eb",
+    "interpretation": "Proposed simulator stability references for the deliberate Q/K accounting change; not measured hardware accuracy or maintainer acceptance.",
+    "unchanged_prefill_cases": 8,
+    "changed_decode_cases": 8,
+    "query_inputs_and_tolerances_unchanged": true,
+    "effective_bandwidth_bytes_per_second": 6160000000000,
+    "old_fixed_ms_per_layer": 0.0264,
+    "delta_derivation": "layers * (osl - 1) * ((batch - 1) * one_token_traffic_ms_per_layer - 0.0264)",
+    "model_geometry": {
+      "Qwen3-32B": {
+        "layers": 64,
+        "tp": 4,
+        "local_q_heads": 16,
+        "local_k_heads": 2,
+        "head_dim": 128,
+        "one_token_traffic_ms_per_layer": 3.2914285714285715e-06
+      },
+      "MiniMax-M2.5": {
+        "layers": 62,
+        "tp": 8,
+        "local_q_heads": 6,
+        "local_k_heads": 1,
+        "head_dim": 128,
+        "one_token_traffic_ms_per_layer": 1.28e-06
+      }
+    },
+    "maximum_delta_residual_ms": 5.684341886080801e-13,
+    "changes": [
+      {
+        "case": "Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.4632784074708995,
+        "after_ms": 5.7736784074709,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1984.398792064317,
+        "after_ms": 1553.926804864317,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": 1.7053025658242404e-13
+      },
+      {
+        "case": "MiniMax-M2.5-predict_decode_latency-1-1024",
+        "before_ms": 6.956580007206089,
+        "after_ms": 5.319780007206088,
+        "derived_delta_ms": -1.6368,
+        "residual_ms": -8.881784197001252e-16
+      },
+      {
+        "case": "MiniMax-M2.5-predict_decode_latency-8-8192",
+        "before_ms": 2192.9660386705996,
+        "after_ms": 1775.723696270599,
+        "derived_delta_ms": -417.2423424,
+        "residual_ms": -5.684341886080801e-13
+      },
+      {
+        "case": "trtllm-Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.390312495740691,
+        "after_ms": 5.700712495740691,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "trtllm-Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1972.7326953236038,
+        "after_ms": 1542.2607081236038,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": -5.684341886080802e-14
+      },
+      {
+        "case": "sglang-Qwen3-32B-predict_decode_latency-1-1024",
+        "before_ms": 7.367158565634071,
+        "after_ms": 5.6775585656340715,
+        "derived_delta_ms": -1.6896,
+        "residual_ms": 4.440892098500626e-16
+      },
+      {
+        "case": "sglang-Qwen3-32B-predict_decode_latency-8-8192",
+        "before_ms": 1916.6777711920129,
+        "after_ms": 1486.205783992013,
+        "derived_delta_ms": -430.4719872,
+        "residual_ms": 1.7053025658242404e-13
+      }
+    ]
+  }
+}
