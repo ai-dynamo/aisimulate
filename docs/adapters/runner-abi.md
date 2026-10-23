@@ -70,6 +70,17 @@ AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
 analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
 cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
+`supported_worker_types` defaults to `("monolithic",)`; a runner must explicitly
+include `"afd"` to accept AFD roles. The built-in engine advertises both types.
+Deployment modes are `agg|disagg`, independent of role implementation. Ordinary
+and native AFD deployments retain ReplaySpec API 1. Role-local AFD topology and
+qualification artifacts use their own schema 2; this does not require downstream
+runners to implement AFD or upgrade the common ReplaySpec protocol. The default
+monolithic-only capability rejects AFD roles before execution.
+
+Old `afd`/`afd+pd` deployment modes and development API-2 saved inputs must be
+regenerated. API-version checks remain exact; API-2 inputs are not silently
+converted to API 1.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
 sets it to `True` within the [registered-scheme replay limits](../replay/engine/speculation.md#registered-schemes).

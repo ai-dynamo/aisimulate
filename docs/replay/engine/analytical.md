@@ -83,8 +83,8 @@ The AFD block has these fields:
 | `engine.workers.<role>.afd.a_system`, `f_system` | `engine.hardware` | fixed | Per-pool hardware. Node width and HBM capacity are resolved independently from each selected system. All pools share `engine.backend_version`. |
 | `engine.workers.<role>.afd.a_batch_size` | Required | User-supplied domain | Positive batch size per A replica; sets scheduler capacity and the frozen measurement batch. |
 | `engine.workers.<role>.afd.f_moe_ep_size` | F GPU count | Pure EP | Omitted values resolve to `n_f_nodes * f_gpus_per_node`. Explicit values are preserved and must give MoE TP1. Recommend accepts positive integers, `f_gpu_count`, or `n_f_nodes`. |
-| `engine.workers.<role>.afd.num_microbatches` | `3` | `{choices: [2, 3, 4]}` | Positive, at most `a_batch_size`. Circulating microbatches for routed layers; the dense prefix runs once at the full A-replica batch. Instantaneous decode reduces this count only when an A replica has fewer sequences. |
-| `engine.workers.<role>.afd.pipeline_layout` | `four_stage` | fixed | `four_stage`: independent A, A→F, F, F→A stages. `two_stage`: continuous A + A→F and F + F→A groups on two resources. |
+| `engine.workers.<role>.afd.num_microbatches` | `3` | `{choices: [2, 3, 4]}` | Positive, at most `a_batch_size`. Circulating microbatches for routed layers; the dense prefix runs once at the full A-replica batch. Actual batches bound the effective depth by the busiest replica population and retain short tails without padding. |
+| `engine.workers.<role>.afd.pipeline_layout` | `four_stage` | fixed | `four_stage`: independent A, A→F, F, F→A stages. `two_stage`: continuous A + A→F and F + F→A groups on two resources. Both layouts execute return restoration on A after F→A, sharing A with attention. |
 | `engine.workers.<role>.afd.chunked_prefill_size` | unset | fixed | Positive chunk size; unset pre-fills the prompt in one pass. Explicit zero is rejected. |
 | `engine.workers.<role>.afd.comm_overhead_factor` | `1.0` | fixed | Positive finite factor on A↔F transfers only; local A TP collectives and return-side restore are not scaled. Explicit zero is rejected. |
 | `engine.workers.<role>.afd.routing_location` | `a` | fixed | Where MoE routing information is produced. `a` runs routing on A replicas before expert-directed A→F transfer. `f` parses and serializes, but execution reports not implemented. |
@@ -135,6 +135,9 @@ is `a_replica_count * a_batch_size`; the A-pool per-GPU KV budget determines
 available KV tokens across replicas. Both A and F must pass memory preflight
 for each phase they serve; an infeasible pool fails with `out_of_memory`.
 Memory fit and KV admission use the same non-KV footprint and selected data roots.
+Both preserve `engine.database_mode`: `SOL` can load hardware specifications
+without measured performance tables, while measured modes retain their data
+availability checks. The same pool memory limits apply in every mode.
 
 For synthetic traffic without an explicit context window, preflight reserves
 `isl + osl` for both prefill and decode. The scheduler request limit is
@@ -198,12 +201,26 @@ See [speculation](speculation.md#mtp--eagle) for MTP behavior.
 
 ### Output artifacts
 
+AFD `prediction_provenance.data_identity.a_pool` and `.f_pool` include
+`requested_quantization` (the original shared overrides) and
+`effective_quantization` (distinct GEMM/MoE execution modes present in each compiled
+pool). Hardware normalization is shared with memory/KV sizing; model exclusions
+can retain additional modes. These fields identify modeled execution and do not
+certify that a serving runtime can load the checkpoint.
+
 Each successful AFD prediction writes `afd-replay-spec.json` and
 `afd-qualification.json`, recording role-indexed model identity, topology,
 provenance, GPU accounting and native A/F memory checks. Qualification links to
 the replay spec by SHA-256 with deterministic JSON ordering. Contract
 qualification, memory feasibility and measured serving accuracy are separate:
 writing a contract without replay leaves memory validation pending.
+
+`prediction.json` also reports `prediction_provenance` for each language role.
+AFD uses `estimator: op_level` and `timing_source: afd`. Its `data_identity`
+retains each pool’s resolved model, system, backend, version, data root and
+selected systems root. `data_version` contains the common A/F version when
+both agree; otherwise it is unset with an explicit reason, and the independent
+pool versions remain visible.
 
 Artifacts use `native_deployment_supported: false` and `launch.supported: false`;
 there is no runnable AFD deployment renderer. For recommendation domains see

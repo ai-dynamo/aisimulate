@@ -90,8 +90,16 @@ scheduler, including mid-flight admission and retraction. There is no separate
 AFD scheduler or compile-time measurement step. Each pool is built through
 `ForwardPassPerfModel::best_available`, preserving `estimator_config`, explicit
 `enable_shared_layer`/`strict_provenance` choices and its selected data roots.
-For different pool systems, inherited F GEMM/MoE precision is cleared and resolved
-against F hardware. The [public configuration](../replay/engine/analytical.md#hardware-and-versions)
+Each pool resolves the caller's precision request independently against its own
+selected system. Requests remain unchanged in saved configurations. The supported
+`nvfp4` execution mapping uses `nvfp4_wo` (FP4 weights, BF16 compute) below
+Blackwell and native `nvfp4` on Blackwell; explicit `nvfp4_wo` remains weight-only.
+No other precision is silently substituted. Unsupported execution combinations
+fail at construction; missing performance data follows the existing data policy.
+Timing, memory and KV budgeting share this resolution. Pool provenance records
+`requested_quantization` and `effective_quantization`; the latter lists compiled
+GEMM/MoE modes, including mixed-precision exclusions. These modeling modes are
+not a runtime checkpoint deployability guarantee. The [public configuration](../replay/engine/analytical.md#hardware-and-versions)
 defines shared version selection and GPU accounting.
 
 Topology resides in `rank.afd`; the rank owns backend, MTP depth and context.
@@ -120,8 +128,9 @@ Timing, physical residency and energy use these same plans.
 Native `AfdTransfer`, `AfdFAllGather`, `AfdFReduceScatter` and `AfdCombine` model
 cross-pool transfers and F/A restoration. A ranks dispatch their token slices;
 F-node reductions produce partials that A combines with shared outputs before
-all-gathering restored hidden states. Return combine/merge/all-gather latency
-belongs to F→A, while its memory and energy remain on A. Uneven slices use actual
+all-gathering restored hidden states. Return combine/merge/all-gather is an
+A-resource stage after the F→A transfer, competing with attention from other
+microbatches. Its memory, energy and diagnostic latency belong to A. Uneven slices use actual
 token counts, with collective padding where required. Router `topk` determines
 expert-selection volume, not a separate top-k selection kernel's latency.
 
@@ -134,34 +143,43 @@ collectives and A-local combine do not use that deployment-wide span.
 
 ## Staged Evaluation
 
-The ordered-stage kernel evaluates `[A, A_to_F, F, F_to_A]` for `four_stage`
-or `[A + A_to_F, F + F_to_A]` for `two_stage`. Each stage has one server;
-merged stages run continuously. Shared computation joins A; return restoration
-joins F→A. The replay loop consumes one complete `step_latency` per pass.
+The per-layer ingredients are `d0` (A computation, including router/shared
+experts), `d1` (A→F), `d2` (F all-gather, routed compute, reduce-scatter), `d3`
+(F→A), and `d4` (A combine, shared merge, token all-gather).
 
-For `m` circulating microbatches, `K` stages of durations `d`, and
-`j = layer_index * m + microbatch_index`:
+`four_stage` uses four resources and the dependency chain
+`A[d0] → send[d1] → F[d2] → return[d3] → A[d4]`.
+`two_stage` groups compute and its outgoing transfer continuously:
+`A[d0+d1] → F[d2+d3] → A[d4]`. The first and final A visits share one server;
+restoration is not an independent fifth server. Each microbatch's next layer
+waits for its own restoration.
 
-```text
-C(j, 0) = max(C(j-1, 0), C(j-m, K-1)) + d[0]
-C(j, r) = max(C(j, r-1), C(j-1, r)) + d[r]  (r > 0)
-```
+Ready tasks are non-preemptive and ordered by readiness time, with restoration
+first on ties, followed by source layer and microbatch ordinal. All completions
+at a timestamp settle before resources dispatch more work. The model does not
+assume partial GPU-kernel overlap. Every pass starts empty and drains completely;
+there is no pipeline state across replay calls. Small depths use stack queues;
+larger depths use bounded priority queues, with workspace proportional to depth.
 
-Negative indices are zero; completion is `C(m * layers - 1, K - 1)`.
-Each pass starts empty and drains completely, retaining no state across calls.
-Microbatches can enter the next layer before peers finish the previous one.
-With four 1 ms stage times, two layers and `m=2`:
+For two microbatches and one layer with `d=[10,1,1,1,10]` ms:
 
-| Layout | Layer 1 F→A completions | Layer 2 F→A completions | Pass time |
-| --- | --- | --- | --- |
-| `four_stage` | 4, 5 ms | 8, 9 ms | 9 ms |
-| `two_stage` | 4, 6 ms | 8, 10 ms | 10 ms |
+| Layout | A resource work | Pass time |
+| --- | --- | --- |
+| `four_stage` | two 10 ms computations plus two 10 ms restores | 40 ms |
+| `two_stage` | the same plus two 1 ms sends | 42 ms |
 
-With `m=1`, both layouts take 8 ms. Work is `O(K * m * layers)` and workspace
-`O(K + m)`; depths 1–4 use stack storage. `comm_overhead_factor` scales transfers
-once before grouping, excluding local A TP and return restoration; final latency
-correction scales the complete pass. Averaged layer diagnostics are not billed
-through another pipeline evaluation.
+`comm_overhead_factor` scales only `d1` and `d3`, once before grouping. F-local
+NCCL, A-local TP and restoration are not transfer-scaled. Final latency correction
+scales the complete pass. `attention_ms` describes total A service, including
+restoration, while `f_to_a_ms` describes only the return transfer. These are
+averaged diagnostics; replay consumes the already evaluated complete pass and
+never reconstructs it from averaged ingredients.
+
+Communication readiness checks the active F all-gather/reduce-scatter and A
+all-gather data buckets against each pool's selected database before replay
+creates workers. SOL needs no measured communication table; measured/empirical
+modes require the corresponding dtype/operation bucket. Message-size and
+interpolation-domain coverage remain query-time checks.
 
 ### Batch pricing
 
@@ -177,9 +195,7 @@ uses the actual batch, current mean KV position and MTP verification width.
 Static forward queries retain their configuration-sized, stride-averaged estimate.
 A pool-wide batch is balanced across replicas, with
 larger populations assigned first, then each replica is balanced across effective
-`m = min(num_microbatches, ceil(pool_batch / a_replica_count))` microbatches. The configured
-count must not exceed `batch_size_per_a_replica`. Sweeper filters such combinations
-before counting candidates; direct and pinned topologies reject them at construction.
+`m = min(num_microbatches, ceil(pool_batch / a_replica_count))` microbatches.
 Idle replicas and short tails contribute no invented tokens. Eight sequences
 on one replica and three microbatches split as 3 + 3 + 2; one sequence across
 eight replicas still prices F compute for one sequence. A latency follows the
@@ -206,14 +222,20 @@ Failures carry categories including `invalid_topology`, `gpu_budget`,
 `expert_divisibility`, `out_of_memory` and `candidate_limit`. Generated enumeration
 records dimensions, filter counts and completeness; pinned enumeration identifies
 `AFDSearchConfig.pinned_topologies` without claiming generated dimensions.
-Manually constructed topologies do not invent generator provenance. Topology
-schema, ReplaySpec API and qualification schema are version 2; obsolete inputs
+Manually constructed topologies do not invent generator provenance. AFD topology
+and qualification schemas are version 2; ReplaySpec remains API 1. Obsolete inputs
 follow [migration rules](../aic-backward-compatibility/migration.md#afd-translation).
 See [output artifacts](../replay/engine/analytical.md#output-artifacts) for qualification.
 
 Native expectations live in `afd_execution_plan.json` and `afd_e2e.json` under
 [`crates/core/parity_tests/perfmodel/goldens/`](../../crates/core/parity_tests/perfmodel/goldens/).
 `gen_afd_spec_fixtures.py` rebuilds pool fixtures through the canonical compiler.
+`scripts/afd_parity.py refresh-e2e` and `refresh-layouts` require `--build-manifest`: an immutable source
+commit/tree, covered source-file hashes, loaded native-binary hash and data tree.
+It refuses unrecorded source/binary/data changes, retains generation identity per
+case, checks exact request/token/GPU counts, and replaces the fixture only after
+all selected cases succeed. Historical attribution is not current generation
+provenance.
 Historical comparisons and host-cost measurements belong under
 [`benchmarks/evidence/`](../../benchmarks/evidence/), separate from serving accuracy.
 
