@@ -1205,13 +1205,15 @@ def test_packaged_recurrent_state_configs_get_no_attention_template(
 
 
 _ENTRY_ERROR = "layer_types entries must be nonempty strings"
+# Config intake's message for a layer count field that is not an integer of at least 1.
+_COUNT_ERROR = "{field} must be an integer >=1, not a boolean, float or numeric string"
 
 
 @pytest.mark.parametrize(
     "declared_layers,layer_types,error",
     [(4, ["linear_attention"] * count, "layer_types must have one entry per num_hidden_layers") for count in (0, 1, 5)]
     + [
-        (value, ["linear_attention"] * 4, "num_hidden_layers must be a positive integer")
+        (value, ["linear_attention"] * 4, _COUNT_ERROR.format(field="num_hidden_layers"))
         for value in (4.5, 4.0, "4", True, 0, -1, None)
     ]
     # A marker does not excuse an entry that is not a nonempty string.
@@ -1219,19 +1221,26 @@ _ENTRY_ERROR = "layer_types entries must be nonempty strings"
 )
 @pytest.mark.parametrize("native", [False, True])
 def test_detected_layout_keeps_the_layer_structure_checks(tmp_path, declared_layers, layer_types, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
     config = _unknown_fp8_moe_config()
     config.update(num_hidden_layers=declared_layers, layer_types=layer_types)
     if not layer_types:
         config["ssm_state_size"] = 16  # An empty layer list declares no marker; recurrent state still does.
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(ValueError) as collector:
         _layout_capability(path, "NewMoeDsaForCausalLM", native=native)
+    # Config intake refuses the same config with the same message.
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(collector.value) == str(intake.value) == error
 
 
-def _attn_type_list_config(tmp_path, declarations):
+def _layer_config(tmp_path, declarations, layer_count=None):
+    """A small 2-layer config. ``layer_count`` states the layer count in place of num_hidden_layers."""
     config = {
-        "num_hidden_layers": 2,
+        **({"num_hidden_layers": 2} if layer_count is None else layer_count),
         "hidden_size": 128,
         "num_attention_heads": 4,
         "num_key_value_heads": 2,
@@ -1267,7 +1276,7 @@ _LENGTH_ERROR = "attn_type_list must have one entry per num_hidden_layers"
 def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, declarations, error, native):
     from aisimulate.support.config_profile import load_model_config as load_intake_config
 
-    path = _attn_type_list_config(tmp_path, declarations)
+    path = _layer_config(tmp_path, declarations)
     # Intake refuses each config with this message, and the collector must give the same one.
     with pytest.raises(ValueError) as intake:
         load_intake_config(path)
@@ -1277,12 +1286,76 @@ def test_detected_layout_keeps_the_attn_type_list_checks_of_intake(tmp_path, dec
     assert str(collector.value) == error
 
 
-@pytest.mark.parametrize("attn_types", [[1, 1, 1], [1, "bad"]], ids=["three-entries-for-two-layers", "string-entry"])
-def test_config_without_markers_keeps_the_attn_type_list_handling_of_main(tmp_path, attn_types):
-    # Main's collector never checked attn_type_list, and the checks above apply to the marker path only.
-    path = _attn_type_list_config(
-        tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": attn_types}
-    )
+@pytest.mark.parametrize(
+    "layer_count,declarations,error",
+    [
+        (
+            {"num_layers": 2},
+            {**_GDN_LAYERS, "layer_types": ["linear_attention"]},
+            "layer_types must have one entry per num_hidden_layers",
+        ),
+        ({"n_layer": 2}, {"architectures": ["MiniMaxText01ForCausalLM"], "attn_type_list": [0]}, _LENGTH_ERROR),
+        (
+            {"num_hidden_layers": 2, "n_layer": 3},
+            _GDN_LAYERS,
+            "conflicting num_hidden_layers fields: {'num_hidden_layers': 2, 'n_layer': 3}",
+        ),
+        ({"num_layers": "2"}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_layers")),
+        ({"n_layer": 2.0}, _GDN_LAYERS, _COUNT_ERROR.format(field="n_layer")),
+        ({"num_hidden_layers": "x", "num_layers": 2}, _GDN_LAYERS, _COUNT_ERROR.format(field="num_hidden_layers")),
+    ],
+    ids=[
+        "num-layers-with-short-layer-types",
+        "n-layer-with-short-attn-type-list",
+        "conflicting-counts",
+        "string-count",
+        "float-count",
+        "malformed-count-before-a-valid-one",
+    ],
+)
+@pytest.mark.parametrize("native", [False, True])
+def test_detected_layout_reads_the_layer_count_as_intake_does(tmp_path, layer_count, declarations, error, native):
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    path = _layer_config(tmp_path, declarations, layer_count)
+    with pytest.raises(ValueError) as intake:
+        load_intake_config(path)
+    assert str(intake.value) == error
+    with pytest.raises(ValueError) as collector:
+        _layout_capability(path, native=native)
+    assert str(collector.value) == error
+
+
+def test_detected_layout_reads_every_layer_count_field_of_intake(tmp_path):
+    from aisimulate.support.config_profile import _INT_ALIASES
+    from aisimulate.support.config_profile import load_model_config as load_intake_config
+
+    # The collector copies intake's list of layer count fields; a field that intake adds must count here too.
+    for field in _INT_ALIASES["num_hidden_layers"]:
+        directory = tmp_path / field
+        directory.mkdir()
+        path = _layer_config(directory, _GDN_LAYERS, {field: 3})
+        with pytest.raises(ValueError) as intake:
+            load_intake_config(path)
+        with pytest.raises(ValueError) as collector:
+            _layout_capability(path, native=True)
+        assert str(collector.value) == str(intake.value) == "layer_types must have one entry per num_hidden_layers"
+
+
+@pytest.mark.parametrize(
+    "layer_count,declarations",
+    [
+        (None, {"attn_type_list": [1, 1, 1]}),
+        (None, {"attn_type_list": [1, "bad"]}),
+        ({"num_layers": 2}, {"layer_types": ["full_attention"]}),
+        ({"num_hidden_layers": 2, "n_layer": 3}, {}),
+    ],
+    ids=["three-entries-for-two-layers", "string-entry", "num-layers-with-short-layer-types", "conflicting-counts"],
+)
+def test_config_without_markers_keeps_the_layer_checks_of_main(tmp_path, layer_count, declarations):
+    # Main's collector read only num_hidden_layers and never checked attn_type_list. The checks above apply to the
+    # marker path only.
+    path = _layer_config(tmp_path, {"architectures": ["MiniMaxText01ForCausalLM"], **declarations}, layer_count)
     capability = _layout_capability(path, native=True)
     assert (capability.support_level, capability.template_id) == ("bootstrap_template", "generic:dense_gqa")
 

@@ -23,6 +23,9 @@ from .model_capability import ResolvedModelConfig, load_model_config, resolve_at
 TEMPLATE_VERSION = 1
 # A cache layout that config.json cannot describe gets no FPM attention template; the native runtime measures it.
 GENERIC_RUNTIME_TEMPLATE_ID = "generic:native_runtime"
+# Config intake's layer count fields, in its order (_INT_ALIASES in aisimulate/support/config_profile.py). The
+# collector does not import the onboarding package, so a test pins this copy to intake.
+_LAYER_COUNT_FIELDS = ("num_hidden_layers", "n_layer", "num_layers")
 
 
 def _enum_name(value: object) -> str:
@@ -41,16 +44,30 @@ def _is_moe(config: dict[str, object]) -> bool:
     return any(int(config.get(key) or 0) > 1 for key in ("n_routed_experts", "num_local_experts", "num_experts"))
 
 
-def _check_layer_declarations(config: dict[str, object], *, check_attn_type_list: bool = False) -> None:
+def _check_layer_declarations(config: dict[str, object], *, marker_layout: bool = False) -> None:
     """Config intake's layer structure checks. A cache layout marker never excuses a malformed declaration.
 
-    With check_attn_type_list, intake's attn_type_list checks apply too. Only the marker path sets it: main's
-    collector never checked attn_type_list, and a config without markers keeps main's behavior.
+    For a marker layout, all of intake's checks apply: the layer count comes from every field that intake reads,
+    with intake's messages, and attn_type_list is checked too. A config without markers keeps main's checks, which
+    read only num_hidden_layers and never checked attn_type_list.
     """
     layer_types = config.get("layer_types")
-    layers = config.get("num_hidden_layers")
-    if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
-        raise ValueError("num_hidden_layers must be a positive integer")
+    if marker_layout:
+        # Intake's rule: each layer count field present is an integer of at least 1, and all of them agree.
+        counts: dict[str, int] = {}
+        for field in _LAYER_COUNT_FIELDS:
+            if field in config:
+                value = config[field]
+                if type(value) is not int or value < 1:
+                    raise ValueError(f"{field} must be an integer >=1, not a boolean, float or numeric string")
+                counts[field] = value
+        if len(set(counts.values())) > 1:
+            raise ValueError(f"conflicting num_hidden_layers fields: {counts}")
+        layers = next(iter(counts.values()), None)
+    else:
+        layers = config.get("num_hidden_layers")
+        if "num_hidden_layers" in config and (type(layers) is not int or layers < 1):
+            raise ValueError("num_hidden_layers must be a positive integer")
     if "layer_types" in config and (
         not isinstance(layer_types, list) or (layers is not None and len(layer_types) != layers)
     ):
@@ -58,7 +75,7 @@ def _check_layer_declarations(config: dict[str, object], *, check_attn_type_list
     if isinstance(layer_types, list) and any(not isinstance(value, str) or not value.strip() for value in layer_types):
         raise ValueError("layer_types entries must be nonempty strings")
     attn_types = config.get("attn_type_list")
-    if check_attn_type_list and "attn_type_list" in config:
+    if marker_layout and "attn_type_list" in config:
         if not isinstance(attn_types, list) or (layers is not None and len(attn_types) != layers):
             raise ValueError("attn_type_list must have one entry per num_hidden_layers")
         if any(type(value) is not int for value in attn_types):
@@ -240,7 +257,7 @@ def resolve_model_capability(
     layout_markers = () if model_family == "DEEPSEEKV41" else cache_layout_markers(config, architecture)
     if layout_markers:
         # No FPM attention template represents this cache, at any support level.
-        _check_layer_declarations(config, check_attn_type_list=True)
+        _check_layer_declarations(config, marker_layout=True)
         reasons = ", ".join(layout_markers)
         if not checkpoint_native_dtypes:
             raise ValueError(
