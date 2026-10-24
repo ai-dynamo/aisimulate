@@ -81,8 +81,9 @@ at construction; queries do not silently switch estimators on a data-domain erro
 
 `fpm_learned` requires explicit selection and `fallback_policy: deny`; it is
 never an automatic or fallback candidate. Supply exactly one of
-`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Frozen
-adaptation accepts either source, online adaptation requires a training or
+`estimator_config.fpm_learned.artifact_path` and `checkpoint_path`. Online
+adaptation is the default; set `adaptation: frozen` explicitly for a fixed forest.
+Frozen adaptation accepts either source, online adaptation requires a training or
 runtime checkpoint, and `causal_selector` requires a training seed checkpoint.
 Learned models support the standalone canonical API with complete per-iteration
 `ForwardPassMetrics` for prediction and feedback. Replay, engine CLI prediction
@@ -232,7 +233,8 @@ fields report their nested paths. The supported namespaces are:
   [learned configuration field tables](fpm_ml/configuration.md).
 - `selector`: expert selection controls for learned
   `adaptation: causal_selector`, documented on the same learned configuration page.
-- `correction`: `enabled` (true), `mode` (`auto`), independent `sampling`, `min_observations`
+- `correction`: `enabled` (false for standalone online learned mode, true otherwise),
+  `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) fixed-policy ranges.
 - `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
@@ -320,6 +322,7 @@ sample from the most populated cell when the store exceeds its budget.
 
 | Correction field | Default | Behavior |
 | --- | --- | --- |
+| `estimator_config.correction.enabled` | `false` for standalone online learned mode; `true` otherwise | Standalone online learned mode requires disabled correction; the combined selector requires enabled correction. Explicit values override the default and are validated for the selected mode. |
 | `estimator_config.correction.mode` | `auto` | `auto` keeps fixed correction for native AIC estimates and selects `hybrid` for learned forests. `hybrid` uses the fixed grid inside its configured limits and dynamic local correction outside. `fixed` and `dynamic_local` explicitly select a single policy. |
 | `estimator_config.correction.sampling.max_observations` | `64` | Sample-slot budget per workload kind and policy. Hybrid retains independent fixed and dynamic budgets, up to `2 * M` slots per kind (128 by default). Dynamic and hybrid updates take `O(M log M)` time and `O(M)` temporary storage; measure update cost before increasing capacity. |
 

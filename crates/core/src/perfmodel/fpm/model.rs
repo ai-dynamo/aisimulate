@@ -2164,6 +2164,7 @@ mod fallback_errors {
         );
         config.estimation_mode = EstimationMode::FpmLearned;
         config.estimator_config.fpm_learned.artifact_path = Some(path.clone());
+        config.estimator_config.fpm_learned.adaptation = crate::LearnedAdaptation::Frozen;
         let resolved = config.resolve().unwrap();
         ForwardPassPerfModel::from_learned_config(&resolved).unwrap();
         artifact["stores"]["pure_decode"]["baseline"] = 20.0.into();

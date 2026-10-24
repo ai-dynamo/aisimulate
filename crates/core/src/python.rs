@@ -393,8 +393,10 @@ impl AicTimingConfig {
                 mode == EstimationMode::FpmInterpolation,
             )?;
         }
+        let mut estimator_input = serde_json::Value::Object(self.estimator_config.clone());
+        EstimatorConfig::apply_context_defaults(&mut estimator_input, mode);
         let estimator_config = EstimatorConfig::migrate_legacy_inputs(
-            Some(&serde_json::to_string(&self.estimator_config)?),
+            Some(&serde_json::to_string(&estimator_input)?),
             None,
             self.fpm_interpolation.map(|method| method.as_str()),
             self.fpm_parquet_path.as_deref(),

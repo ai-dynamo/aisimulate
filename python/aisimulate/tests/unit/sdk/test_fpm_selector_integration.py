@@ -42,6 +42,8 @@ def test_selector_matches_independent_experts_and_causal_recurrence(tmp_path, pe
                         "recent_window": 8,
                         "update_every": 1,
                         "history_weight": 0.01,
+                        # Compare identical experts, independent of mode defaults.
+                        "history_weight_ramp_observations": 0,
                     },
                 },
             }
