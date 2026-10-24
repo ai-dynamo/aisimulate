@@ -67,7 +67,8 @@ Python objects inside adapter payloads.
 formats and hook identities. Pair/trace declarations may use `"*"` where the
 contract allows it. More specific flags cover disaggregated attention-DP,
 AgentX backends/topologies/lanes/snapshots/warmup/profiles, offload/speculation,
-analytical EPD, cached-prefix tokens, state/grouped cache and model controls.
+analytical EPD and its deferred overlay, cached-prefix tokens, state/grouped
+cache and model controls.
 Generic flag defaults are not qualification evidence for an optional stack.
 
 `supports_generic_speculation` defaults to `False`; the built-in engine factory
@@ -105,9 +106,11 @@ capture even though native Rust observers support it.
 
 A factory that sets `supports_deferred_encoder_overlay` accepts
 `defer_encoder_overlay=True`: for an analytical EPD spec, the runner returns
-the normalized language report without the encoder overlay. Sweeper then
-replays each language deployment once and applies `apply_encoder_overlay` for
-every encoder pool that shares it.
+the normalized language report without the encoder overlay, and rejects the
+flag together with memory diagnostics. Sweeper then replays each language
+deployment once per candidate batch and applies `apply_encoder_overlay` for
+every encoder pool that shares it. A failed, timed-out or refused language
+replay is recorded for each of those pools.
 
 An optional `estimate_host_resources(workload, *, concurrency=None)` factory
 method participates in [resource admission](../reference/local-resources.md).

@@ -514,6 +514,8 @@ class EngineReplayRunner:
             if encoder.mode == "analytical":
                 if output_requirements.capture_per_request or output_requirements.include_raw_report:
                     raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+                if output_requirements.defer_encoder_overlay and output_requirements.capture_memory_diagnostics:
+                    raise InvalidRunnerError("a deferred encoder overlay cannot carry memory diagnostics")
                 goal = OptimizationGoal.model_validate(spec.goal)
                 if (
                     goal.min_goodput_rps is not None
