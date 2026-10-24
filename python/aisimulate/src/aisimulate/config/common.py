@@ -159,6 +159,12 @@ class CandidateConstraints(StrictModel):
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
     min_goodput_rps: PositiveFiniteFloat | None = None
+    max_p99_ttft_ms: PositiveFiniteFloat | None = None
+    max_p99_e2e_latency_ms: PositiveFiniteFloat | None = None
+
+    @property
+    def has_percentile_constraints(self) -> bool:
+        return self.max_p99_ttft_ms is not None or self.max_p99_e2e_latency_ms is not None
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> CandidateConstraints:

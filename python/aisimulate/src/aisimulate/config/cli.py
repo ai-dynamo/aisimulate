@@ -68,6 +68,12 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("engine.hardware='auto' requires one optimization.hardware")
         source = self.traffic.source if self.traffic is not None else None
         modes = set(self.engine.mode.choices) if hasattr(self.engine.mode, "choices") else {self.engine.mode}
+        if self.optimization.constraints.has_percentile_constraints:
+            if "afd" in modes:
+                raise ValueError("p99 latency constraints are unsupported for AFD replay")
+            encoder = self.engine.workers.encoder
+            if encoder is not None and encoder.mode == "analytical":
+                raise ValueError("p99 latency constraints are unsupported for analytical EPD")
         if "afd" in modes and isinstance(source, SyntheticSource) and source.cached_prefix_tokens:
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if "afd" in modes and source is not None and not isinstance(source, SyntheticSource):

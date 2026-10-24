@@ -127,6 +127,13 @@ class OptimizationGoal(BaseModel):
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
     strict_sla: bool = Field(default=False, strict=True)
     min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+    # Independent aggregate-percentile gates; these do not define per-request goodput.
+    max_p99_ttft_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+    max_p99_e2e_latency_ms: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+
+    @property
+    def has_percentile_constraints(self) -> bool:
+        return self.max_p99_ttft_ms is not None or self.max_p99_e2e_latency_ms is not None
 
     @property
     def requires_aggregate_sla(self) -> bool:
@@ -1287,6 +1294,17 @@ class SmartSearchConfig(BaseModel):
     workload: Workload
     goal: OptimizationGoal = Field(default_factory=OptimizationGoal)
     sweep: SweepConfig = Field(default_factory=SweepConfig)
+
+    @model_validator(mode="after")
+    def _validate_percentile_constraints(self) -> SmartSearchConfig:
+        if not self.goal.has_percentile_constraints:
+            return self
+        if set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
+            raise ValueError("p99 latency constraints are unsupported for AFD replay")
+        encoder = self.search_space.encoder
+        if encoder is not None and encoder.mode == "analytical":
+            raise ValueError("p99 latency constraints are unsupported for analytical EPD")
+        return self
 
     @model_validator(mode="after")
     def _validate_min_gpus(self) -> SmartSearchConfig:

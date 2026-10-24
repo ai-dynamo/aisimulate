@@ -124,6 +124,17 @@ The `optimization` section is required, even when its target uses a default.
 | `optimization.constraints.min_candidate_gpus` | `null` | `x` | `-` | Positive when set and no greater than the maximum. |
 | `optimization.constraints.max_candidate_gpus` | `32` | `x` | `-` | Positive. |
 | `optimization.constraints.min_goodput_rps` | `null` | `x` | `-` | Positive finite SLA-compliant requests/s floor for `min_gpus` only; required with request-rate traffic and cannot exceed the offered rate. Optional with fixed concurrency. |
+| `optimization.constraints.max_p99_ttft_ms` | `null` | `x` | `-` | Positive finite upper bound on the aggregate request TTFT p99; enforced independently of `strict_sla`. |
+| `optimization.constraints.max_p99_e2e_latency_ms` | `null` | `x` | `-` | Positive finite upper bound on the aggregate request E2E latency p99; may be combined with the TTFT p99 bound. |
+
+The p99 constraints filter candidates before ranking or Pareto analysis, including when
+`strict_sla` is false. They require finite reported percentiles and positive qualifying sample
+counts; missing evidence rejects a candidate. AFD and analytical EPD do not provide these
+percentiles and reject configurations requesting these constraints. Native encoder replay is
+supported. These bounds do not define per-request goodput and do not satisfy the separate
+`evaluation.sla` requirement for goodput or minimum-GPU targets. See
+[percentile constraints](../sweeper/optimization-goals.md#percentile-constraints) for the sample
+population and saved-result semantics.
 
 `optimization.hardware` is one fallback SKU, never a list or inventory.
 Concrete P/D role SKUs can override it. `optimizer` controls execution of the

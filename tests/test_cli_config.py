@@ -755,6 +755,103 @@ def test_strict_sla_is_public_and_lowers_to_sweeper_goal() -> None:
         CoreRecommendationConfig.model_validate({**base, "optimization": {"strict_sla": "true"}})
 
 
+@pytest.mark.parametrize("strict_sla", [False, True])
+def test_p99_constraints_lower_and_round_trip_independently_of_request_sla(strict_sla) -> None:
+    from aisimulate.sweeper import SmartSearchConfig
+
+    bounds = {"max_p99_ttft_ms": 100.0, "max_p99_e2e_latency_ms": 1000.0}
+    raw = {
+        "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
+        "evaluation": {"sla": {"itl_ms": 30.0}},
+        "optimization": {"strict_sla": strict_sla, "constraints": bounds},
+    }
+    public = CoreRecommendationConfig.model_validate(raw)
+    restored = CoreRecommendationConfig.model_validate_json(public.model_dump_json())
+    lowered = recommendation_to_sweeper(restored)
+    goal = SmartSearchConfig.model_validate_json(lowered.model_dump_json()).goal
+
+    assert goal.max_p99_ttft_ms == bounds["max_p99_ttft_ms"]
+    assert goal.max_p99_e2e_latency_ms == bounds["max_p99_e2e_latency_ms"]
+    assert goal.has_percentile_constraints
+    assert goal.strict_sla is strict_sla
+    assert goal.sla.model_dump(exclude_none=True) == {"itl_ms": 30.0}
+
+
+@pytest.mark.parametrize("field", ["max_p99_ttft_ms", "max_p99_e2e_latency_ms"])
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "100"])
+def test_public_p99_constraints_reject_invalid_bounds(field, value) -> None:
+    with pytest.raises(ValidationError, match=field):
+        CoreRecommendationConfig.model_validate(
+            {"engine": {**_engine(), "mode": "aggregated"}, "optimization": {"constraints": {field: value}}}
+        )
+
+
+@pytest.mark.parametrize("target", ["goodput", "goodput_per_gpu", "min_gpus"])
+def test_p99_constraints_do_not_satisfy_public_request_sla_requirement(target) -> None:
+    with pytest.raises(ValidationError, match="requires an evaluation.sla bound"):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "mode": "aggregated"},
+                "optimization": {"target": target, "constraints": {"max_p99_ttft_ms": 100.0}},
+            }
+        )
+
+
+@pytest.mark.parametrize("combined_with_pd", [False, True])
+def test_public_p99_constraints_reject_afd(combined_with_pd) -> None:
+    raw = {
+        "engine": {
+            **_engine(),
+            "mode": {"choices": ["afd"]},
+            "workers": {},
+            "afd": {
+                "phase": "decode" if combined_with_pd else "both",
+                "combined_with_pd": combined_with_pd,
+                "a_batch_size": 8,
+            },
+        },
+        "optimization": {},
+    }
+    CoreRecommendationConfig.model_validate(raw)
+    raw["optimization"]["constraints"] = {"max_p99_e2e_latency_ms": 1000.0}
+    with pytest.raises(ValidationError, match="p99 latency constraints are unsupported for AFD replay"):
+        CoreRecommendationConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("encoder_mode", ["analytical", "native"])
+def test_public_p99_constraints_distinguish_encoder_replay_modes(encoder_mode) -> None:
+    encoder = {"mode": encoder_mode}
+    if encoder_mode == "native":
+        encoder.update(
+            host_profile={"path": "unused.json", "frontend": "python"},
+            transfer={"bandwidth_gb_per_second": 50.0},
+        )
+    raw = {
+        "engine": {
+            **_engine(),
+            "mode": "aggregated",
+            "backend": "sglang",
+            "context_length": 4096,
+            "workers": {"aggregated": {}, "encoder": encoder},
+        },
+        "traffic": {
+            "source": {"type": "synthetic", "images": {"height": 448, "width": 448}},
+            "load": {"type": "concurrency", "concurrency": 2},
+            "stop": {"requests": 4},
+        },
+        "optimization": {},
+    }
+    CoreRecommendationConfig.model_validate(raw)
+    raw["optimization"]["constraints"] = {"max_p99_ttft_ms": 100.0}
+    if encoder_mode == "analytical":
+        with pytest.raises(ValidationError, match="p99 latency constraints are unsupported for analytical EPD"):
+            CoreRecommendationConfig.model_validate(raw)
+    else:
+        lowered = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
+        assert lowered.search_space.encoder.mode == "native"
+        assert lowered.goal.max_p99_ttft_ms == 100.0
+
+
 @pytest.mark.parametrize(("field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])
 def test_prediction_accepts_independent_token_sla_bounds(field: str, bound: float) -> None:
     config = CorePredictionConfig.model_validate({"engine": _engine(), "evaluation": {"sla": {field: bound}}})
@@ -1080,6 +1177,7 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
     from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
+    raw["optimization"]["constraints"].update(max_p99_ttft_ms=100.0, max_p99_e2e_latency_ms=1000.0)
     worker = raw["engine"]["workers"].pop("aggregated")
     if mode != "aggregated":
         worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
@@ -1127,6 +1225,9 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
         ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
         adapter_sections={},
     )
+    assert "optimization" not in prediction
+    assert smart.goal.max_p99_ttft_ms == 100.0
+    assert smart.goal.max_p99_e2e_latency_ms == 1000.0
     for public_role, role in roles.items():
         expected_path = f"{path}.{public_role}" if path else None
         assert sample[f"{role}_fpm_parquet_path"] == (None if canonical else expected_path)
