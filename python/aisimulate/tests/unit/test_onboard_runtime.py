@@ -1406,6 +1406,100 @@ def test_plan_checks_finalized_probe_evidence_against_the_profile(tmp_path, caps
     assert error in capsys.readouterr().err
 
 
+_NO_PROBE_EVIDENCE = (
+    "the profile provenance records measured_cache_groups, but the request has no runtime probe evidence"
+)
+
+
+@pytest.mark.parametrize("remove", [False, True], ids=["unedited", "runtime-probe-removed"])
+def test_plan_refuses_a_finalized_linear_profile_without_its_runtime_probe(tmp_path, capsys, remove):
+    import yaml
+
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.plan import _probe_observed_resources
+
+    _, request, _, root = _completed_runtime_collection(
+        tmp_path, capsys, block_tokens=(256, 256), resource_overrides={"cache_layout": "linear"}
+    )
+    finalize(request, root, tmp_path / "finalized")
+    payload = SupportRequest.from_yaml(tmp_path / "finalized/request.yaml").model_dump(mode="json", exclude_none=True)
+    # Finalization records the measured groups of a linear profile from the probe in the profile provenance.
+    assert "measured_cache_groups" in json.loads(payload["fpm_profile"]["provenance"])
+    if remove:
+        # A hand edit removes the probe evidence from the finalization manifest.
+        runtime = payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+        manifest = json.loads(runtime["provenance"])
+        del manifest["runtime_probe"]
+        runtime["provenance"] = json.dumps(manifest)
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    command = ["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]
+    if not remove:
+        assert cli.main(command) == 0
+        worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+        assert worker["kv_cache"]["block_size"] == 256
+        return
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(SupportRequest.from_yaml(config))
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    with pytest.raises(SystemExit) as failure:
+        cli.main(command)
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+def test_plan_refuses_a_linear_draft_from_the_probe_without_its_runtime_memory(tmp_path, capsys):
+    from aisimulate.support.finalization import finalization_manifest
+    from aisimulate.support.plan import _probe_observed_resources
+    from aisimulate.support.runtime import runtime_probe_manifest
+
+    _, _, request, _ = _imported(tmp_path, capsys, resource_overrides=_LINEAR_CLAIM)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    # A hand edit removes the runtime memory of the draft, and with it the probe evidence. The profile provenance
+    # still records the measured groups of the probe.
+    del payload["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]
+    edited = SupportRequest.model_validate(payload)
+    assert edited.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" in json.loads(edited.fpm_profile.provenance)
+    assert runtime_probe_manifest(edited) is None and finalization_manifest(edited) is None
+    with pytest.raises(ValueError) as error:
+        _probe_observed_resources(edited)
+    assert str(error.value) == _NO_PROBE_EVIDENCE
+    config = tmp_path / "edited.yaml"
+    _write(config, payload)
+    with pytest.raises(SystemExit) as failure:
+        cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")])
+    assert failure.value.code == 2
+    assert _NO_PROBE_EVIDENCE in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "provenance", [None, "Declared synthetic rank-local bounds."], ids=["onboard-init", "free-text"]
+)
+def test_plan_of_a_linear_profile_without_measured_cache_groups_has_no_block_size(tmp_path, provenance):
+    import yaml
+
+    from aisimulate.support.plan import _probe_observed_resources
+
+    from .test_onboard_finalization import _prepare_collection
+
+    # onboard init declares kv_bytes_per_token from the model config. The linear profile has no probe evidence and
+    # records no measured_cache_groups, so its configs keep the default block size, as on main.
+    request, _ = _prepare_collection(tmp_path)
+    payload = request.model_dump(mode="json", exclude_none=True)
+    if provenance is not None:
+        payload["fpm_profile"]["provenance"] = provenance
+    request = SupportRequest.model_validate(payload)
+    assert request.profile_deployment().resources.cache_layout == "linear"
+    assert "measured_cache_groups" not in request.fpm_profile.provenance
+    assert _probe_observed_resources(request) is None
+    config = tmp_path / "declared.yaml"
+    _write(config, payload)
+    assert cli.main(["onboard", "plan", "--config", str(config), "--output-dir", str(tmp_path / "plan")]) == 0
+    worker = yaml.safe_load((tmp_path / "plan/predict/pilot.yaml").read_text())["engine"]["workers"]["aggregated"]
+    assert "block_size" not in worker.get("kv_cache", {})
+
+
 def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
     from aisimulate.support.finalization import finalization_manifest
 

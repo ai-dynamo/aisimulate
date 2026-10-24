@@ -46,6 +46,15 @@ def validation_id(request: SupportRequest) -> str:
     return "validation-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _profile_provenance(request: SupportRequest) -> dict[str, Any]:
+    """The profile provenance as a JSON object; empty when it is not one, such as a free-text provenance."""
+    try:
+        provenance = json.loads(request.fpm_profile.provenance)
+    except ValueError:
+        return {}
+    return provenance if isinstance(provenance, dict) else {}
+
+
 def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
     """The observed resources of the request's runtime probe evidence; None when the request has no such evidence.
 
@@ -54,6 +63,12 @@ def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
     the measured_cache_groups of the profile provenance, and their linear layout has the profile's
     kv_bytes_per_token. Evidence without observed cache groups is invalid provenance. A hand-edited request that
     breaks either rule fails with a ValueError.
+
+    Only a linear profile from the runtime probe records measured_cache_groups in its profile provenance, and its
+    request keeps the probe evidence: in the runtime memory provenance of a draft, or in the finalization manifest.
+    A request without probe evidence whose profile provenance records measured_cache_groups is therefore invalid
+    provenance, and it also fails with a ValueError. Otherwise replay would use a default block size instead of the
+    measured one.
     """
     from .finalization import finalization_manifest
     from .runtime import runtime_probe_manifest
@@ -63,6 +78,11 @@ def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
     if finalized:
         manifest = finalization_manifest(request)
         if manifest is None or "runtime_probe" not in manifest:
+            if "measured_cache_groups" in _profile_provenance(request):
+                raise ValueError(
+                    "the profile provenance records measured_cache_groups, but the request has no runtime probe "
+                    "evidence"
+                )
             return None
         probe = manifest["runtime_probe"]
     observed = probe.get("observed_resources") if isinstance(probe, dict) else None
@@ -74,11 +94,7 @@ def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
         )
     if finalized:
         differs = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
-        try:
-            provenance = json.loads(request.fpm_profile.provenance)
-        except ValueError:
-            provenance = None
-        measured = provenance.get("measured_cache_groups") if isinstance(provenance, dict) else None
+        measured = _profile_provenance(request).get("measured_cache_groups")
         if not isinstance(measured, list) or _cache_group_shapes(groups) != _cache_group_shapes(measured):
             raise ValueError(differs + "differ from measured_cache_groups in the profile provenance")
         linear = linear_runtime_resources(observed)
