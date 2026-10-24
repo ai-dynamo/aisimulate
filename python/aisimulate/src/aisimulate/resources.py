@@ -21,7 +21,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -881,13 +881,13 @@ def _estimate_trace(
         or workload.get("agentic_warmup")
     ):
         return _estimate_trace_legacy(
-            workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
+            workload, stack=stack, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes
         )
     return _estimate_finite_trace(workload, format_name=format_name, inspection_budget_bytes=inspection_budget_bytes)
 
 
 def _estimate_trace_legacy(
-    workload: Mapping[str, Any], *, format_name: str, inspection_budget_bytes: int | None
+    workload: Mapping[str, Any], *, stack: str, format_name: str, inspection_budget_bytes: int | None
 ) -> ResourceEstimate:
     """Keep the conservative storage estimate for snapshot, warmup and profile replays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
@@ -971,28 +971,34 @@ def _estimate_trace_legacy(
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
-    if workload.get("agentic_profile") is not None:
-        # Retired plays release their large payloads, but retain identities and
-        # lifecycle rows. Their count depends on simulated completion times, so
-        # neither the finite corpus nor duration alone bounds the full profile.
+    profile = workload.get("agentic_profile") is not None
+    if profile or stack == "dynamo":
+        # Native routing retains additional state outside the engine estimate.
+        # Profiles also retain retired identities and lifecycle rows, whose
+        # count depends on simulated completion times rather than corpus size.
         # Keep the initial-materialization refusal before admitting unknown peaks.
+        model = "agentic-profile" if profile else "dynamo"
         if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
             return ResourceEstimate(
-                "agentic-profile-materialization-v1",
+                f"{model}-materialization-v1",
                 None,
                 0,
                 0,
                 peak,
-                "initial profile trace materialization estimate exceeds live headroom",
+                "initial trace materialization estimate exceeds live headroom",
             )
         return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
+            f"{model}-unqualified-v1",
             None,
             0,
             0,
             None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
+            (
+                "agentic profile retains evidence beyond the initial corpus"
+                if profile
+                else "Dynamo policy retains native router state beyond the engine trace estimate"
+            )
+            + "; total memory has no qualified static bound and requires supervised serial execution",
         )
     return ResourceEstimate(
         "trace-json-metadata-v1",
@@ -1059,6 +1065,7 @@ def build_plan(
     host: HostResources | None = None,
     factory: Any = None,
     concurrency: int | None = None,
+    native_router: bool = False,
 ) -> dict[str, Any]:
     policy = policy or _POLICY.get() or ResourceConfig()
     host = host or discover_host()
@@ -1085,6 +1092,17 @@ def build_plan(
         raise ResourceLimitError("runner returned an invalid host resource estimate")
     if peak is not None and (type(peak) is not int or peak <= 0 or peak < estimate.lower_bound_bytes):
         raise ResourceLimitError("runner returned an invalid host resource estimate")
+    if native_router and ((peak is not None and peak <= free) or estimate.allocation_model == OBSERVED_TRACE_MODEL):
+        # Preserve initial-materialization refusals and lower bounds, but neither
+        # an engine-only estimate nor an observed trace peak qualifies router state.
+        estimate = replace(
+            estimate,
+            allocation_model="dynamo-unqualified-v1",
+            estimated_peak_bytes=None,
+            reason="Dynamo policy retains native router state beyond the engine estimate; "
+            "total memory requires supervised serial execution",
+        )
+        peak = None
     workers = min(requested_parallelism, budget["cpu_limit"], free // peak) if peak else 0
     reason = "" if workers else "candidate exceeds the host memory budget"
     if peak is None:
@@ -1136,8 +1154,23 @@ def resource_policy(policy: ResourceConfig):
         _POLICY.reset(token)
 
 
+def _uses_native_router(spec: Any) -> bool:
+    return any(
+        hook.provider == "engine.router"
+        and hook.kind == "placement_policy"
+        and hook.config.get("provider") == "dynamo_kv_router"
+        for hook in getattr(spec, "runtime_hooks", ())
+    )
+
+
 def guard_replay(spec: Any, *, stack: str, factory: Any = None) -> dict[str, Any]:
-    plan = build_plan(spec.workload, stack=stack, concurrency=spec.concurrency, factory=factory)
+    plan = build_plan(
+        spec.workload,
+        stack=stack,
+        concurrency=spec.concurrency,
+        factory=factory,
+        native_router=_uses_native_router(spec),
+    )
     require_plan(plan)
     return plan
 
@@ -1235,6 +1268,7 @@ class GuardedRunnerFactory:
                 host=host,
                 factory=self.factory,
                 concurrency=spec.concurrency,
+                native_router=_uses_native_router(spec),
             )
             plans.append(plan)
             estimate = plan["estimate"]

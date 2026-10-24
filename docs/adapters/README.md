@@ -16,6 +16,7 @@ the existing Dynamo integration is documented [with Replay](../replay/dynamo.md)
 | [Simulation configuration](configuration-abi.md) | Compile prediction, search plan and candidate hooks | `aisimulate.config_adapters`; config API 3 |
 | [SDK sweep provider](configuration-abi.md#sweepconfigprovider-v1) | SDK search-space preparation and materialization | `aisimulate.sweep_config_providers`; provider API 1 |
 | [Recommendation output](output-abi.md) | Optional live callbacks and additional final artifacts | `aisimulate.output_adapters`; output API 1 |
+| [External policy](native-composition.md#external-policy-transport) | Independently installed placement policy called by the AISimulate engine | Versioned JSON callbacks; AISimulate owns execution |
 | [Native composition](native-composition.md) | Placement and optional scaling in Rust Replayer | Rust traits in `aisimulate_core::replay`; crate-version compatibility |
 
 Here ABI means the versioned cross-package data/interface contract. These

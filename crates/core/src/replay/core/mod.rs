@@ -7,6 +7,7 @@
 //! can later become a standalone crate without deployment-specific APIs.
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::replay::ReplayTerminalStatus;
@@ -64,7 +65,7 @@ pub trait AdmissionSource {
     fn total_requests(&self) -> usize;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct PlacementCacheSample {
     /// Prefix blocks available on the selected worker.
     pub overlap_blocks: u32,
@@ -75,7 +76,7 @@ pub struct PlacementCacheSample {
 
 /// Request-scoped KV hints a router attaches to a placement (vLLM `kv_hints`,
 /// Dynamo `kv_hint`). Only `kv.fetch` is modeled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct KvHints {
     pub fetch: KvFetchAction,
 }
@@ -86,12 +87,12 @@ pub struct KvHints {
 /// identifies one worker and attention-DP rank. It uses the scheduler-id space
 /// of the stage that placed the request. The hint's block list is not carried
 /// because it does not affect behavior with opportunistic query.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct KvFetchAction {
     pub source_scheduler_id: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct Placement {
     pub request_id: Uuid,
     pub scheduler_id: usize,
@@ -120,7 +121,7 @@ pub struct PlacementEffects {
     pub released: Vec<Placement>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkerTopology {
     pub worker_id: usize,
     pub scheduler_ids: Vec<usize>,
@@ -141,6 +142,38 @@ pub trait PlacementPolicy<Request> {
         now_ms: f64,
     ) -> Result<PlacementEffects>;
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
+    /// The selected engine accepted ownership (destination reservation for P/D
+    /// decode). Policies may commit a tentative binding only at this boundary.
+    /// If this fails, replay attempts to cancel the accepted engine request and
+    /// calls `dispatch_aborted`, then permanently fails the runtime. Callbacks
+    /// need not be transactional; replay cannot safely resume or report after a
+    /// potentially partial policy commit, even when engine cleanup succeeds.
+    fn dispatch_committed(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// The selected engine rejected ownership, or rollback was attempted after
+    /// `dispatch_committed` failed. Discard tentative policy
+    /// state; tolerate partial commits. An abort error is reported together with
+    /// the original dispatch error and permanently fails the runtime.
+    fn dispatch_aborted(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// Advance policy time using the replay clock and release any newly ready
+    /// placements. Wall time must not drive offline policy state.
+    fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    /// A concrete wakeup for policy-owned work, finite and no earlier than the
+    /// current replay time. A same-time wakeup is allowed while immediate work
+    /// is draining (for example, after `dispatch_committed`); `advance_clock`
+    /// must consume it or release work so the drain makes progress. Once the
+    /// timestamp is settled, any remaining wakeup must be strictly in the future.
+    /// Invalid or unconsumed same-time wakeups fail replay rather than advancing
+    /// its clock. Idle housekeeping that cannot release work should be performed
+    /// lazily in `advance_clock`.
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        None
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
