@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Adapted and modified from AIConfigurator PR #1606:
+# https://github.com/ai-dynamo/aiconfigurator/blob/a97c69677af23190eada7ee893afa6a04a0ef269/tests/unit/collector/test_sglang_moe_ep_routing.py
 
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
+
+from tests.unit.collector._real_torch import real_torch
 
 
 def _import_helper_module():
@@ -14,33 +17,13 @@ def _import_helper_module():
     helper_path = Path(__file__).resolve().parents[3] / "collector" / "helper.py"
     spec = importlib.util.spec_from_file_location(module_name, helper_path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
 
-# test_parallel_run.py injects a MagicMock as "torch" into sys.modules so
-# collector code can be imported without CUDA.  This test needs real tensors
-# and a helper.py copy imported against real torch, but it must not permanently
-# replace the injected mock in sys.modules.
-_saved_mock = sys.modules.get("torch")
-_restore_mock = isinstance(_saved_mock, MagicMock)
-if _restore_mock:
-    sys.modules.pop("torch")
-
-try:
-    import torch as _real_torch
-except ImportError:
-    if _restore_mock:
-        sys.modules["torch"] = _saved_mock
-    pytest.skip("real torch required for tensor operations", allow_module_level=True)
-
-try:
+with real_torch() as torch:
     _HELPER_MODULE = _import_helper_module()
-finally:
-    if _restore_mock:
-        sys.modules["torch"] = _saved_mock
-
-torch = _real_torch
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +31,7 @@ def _use_real_torch(monkeypatch):
     # At test execution time sys.modules["torch"] is still test_parallel_run.py's
     # MagicMock. helper.py functions do lazy `import torch`, so they pick up the
     # mock rather than the real module. Swap in real torch for each test's duration.
-    monkeypatch.setitem(sys.modules, "torch", _real_torch)
+    monkeypatch.setitem(sys.modules, "torch", torch)
 
 
 @pytest.mark.unit
