@@ -37,7 +37,7 @@ from aisimulate_core.sdk.models.blocks import moe as blocks_moe
 
 pytestmark = pytest.mark.unit
 
-MIMO = "XiaomiMiMo/MiMo-V2-Flash"  # 256 experts, 48 layers (24 global_moe / 23 swa_moe / 1 swa_dense)
+MIMO = "XiaomiMiMo/MiMo-V2-Flash"  # 256 experts, 48 layers (8 global_moe / 39 swa_moe / 1 global_dense)
 SCOUT = "meta-llama/Llama-4-Scout-17B-16E-Instruct"  # 16 experts (<128): the A8 model
 MAVERICK = "meta-llama/Llama-4-Maverick-17B-128E-Instruct"  # 128 experts (>=128 gate boundary)
 M3 = "MiniMaxAI/MiniMax-M3"  # 128 experts + 1 shared expert, 60 layers
@@ -73,13 +73,13 @@ class TestHybridMoEBlocksViaBuilder:
         """A8: <128-expert hybrid models now emit one router GEMM per MoE span."""
         model = _build(SCOUT)
         for phase, op_list in (("context", model.context_ops), ("generation", model.generation_ops)):
-            for layer_type in ("global", "swa"):
+            for layer_type, num_layers in (("global", 12), ("swa", 36)):
                 router = _op(op_list, f"{phase}_{layer_type}_router_gemm")
                 assert isinstance(router, ops.GEMM)
                 assert router._n == 16  # num_experts
                 assert router._k == 5120  # hidden_size
                 assert router._quant_mode.name == "bfloat16"
-                assert router._scale_factor == 24  # 24 global + 24 swa MoE layers, mtp factor 1.0
+                assert router._scale_factor == num_layers  # 12 global + 36 swa MoE layers, mtp factor 1.0
 
     def test_scout_context_sequence_golden(self):
         """Full ordered context emission for the A8 model (routers inserted in place)."""
@@ -109,7 +109,9 @@ class TestHybridMoEBlocksViaBuilder:
         ]
 
     def test_mimo_context_sequence_unchanged(self):
-        """>=128-expert models already emitted the router: byte-identical emission."""
+        """>=128-expert models already emitted the router, so A8 adds no op here. The
+        sequence follows the corrected layer plan: 8 global MoE layers, 39 sliding-window
+        MoE layers and the dense layer 0 with full attention (global_dense)."""
         model = _build(MIMO)
         assert _names(model.context_ops) == [
             "context_embedding",
@@ -131,14 +133,15 @@ class TestHybridMoEBlocksViaBuilder:
             "context_swa_moe_pre_dispatch",
             "context_swa_moe",
             "context_swa_moe_post_dispatch",
-            "context_swa_dense_attn_norm",
-            "context_swa_dense_qkv_gemm",
+            # The dense layer 0 has full attention (hybrid_layer_pattern[0] == 0).
+            "context_global_dense_attn_norm",
+            "context_global_dense_qkv_gemm",
             "context_attention",
-            "context_swa_dense_proj_gemm",
-            "context_swa_dense_ffn_norm",
-            "context_swa_dense_gate_up_gemm",
-            "context_swa_dense_act",
-            "context_swa_dense_down_gemm",
+            "context_global_dense_proj_gemm",
+            "context_global_dense_ffn_norm",
+            "context_global_dense_gate_up_gemm",
+            "context_global_dense_act",
+            "context_global_dense_down_gemm",
             "context_logits_gemm",
             "context_p2p",
         ]
@@ -217,7 +220,7 @@ class TestHybridMoEBlocksViaBuilder:
         assert len(calls) == 4  # (global + swa) x (context + generation)
         assert all(kw["model_family"] == "HYBRIDMOE" for kw in calls)
         assert all(kw["backend_name"] == "sglang" for kw in calls)
-        assert sorted(kw["scale_factor"] for kw in calls) == [24, 24, 24, 24]
+        assert sorted(kw["scale_factor"] for kw in calls) == [12, 12, 36, 36]  # (12 global, 36 swa) x 2 phases
         assert all("gpus_per_node" not in kw for kw in calls)  # fused-only family
         assert all("attn_cp_size" not in kw for kw in calls)  # CP stays post-hoc
 

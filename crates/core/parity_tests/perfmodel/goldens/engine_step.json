@@ -620,28 +620,28 @@
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape": {
       "agg": {
         "values": {
-          "agg_request": 93.51656956202063,
-          "agg_tpot": 23.678385676245004,
-          "agg_ttft": 69.83818388577563
+          "agg_request": 90.22990557713078,
+          "agg_tpot": 22.131720271590954,
+          "agg_ttft": 68.09818530553983
         }
       },
       "disagg": {
         "values": {
-          "disagg_request": 50.373,
-          "disagg_tpot": 6.149,
-          "disagg_ttft": 44.224
+          "disagg_request": 47.249,
+          "disagg_tpot": 6.096,
+          "disagg_ttft": 41.153
         }
       },
       "mixed": {
         "values": {
-          "mixed_step": 23.678385676245007
+          "mixed_step": 22.131720271590957
         }
       },
       "static": {
         "values": {
-          "static_ctx": 22.335,
-          "static_gen": 4.416,
-          "static_total": 26.751
+          "static_ctx": 20.785,
+          "static_gen": 4.421,
+          "static_total": 25.206
         }
       }
     },
@@ -2235,19 +2235,19 @@
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::agg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "38e518543f18e53c6c8a127ddb2c1d5830fa5a58"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::disagg": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "38e518543f18e53c6c8a127ddb2c1d5830fa5a58"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::mixed": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "38e518543f18e53c6c8a127ddb2c1d5830fa5a58"
     },
     "mimo-v2-flash-b200-vllm-hybrid-attn-xshape::static": {
       "engine": "rust",
-      "git_head": "0a51476b6ab90bc0e475bd41d4b1c7abbef07b95"
+      "git_head": "38e518543f18e53c6c8a127ddb2c1d5830fa5a58"
     },
     "minimax-m25-b200-sglang-isl1024-osl2::agg": {
       "engine": "rust",

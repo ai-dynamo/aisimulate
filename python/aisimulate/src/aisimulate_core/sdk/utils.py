@@ -1018,14 +1018,20 @@ def _parse_hf_config_json(config: dict) -> dict:
         moe_layer_freq = (
             tuple(moe_layer_freq_raw) if isinstance(moe_layer_freq_raw, list) else tuple([moe_layer_freq_raw] * layers)
         )
-        attn_pattern = tuple(config.get("hybrid_layer_pattern", []))
-        if len(attn_pattern) != layers or len(moe_layer_freq) != layers:
+        hybrid_pattern = tuple(config.get("hybrid_layer_pattern", []))
+        if len(hybrid_pattern) != layers or len(moe_layer_freq) != layers:
             raise ValueError(
                 f"Hybrid pattern length mismatch for {architecture}: "
-                f"expected {layers} entries, got attn={len(attn_pattern)} moe={len(moe_layer_freq)}"
+                f"expected {layers} entries, got attn={len(hybrid_pattern)} moe={len(moe_layer_freq)}"
             )
-        if any(v not in (0, 1) for v in (*attn_pattern, *moe_layer_freq)):
+        if any(v not in (0, 1) for v in (*hybrid_pattern, *moe_layer_freq)):
             raise ValueError(f"Hybrid patterns for {architecture} must contain only 0/1 values")
+        # hybrid_layer_pattern[i] == 1 marks a sliding-window layer, which uses the swa_* dims, and 0
+        # marks a full-attention layer. References: Hugging Face XiaomiMiMo/MiMo-V2-Flash revision
+        # 1afd314a, modeling_mimo_v2_flash.py:408-413; vLLM v0.31.0 (db9527a4),
+        # vllm/model_executor/models/mimo_v2.py:376-404 and :463-464. attn_layer_pattern uses 1 for
+        # global attention, so store the complement.
+        attn_pattern = tuple(1 - v for v in hybrid_pattern)
         extra_params = HybridMoEConfig(
             attn_layer_pattern=attn_pattern,
             moe_layer_freq=moe_layer_freq,
@@ -1045,12 +1051,53 @@ def _parse_hf_config_json(config: dict) -> dict:
         )
     elif architecture == "Llama4ForConditionalGeneration":
         # Llama 4: step-based patterns — generate normalized per-layer tuples.
-        # Attention: even layers → local (0), odd layers → global (1).
+        # Attention: layer i is global (1) if layer_types[i] is "full_attention" or, without
+        # layer_types, if no_rope_layers[i] == 0. The no_rope_layers name is inverted: 1 marks a RoPE
+        # layer with chunked local attention (0), modeled as a window of attention_chunk_size tokens,
+        # and 0 marks a NoPE layer with full attention. As in transformers v4.57.1
+        # configuration_llama4.py:372-393, layer_types wins, then a nonempty no_rope_layers ([] means
+        # unset), then a NoPE layer every no_rope_layer_interval layers (default 4). vLLM v0.31.0
+        # (db9527a4) derives the same layers from no_rope_layers alone and ignores layer_types
+        # (vllm/model_executor/models/llama4.py:184-185 and :251-252).
+        # These fields are read after the text_config flatten, so nested and flat configs agree.
         # FFN: layer i is MoE (1) if (i+1) % interleave_moe_layer_step == 0, else dense (0).
         step = config.get("interleave_moe_layer_step", 1)
         if not isinstance(step, int) or step <= 0:
             raise ValueError(f"interleave_moe_layer_step must be a positive integer, got {step}")
-        attn_pattern = tuple(i % 2 for i in range(layers))
+        no_rope_interval = config.get("no_rope_layer_interval", 4)
+        if not isinstance(no_rope_interval, int) or isinstance(no_rope_interval, bool) or no_rope_interval <= 0:
+            raise ValueError(f"no_rope_layer_interval must be a positive integer, got {no_rope_interval}")
+        no_rope_layers = config.get("no_rope_layers")
+        if no_rope_layers is not None and not isinstance(no_rope_layers, (list, tuple)):
+            raise ValueError(f"Llama 4 no_rope_layers must be a list, got {type(no_rope_layers).__name__}")
+        no_rope_layers = no_rope_layers or None  # an empty list or tuple means unset, as in transformers
+        if no_rope_layers is not None:
+            if len(no_rope_layers) != layers:
+                raise ValueError(f"Llama 4 no_rope_layers length {len(no_rope_layers)} != num_hidden_layers {layers}")
+            bad = next(((i, v) for i, v in enumerate(no_rope_layers) if v not in (0, 1)), None)
+            if bad is not None:
+                raise ValueError(
+                    f"Llama 4 no_rope_layers must contain only 0/1 values, got {bad[1]!r} at layer {bad[0]}"
+                )
+        layer_types = config.get("layer_types")
+        if layer_types is not None:
+            if not isinstance(layer_types, (list, tuple)):
+                raise ValueError(f"Llama 4 layer_types must be a list, got {type(layer_types).__name__}")
+            if len(layer_types) != layers:
+                raise ValueError(f"Llama 4 layer_types length {len(layer_types)} != num_hidden_layers {layers}")
+            bad = next(
+                ((i, t) for i, t in enumerate(layer_types) if t not in ("full_attention", "chunked_attention")), None
+            )
+            if bad is not None:
+                raise ValueError(
+                    "Llama 4 layer_types must contain only 'full_attention' or 'chunked_attention', "
+                    f"got {bad[1]!r} at layer {bad[0]}"
+                )
+            attn_pattern = tuple(1 if t == "full_attention" else 0 for t in layer_types)
+        elif no_rope_layers is not None:
+            attn_pattern = tuple(1 if v == 0 else 0 for v in no_rope_layers)
+        else:
+            attn_pattern = tuple(1 if (i + 1) % no_rope_interval == 0 else 0 for i in range(layers))
         moe_freq = tuple(1 if (i + 1) % step == 0 else 0 for i in range(layers))
         if not isinstance(vision_cfg, dict):
             raise TypeError("Llama 4 config must preserve vision_config metadata")
