@@ -229,8 +229,11 @@ pub enum ReplayRuntimeInput {
 }
 
 /// Built-in engine-only composition: Round-robin placement and fixed capacity.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RoundRobinComposition;
+#[derive(Debug, Default, Clone, Copy, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoundRobinComposition {
+    pub session_affinity: bool,
+}
 
 impl ReplayComposition for RoundRobinComposition {
     type Metadata = NoReplayMetadata;
@@ -259,7 +262,8 @@ impl ReplayComposition for RoundRobinComposition {
         dp_size: u32,
         topology: Vec<WorkerTopology>,
     ) -> AnyResult<Self::AggregatedPlacement> {
-        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology))
+        Ok(AggregatedRoundRobinPlacement::new(dp_size, topology)
+            .with_session_affinity(self.session_affinity))
     }
 
     fn create_disaggregated_placements(
@@ -270,8 +274,10 @@ impl ReplayComposition for RoundRobinComposition {
         decode_topology: Vec<WorkerTopology>,
     ) -> AnyResult<(Self::DisaggregatedPlacement, Self::DisaggregatedPlacement)> {
         Ok((
-            PoolRoundRobinPlacement::new(prefill_topology),
-            PoolRoundRobinPlacement::new(decode_topology),
+            PoolRoundRobinPlacement::new(prefill_topology)
+                .with_session_affinity(self.session_affinity),
+            PoolRoundRobinPlacement::new(decode_topology)
+                .with_session_affinity(self.session_affinity),
         ))
     }
 }
@@ -290,7 +296,14 @@ pub struct Replayer<C = RoundRobinComposition> {
 
 impl Replayer<RoundRobinComposition> {
     pub fn new(spec: ReplaySpec, factory: ReplayEngineFactory) -> ReplayResult<Self> {
-        Self::with_composition(spec, factory, RoundRobinComposition)
+        let config = &spec.adapters.placement.config;
+        let composition = if config.is_null() {
+            RoundRobinComposition::default()
+        } else {
+            serde_json::from_value(config.clone())
+                .map_err(|error| ReplayError::InvalidSpec(error.to_string()))?
+        };
+        Self::with_composition(spec, factory, composition)
     }
 
     /// Run a fixed, aggregated single-worker replay and retain detailed
