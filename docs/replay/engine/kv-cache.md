@@ -58,6 +58,11 @@ All paths below are under `engine.workers.<role>.kv_cache`.
 
 ## GPU cache (G1)
 
+SGLang's default LRU evicts whole unlocked compressed radix leaves, so an
+allocation can reclaim more pages than it needs. It does not preserve a
+partial leaf solely to meet the requested eviction count. The optional
+Belady policy retains its separate page-wise tail eviction behavior.
+
 Each attention-DP rank has its own G1 cache and its own running requests.
 Tensor parallelism splits each token's KV across GPUs. `bytes_per_token` and
 `capacity` are therefore per TP shard and per DP rank.

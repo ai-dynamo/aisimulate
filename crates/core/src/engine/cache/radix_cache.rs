@@ -4,6 +4,9 @@
 //! Radix-tree KV cache for SGLang engine simulation.
 //!
 //! Reference: sglang/python/sglang/srt/mem_cache/radix_cache.py
+//! Whole-leaf LRU behavior was aligned with native UnifiedRadixCache at
+//! https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+//! (Copyright SGLang Team and contributors, Apache-2.0); see THIRD_PARTY_NOTICES.md.
 
 use crate::engine::belady::BeladyOracle;
 #[cfg(test)]
@@ -1041,13 +1044,14 @@ impl RadixCache {
 
             let victim_pages = self.nodes[victim_id].key.len();
             let victim_tokens = victim_pages * self.page_size;
-            let remaining = num_tokens - evicted;
             // A compressed edge can contain pages with different future demand. Expose and
             // rerank its next tail after each Belady eviction instead of discarding the edge.
             let eviction_pages = if self.belady.is_some() {
                 1
             } else {
-                remaining.div_ceil(self.page_size).min(victim_pages)
+                // Native SGLang LRU removes a whole compressed leaf, even
+                // when fewer pages would satisfy the allocation.
+                victim_pages
             };
             let eviction_len = eviction_pages * self.page_size;
 
@@ -1346,7 +1350,7 @@ mod tests {
         cache.insert_from_node(leaf, 3, &[1, 2, 3, 4], &[0, 1, 2, 3]);
         check(&cache, &mut hint, 4);
         cache.evict(2);
-        check(&cache, &mut hint, 2);
+        check(&cache, &mut hint, 0);
         cache.evict(2);
         check(&cache, &mut hint, 0);
 
@@ -1590,19 +1594,20 @@ mod tests {
     }
 
     #[test]
-    fn partial_eviction_and_parent_promotion_keep_index_consistent() {
+    fn whole_leaf_eviction_and_parent_promotion_keep_index_consistent() {
         let mut cache = RadixCache::new(100, 1);
         let base = Instant::now();
         cache.set_test_now(base);
         cache.insert(&[1, 2, 3, 4], &[0, 1, 2, 3]);
-        let (_, leaf) = cache.match_prefix(&[1, 2, 3, 4]);
         cache.set_test_now(base + std::time::Duration::from_secs(1));
         cache.insert(&[5, 6, 7], &[4, 5, 6]);
 
-        assert_eq!(cache.evict(2).0, 2);
-        assert_eq!(cache.node(leaf).key.len(), 2);
-        assert!(cache.evictable_leaf_is_indexed(leaf));
-        assert_eq!(cache.evict(2).0, 2);
+        let (tokens, pages) = cache.evict(2);
+        assert_eq!(tokens, 4);
+        assert_eq!(
+            pages,
+            vec![KvPageId(0), KvPageId(1), KvPageId(2), KvPageId(3)]
+        );
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 0);
         assert_eq!(cache.match_prefix(&[5, 6, 7]).0, 3);
 

@@ -276,6 +276,10 @@ pub struct ReplayRequest {
     /// native generation while `output_tokens` remains the authored maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Preserve SGLang's fixed-length admission reservation instead of the early-EOS discount.
+    /// This controls reservation only; the replay output plan still determines generated tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_eos: bool,
     /// Optional aggregated or disaggregated decode attention-DP rank selected by the workload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dp_rank: Option<u32>,

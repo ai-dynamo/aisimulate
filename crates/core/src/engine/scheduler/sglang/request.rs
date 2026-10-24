@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Fixed-output reservation metadata adapts SGLang's schedule_policy.py at
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py
+// Copyright SGLang Team and contributors, Apache-2.0. Modified for Rust request
+// leases; see THIRD_PARTY_NOTICES.md.
+
 use std::collections::VecDeque;
 use std::ops::{Deref, RangeFull};
 
@@ -22,6 +27,7 @@ pub(super) struct SglangRequest {
     pub(super) sequence_tokens: Vec<u32>,
     pub(super) prompt_len: usize,
     pub(super) max_output_tokens: usize,
+    pub(super) ignore_eos: bool,
     pub(super) planned_output_ids: Option<Vec<u32>>,
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
@@ -56,6 +62,7 @@ impl SglangRequest {
             sequence_tokens,
             prompt_len,
             max_output_tokens,
+            ignore_eos: req.ignore_eos,
             planned_output_ids: req.output_token_ids,
             kv_lease,
             materialized_tokens: 0,

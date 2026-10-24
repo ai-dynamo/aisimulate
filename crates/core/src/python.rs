@@ -5884,6 +5884,7 @@ mod tests {
                 input_token_ids: Some(vec![1, 2, 3, 4]),
                 output_tokens: 1,
                 output_token_ids: None,
+                ignore_eos: false,
                 dp_rank: None,
                 prefill_dp_rank: None,
                 kv_hints: None,

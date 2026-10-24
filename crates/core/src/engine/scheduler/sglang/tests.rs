@@ -1,6 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+// Synthetic boundary expectations adapt SGLang's schedule_policy.py at
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/managers/schedule_policy.py
+// and its UnifiedRadixCache at the same revision. Copyright SGLang Team and
+// contributors, Apache-2.0. Modified as Rust regressions; see THIRD_PARTY_NOTICES.md.
+
 use super::request::WaitingQueue;
 
 use uuid::Uuid;
@@ -73,6 +78,98 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
         uuid: None,
         arrival_timestamp_ms: None,
         ..Default::default()
+    }
+}
+
+#[test]
+fn native_chunked_prefill_progresses_above_the_input_cap() {
+    let mut args = test_args(32, 128, 4096);
+    args.sglang.as_mut().unwrap().max_prefill_tokens = Some(64);
+    let mut core = SglangCore::new(args);
+    for start in [0, 1000] {
+        core.receive(direct_request((start..start + 128).collect(), 1));
+    }
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    for step in 0..2 {
+        let pass = core.execute_pass(&mut collector, step as f64);
+        assert_eq!(
+            pass.admissions.len(),
+            1,
+            "the exhausted input cap ends the batch"
+        );
+        assert_eq!(pass.fpm.unwrap().sum_prefill_tokens, 128);
+        assert_eq!(
+            pass.output_signals.iter().filter(|s| s.completed).count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn native_chunked_prefill_checks_input_cap_after_admitting_each_chunk() {
+    let mut args = test_args(32, 128, 4096);
+    args.sglang.as_mut().unwrap().max_prefill_tokens = Some(256);
+    let mut core = SglangCore::new(args);
+    for (start, len) in [(0, 128), (1000, 256), (2000, 128)] {
+        core.receive(direct_request((start..start + len).collect(), 1));
+    }
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let first = core.execute_pass(&mut collector, 0.0);
+    // Native's pre-admission input-cap guard is only for non-chunked prefill.
+    // With chunking enabled, budget_state() stops after this crossing chunk.
+    assert_eq!(first.admissions.len(), 2);
+    assert_eq!(first.fpm.unwrap().sum_prefill_tokens, 384);
+    assert_eq!(core.execute_pass(&mut collector, 1.0).admissions.len(), 1);
+}
+
+#[test]
+fn native_fixed_output_reservation_keeps_the_second_request_queued() {
+    for ignore_eos in [false, true] {
+        let mut args = test_args(32, 128, 4096);
+        args.sglang.as_mut().unwrap().schedule_conservativeness = Some(0.3);
+        let mut core = SglangCore::new(args);
+        for start in [0, 10000] {
+            core.receive(DirectRequest {
+                ignore_eos,
+                ..direct_request((start..start + 1792).collect(), 288)
+            });
+        }
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        assert_eq!(core.execute_pass(&mut collector, 0.0).admissions.len(), 1);
+        let second = core.execute_pass(&mut collector, 1.0);
+        assert_eq!(second.admissions.len(), usize::from(!ignore_eos));
+        let mut completed = 0;
+        let mut retractions = 0;
+        for step in 2..1000 {
+            let pass = core.execute_pass(&mut collector, step as f64);
+            completed += pass.output_signals.iter().filter(|s| s.completed).count();
+            retractions += pass
+                .pressure_events
+                .iter()
+                .filter(|event| event.kind == PressureKind::SglangRetraction)
+                .count();
+            if completed == 2 {
+                break;
+            }
+        }
+        assert_eq!(completed, 2);
+        assert_eq!(retractions, usize::from(!ignore_eos));
+    }
+}
+
+#[test]
+fn native_lru_pressure_does_not_reuse_a_partially_evicted_leaf() {
+    let mut core = SglangCore::new(test_args(32, 128, 4096));
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    for (step, start, len) in [(0, 0, 2048), (1, 10000, 2560), (2, 0, 2048)] {
+        core.receive(direct_request((start..start + len).collect(), 1));
+        let pass = core.execute_pass(&mut collector, step as f64);
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(pass.admissions[0].reused_input_tokens, 0);
+        assert_eq!(
+            pass.output_signals.iter().filter(|s| s.completed).count(),
+            1
+        );
     }
 }
 
@@ -453,6 +550,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             prompt_len: 4,
             max_output_tokens: 0,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: zero_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -466,6 +564,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             prompt_len: 4,
             max_output_tokens: 1,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: normal_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -520,6 +619,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             prompt_len: 3,
             max_output_tokens: 2,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: r1_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -533,6 +633,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             prompt_len: 4,
             max_output_tokens: 5,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: r2_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -573,6 +674,7 @@ fn committed_decode_membership_excludes_retracted_requests() {
             prompt_len,
             max_output_tokens,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: allocation.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -615,6 +717,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         prompt_len: prompt.len(),
         max_output_tokens: 1,
         planned_output_ids: None,
+        ignore_eos: false,
         materialized_tokens: 0,
         kv_lease: RadixRequestLease::default(),
         allocated_tokens: 0,
@@ -642,6 +745,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         prompt_len: 3,
         max_output_tokens: 1,
         planned_output_ids: None,
+        ignore_eos: false,
         kv_lease: blocker_alloc.lease,
         materialized_tokens: 3,
         allocated_tokens: 4,
@@ -1365,6 +1469,7 @@ mod scheduling {
                 prompt_len: 3,
                 max_output_tokens: 1,
                 planned_output_ids: None,
+                ignore_eos: false,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
@@ -1378,6 +1483,7 @@ mod scheduling {
                 prompt_len: 5,
                 max_output_tokens: 1,
                 planned_output_ids: None,
+                ignore_eos: false,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
@@ -1414,6 +1520,7 @@ mod scheduling {
                 prompt_len: duplicate_prefix.len(),
                 max_output_tokens: 1,
                 planned_output_ids: None,
+                ignore_eos: false,
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
@@ -1429,6 +1536,7 @@ mod scheduling {
             prompt_len: 32,
             max_output_tokens: 1,
             planned_output_ids: None,
+            ignore_eos: false,
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
@@ -1462,6 +1570,7 @@ mod core_behavior {
                 tokens: sequence.clone(),
                 max_output_tokens: planned.len(),
                 output_token_ids: Some(planned.clone()),
+                ignore_eos: false,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
@@ -1527,6 +1636,7 @@ mod core_behavior {
             prompt_len: 16,
             max_output_tokens: 2,
             planned_output_ids: None,
+            ignore_eos: false,
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
@@ -1561,6 +1671,7 @@ mod core_behavior {
             prompt_len: 6,
             max_output_tokens: 4,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: alloc.lease,
             materialized_tokens: 6,
             allocated_tokens: 8,
@@ -1608,6 +1719,7 @@ mod core_behavior {
             prompt_len: 4,
             max_output_tokens: 4,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: base_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -1624,6 +1736,7 @@ mod core_behavior {
             prompt_len: 4,
             max_output_tokens: 4,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: fast_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -1676,6 +1789,7 @@ mod core_behavior {
                 prompt_len: 4,
                 max_output_tokens: 10,
                 planned_output_ids: None,
+                ignore_eos: false,
                 kv_lease: RadixRequestLease::from_parts(first, 8, 4, kv_manager.cache().root()),
                 materialized_tokens: 8,
                 allocated_tokens: 8,
@@ -1689,6 +1803,7 @@ mod core_behavior {
                 prompt_len: 4,
                 max_output_tokens: 10,
                 planned_output_ids: None,
+                ignore_eos: false,
                 kv_lease: RadixRequestLease::from_parts(second, 5, 4, kv_manager.cache().root()),
                 materialized_tokens: 5,
                 allocated_tokens: 8,
@@ -1723,6 +1838,7 @@ mod core_behavior {
             prompt_len: 4,
             max_output_tokens: 4,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
@@ -1754,6 +1870,7 @@ mod core_behavior {
             tokens: vec![1; 6],
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: None,
             arrival_timestamp_ms: None,
             session_id: None,
@@ -1901,6 +2018,7 @@ mod forward_pass_metrics {
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -1934,6 +2052,7 @@ mod forward_pass_metrics {
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -1953,6 +2072,7 @@ mod forward_pass_metrics {
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -1991,6 +2111,7 @@ mod forward_pass_metrics {
             tokens: (0..4).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2014,6 +2135,7 @@ mod forward_pass_metrics {
             tokens: (100..104).collect(),
             max_output_tokens: 3,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2064,6 +2186,7 @@ mod forward_pass_metrics {
             tokens: (0..8).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2080,6 +2203,7 @@ mod forward_pass_metrics {
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2293,6 +2417,7 @@ mod forward_pass_metrics {
             tokens: (0..8).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2303,6 +2428,7 @@ mod forward_pass_metrics {
             tokens: (100..108).collect(),
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2350,6 +2476,7 @@ mod forward_pass_metrics {
             tokens: (0..4).collect(), // prompt_len = 4
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2360,6 +2487,7 @@ mod forward_pass_metrics {
             tokens: (100..112).collect(), // prompt_len = 12
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2405,6 +2533,7 @@ mod forward_pass_metrics {
             tokens: (0..16).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2478,6 +2607,7 @@ mod forward_pass_metrics {
                 tokens,
                 max_output_tokens,
                 output_token_ids: None,
+                ignore_eos: false,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
@@ -2494,6 +2624,7 @@ mod forward_pass_metrics {
             tokens: (200..232).collect(),
             max_output_tokens: 40,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(fresh),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2572,6 +2703,7 @@ mod forward_pass_metrics {
             tokens,
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(id)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2604,6 +2736,7 @@ mod forward_pass_metrics {
             tokens: r2,
             max_output_tokens: 1,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2639,6 +2772,7 @@ mod forward_pass_metrics {
             tokens: (0..5).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2678,6 +2812,7 @@ mod forward_pass_metrics {
                 tokens,
                 max_output_tokens: 2,
                 output_token_ids: None,
+                ignore_eos: false,
                 uuid: Some(Uuid::from_u128(id)),
                 arrival_timestamp_ms: None,
                 session_id: None,
@@ -2707,6 +2842,7 @@ mod forward_pass_metrics {
             tokens: (0..12).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(7)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2764,6 +2900,7 @@ mod forward_pass_metrics {
                 tokens,
                 max_output_tokens: 1,
                 output_token_ids: None,
+                ignore_eos: false,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
                 session_id: None,
@@ -2802,6 +2939,7 @@ mod forward_pass_metrics {
             tokens: (0..4).collect(),
             max_output_tokens: 2,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2874,6 +3012,7 @@ mod forward_pass_metrics {
             tokens: (0..4).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2884,6 +3023,7 @@ mod forward_pass_metrics {
             tokens: (100..104).collect(),
             max_output_tokens: 20,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -2901,6 +3041,7 @@ mod forward_pass_metrics {
             tokens: (200..212).collect(), // 12 tokens
             max_output_tokens: 10,
             output_token_ids: None,
+            ignore_eos: false,
             uuid: Some(Uuid::from_u128(3)),
             arrival_timestamp_ms: None,
             session_id: None,
@@ -3441,6 +3582,7 @@ mod host_loop_passes {
             prompt_len: 8,
             max_output_tokens: 1,
             planned_output_ids: None,
+            ignore_eos: false,
             kv_lease: alloc.lease,
             materialized_tokens: 8,
             allocated_tokens: 8,
@@ -3496,6 +3638,7 @@ mod host_loop_passes {
                 prompt_len: 4,
                 max_output_tokens: 1,
                 planned_output_ids: None,
+                ignore_eos: false,
                 kv_lease: finishing_alloc.lease,
                 materialized_tokens: 4,
                 allocated_tokens: 4,
@@ -3509,6 +3652,7 @@ mod host_loop_passes {
                 prompt_len: 4,
                 max_output_tokens: 5,
                 planned_output_ids: None,
+                ignore_eos: false,
                 kv_lease: continuing_alloc.lease,
                 materialized_tokens: 4,
                 allocated_tokens: 4,
@@ -3732,6 +3876,7 @@ mod vision_batches {
                 prompt_len,
                 max_output_tokens: 2,
                 planned_output_ids: None,
+                ignore_eos: false,
                 kv_lease: allocation.lease,
                 materialized_tokens: 4,
                 allocated_tokens: 4,

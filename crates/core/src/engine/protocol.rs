@@ -78,6 +78,10 @@ pub struct Request {
     /// output position, so reusing a request ID reproduces the same stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Preserve SGLang's fixed-length admission reservation instead of the early-EOS discount.
+    /// This controls reservation only; the replay output plan still determines generated tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_eos: bool,
     /// Optional session attribution; does not affect scheduling or cache identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
