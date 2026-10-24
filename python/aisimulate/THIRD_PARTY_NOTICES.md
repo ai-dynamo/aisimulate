@@ -49,6 +49,7 @@ upstream serving implementation is vendored.
 Repository-root `crates/core/src/engine/scheduler/sglang/prefill.rs` and
 `request.rs`, `crates/core/src/engine/cache/radix_cache.rs`, and the regression
 tests in `crates/core/src/engine/scheduler/sglang/tests.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`,
 `crates/core/src/replay/disagg_tests.rs`, `crates/core/tests/engine.rs` and
 `crates/core/src/engine/cache/radix_cache.rs`, plus the source-execution harness
 `benchmarks/evidence/sglang-native-boundaries/probe_input_cap.py`

@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Behavioral harness for SGLang schedule_policy.py at the immutable revision below.
 # Copyright SGLang Team and contributors, Apache-2.0. Modified as a CPU-only

@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Cache regression expectations adapted from SGLang at the immutable source:
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/mem_cache/unified_radix_cache.py
+// Copyright 2023-2024 SGLang Team and contributors, Apache-2.0.
+// Modified for AISimulate's request leases; see THIRD_PARTY_NOTICES.md.
 
 //! SGLang KV manager — wraps [`RadixCache`] with request-level lifecycle
 //! operations and KV event publishing.
