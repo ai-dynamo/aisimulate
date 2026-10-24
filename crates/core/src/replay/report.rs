@@ -982,6 +982,8 @@ pub struct PerRequestRecord {
     /// Number of output tokens actually emitted by the mock engine.
     pub output_length: usize,
     pub reused_input_tokens: usize,
+    /// Total reuse at the first admission, excluding increases from readmission.
+    pub first_admission_reused_input_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_admission_g1_reused_input_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2287,6 +2289,7 @@ impl TraceCollector {
                 reused_input_tokens: detail
                     .prefill_reused_input_tokens
                     .unwrap_or(stats.reused_input_tokens),
+                first_admission_reused_input_tokens: stats.first_admission_reused_input_tokens,
                 first_admission_g1_reused_input_tokens: detail
                     .first_admission_cache_tier_attribution
                     .map(|value| value.g1_reused_input_tokens),
@@ -3207,6 +3210,7 @@ mod tests {
         assert_eq!(rec.input_length, 100);
         assert_eq!(rec.output_length, 4);
         assert_eq!(rec.reused_input_tokens, 30);
+        assert_eq!(rec.first_admission_reused_input_tokens, 30);
         assert_eq!(rec.prefill_worker_idx, Some(2));
         assert_eq!(rec.decode_worker_idx, Some(7));
         assert_eq!(rec.prefill_admit_ms, Some(5.0));

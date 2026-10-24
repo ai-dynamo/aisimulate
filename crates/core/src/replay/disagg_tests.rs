@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified behavioral adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, VecDeque};
@@ -436,6 +439,30 @@ fn trtllm_disaggregation_runs_source_first_handoff_to_completion() {
     assert_eq!(
         conformance.lifecycle,
         crate::replay::expected_normalized_handoff(HandoffOrder::SourceFirst)
+    );
+    assert_eq!(conformance.completed_requests, 1);
+    assert!(conformance.source_drained);
+    assert!(conformance.destination_drained);
+}
+
+#[test]
+fn sglang_destination_stores_nothing_before_running_admission() {
+    let mut config = sglang_disagg_config();
+    config.num_prefill_workers = 1;
+    config.num_decode_workers = 1;
+    let runtime =
+        new_handoff_conformance(&config, VecDeque::from([request(1, 128, 2, 0.0)])).unwrap();
+
+    let conformance = runtime.run_handoff_conformance(EngineType::Sglang).unwrap();
+
+    assert_eq!(conformance.order, HandoffOrder::DestinationFirst);
+    assert_eq!(
+        conformance.lifecycle,
+        crate::replay::expected_normalized_handoff(HandoffOrder::DestinationFirst)
+    );
+    assert_eq!(
+        conformance.destination_stored,
+        crate::replay::NormalizedStoredTiming::default()
     );
     assert_eq!(conformance.completed_requests, 1);
     assert!(conformance.source_drained);

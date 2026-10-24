@@ -849,6 +849,7 @@ pub fn rebuild_replay_report_literals(
             requested_output_length: record.requested_output_length,
             output_length: record.output_length,
             reused_input_tokens: record.reused_input_tokens,
+            first_admission_reused_input_tokens: record.first_admission_reused_input_tokens,
             first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
             first_admission_host_reused_input_tokens: record
                 .first_admission_host_reused_input_tokens,
