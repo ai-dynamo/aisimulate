@@ -23,8 +23,10 @@ from pydantic import ValidationError
 from aisimulate.config.common import load_yaml
 
 from .config_profile import (
+    CHECKED_GEOMETRY,
     FIELD_CHOICES,
     INTEGER_FIELDS,
+    LAYOUT_NOTES,
     OVERRIDE_FIELDS,
     ModelConfig,
     ProfileDraft,
@@ -69,6 +71,10 @@ def add_support_parser(subparsers: Any) -> None:
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --gpu, and --interconnect. "
+            "Cache layouts that config.json cannot establish, such as linear-attention or recurrent state, or that "
+            "belong to an architecture intake does not recognize, are resolved by onboard probe-runtime: setup stops "
+            "with guidance and writes nothing. onboard import-observations checks a cache geometry override for such "
+            "a layout against the probe's measurement. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
             "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
             "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
@@ -763,9 +769,14 @@ def _review_config_profile(
         try:
             edited_request = SupportRequest.model_validate(payload)
             updated = derive_profile(config, edited_request, staged)
-            while updated.missing:
+            while updated.missing and not updated.pending_runtime:
                 field = min(updated.missing, key=_memory_field)
                 staged, updated = _prompt_profile_value(config, edited_request, staged, updated, field)
+            if updated.pending_runtime:
+                raise ValueError(
+                    "Cache geometry: pending runtime probe, so init cannot save this profile; "
+                    f"{updated.pending_runtime['cache_geometry']} (guide: {_PROBE_GUIDE})"
+                )
             if updated.profile is None:
                 raise ValueError("model config did not produce a complete FPM profile")
             validated = SupportRequest.model_validate({**edited_request.model_dump(), "fpm_profile": updated.profile})
@@ -788,8 +799,9 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
     preview = derive_profile(config, None, overrides)
     if not args.suggest_parallel:
         print(f"Model config source: {Path(args.model_config).expanduser()} (SHA-256 {config.sha256}).")
-        for name, note in config.notes.items():
-            print(f"Config {name}: {note}")
+        for name, note in preview.notes.items():
+            if name not in LAYOUT_NOTES:
+                print(f"Config {name}: {note}")
         for name in ("architecture", "context_length", "num_experts"):
             if name in preview.resolved:
                 print(f"{name}: {preview.resolved[name]} (source: {preview.sources[name]})")
@@ -798,6 +810,11 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
         for name in ("architecture", "context_length", "num_experts"):
             if name in preview.missing:
                 overrides, preview = _prompt_profile_value(config, None, overrides, preview, name)
+    if not args.suggest_parallel:
+        # Printed after any architecture answer, so they describe the classification derive_profile now uses.
+        for name in LAYOUT_NOTES:
+            if name in preview.notes:
+                print(f"Config {name}: {preview.notes[name]}")
     if args.model is None:
         args.model = config.suggestions.get("model")
     if args.model_kind is None:
@@ -827,19 +844,32 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
     return config, overrides, request
 
 
-def _topology_summary(suggestions: TopologySuggestions) -> str:
+def _topology_summary(suggestions: TopologySuggestions, *, missing: bool = True) -> str:
+    """Shortlist text; ``missing=False`` leaves out inputs that the caller already lists."""
     lines = [
         "Suggested worker topologies (collection starting points, not a performance ranking):",
         f"  Hardware: {suggestions.hardware.source}; {suggestions.hardware.assumption}",
     ]
-    for number, candidate in enumerate(suggestions.candidates, 1):
+    candidates = suggestions.candidates
+    # An input every candidate lacks is listed once, after the candidates; other gaps stay with their candidate.
+    shared = []
+    if missing and candidates:
+        shared = [item for item in candidates[0].missing.items() if all(item in c.missing.items() for c in candidates)]
+    for number, candidate in enumerate(candidates, 1):
         default = " (default)" if candidate == suggestions.default else ""
         lines.append(
             f"  {number}. {candidate.family}, {candidate.required_gpus} GPUs, {candidate.status}{default}: "
             + shlex.join(candidate.cli_flags)
         )
         lines.extend(f"     {reason}" for reason in candidate.reasons)
-        lines.extend(f"     Missing {name}: {reason}" for name, reason in candidate.missing.items())
+        if missing:
+            lines.extend(
+                f"     Missing {name}: {reason}"
+                for name, reason in candidate.missing.items()
+                if (name, reason) not in shared
+            )
+    subject = "The candidate" if len(candidates) == 1 else "Every candidate"
+    lines.extend(f"  {subject} is missing {name}: {reason}" for name, reason in shared)
     if not suggestions.candidates:
         lines.append("  No eligible topology remains in the automatic hardware domain.")
         for candidate in suggestions.rejected_candidates:
@@ -847,6 +877,65 @@ def _topology_summary(suggestions: TopologySuggestions) -> str:
                 f"  Rejected {candidate.family}, {candidate.required_gpus} GPUs: " + "; ".join(candidate.reasons)
             )
     lines.append("Runtime compatibility, actual GPU availability and measured performance remain unchecked.")
+    return "\n".join(lines)
+
+
+def _print_profile_inputs(draft: ProfileDraft, *, skip: tuple[str, ...] = ()) -> None:
+    print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
+    for name, value in draft.resolved.items():
+        if name not in skip:
+            print(f"  {name}: {value} (source: {draft.sources[name]})")
+
+
+_PROBE_GUIDE = "docs/perf-model/fpm-self-service/implementation.md#cache-geometry-pending-the-runtime-probe"
+
+
+def _probe_guidance(draft: ProfileDraft, shortlist: str | None = None, *, starting_points: bool = True) -> str:
+    """Stop message for a layout whose cache geometry only the runtime probe measures.
+
+    ``starting_points`` says whether the shortlist kept any candidate. The message never asks for geometry.
+    """
+    lines = []
+    if draft.missing:
+        lines += [
+            "Unresolved profile fields for this deployment:",
+            *(f"  {name}: {reason}" for name, reason in draft.missing.items()),
+            "Supply them in --resource-overrides PATH (JSON/YAML), or use --interactive.",
+        ]
+    lines += ["Cache geometry: pending runtime probe", f"  {draft.pending_runtime['cache_geometry']}"]
+    # A pending draft holds cache geometry only from overrides; nothing derives it for such a layout.
+    if any(name in draft.resolved for name in CHECKED_GEOMETRY):
+        lines.append(
+            "  onboard import-observations checks each cache geometry override against the probe's measurement."
+        )
+    if shortlist is not None:
+        lines.append(shortlist)
+    lines.append(
+        "Next step: record the deployment, the model config path and the five precision values (gemm_quant_mode, "
+        "moe_quant_mode, fmha_quant_mode, comm_quant_mode and kv_cache_dtype) in the onboarding checkpoint "
+        "(onboard checkpoint), then run onboard probe-runtime --checkpoint PATH --output-dir DIR "
+        f"(guide: {_PROBE_GUIDE})."
+    )
+    if shortlist is not None:
+        lines.append(
+            "The probe takes an explicit topology: record one of the starting points above, or your own."
+            if starting_points
+            else "No usable starting point exists. The probe takes an explicit topology: record your own."
+        )
+    # A marker declares a cache group other than full or sliding attention, such as recurrent state. An unrecognized
+    # architecture alone does not declare one. Without a declared window, the probe reports attention groups, and a
+    # matching per-token size then gives back a linear profile.
+    if draft.layout_markers:
+        lines.append(
+            "Importing cache groups other than full or sliding attention (for example recurrent state) is not "
+            "supported yet. Import reports such probes as incomplete."
+        )
+    elif not draft.declares_window:
+        lines.append(
+            "If you keep kv_bytes_per_token in the configuration's resource_overrides in the checkpoint, "
+            "onboard import-observations checks it, and when it matches, import writes a linear profile."
+        )
+    lines.append("Nothing was saved.")
     return "\n".join(lines)
 
 
@@ -890,6 +979,13 @@ def _select_topologies(
                 raise
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
+    # Pending geometry is topology-independent: no candidate can be chosen into a saved request.
+    if (pending := derive_profile(config, None, overrides)).pending_runtime:
+        # This preview has no request, so its scheduler limits are policy defaults, not the user's bounds.
+        _print_profile_inputs(pending, skip=("max_num_tokens", "max_batch_size"))
+        # The guidance lists the unresolved inputs, so the shortlist does not repeat them.
+        shortlist = _topology_summary(suggestions, missing=False)
+        raise ValueError(_probe_guidance(pending, shortlist, starting_points=bool(suggestions.candidates)))
     summary = _topology_summary(suggestions)
     if not suggestions.candidates or (not args.interactive and suggestions.default is None):
         raise ValueError(
@@ -964,9 +1060,9 @@ def _complete_config_request(
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
             continue
-        print("Profile inputs (resource bytes per rank; estimates require runtime verification):")
-        for name, value in draft.resolved.items():
-            print(f"  {name}: {value} (source: {draft.sources[name]})")
+        _print_profile_inputs(draft)
+        if draft.pending_runtime and not args.interactive:
+            raise ValueError(_probe_guidance(draft))
         if draft.missing and not args.interactive:
             raise ValueError(
                 "Unresolved profile fields for this deployment:\n"
@@ -985,6 +1081,8 @@ def _complete_config_request(
             _correct_option(args, exc, require_known_field=True)
             request = _validate_guided_request(args)
             continue
+        if draft.pending_runtime:
+            raise ValueError(_probe_guidance(draft))
         if draft.profile is None:
             raise ValueError("model config did not produce a complete FPM profile")
         try:

@@ -22,6 +22,7 @@ import yaml
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 
+from .config_profile import _cache_group_shapes, linear_block_size, linear_runtime_resources
 from .fpm import fpm_cli_args
 from .schema import SupportRequest
 
@@ -43,6 +44,53 @@ def validation_id(request: SupportRequest) -> str:
     """Bind generated validation examples to the complete saved request."""
     payload = json.dumps(request.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
     return "validation-" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _probe_observed_resources(request: SupportRequest) -> dict[str, Any] | None:
+    """The observed resources of the request's runtime probe evidence; None when the request has no such evidence.
+
+    A finalized request keeps the evidence in its finalization manifest, and planning cannot verify it against the
+    source collection. So the evidence must agree with the profile, as finalization wrote them: its cache groups are
+    the measured_cache_groups of the profile provenance, and their linear layout has the profile's
+    kv_bytes_per_token. Evidence without observed cache groups is invalid provenance. A hand-edited request that
+    breaks either rule fails with a ValueError.
+    """
+    from .finalization import finalization_manifest
+    from .runtime import runtime_probe_manifest
+
+    probe = runtime_probe_manifest(request)
+    finalized = probe is None
+    if finalized:
+        manifest = finalization_manifest(request)
+        if manifest is None or "runtime_probe" not in manifest:
+            return None
+        probe = manifest["runtime_probe"]
+    observed = probe.get("observed_resources") if isinstance(probe, dict) else None
+    groups = observed.get("cache_groups") if isinstance(observed, dict) else None
+    if not isinstance(groups, list) or not groups:
+        raise ValueError(
+            "invalid onboarding runtime probe provenance: "
+            "the probe evidence has no observed_resources with cache_groups"
+        )
+    if finalized:
+        differs = "finalized runtime probe provenance differs from the profile: its observed cache_groups "
+        try:
+            provenance = json.loads(request.fpm_profile.provenance)
+        except ValueError:
+            provenance = None
+        measured = provenance.get("measured_cache_groups") if isinstance(provenance, dict) else None
+        if not isinstance(measured, list) or _cache_group_shapes(groups) != _cache_group_shapes(measured):
+            raise ValueError(differs + "differ from measured_cache_groups in the profile provenance")
+        linear = linear_runtime_resources(observed)
+        if linear is None:
+            raise ValueError(differs + "have no linear layout, and the profile is linear")
+        expected = request.profile_deployment().resources.kv_bytes_per_token
+        if linear["kv_bytes_per_token"] != expected:
+            raise ValueError(
+                differs + f"give kv_bytes_per_token={linear['kv_bytes_per_token']}, and the profile has "
+                f"kv_bytes_per_token={expected}"
+            )
+    return observed
 
 
 def _configs(
@@ -83,6 +131,12 @@ def _configs(
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
         if request.profile_deployment().resources.cache_layout == "grouped":
             worker.setdefault("kv_cache", {})["prefix_caching"] = False
+        else:
+            # Replay of a linear profile with runtime probe evidence uses the measured block size.
+            observed = _probe_observed_resources(request)
+            block_size = None if observed is None else linear_block_size(observed)
+            if block_size is not None:
+                worker.setdefault("kv_cache", {})["block_size"] = block_size
     if request.worker_type in {"prefill", "decode"}:
         # A role is independently collectable. A complete P/D serving config
         # also needs the independently accepted counterpart and runtime support.
@@ -323,8 +377,15 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             )
         elif deployment.resources.cache_layout == "grouped":
             if estimate["request_peak_cache_bytes"] > estimate["total_kv_size_bytes"]:
+                source = "observed" if deployment.resources.memory_source == "runtime" else "declared"
                 raise ValueError(
-                    "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+                    f"{source} FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+                )
+        elif deployment.resources.memory_source == "runtime":
+            # vLLM starts when one full-context request fills the observed capacity exactly.
+            if estimate["total_kv_size_tokens"] < request.search.context_length:
+                raise ValueError(
+                    "observed FPM resources leave insufficient rank-local KV capacity for the runtime context"
                 )
         elif estimate["total_kv_size_tokens"] <= request.search.context_length:
             raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the runtime context")
@@ -369,11 +430,11 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "Selected deployment uses observed cache capacity for the exact recorded runtime settings. "
                 "Timing coverage and silicon accuracy require separate validation."
             )
+            # A linear profile has no cache groups. The text for a grouped profile is unchanged.
+            geometry = "grouped geometry" if deployment.resources.cache_layout == "grouped" else "cache geometry"
             plan["prerequisites"][0].update(
                 status="runtime_memory_resolved",
-                detail=(
-                    "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
-                ),
+                detail=f"Observed cache capacity and {geometry} are bound to this deployment and runtime envelope.",
             )
         plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
     role_only = request.worker_type in {"prefill", "decode"}
