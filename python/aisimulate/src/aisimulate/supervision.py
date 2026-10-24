@@ -447,7 +447,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     event_output = None
     if raw is not None:
         try:
-            output = prepare_output_directory(args.output_dir, overwrite=args.overwrite)
+            from .config.traffic import TraceSource
+
+            source = config.traffic.source if config.traffic is not None else None
+            input_paths = [args.config, *(source.paths if isinstance(source, TraceSource) else [])]
+            output = prepare_output_directory(args.output_dir, overwrite=args.overwrite, input_paths=input_paths)
         except (OSError, ValueError) as exc:
             parser.error(str(exc))
         event_output = str(output / "execution-events.jsonl")
