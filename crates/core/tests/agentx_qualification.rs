@@ -529,9 +529,10 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     let mut driver = g2_snapshot_driver(false, true);
     driver
         .enable_agentic_profile(AgenticProfileOptions {
-            // The restored parent arrives at 200 ms; its two-block H2D needs
-            // another 200 ms. End profiling while it owns the G1 reservation.
-            duration_seconds: 0.3,
+            // The restored parent arrives 20 ms after its child completes, at
+            // 44 ms; its two-block H2D needs another 200 ms. End profiling
+            // while it owns the G1 reservation.
+            duration_seconds: 0.1,
             response_grace_seconds: 0.0,
             ..Default::default()
         })
@@ -543,7 +544,7 @@ fn agentx_g2_profile_cancels_pending_host_restore_and_releases_server_resources(
     assert_eq!(profile.canceled_requests, 1, "{profile:?}");
     assert_eq!(profile.client_in_flight_requests, 0);
     assert_eq!(profile.server_unsettled_requests, 0);
-    assert_eq!(profile.finished_at_ms, Some(300.0));
+    assert_eq!(profile.finished_at_ms, Some(100.0));
     let restore = g2_request(&report, "restore");
     assert_eq!(restore.terminal_status, ReplayTerminalStatus::Canceled);
     assert!(restore.dispatched_at_ms.is_some());
@@ -662,10 +663,10 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
         "g2 snapshot disagg: 5 a6573f2379f39c15",
         "g2 warmup agg: 5 21a10bcd0843bc96",
         "g2 warmup disagg: 5 a0834d087069f92e",
-        "g2 profile agg: 40 a69d736cdea338aa",
-        "g2 profile disagg: 40 fa167c22cb9d4b34",
-        "g2 profile-cold agg: 40 f63f6e7cf21a4de3",
-        "g2 profile-cold disagg: 40 29b72dc9224ae354",
+        "g2 profile agg: 168 44441ca085ad970c",
+        "g2 profile disagg: 151 8f4f03ccf36a2a4e",
+        "g2 profile-cold agg: 168 be8fa4bd9231255a",
+        "g2 profile-cold disagg: 151 9a175b25b7cdd899",
         "two-plays snapshot agg: 3 19563e804401e8a2",
         "two-plays snapshot disagg: 3 88c3919df99f7ce1",
         "two-plays warmup agg: 3 2bb148e6548bb88a",

@@ -44,6 +44,17 @@ native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
 
+The continuous-profile release rules in the same `driver.rs`, their regression
+tests there, and the release descriptions in
+`docs/replay/agentic/continuous-profiles.md` and `docs/replay/workloads.md` are
+modified re-implementations of the pinned `agentic_replay.py`,
+`src/aiperf/timing/branch_orchestrator.py` and
+`src/aiperf/common/loop_scheduler.py` behavior: dependency-relative release of
+continuations, spawns and joins, joins gated by the parent's own replay
+deadline, and uniform idle shifts of every pending replay timer. NVIDIA modified
+these rules to operate on the native dependency graph. The original NVIDIA
+copyright and Apache-2.0 license apply; no upstream implementation is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
