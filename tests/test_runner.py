@@ -1196,9 +1196,14 @@ engine:
 
 
 @pytest.mark.parametrize(
-    "backend,field,value", [("vllm", "prefill_schedule_interval", 4), ("sglang", "prefill_decode_interval", 20)]
+    "backend,field,value",
+    [
+        ("vllm", "prefill_schedule_interval", 4),
+        ("sglang", "prefill_decode_interval", 20),
+        ("vllm", "async_scheduling", False),
+    ],
 )
-def test_public_prefill_interval_reaches_native_execution_rank(tmp_path, backend, field, value):
+def test_public_scheduler_control_reaches_native_execution_rank(tmp_path, backend, field, value):
     path = tmp_path / "prediction.yaml"
     path.write_text(
         f"""\

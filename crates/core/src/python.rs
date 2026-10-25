@@ -1809,6 +1809,19 @@ fn timing_provenance(timing: &TimingModelConfig) -> serde_json::Value {
     }
 }
 
+/// vLLM turns async scheduling off by default for prompt-lookup (ngram)
+/// drafts and rejects an explicit request for it.
+fn resolve_ngram_async_scheduling(rank: &mut EngineConfig, speculation_kind: &str) -> Result<()> {
+    if speculation_kind == "ngram" && rank.backend == Backend::Vllm {
+        ensure!(
+            rank.async_scheduling != Some(true),
+            "vLLM does not support async scheduling with ngram speculative decoding"
+        );
+        rank.async_scheduling = Some(false);
+    }
+    Ok(())
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1852,6 +1865,7 @@ fn resolve_role_timing(
             "aic_nextn conflicts with resolved speculative depth {depth}"
         );
         role.rank.aic_nextn = (depth > 0).then_some(depth);
+        resolve_ngram_async_scheduling(&mut role.rank, &speculation.kind)?;
     }
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
@@ -4929,6 +4943,21 @@ mod tests {
             .unwrap(),
         );
         assert!(config.validate_parallel_shape().is_err());
+    }
+
+    #[test]
+    fn ngram_drafts_turn_vllm_async_scheduling_off() {
+        let mut rank = EngineConfig::default();
+        resolve_ngram_async_scheduling(&mut rank, "mtp").unwrap();
+        assert_eq!(rank.async_scheduling, None);
+        resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap();
+        assert_eq!(rank.async_scheduling, Some(false));
+        rank.async_scheduling = Some(true);
+        let error = resolve_ngram_async_scheduling(&mut rank, "ngram").unwrap_err();
+        assert!(error.to_string().contains("async scheduling"), "{error}");
+        let mut sglang = EngineConfig::for_backend(Backend::Sglang);
+        resolve_ngram_async_scheduling(&mut sglang, "ngram").unwrap();
+        assert_eq!(sglang.async_scheduling, None);
     }
 
     #[test]

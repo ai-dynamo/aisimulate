@@ -315,6 +315,22 @@ scheduled draft positions, first-output and preemption state in virtual time;
 it does not reproduce asynchronous worker execution. That revision has no
 root NOTICE file. The repository LICENSE contains the Apache-2.0 license text.
 
+The async-scheduling admission in repository-root files
+`crates/core/src/engine/scheduler/vllm/{core,tests}.rs` is an independently
+written, modified Rust simulation adaptation of behavioral contracts at vLLM
+tag `v0.28.0` (commit `2cf0a6915ce544dc493a0990f2ea38d81601128a`):
+
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/engine/core.py
+- https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/config/vllm.py
+
+Copyright contributors to the vLLM project. Licensed under Apache-2.0:
+https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/LICENSE
+
+No upstream method bodies or test fixtures are copied. The adaptation models,
+in virtual time, which committed batch an arriving request can join while the
+engine core keeps a queue of `max_concurrent_batches`; it does not reproduce
+asynchronous worker execution. That revision has no root NOTICE file.
+
 The following files are derived from vLLM's attention test utilities at tag
 `v0.11.0` (commit `b8b302cde434df8c9289a2b465406b47ebab1c2d`):
 

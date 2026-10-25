@@ -727,6 +727,8 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if worker.scheduler.async_scheduling is not None:
+        payload["async_scheduling"] = worker.scheduler.async_scheduling
     if engine.speculation is not None:
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:

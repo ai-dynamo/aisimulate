@@ -1077,6 +1077,11 @@ fn aggregated_mixed_pass_prices_only_ongoing_decoders_and_completes_together(
 ) {
     let timing = Arc::new(RecordingTiming::default());
     let mut replay = recording_timing_spec(backend);
+    // The mixed pass needs the mid-pass arrival in the next pass, where a
+    // synchronous vLLM engine admits it.
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
+    config.rank.async_scheduling = (backend == Backend::Vllm).then_some(false);
+    replay.engine = serde_json::to_value(config).unwrap();
     replay.requests = vec![
         request_with_tokens("decoding", 0.0, vec![1, 2, 3, 4], 2),
         request_with_tokens("prefilling", 5.0, (10..18).collect(), 1),

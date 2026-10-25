@@ -381,11 +381,13 @@ fn shared_g2_g3_chunked_recompute_of_a_preempted_request_completes() {
     // preempted after its seventh output token fills block 4, then readmitted
     // with a 16-token prefix hit and a 3-token budget: the chunk 16..19 leaves
     // the final generated block unhashed, which debug builds used to reject.
-    // r9 later restores 8 tokens from the shared G2 pool.
+    // r9 later restores 8 tokens from the shared G2 pool. The schedule assumes
+    // synchronous admission.
     let report = run(
         json!({"kind": "aggregated", "workers": {"initial_workers": 1}}),
         json!({
             "rank": small_rank(8, 4, 3, json!({
+                "async_scheduling": false,
                 "g3_offload": {
                     "num_g3_blocks": 64,
                     "read_bandwidth_gbps": 0.5,
