@@ -561,6 +561,28 @@ mod tests {
     }
 
     #[test]
+    fn public_config_requires_strings_for_numeric_looking_identity() {
+        let json = r#"{"model":"123","backend_version":"0.10","system":"offline_system","backend":"vllm","worker_type":"decode"}"#;
+        let yaml = "model: \"123\"\nbackend_version: \"0.10\"\nsystem: offline_system\nbackend: vllm\nworker_type: decode\n";
+        for (path, result) in parse_public_config_paths(json, yaml) {
+            let config = result.expect(path);
+            assert_eq!(config.model, "123", "{path}");
+            assert_eq!(config.backend_version.as_deref(), Some("0.10"), "{path}");
+        }
+        for (field, literal) in [("model", "123"), ("backend_version", "0.10")] {
+            let json = json.replace(&format!("\"{literal}\""), literal);
+            let yaml = yaml.replace(&format!("\"{literal}\""), literal);
+            for (path, result) in parse_public_config_paths(&json, &yaml) {
+                let error = result.expect_err(path);
+                assert!(
+                    error.contains(field) && error.contains("string"),
+                    "{path}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn public_config_aliases_keep_contextual_defaults() {
         let input = serde_json::json!({
             "model": "offline/model", "system": "offline_system", "backend": "vllm",

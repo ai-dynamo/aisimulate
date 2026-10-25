@@ -48,6 +48,19 @@ print(model.diagnostics()["provenance"])
 
 ### Engine identity controls
 
+Canonical JSON/YAML requires string values for text fields. Numeric-looking YAML
+identities must be quoted to preserve their exact spelling:
+
+| Field | Default | Input requirement |
+| --- | --- | --- |
+| `model` | Required | String model name or path; write a numeric identifier as `model: "123"`. |
+| `backend_version` | `null` | Optional string version; write `backend_version: "0.10"` to preserve the trailing zero. |
+
+This is an intentional compatibility change for direct Rust YAML parsing:
+earlier parsing accepted numeric scalars for string fields, while canonical
+normalization now rejects them. Quote numeric, Boolean, or null-like values
+when they represent text. An actual `backend_version: null` still means unset.
+
 The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
 `encoder_parallel` (default absent) compiles a VL model's vision tower in the given layout, `tp` (sharded over the tensor-parallel group) or `dp` (replicated, images split across ranks), so the estimator can price encoder calls. It requires a model with a vision encoder, is omitted from the serialized payload when unset, and is part of the estimator identity, cache keys and provenance. Llama 4 rejects `dp`.
