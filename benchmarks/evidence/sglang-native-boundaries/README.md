@@ -91,6 +91,12 @@ physical destination-reservation behavior.
 
 ## Dynamo adoption dependency
 
+The repository-local `scripts/performance/build_simulation_dynamo.py` bridge
+for pinned Dynamo `def3b79` now forwards the core-owned `DirectRequest.ignore_eos`
+into native `Request`. Its current-API regression checks the generated conversion;
+incompatible types, visibility and later source drift still fail before any write.
+This CI build bridge does not update Dynamo's SGLang HTTP parser or released pin.
+
 At [Dynamo 123d667](https://github.com/ai-dynamo/dynamo/tree/123d667df9d8f85a7859c52dba5761135d4d0452),
 `Cargo.toml` pins `aisimulate-core =0.13.0-dev.202610160000000073`, which does
 not contain this new field. This AISimulate change does not silently upgrade

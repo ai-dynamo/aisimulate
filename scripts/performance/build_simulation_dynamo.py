@@ -128,7 +128,7 @@ class LiteralSite(NamedTuple):
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/mocker/src/replay/offline/extensions/kv_events/mod.rs
 # https://github.com/ai-dynamo/dynamo/blob/def3b79b15c266805540a678dd400aeb6ccada1d/lib/bindings/python/rust/llm/replay.rs
 # Adds `field: None` for new optional AISimulate fields and empty images for the
-# pinned text-only Request; Dynamo behavior is otherwise unchanged.
+# pinned text-only Request; forwards its fixed-output reservation flag.
 OPTIONAL_FIELD_LITERALS = (
     LiteralSite(
         "lib/mocker/src/grouped_scheduler/compatibility.rs",
@@ -260,7 +260,14 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     empty_images = (
         site.struct == "Request" and "images" in missing and struct_fields["images"] == (True, "Vec<ImageSpec>")
     )
-    optional = [name for name in missing if not (empty_images and name == "images")]
+    forward_ignore_eos = (
+        site.struct == "Request" and "ignore_eos" in missing and struct_fields["ignore_eos"] == (True, "bool")
+    )
+    optional = [
+        name
+        for name in missing
+        if not ((empty_images and name == "images") or (forward_ignore_eos and name == "ignore_eos"))
+    ]
     required = [
         name for name in optional if not (struct_fields[name][0] and _OPTION_TYPE.fullmatch(struct_fields[name][1]))
     ]
@@ -281,6 +288,9 @@ def _patch_literal(source: str, site: LiteralSite, struct_fields: dict) -> tuple
     elif optional:
         inserted = f"{indent}// Modified by AISimulate CI: Dynamo does not set these optional fields yet.\n"
         inserted += "".join(f"{indent}{name}: None,\n" for name in optional)
+    if forward_ignore_eos:
+        inserted += f"{indent}// Modified by AISimulate CI: preserve fixed-output reservation.\n"
+        inserted += f"{indent}ignore_eos: request.ignore_eos,\n"
     if empty_images:
         inserted += f"{indent}// Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
         inserted += (
@@ -328,7 +338,8 @@ def _patch_ttft_lifecycle(source: str, api: str) -> tuple[str, list[str]]:
 
 
 # Fail closed: each file must match its reviewed sha256 before any file is written.
-# Request/placement additions must be public `Option`s or the reviewed Request.images;
+# Request/placement additions must be public `Option`s or the reviewed Request.images
+# and Request.ignore_eos conversions;
 # ReplaySpec and SyntheticTraceSpec accept only reviewed text-only defaults.
 # Removed fields remain errors.
 def patch_optional_literal_fields(core: Path, dynamo: Path) -> list[dict]:

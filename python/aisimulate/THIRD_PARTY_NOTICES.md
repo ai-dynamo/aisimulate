@@ -1390,7 +1390,9 @@ The adaptation adds `None` for new optional AISimulate fields to the native
 request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It also sets an empty image list for the pinned text-only
 request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
-instead of adding multimodal support to Dynamo's adapter. Both offline replay
+instead of adding multimodal support to Dynamo's adapter. When the native Request
+adds the public boolean `ignore_eos`, the conversion forwards the same field from
+the core-owned DirectRequest, preserving its fixed-output reservation. Both offline replay
 specifications disable the encoder pool; the Python binding's synthetic trace
 explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
 rejects host-loop TTFT milestones, which its legacy DTO cannot represent.

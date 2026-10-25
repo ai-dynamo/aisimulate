@@ -3472,6 +3472,8 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         f"            {_MARKER}"
         "            session_id: None,\n"
         "            kv_hint: None,\n"
+        "            // Modified by AISimulate CI: preserve fixed-output reservation.\n"
+        "            ignore_eos: request.ignore_eos,\n"
         "            // Modified by AISimulate CI: the pinned Dynamo request is text-only.\n"
         "            images: {\n"
         "                assert!(\n"
@@ -3498,7 +3500,7 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         "path": request.path,
         "struct": "Request",
         "before_sha256": request.sha256,
-        "inserted_fields": ["session_id", "images", "kv_hint"],
+        "inserted_fields": ["ignore_eos", "session_id", "images", "kv_hint"],
         "rejected_lifecycle_events": ["TtftMilestone"],
         "after_sha256": hashlib.sha256(expected.encode()).hexdigest(),
     }
@@ -3533,6 +3535,9 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
         ),
         (_SESSION, "    pub images: Vec<ImageSpec>,\n", _REQUEST_LITERAL, False, r"must set .*\['images'\]"),
         (_SESSION, "    pub(crate) note: Option<u8>,\n", _REQUEST_LITERAL, False, r"must set .*\['note'\]"),
+        (_SESSION + "    pub ignore_eos: u8,\n", "", _REQUEST_LITERAL, False, r"must set .*\['ignore_eos'\]"),
+        (_SESSION + "    pub(crate) ignore_eos: bool,\n", "", _REQUEST_LITERAL, False, r"must set .*\['ignore_eos'\]"),
+        (_SESSION, "    pub ignore_eos: bool,\n", _REQUEST_LITERAL, False, r"must set .*\['ignore_eos'\]"),
         (
             _SESSION,
             "",
@@ -3541,6 +3546,13 @@ def test_simulation_dynamo_text_only_request_against_current_api(tmp_path, monke
             r"no longer has: \['legacy'\]",
         ),
         (_SESSION, "", _REQUEST_LITERAL, True, "kv_router/mod.rs differs from reviewed source"),
+        (
+            _SESSION + "    pub ignore_eos: bool,\n",
+            "",
+            _REQUEST_LITERAL,
+            True,
+            "kv_router/mod.rs differs from reviewed source",
+        ),
         (
             _SESSION + "    pub images: Vec<ImageSpec>,\n",
             "",
