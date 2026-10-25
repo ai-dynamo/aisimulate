@@ -99,6 +99,10 @@ pub struct DirectRequest {
     pub max_output_tokens: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Preserve SGLang's fixed-length admission reservation instead of the early-EOS discount.
+    /// This controls reservation only; the replay output plan still determines generated tokens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_eos: bool,
     pub uuid: Option<Uuid>,
     pub dp_rank: u32,
     /// Optional rank requested by the authored ReplaySpec. The runtime-owned
@@ -202,6 +206,7 @@ mod tests {
             tokens: vec![1, 2],
             max_output_tokens: 0,
             output_token_ids: Some(vec![7, 8]),
+            ignore_eos: true,
             ..Default::default()
         };
 
@@ -209,6 +214,7 @@ mod tests {
         let limited = request.clone_with_output_limit(1);
         assert_eq!(limited.max_output_tokens, 1);
         assert_eq!(limited.output_token_ids.as_deref(), Some(&[7][..]));
+        assert!(limited.ignore_eos);
         assert_eq!(limited.output_token_ids.unwrap().capacity(), 1);
         assert_eq!(request.output_token_ids.as_deref(), Some(&[7, 8][..]));
 

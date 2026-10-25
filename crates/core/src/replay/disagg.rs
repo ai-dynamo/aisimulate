@@ -3871,6 +3871,7 @@ fn direct_to_native(
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
+        ignore_eos: request.ignore_eos,
         session_id: request
             .replay_context
             .and_then(|context| context.session_id().map(str::to_owned)),

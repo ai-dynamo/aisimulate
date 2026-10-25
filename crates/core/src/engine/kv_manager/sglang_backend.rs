@@ -1,5 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
+// Cache regression expectations adapted from SGLang at the immutable source:
+// https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/mem_cache/unified_radix_cache.py
+// Copyright 2023-2024 SGLang Team and contributors, Apache-2.0.
+// Modified for AISimulate's request leases; see THIRD_PARTY_NOTICES.md.
 
 //! SGLang KV manager — wraps [`RadixCache`] with request-level lifecycle
 //! operations and KV event publishing.
@@ -1270,18 +1274,19 @@ mod tests {
         let other_alloc = mgr.allocate_for_request(&other).unwrap();
         mgr.finish(&other, other_alloc.lease);
         // Make `prefix` the LRU victim. The new request must protect it before
-        // evicting one of `other`'s pages to satisfy its suffix allocation.
+        // evicting `other`'s whole compressed leaf for its suffix allocation.
         assert_eq!(mgr.cache_mut().match_prefix(&other).0, other.len());
         assert_eq!(mgr.cache().available_tokens(), 0);
 
         let extended = [1, 2, 3, 4, 5, 6, 7, 8];
         let alloc = mgr
             .allocate_for_request(&extended)
-            .expect("protected prefix plus one evicted page should fit");
+            .expect("protected prefix plus the evicted leaf should fit");
 
         assert_eq!(alloc.prefix_len, prefix.len());
         assert_eq!(mgr.cache().prefix_match_len(&prefix), prefix.len());
-        assert_eq!(mgr.cache().available_tokens(), 0);
+        assert_eq!(mgr.cache().prefix_match_len(&other), 0);
+        assert_eq!(mgr.cache().available_tokens(), 4);
     }
 
     #[test]

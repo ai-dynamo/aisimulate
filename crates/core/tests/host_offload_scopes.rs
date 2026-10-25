@@ -454,6 +454,7 @@ fn serve_prompt(engine: &mut Engine, id: u128, now_ms: &mut f64) -> usize {
                     tokens: PROMPT.to_vec(),
                     max_output_tokens: 1,
                     output_token_ids: None,
+                    ignore_eos: false,
                     session_id: None,
                     kv_hint: None,
                 }),

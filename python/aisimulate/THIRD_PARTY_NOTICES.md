@@ -44,6 +44,34 @@ native deterministic dependency executor and its transactional server-settlement
 barrier. The original NVIDIA copyright and Apache-2.0 license apply; no
 upstream serving implementation is vendored.
 
+## SGLang scheduling and cache boundary behavior
+
+Repository-root `crates/core/src/engine/scheduler/sglang/prefill.rs` and
+`request.rs`, `crates/core/src/engine/cache/radix_cache.rs`, and the regression
+tests in `crates/core/src/engine/scheduler/sglang/tests.rs`,
+`crates/core/src/engine/kv_manager/sglang_backend.rs`,
+`crates/core/src/replay/disagg_tests.rs`, `crates/core/tests/engine.rs` and
+`crates/core/src/engine/cache/radix_cache.rs`, plus the source-execution harness
+`benchmarks/evidence/sglang-native-boundaries/probe_input_cap.py`
+contain modified, independently implemented behavioral adaptations of SGLang
+at commit `baa9befa381511cd4d56f83980951e5a45fffc6d`:
+
+- `python/sglang/srt/managers/schedule_policy.py`: chunked-prefill input-cap
+  handling and fixed-output running-request reservation.
+- `python/sglang/srt/mem_cache/unified_radix_cache.py`,
+  `python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py` and
+  `rust/sglang-radix-tree/src/`:
+  whole-leaf LRU eviction as observed through the native cache.
+
+Source: https://github.com/sgl-project/sglang/tree/baa9befa381511cd4d56f83980951e5a45fffc6d
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate's Rust request leases, physical page pool and replay
+protocol. No serving implementation or production request content is vendored.
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from
@@ -1373,7 +1401,9 @@ The adaptation adds `None` for new optional AISimulate fields to the native
 request and offline KV-router placement struct literals for CI builds against
 newer AISimulate APIs. It also sets an empty image list for the pinned text-only
 request when AISimulate requires `images: Vec<ImageSpec>`, rejecting image inputs
-instead of adding multimodal support to Dynamo's adapter. Both offline replay
+instead of adding multimodal support to Dynamo's adapter. When the native Request
+adds the public boolean `ignore_eos`, the conversion forwards the same field from
+the core-owned DirectRequest, preserving its fixed-output reservation. Both offline replay
 specifications disable the encoder pool; the Python binding's synthetic trace
 explicitly retains text-only traffic with `images: None`. The lifecycle conversion explicitly
 rejects host-loop TTFT milestones, which its legacy DTO cannot represent.

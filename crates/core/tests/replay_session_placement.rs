@@ -410,6 +410,7 @@ fn session_metadata_reaches_stores_without_changing_execution() {
                         input_token_ids: Some(vec![10 + i; 16]),
                         output_tokens: 8,
                         output_token_ids: Some(vec![20 + i; 8]),
+                        ignore_eos: false,
                         dp_rank: None,
                         prefill_dp_rank: None,
                         turn_index: None,

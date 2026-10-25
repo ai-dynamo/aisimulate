@@ -475,6 +475,7 @@ impl TurnTrace {
             tokens,
             max_output_tokens: self.max_output_tokens,
             output_token_ids: self.output_token_ids.clone(),
+            ignore_eos: false,
             uuid: Some(request_uuid),
             dp_rank: 0,
             preferred_dp_rank: None,
