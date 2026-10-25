@@ -42,8 +42,8 @@ use crate::engine::scheduler::{
 };
 use crate::engine::trace::TraceCollector;
 use crate::engine::{
-    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PressureEvent,
-    PressureKind, PressureState, modeled_duration_ms,
+    CacheTierAttribution, DecodeAcceptance, G2Scope, HandoffId, KvHintSource, PrefillTotals,
+    PressureEvent, PressureKind, PressureState, modeled_duration_ms,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2277,8 +2277,13 @@ impl VllmCore {
             .native_host_offload
             .as_ref()
             .map_or(now_ms, |adapter| adapter.compute_not_before_ms(now_ms));
-        let prefill_time =
-            predict_prefill_duration(batch_count, batch_total_isl, batch_total_prefix, &self.args)?;
+        let prefill = priced_prefill(
+            batch_count,
+            batch_total_isl,
+            batch_total_prefix,
+            self.args.worker_type,
+        );
+        let prefill_time = predict_prefill_duration(prefill, &self.args)?;
         if let Some(oracle) = &self.belady_oracle
             && !admissions.is_empty()
         {
@@ -2303,6 +2308,7 @@ impl VllmCore {
             decode_start_ms,
             now_ms,
             &scheduled,
+            prefill,
             &mut decode_acceptance,
         )?;
         // Emit the terminal signals for the requests the gate rejected above
@@ -2916,6 +2922,37 @@ impl VllmCore {
         }
     }
 
+    /// Decode time of `decode_count` requests whose sequences total
+    /// `total_length` tokens. In a pass that also prices `prefill`, both run
+    /// in one forward, so a provider that composes such a pass charges only
+    /// the decode share instead of a second, separate decode pass.
+    fn decode_duration(
+        &self,
+        prefill: Option<PrefillTotals>,
+        decode_count: usize,
+        total_length: usize,
+    ) -> anyhow::Result<Duration> {
+        let active_kv_tokens = total_length;
+        let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
+        let context_length = total_length / decode_count;
+        let decode_ms = match prefill {
+            Some(prefill) => self.args.perf_model.predict_mixed_decode_time(
+                prefill,
+                decode_count,
+                active_kv_tokens,
+                context_length,
+                total_kv_tokens,
+            )?,
+            None => self.args.perf_model.predict_decode_time(
+                decode_count,
+                active_kv_tokens,
+                context_length,
+                total_kv_tokens,
+            )?,
+        };
+        scale_decode_time(decode_ms, &self.args)
+    }
+
     fn is_first_token_from_prefill(
         &self,
         uuid: &Uuid,
@@ -2941,6 +2978,7 @@ impl VllmCore {
         decode_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
     ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
         let mut ready = Vec::with_capacity(self.state.running.len());
@@ -3008,6 +3046,7 @@ impl VllmCore {
                     decode_start_ms,
                     pressure_at_ms,
                     scheduled,
+                    prefill,
                     decode_acceptance,
                 );
             }
@@ -3019,6 +3058,7 @@ impl VllmCore {
                 decode_start_ms,
                 pressure_at_ms,
                 scheduled,
+                prefill,
                 decode_acceptance,
             )?;
             output_signals.append(&mut speculative_signals);
@@ -3033,16 +3073,7 @@ impl VllmCore {
             if self.args.worker_type == WorkerType::Prefill || decode_count == 0 {
                 (Duration::ZERO, decode_start_ms)
             } else {
-                let active_kv_tokens = total_length;
-                let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
-                let context_length = total_length / decode_count;
-                let decode_ms = self.args.perf_model.predict_decode_time(
-                    decode_count,
-                    active_kv_tokens,
-                    context_length,
-                    total_kv_tokens,
-                )?;
-                let dt = scale_decode_time(decode_ms, &self.args)?;
+                let dt = self.decode_duration(prefill, decode_count, total_length)?;
                 (dt, decode_start_ms + dt.as_secs_f64() * 1000.0)
             };
 
@@ -3113,6 +3144,7 @@ impl VllmCore {
         Ok((decode_time, output_signals))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_speculative_ready_tokens(
         &mut self,
         mut ready: Vec<Uuid>,
@@ -3120,6 +3152,7 @@ impl VllmCore {
         decode_start_ms: f64,
         pressure_at_ms: f64,
         scheduled: &FxHashMap<Uuid, ScheduledWork>,
+        prefill: Option<PrefillTotals>,
         decode_acceptance: &mut DecodeAcceptance,
     ) -> anyhow::Result<(Duration, Vec<OutputSignal>)> {
         let nextn = self
@@ -3222,16 +3255,7 @@ impl VllmCore {
             if worker_type == WorkerType::Prefill || decode_count == 0 {
                 (Duration::ZERO, decode_start_ms)
             } else {
-                let active_kv_tokens = total_length;
-                let total_kv_tokens = self.decode_kv_context_bound(active_kv_tokens);
-                let context_length = total_length / decode_count;
-                let decode_ms = self.args.perf_model.predict_decode_time(
-                    decode_count,
-                    active_kv_tokens,
-                    context_length,
-                    total_kv_tokens,
-                )?;
-                let duration = scale_decode_time(decode_ms, &self.args)?;
+                let duration = self.decode_duration(prefill, decode_count, total_length)?;
                 (duration, decode_start_ms + duration.as_secs_f64() * 1000.0)
             };
 
@@ -3383,22 +3407,38 @@ impl VllmCore {
     }
 }
 
-fn predict_prefill_duration(
+/// The prefill a pass prices: its scheduled totals. Decode ranks do not price
+/// prefill, and a batch that computes no token has none.
+fn priced_prefill(
     batch_count: usize,
     batch_total_isl: usize,
     batch_total_prefix: usize,
+    worker_type: WorkerType,
+) -> Option<PrefillTotals> {
+    let new_tokens = batch_total_isl - batch_total_prefix;
+    (batch_count > 0 && new_tokens > 0 && worker_type != WorkerType::Decode).then_some(
+        PrefillTotals {
+            batch_size: batch_count,
+            new_tokens,
+            prefix_tokens: batch_total_prefix,
+        },
+    )
+}
+
+fn predict_prefill_duration(
+    prefill: Option<PrefillTotals>,
     args: &MockEngineArgs,
 ) -> anyhow::Result<Duration> {
-    if batch_count == 0 || args.worker_type == WorkerType::Decode {
+    let Some(prefill) = prefill else {
         return Ok(Duration::ZERO);
-    }
+    };
 
     // Price the scheduled totals: integer per-request means can reconstruct
     // more prefill tokens than the budget admitted.
     let prefill_ms = args.perf_model.predict_prefill_time(
-        batch_count,
-        batch_total_isl - batch_total_prefix,
-        batch_total_prefix,
+        prefill.batch_size,
+        prefill.new_tokens,
+        prefill.prefix_tokens,
     )?;
     let modeled_ms = modeled_duration_ms(prefill_ms, args.speedup_ratio)?;
     Ok(Duration::from_secs_f64(modeled_ms / 1_000.0))

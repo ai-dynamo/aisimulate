@@ -854,6 +854,128 @@ mod prefill_timing_totals {
     }
 }
 
+mod mixed_pass_timing {
+    use super::*;
+    use crate::engine::PrefillTotals;
+    use std::sync::{Arc, Mutex};
+
+    /// Prefill costs 10 ms and a separate decode pass 7 ms. With `share`, the
+    /// provider prices a mixed pass as one forward whose decode share is that
+    /// value, and records each share query.
+    struct OnePassProbe {
+        share: Option<f64>,
+        shares: Mutex<Vec<(PrefillTotals, usize, usize)>>,
+    }
+
+    impl crate::engine::TimingModel for OnePassProbe {
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(10.0)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(7.0)
+        }
+
+        fn predict_mixed_decode_ms(
+            &self,
+            prefill: PrefillTotals,
+            batch: usize,
+            active_kv_tokens: usize,
+            _: usize,
+            _: usize,
+        ) -> anyhow::Result<Option<f64>> {
+            self.shares
+                .lock()
+                .unwrap()
+                .push((prefill, batch, active_kv_tokens));
+            Ok(self.share)
+        }
+    }
+
+    fn core(engine_type: EngineType, timing: Arc<OnePassProbe>, nextn: Option<usize>) -> VllmCore {
+        let mut core = VllmCore::new(
+            MockEngineArgs::builder()
+                .engine_type(engine_type)
+                .block_size(4)
+                .num_gpu_blocks(64)
+                .max_num_batched_tokens(Some(16))
+                .max_num_seqs(Some(4))
+                .enable_chunked_prefill(true)
+                .enable_prefix_caching(false)
+                .speedup_ratio(1.0)
+                .aic_nextn(nextn)
+                .aic_nextn_accept_rates(nextn.map(|_| "1".into()))
+                .build()
+                .unwrap(),
+        );
+        core.args.perf_model =
+            crate::engine::common::perf_model::PerfModel::External { timing }.into();
+        core
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, prompt: usize, output: usize) {
+        core.receive(DirectRequest {
+            tokens: vec![id as u32; prompt],
+            max_output_tokens: output,
+            uuid: Some(Uuid::from_u128(id)),
+            ..Default::default()
+        });
+    }
+
+    /// A decode step that rides a prefill pass costs the provider's decode
+    /// share, so the pass costs its one-pass estimate. Without a composition
+    /// it remains a separate decode pass, and decode-only passes never ask.
+    #[rstest]
+    #[case::vllm(EngineType::Vllm, Some(2.0), 12.0)]
+    #[case::trtllm(EngineType::Trtllm, Some(2.0), 12.0)]
+    #[case::no_composition(EngineType::Vllm, None, 17.0)]
+    fn decode_riding_a_prefill_pass_costs_the_provider_share(
+        #[case] engine_type: EngineType,
+        #[case] share: Option<f64>,
+        #[case] mixed_ms: f64,
+    ) {
+        let timing = Arc::new(OnePassProbe {
+            share,
+            shares: Mutex::default(),
+        });
+        let mut core = core(engine_type, timing.clone(), None);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 3);
+        // The first token comes from the prefill forward: no decode work.
+        let first = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(first.end_ms, 10.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, mixed_ms);
+        let decode = core.execute_pass(&mut collector, mixed.end_ms);
+        assert_eq!(decode.end_ms - mixed.end_ms, 7.0);
+        // Only the mixed pass asked, with the prefill it computes and the
+        // decoder's nine-token sequence.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        assert_eq!(*timing.shares.lock().unwrap(), [(prefill, 1, 9)]);
+    }
+
+    #[test]
+    fn speculative_decode_riding_a_prefill_pass_costs_the_provider_share() {
+        let timing = Arc::new(OnePassProbe {
+            share: Some(3.0),
+            shares: Mutex::default(),
+        });
+        let mut core = core(EngineType::Vllm, timing.clone(), Some(1));
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        submit(&mut core, 1, 8, 6);
+        let first = core.execute_pass(&mut collector, 0.0);
+        submit(&mut core, 2, 8, 2);
+        let mixed = core.execute_pass(&mut collector, first.end_ms);
+        assert_eq!(mixed.end_ms - first.end_ms, 13.0);
+        assert_eq!(timing.shares.lock().unwrap().len(), 1);
+    }
+}
+
 mod source_holds {
     use super::*;
 

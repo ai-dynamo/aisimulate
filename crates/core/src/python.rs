@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::engine::{
-    Backend, EngineConfig, TimingEvidenceAccumulator, TimingEvidenceSource, TimingEvidenceSummary,
-    TimingModel, TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
-    ValidatedTimingPhase, VisionShape,
+    Backend, EngineConfig, PrefillTotals, TimingEvidenceAccumulator, TimingEvidenceSource,
+    TimingEvidenceSummary, TimingModel, TimingModelConfig, TimingOperationEvidence,
+    TimingPhaseEvidence, ValidatedTimingPhase, VisionShape,
 };
 use crate::perfmodel::engine::{Engine as PerfEngine, RuntimeConfig};
 use crate::replay::{
@@ -546,6 +546,15 @@ enum AicPhaseProvider {
     NativeEntries(Vec<crate::perfmodel::engine::PerOpValue>),
 }
 
+/// What one recorded whole-model FPM estimate prices. The decode share of a
+/// mixed pass differs from a separate decode pass at the same totals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FpmEvidencePhase {
+    Prefill,
+    Decode,
+    MixedDecode,
+}
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<Arc<ForwardPassPerfModel>>,
@@ -557,8 +566,9 @@ struct AicTimingModel {
     evidence: Mutex<TimingEvidenceAccumulator>,
     // Capture-only history. Keyed by phase and exact iteration totals, so
     // repeated invocations increment a count without cloning prior history.
-    fpm_evidence:
-        Mutex<std::collections::BTreeMap<(bool, u32, u32, u32), crate::FpmEstimateEvidence>>,
+    fpm_evidence: Mutex<
+        std::collections::BTreeMap<(FpmEvidencePhase, u32, u32, u32), crate::FpmEstimateEvidence>,
+    >,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, Arc<ValidatedTimingPhase>>,
     /// Present when the rank hosts the vision tower.
     vision: Option<VisionTimer>,
@@ -846,7 +856,7 @@ impl AicTimingModel {
 
     fn record_fpm_estimate(
         &self,
-        key: (bool, u32, u32, u32),
+        key: (FpmEvidencePhase, u32, u32, u32),
         estimate: crate::ForwardPassEstimate,
     ) -> Result<f64> {
         let latency_ms = estimate
@@ -959,7 +969,7 @@ impl TimingModel for AicTimingModel {
         }
         if let Some(model) = &self.diagnostic_model {
             return self.record_fpm_estimate(
-                (true, batch_size, mean_isl, mean_prefix),
+                (FpmEvidencePhase::Prefill, batch_size, mean_isl, mean_prefix),
                 model.static_prefill_detailed(batch_size, mean_isl, mean_prefix)?,
             );
         }
@@ -997,7 +1007,12 @@ impl TimingModel for AicTimingModel {
         let total_kv_read_tokens = checked_u32(prefix_tokens, "total prefill KV tokens")?;
         if let Some(model) = &self.diagnostic_model {
             return self.record_fpm_estimate(
-                (true, batch_size, total_prefill_tokens, total_kv_read_tokens),
+                (
+                    FpmEvidencePhase::Prefill,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                ),
                 model.static_prefill_detailed_total(
                     batch_size,
                     total_prefill_tokens,
@@ -1034,12 +1049,8 @@ impl TimingModel for AicTimingModel {
         total_kv_tokens: usize,
     ) -> Result<f64> {
         if self.use_fpm_decode_totals {
-            let total_past_kv_tokens = active_kv_tokens
-                .checked_sub(batch_size)
-                .context("active decode tokens must include one current token per request")?
-                .min(total_kv_tokens);
-            let batch_size = checked_u32(batch_size, "decode batch size")?;
-            let total_past_kv_tokens = checked_u32(total_past_kv_tokens, "total past KV tokens")?;
+            let (batch_size, total_past_kv_tokens) =
+                fpm_decode_totals(batch_size, active_kv_tokens, total_kv_tokens)?;
             if let Some(model) = &self.diagnostic_model {
                 let estimate =
                     model.estimate_forward_pass_detailed(&[crate::ForwardPassMetrics {
@@ -1050,8 +1061,15 @@ impl TimingModel for AicTimingModel {
                         },
                         ..Default::default()
                     }])?;
-                return self
-                    .record_fpm_estimate((false, batch_size, 0, total_past_kv_tokens), estimate);
+                return self.record_fpm_estimate(
+                    (
+                        FpmEvidencePhase::Decode,
+                        batch_size,
+                        0,
+                        total_past_kv_tokens,
+                    ),
+                    estimate,
+                );
             }
             if let Some(model) = &self.fpm_model {
                 return model
@@ -1084,6 +1102,48 @@ impl TimingModel for AicTimingModel {
         Ok(latency_ms)
     }
 
+    fn predict_mixed_decode_ms(
+        &self,
+        _prefill: PrefillTotals,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        _mean_context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<Option<f64>> {
+        // Whole-model FPM composes a mixed pass from the prefill it computes
+        // plus a decode share that does not depend on that prefill. Operation
+        // graphs keep pricing a separate decode pass here.
+        if !self.use_fpm_decode_totals {
+            return Ok(None);
+        }
+        let (batch_size, total_past_kv_tokens) =
+            fpm_decode_totals(batch_size, active_kv_tokens, total_kv_tokens)?;
+        if let Some(model) = &self.diagnostic_model {
+            let Some(estimate) =
+                model.mixed_decode_detailed_total(batch_size, total_past_kv_tokens)?
+            else {
+                return Ok(None);
+            };
+            return self
+                .record_fpm_estimate(
+                    (
+                        FpmEvidencePhase::MixedDecode,
+                        batch_size,
+                        0,
+                        total_past_kv_tokens,
+                    ),
+                    estimate,
+                )
+                .map(Some);
+        }
+        match &self.fpm_model {
+            Some(model) => model
+                .predict_mixed_decode_latency_total(batch_size, total_past_kv_tokens)
+                .context("AIC mixed decode prediction failed"),
+            None => Ok(None),
+        }
+    }
+
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
         if self.use_fpm_decode_totals {
             return None;
@@ -1102,7 +1162,7 @@ impl TimingModel for AicTimingModel {
         let phase = |prefill: bool| {
             let fpm_estimates: Vec<_> = history
                 .iter()
-                .filter(|(key, _)| key.0 == prefill)
+                .filter(|(key, _)| (key.0 == FpmEvidencePhase::Prefill) == prefill)
                 .map(|(_, evidence)| evidence.clone())
                 .collect();
             if fpm_estimates.is_empty() {
@@ -1151,6 +1211,24 @@ impl TimingModel for AicTimingModel {
 
 fn checked_u32(value: usize, name: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{name} {value} exceeds AIC's u32 limit"))
+}
+
+/// FPM decode coordinates of a scheduler decode batch: its requests and their
+/// past KV, which excludes each request's current token and stays within the
+/// scheduler's KV bound.
+fn fpm_decode_totals(
+    batch_size: usize,
+    active_kv_tokens: usize,
+    total_kv_tokens: usize,
+) -> Result<(u32, u32)> {
+    let total_past_kv_tokens = active_kv_tokens
+        .checked_sub(batch_size)
+        .context("active decode tokens must include one current token per request")?
+        .min(total_kv_tokens);
+    Ok((
+        checked_u32(batch_size, "decode batch size")?,
+        checked_u32(total_past_kv_tokens, "total past KV tokens")?,
+    ))
 }
 
 fn aic_capacity_kwargs<'py>(
@@ -5440,6 +5518,97 @@ mod tests {
         assert!(
             format!("{error:#}").contains("total_prefill_tokens=18"),
             "{error:#}"
+        );
+    }
+
+    #[test]
+    fn native_fpm_mixed_decode_share_completes_the_one_pass_estimate() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        use crate::perfmodel::engine::runtime::tests::build_fpm_engine_with_rows;
+        use crate::perfmodel::fpm::ForwardPassPerfOptions;
+        pyo3::prepare_freethreaded_python();
+        let row =
+            |workload_kind, batch_size, total_prefill_tokens, total_kv_read_tokens, latency_ms| {
+                RowSpec {
+                    workload_kind,
+                    batch_size,
+                    total_prefill_tokens,
+                    total_kv_read_tokens,
+                    latency_ms,
+                    ..RowSpec::default()
+                }
+            };
+        let tmp = tempfile::tempdir().unwrap();
+        let rows = [
+            row("prefill", 1, 8, 0, 10.0),
+            row("decode", 1, 0, 4, 2.0),
+            row("decode", 1, 0, 12, 4.0),
+        ];
+        let model = Arc::new(ForwardPassPerfModel::from_engine(
+            Arc::new(build_fpm_engine_with_rows(tmp.path(), &rows).unwrap()),
+            ForwardPassPerfOptions::default(),
+        ));
+        let engine =
+            || Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let mut timing = python_timing_model(engine(), true);
+        timing.fpm_model = Some(Arc::clone(&model));
+        // One decoder whose nine-token sequence has eight past KV tokens.
+        let prefill = PrefillTotals {
+            batch_size: 1,
+            new_tokens: 8,
+            prefix_tokens: 0,
+        };
+        let one_pass = model
+            .estimate_forward_pass_time_ms(&[crate::ForwardPassMetrics {
+                scheduled_requests: crate::ScheduledRequestMetrics {
+                    num_prefill_requests: 1,
+                    sum_prefill_tokens: 8,
+                    num_decode_requests: 1,
+                    sum_decode_kv_tokens: 8,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }])
+            .unwrap()
+            .unwrap();
+        let prefill_ms = timing.predict_prefill_totals_ms(1, 8, 0).unwrap();
+        let decode_ms = timing.predict_decode_ms(1, 9, 9, 1024).unwrap();
+        let share = timing
+            .predict_mixed_decode_ms(prefill, 1, 9, 9, 1024)
+            .unwrap()
+            .unwrap();
+        // The prefill row prices 8 new tokens at 10 ms. Decode at 8 past KV
+        // tokens lies halfway between the 4- and 12-token rows (3 ms); the
+        // one-request pass baseline is the smallest-KV row (2 ms), so the
+        // decode request adds 1 ms to the pass.
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(prefill_ms, 10.0), "{prefill_ms}");
+        assert!(close(decode_ms, 3.0), "{decode_ms}");
+        assert!(close(share, 1.0), "{share}");
+        assert!(close(one_pass, 11.0), "{one_pass}");
+        assert_eq!(prefill_ms + share, one_pass);
+
+        // Capture records the share apart from a decode pass at the same totals.
+        timing.diagnostic_model = Some(model);
+        assert_eq!(
+            timing
+                .predict_mixed_decode_ms(prefill, 1, 9, 9, 1024)
+                .unwrap(),
+            Some(share)
+        );
+        assert_eq!(timing.predict_decode_ms(1, 9, 9, 1024).unwrap(), decode_ms);
+        assert_eq!(
+            timing.fpm_evidence_summary().unwrap().decode.latency_ms,
+            share + decode_ms
+        );
+
+        // Operation graphs keep pricing a separate decode pass.
+        let op_level = python_timing_model(engine(), false);
+        assert_eq!(
+            op_level
+                .predict_mixed_decode_ms(prefill, 1, 9, 9, 1024)
+                .unwrap(),
+            None
         );
     }
 

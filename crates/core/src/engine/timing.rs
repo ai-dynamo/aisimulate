@@ -743,6 +743,15 @@ pub struct VisionShape {
     pub count: u32,
 }
 
+/// Exact totals of the prefill batch one forward pass computes: its requests,
+/// the tokens they compute, and the cached or earlier-chunk KV they read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrefillTotals {
+    pub batch_size: usize,
+    pub new_tokens: usize,
+    pub prefix_tokens: usize,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -792,6 +801,25 @@ pub trait TimingModel: Send + Sync {
         mean_context_length: usize,
         total_kv_tokens: usize,
     ) -> Result<f64>;
+
+    /// Predict the latency, in milliseconds, that a decode batch adds to a
+    /// forward pass that also computes `prefill`. Arguments after `prefill`
+    /// describe the decode batch as in [`Self::predict_decode_ms`].
+    ///
+    /// A provider that prices a mixed pass as one forward returns its decode
+    /// share, so that the prefill latency plus this share is its one-pass
+    /// estimate. The default `None` means the provider has no such
+    /// composition; schedulers then price a separate decode pass.
+    fn predict_mixed_decode_ms(
+        &self,
+        _prefill: PrefillTotals,
+        _batch_size: usize,
+        _active_kv_tokens: usize,
+        _mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<Option<f64>> {
+        Ok(None)
+    }
 
     /// Return typed evidence accumulated by this provider so far.
     ///

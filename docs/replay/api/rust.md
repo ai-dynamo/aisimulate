@@ -34,6 +34,13 @@ the Replayer so ownership, virtual time and caches remain within one execution.
 the tokens the batch computes and the cached or earlier-chunk KV its requests
 read. The default reduces these totals to the integer per-request means of
 `predict_prefill_ms`; providers indexed by iteration totals override it.
+Decode steps that share a vLLM or TensorRT-LLM pass with prefill are priced
+with `TimingModel::predict_mixed_decode_ms(prefill, batch_size, ...)`, which
+takes the pass's `PrefillTotals` and otherwise the arguments of
+`predict_decode_ms`. A provider that prices such a pass as one forward returns
+the decode share, so the pass costs its one-pass estimate; the default `None`
+prices a separate decode pass with `predict_decode_ms`. The AIC provider
+returns the share for whole-model FPM interpolation.
 `TimingModel::predict_vision_ms(&[VisionShape])`
 prices one vision-encoder batch; the default returns `None`, and a rank with
 image work then rejects it rather than treating the encoder as free. The AIC

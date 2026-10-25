@@ -204,8 +204,16 @@ scheduled per-rank FPM telemetry, including mixed work and its existing online
 correction behavior.
 
 Ordinary replay uses this returned model for FPM timing and emits
-`fpm_query_coverage` in its report when collection is enabled. The CLI also saves
-`fpm-coverage.json`, including partial evidence when a native timing error stops
+`fpm_query_coverage` in its report when collection is enabled. A vLLM or
+TensorRT-LLM replay pass that computes prefill alongside decode steps runs as
+one forward. Replay charges the prefill at the pass's exact totals plus only
+the latency the decode requests add, `max(0, decode - decode_pass_baseline)`
+at their totals, so the pass costs the native one-pass estimate of that mixed
+iteration before `estimate_forward_pass_time_ms()` applies online correction.
+Measured SD-round profiles, MTP drafts (`nextn > 0`) and operation-level draft
+tails define no such decode share; replay prices their decode work as a
+separate decode pass. The CLI also saves `fpm-coverage.json`, including partial
+evidence when a native timing error stops
 replay; the Python exception retains a `fpm_query_coverage` attribute for that
 failure path. A passing replay coverage status requires completed requests,
 nonempty resolved queries and no unsupported lookup. It is distinct from

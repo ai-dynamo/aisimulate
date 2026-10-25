@@ -9,7 +9,7 @@
 use anyhow::{Context, Result, ensure};
 use std::sync::Arc;
 
-use crate::engine::timing::mean_prefill_shape;
+use crate::engine::timing::{PrefillTotals, mean_prefill_shape};
 
 /// Performance model for predicting prefill and decode timing
 #[derive(Default)]
@@ -159,6 +159,47 @@ impl PerfModel {
         // The polynomial applies its own historical floor. External measurements
         // can legitimately be below one millisecond and must retain that value.
         Ok(time)
+    }
+
+    /// Predict the decode time in milliseconds of a pass that also computes
+    /// `prefill`. A provider that prices the pass as one forward charges only
+    /// the decode share, so the pass costs its one-pass estimate. Other
+    /// providers and the polynomial fallback price a separate decode pass,
+    /// as [`Self::predict_decode_time`] does.
+    pub fn predict_mixed_decode_time(
+        &self,
+        prefill: PrefillTotals,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        context_length: usize,
+        total_kv_tokens: usize,
+    ) -> Result<f64> {
+        if batch_size == 0 {
+            return Ok(0.0);
+        }
+        if let PerfModel::External { timing } = self
+            && let Some(time) = timing
+                .predict_mixed_decode_ms(
+                    prefill,
+                    batch_size,
+                    active_kv_tokens,
+                    context_length,
+                    total_kv_tokens,
+                )
+                .context("external mixed decode prediction failed")?
+        {
+            ensure!(
+                time.is_finite() && time >= 0.0,
+                "mixed decode timing provider returned invalid duration {time}ms"
+            );
+            return Ok(time);
+        }
+        self.predict_decode_time(
+            batch_size,
+            active_kv_tokens,
+            context_length,
+            total_kv_tokens,
+        )
     }
 }
 
