@@ -1072,3 +1072,46 @@ def test_finalize_keeps_power_disabled_schema_column_free(tmp_path):
     [parquet] = finalize_perf_files([perf])
 
     assert pq.read_table(parquet).column_names == ["shape", "latency"]
+
+
+@pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()], ids=["string", "large_string"])
+def test_repeated_merges_preserve_arrow_identity_schema_and_metadata(tmp_path, key_type):
+    schema = pa.schema(
+        [
+            pa.field("op", key_type, nullable=False, metadata={b"identity": b"operation"}),
+            pa.field("model", key_type),
+            pa.field("latency", pa.float64()),
+        ],
+        metadata={b"collector": b"native-measurements"},
+    )
+
+    def table(rows):
+        return pa.Table.from_pylist(
+            [{"op": key, "model": None if key == "a" else "model", "latency": value} for key, value in rows],
+            schema=schema,
+        )
+
+    path = tmp_path / "gemm_perf.parquet"
+    accumulated = table([("a", 1.0), ("b", 2.0)])
+    updates = [
+        ([("a", 3.0), ("c", 4.0)], {"a": 3.0, "b": 2.0, "c": 4.0}),
+        ([("d", 5.0)], {"a": 3.0, "b": 2.0, "c": 4.0, "d": 5.0}),
+        ([("b", 6.0), ("a", 7.0)], {"a": 7.0, "b": 6.0, "c": 4.0, "d": 5.0}),
+    ]
+    for rows, expected in updates:
+        accumulated, merged, current_rows = helper_mod._merge_perf_rows(table(rows), accumulated, path, pa=pa)
+        assert merged and current_rows == len(rows)
+        assert accumulated.schema.equals(schema, check_metadata=True)
+        pq.write_table(accumulated, path)
+        accumulated = pq.read_table(path)
+        assert accumulated.schema.equals(schema, check_metadata=True)
+        assert {r["op"]: r["latency"] for r in accumulated.to_pylist()} == expected
+
+
+@pytest.mark.parametrize("old_type,new_type", [(pa.string(), pa.large_string()), (pa.large_string(), pa.string())])
+def test_merge_keeps_incompatible_arrow_string_identity_guard(tmp_path, old_type, new_type):
+    old = pa.table({"op": pa.array(["old"], type=old_type), "latency": [1.0]})
+    new = pa.table({"op": pa.array(["new"], type=new_type), "latency": [2.0]})
+    result, merged, current_rows = helper_mod._merge_perf_rows(new, old, tmp_path / "gemm_perf.parquet", pa=pa)
+    assert not merged and current_rows == 1
+    assert result.equals(new, check_metadata=True)

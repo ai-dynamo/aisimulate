@@ -876,6 +876,12 @@ when no Parquet exists yet, and attests the unique current-row count. It does no
 choose the fastest timing or combine different kernel identities. Keep the raw
 snapshot for audit; `delete_source=False` preserves staging when using the helper.
 Explicit `merge_existing=False` retains its overwrite behavior.
+Compatible merges preserve the validated Arrow field types, nullability, and
+metadata through pandas conversion, including `string` versus `large_string`
+identities. This prevents pandas 3 string inference from turning a later resume
+into a schema-replacement write. Genuine incoming identity-schema mismatches
+retain their existing warning and replacement behavior; metric null/numeric
+reconciliation and latest-measurement selection are unchanged.
 
 ## For SGLang
 
