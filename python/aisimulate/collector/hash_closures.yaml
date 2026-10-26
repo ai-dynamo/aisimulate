@@ -225,6 +225,7 @@ collector.vllm.collect_attn_v1:
   - collector/cases/base_ops/attention_generation.yaml
   - __model_cases__
 collector.vllm.collect_attn_v2:
+  - collector/vllm/runtime_031.py
   - collector/vllm/collect_attn_v1.py
   - collector/vllm/utils.py
   - collector/cases/base_ops/attention_context.yaml

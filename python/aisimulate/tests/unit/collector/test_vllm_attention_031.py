@@ -63,8 +63,9 @@ def adapter():
         "compute_layout_strides": native_strides,
         "create_kv_cache_views": native_views,
     }
-    nodes = [node for node in ast.parse(SOURCE.read_text()).body if isinstance(node, ast.FunctionDef)]
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec"), namespace)
+    for source in (SOURCE.with_name("runtime_031.py"), SOURCE):
+        nodes = [node for node in ast.parse(source.read_text()).body if isinstance(node, ast.FunctionDef)]
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"), namespace)
     return SimpleNamespace(**namespace), calls, cache
 
 
@@ -125,8 +126,6 @@ def test_allocation_error_and_other_backend_are_not_silent_fallbacks(adapter):
     module.validate_backend("TRITON_ATTN")
     with pytest.raises(NotImplementedError, match="FLASH_ATTN"):
         module.validate_backend("FLASH_ATTN")
-    with pytest.raises(NotImplementedError, match="non-windowed"):
-        module.run_attention_torch(1, 64, 4, 1, 192, True, True, 128, perf_filename="unused")
 
 
 def test_current_route_is_exact_and_legacy_route_remains():
@@ -138,3 +137,18 @@ def test_current_route_is_exact_and_legacy_route_remains():
     compat = next(node.value.value for node in tree.body if isinstance(node, ast.Assign))
     assert _check_compat(compat, "0.31.0+cu130")
     assert not _check_compat(compat, "0.32.0")
+
+
+@pytest.mark.parametrize("case", [[1, 128, 64, 8, 192, True, True, 128], [1, 127, 64, 8, 192, True, False, 128]])
+def test_retained_window_cases_reach_native_runner(adapter, case):
+    module, _, _ = adapter
+    calls = []
+    globals_ = module.run_attention_torch.__globals__
+    globals_["collect_attn_v1"] = SimpleNamespace(
+        run_attention_torch=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    globals_["__name__"] = "test_current_adapter"
+    globals_["sys"] = SimpleNamespace(modules={"test_current_adapter": module})
+    module.run_attention_torch(*case, perf_filename="fresh_attention_perf.txt")
+    assert calls[0][0] == tuple(case)
+    assert calls[0][1]["_runtime"] is module
