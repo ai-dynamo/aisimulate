@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""vLLM 0.31 native Triton attention qualification with packed KV storage.
+"""vLLM 0.31 native dense attention qualification with packed KV storage.
 
 Contracts at vllm-project/vllm db9527a46873454610df6dbedf79a36d6bf1a7f6:
 * vllm/v1/worker/gpu_model_runner.py:2426-2446: common metadata population.
@@ -10,9 +10,17 @@ Contracts at vllm-project/vllm db9527a46873454610df6dbedf79a36d6bf1a7f6:
 * vllm/v1/kv_cache_interface.py:296-420: native packed cache views/strides.
 * vllm/v1/attention/backends/triton_attn.py:615-630,764-805: packed K/V.
 
-Only the native Triton path is qualified here. Other selected
-backends raise, with no fallback. Getters retain all cases; campaign filters
-select the reviewed B200 cases. Measurements retain KV update plus forward.
+The native selector remains authoritative for FlashInfer, FlashAttention and
+Triton. Other selected backends raise, with no fallback. Getters retain all
+cases; GPU smoke and numerical checks gate each campaign scope. Measurements
+retain KV update plus forward.
+
+Additional contracts at the same vLLM SHA:
+* flashinfer.py:882-895,1326-1439: per-layer parameters and public metadata.
+* flashinfer.py:1918-1925,1990-2009: native FP8 query-input capability.
+* flashinfer.py:2058-2066: metadata selects FI native versus TRTLLM paths.
+* flash_attn.py:687-718,1147-1220: builder, FA version and query capability.
+(All paths above are under vllm/v1/attention/backends/.)
 """
 
 __compat__ = "vllm==0.31.0"
@@ -32,7 +40,7 @@ def get_generation_attention_test_cases():
 
 
 def validate_backend(backend_name):
-    if backend_name != "TRITON_ATTN":
+    if backend_name not in ("TRITON_ATTN", "FLASHINFER", "FLASH_ATTN"):
         raise NotImplementedError(f"vLLM 0.31 attention qualification does not cover selected backend {backend_name}")
 
 

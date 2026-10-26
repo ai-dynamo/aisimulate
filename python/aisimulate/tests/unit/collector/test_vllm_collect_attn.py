@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import os
+import sys
 import typing
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
@@ -71,7 +72,10 @@ class BatchSpec:
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
 @pytest.mark.parametrize("native_runtime", [False, True])
 @pytest.mark.parametrize("window_size", [0, 128])
-def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache, native_runtime, window_size):
+@pytest.mark.parametrize("backend_name,fa_version", [("FLASH_ATTN", 3), ("FLASH_ATTN", 4), ("FLASHINFER", None)])
+def test_generation_uses_total_runtime_length_and_production_call_order(
+    use_fp8_kv_cache, native_runtime, window_size, backend_name, fa_version, monkeypatch
+):
     calls, events = {}, []
     slot_mapping = object()
     history_slot_mapping = SimpleNamespace(numel=lambda: 128)
@@ -97,20 +101,37 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     class Backend:
         forward_includes_kv_cache_update = False
 
-        get_name = staticmethod(lambda: "FLASH_ATTN")
+        get_name = staticmethod(lambda: backend_name)
         get_required_kv_cache_layout = staticmethod(lambda: None)
         get_kv_cache_stride_order = staticmethod(lambda: (0, 1, 2, 3, 4))
 
-    class Builder:
-        def __init__(self, *_args, **_kwargs):
-            pass
+    flashinfer = SimpleNamespace(get_per_layer_parameters=None)
+    if backend_name == "FLASHINFER":
+        # The production runner imports and patches this upstream population hook.
+        for name in ("vllm", "vllm.v1", "vllm.v1.attention", "vllm.v1.attention.backends"):
+            monkeypatch.setitem(sys.modules, name, SimpleNamespace(__path__=[]))
+        monkeypatch.setitem(sys.modules, "vllm.v1.attention.backends.flashinfer", flashinfer)
+        monkeypatch.setitem(
+            sys.modules, "vllm.v1.attention.backends.utils", SimpleNamespace(PerLayerParameters=SimpleNamespace)
+        )
 
-        def build(self, **_kwargs):
+    class FlashInferTrtllmAPIDecode:
+        kernel = SimpleNamespace(value="trtllm-gen")
+
+    class Builder:
+        def __init__(self, _spec, layer_names, actual_config, _device):
+            if backend_name == "FLASHINFER":
+                calls["per_layer"] = flashinfer.get_per_layer_parameters(actual_config, layer_names, Impl)
+
+        def build(self, **kwargs):
+            calls["build"] = kwargs
+            if backend_name == "FLASHINFER":
+                return SimpleNamespace(num_prefills=0, prefill=None, decode=FlashInferTrtllmAPIDecode())
             return object()
 
     class Impl:
-        supports_quant_query_input = False
-        vllm_flash_attn_version = 3
+        supports_quant_query_input = backend_name == "FLASHINFER"
+        vllm_flash_attn_version = fa_version
 
         def __init__(self, *_args, **kwargs):
             calls["impl"] = kwargs
@@ -141,6 +162,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
     @contextmanager
     def benchmark(**kwargs):
+        calls["timing"] = kwargs
         kwargs["kernel_func"]()
         kwargs["kernel_func"]()
         yield {"latency_ms": 1.25, "power_stats": None}
@@ -157,7 +179,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "AttentionSelectorConfig": lambda **kwargs: SimpleNamespace(**kwargs),
         "current_platform": Platform(),
         "resolve_obj_by_qualname": lambda _path: Backend,
-        "AttentionBackendEnum": {"FLASH_ATTN": object()},
+        "AttentionBackendEnum": {backend_name: object()},
         "create_standard_kv_cache_spec": lambda *_args: SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
         "create_common_attn_metadata": create_metadata,
         "create_kv_cache_and_block_mappings": lambda **_kwargs: (FakeTensor(), history_slot_mapping),
@@ -205,7 +227,19 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     assert calls["selector"].kv_cache_dtype == ("fp8" if use_fp8_kv_cache else "auto")
     assert calls["log"]["item_list"][0]["isl"] == 1
     assert calls["log"]["item_list"][0]["step"] == 64
-    assert calls["log"]["kernel_source"] == "vllm_flash_attn_fa3"
+    expected_source = (
+        "vllm_flashinfer_flashinfertrtllmapidecode"
+        if backend_name == "FLASHINFER"
+        else f"vllm_flash_attn_fa{fa_version}"
+    )
+    assert calls["log"]["kernel_source"] == expected_source
+    if backend_name == "FLASHINFER":
+        params = calls["per_layer"]["placeholder"]
+        assert params.window_left == (window_size - 1 if window_size else -1)
+        assert params.logits_soft_cap == 0.0 and params.sm_scale == pytest.approx(128**-0.5)
+        assert flashinfer.get_per_layer_parameters is None  # no leaked monkeypatch
+    assert calls["build"]["common_prefix_len"] == 0
+    assert (calls["timing"]["num_warmups"], calls["timing"]["num_runs"], calls["timing"]["repeat_n"]) == (3, 6, 1)
     assert [event[0] for event in events] == ["update", "update", "forward", "update", "forward"]
     assert events[0][5] is history_slot_mapping
     for update, forward in zip(events[1::2], events[2::2], strict=True):
