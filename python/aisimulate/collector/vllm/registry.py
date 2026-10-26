@@ -28,14 +28,20 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="attention_context",
-        module="collector.vllm.collect_attn",
+        versions=(
+            VersionRoute("0.31.0", "collector.vllm.collect_attn_v2"),
+            VersionRoute("0.0.0", "collector.vllm.collect_attn_v1"),
+        ),
         get_func="get_context_attention_test_cases",
         run_func="run_attention_torch",
         perf_filename=PerfFile.CONTEXT_ATTENTION,
     ),
     OpEntry(
         op="attention_generation",
-        module="collector.vllm.collect_attn",
+        versions=(
+            VersionRoute("0.31.0", "collector.vllm.collect_attn_v2"),
+            VersionRoute("0.0.0", "collector.vllm.collect_attn_v1"),
+        ),
         get_func="get_generation_attention_test_cases",
         run_func="run_attention_torch",
         perf_filename=PerfFile.GENERATION_ATTENTION,

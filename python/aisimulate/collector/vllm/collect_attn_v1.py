@@ -31,8 +31,8 @@ from vllm.config import set_current_vllm_config
 from vllm.platforms import current_platform
 from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm.utils.torch_utils import set_random_seed
+from vllm.v1.attention.backends import utils as backend_utils
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.v1.attention.backends.utils import set_kv_cache_layout
 from vllm.v1.attention.selector import AttentionSelectorConfig
 from vllm.version import __version__ as vllm_version
 
@@ -91,6 +91,7 @@ def run_attention_torch(
     *,
     perf_filename,
     device="cuda:0",
+    _runtime=None,
 ):
     torch.cuda.set_device(device)
 
@@ -146,6 +147,8 @@ def run_attention_torch(
     backend_cls = resolve_obj_by_qualname(backend_path)
     backend_name_str = backend_cls.get_name()
     backend_name = AttentionBackendEnum[backend_name_str]
+    if _runtime is not None:
+        _runtime.validate_backend(backend_name_str)
 
     kv_cache_spec = create_standard_kv_cache_spec(vllm_config, use_fp8_kv_cache)
 
@@ -181,29 +184,34 @@ def run_attention_torch(
     key_vllm = torch.cat(all_k_vllm, dim=0)
     value_vllm = torch.cat(all_v_vllm, dim=0)
 
-    common_attn_metadata = create_common_attn_metadata(batch_spec, vllm_config.cache_config.block_size, device)
+    if _runtime is not None:
+        common_attn_metadata, kv_cache, history_slot_mapping = _runtime.prepare_cache(
+            batch_spec, vllm_config, backend_cls, kv_cache_spec, num_blocks, device, is_context_phase
+        )
+    else:
+        common_attn_metadata = create_common_attn_metadata(batch_spec, vllm_config.cache_config.block_size, device)
 
-    # 3. Simulate Paged KV Cache and realistic history/query slot mappings.
-    kv_cache, history_slot_mapping = create_kv_cache_and_block_mappings(
-        block_size=block_size,
-        num_kv_heads=num_kv_heads,
-        head_size=head_dim,
-        dtype=kv_cache_spec.dtype,
-        device=device,
-        num_blocks=num_blocks,
-        common_attn_metadata=common_attn_metadata,
-        randomize_blocks=True,
-    )
+        # 3. Simulate Paged KV Cache and realistic history/query slot mappings.
+        kv_cache, history_slot_mapping = create_kv_cache_and_block_mappings(
+            block_size=block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=head_dim,
+            dtype=kv_cache_spec.dtype,
+            device=device,
+            num_blocks=num_blocks,
+            common_attn_metadata=common_attn_metadata,
+            randomize_blocks=True,
+        )
 
-    # The helper populates [2, num_blocks, ...]; vLLM 0.24 uses logical
-    # [num_blocks, 2, ...] and may impose a backend-specific physical stride.
-    kv_cache = kv_cache.transpose(0, 1).contiguous()
-    set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
-    exit_stack.callback(set_kv_cache_layout, None)
-    stride_order = backend_cls.get_kv_cache_stride_order()
-    if stride_order != tuple(range(kv_cache.ndim)):
-        inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
-        kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+        # The helper populates [2, num_blocks, ...]; vLLM 0.24 uses logical
+        # [num_blocks, 2, ...] and may impose a backend-specific physical stride.
+        kv_cache = kv_cache.transpose(0, 1).contiguous()
+        backend_utils.set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
+        exit_stack.callback(backend_utils.set_kv_cache_layout, None)
+        stride_order = backend_cls.get_kv_cache_stride_order()
+        if stride_order != tuple(range(kv_cache.ndim)):
+            inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
+            kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
 
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]

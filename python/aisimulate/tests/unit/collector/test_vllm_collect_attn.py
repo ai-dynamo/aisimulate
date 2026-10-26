@@ -16,7 +16,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[3]
-ATTN_SOURCE = ROOT / "collector/vllm/collect_attn.py"
+ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_v1.py"
 ENCODER_ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_encoder.py"
 MLA_ATTN_SOURCE = ROOT / "collector/vllm/collect_mla_module.py"
 UTILS_SOURCE = ROOT / "collector/vllm/utils.py"
@@ -69,7 +69,8 @@ class BatchSpec:
 
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
-def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache):
+@pytest.mark.parametrize("native_runtime", [False, True])
+def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache, native_runtime):
     calls, events = {}, []
     slot_mapping = object()
     history_slot_mapping = SimpleNamespace(numel=lambda: 128)
@@ -159,7 +160,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         "create_standard_kv_cache_spec": lambda *_args: SimpleNamespace(dtype=UINT8 if use_fp8_kv_cache else BF16),
         "create_common_attn_metadata": create_metadata,
         "create_kv_cache_and_block_mappings": lambda **_kwargs: (FakeTensor(), history_slot_mapping),
-        "set_kv_cache_layout": lambda _layout: None,
+        "backend_utils": SimpleNamespace(set_kv_cache_layout=lambda _layout: None),
         "get_attention_backend": lambda _backend: (Builder, Impl),
         "benchmark_with_power": benchmark,
         "log_perf": lambda **kwargs: calls.setdefault("log", kwargs),
@@ -167,6 +168,20 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
     }
     _load_function(ATTN_SOURCE, "_dense_kernel_source", namespace)
     run = _load_function(ATTN_SOURCE, "run_attention_torch", namespace)
+    runtime = None
+    if native_runtime:
+
+        def prepare_cache(batch, _config, _backend, _spec, _blocks, _device, _is_context):
+            calls["batch"] = batch
+            return SimpleNamespace(slot_mapping=slot_mapping), FakeTensor(), history_slot_mapping
+
+        runtime = SimpleNamespace(
+            validate_backend=lambda name: calls.setdefault("validated_backend", name), prepare_cache=prepare_cache
+        )
+        # The current route must never invoke the removed legacy metadata/layout APIs.
+        namespace["create_common_attn_metadata"] = None
+        namespace["create_kv_cache_and_block_mappings"] = None
+        namespace["backend_utils"] = None
     with ExitStack() as stack:
         run(
             stack,
@@ -178,6 +193,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             use_fp8_kv_cache=use_fp8_kv_cache,
             is_context_phase=False,
             perf_filename="generation_attention_perf.txt",
+            _runtime=runtime,
         )
 
     assert calls["batch"] == BatchSpec(seq_lens=[65, 65], query_lens=[1, 1])

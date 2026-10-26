@@ -63,7 +63,12 @@ def test_dynamo16_trtllm_stock_ops_share_one_runtime():
 
 
 def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
-    assert {entry.op for entry in VLLM_REGISTRY if entry.versions} == {"mla_bmm_gen_pre", "mla_bmm_gen_post"}
+    assert {entry.op for entry in VLLM_REGISTRY if entry.versions} == {
+        "mla_bmm_gen_pre",
+        "mla_bmm_gen_post",
+        "attention_context",
+        "attention_generation",
+    }
 
     # Each module pins the runtime that actually collects it: the manifest
     # default, or its family override (e.g. kda runs only on the vllm kimi-k3

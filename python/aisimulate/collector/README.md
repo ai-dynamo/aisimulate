@@ -356,6 +356,26 @@ sample limit for the full sweep. CPU tests qualify layout and routing, not GPU
 performance. Retain failures and provenance; do not reuse checkpoints from the
 old output layout or claim post-BMM coverage from a pre-only table.
 
+### B200 native Triton attention qualification
+
+With the same opt-in manifest, `attention_context` and `attention_generation`
+select the exact 0.31.0 adapter. It accepts the framework-selected,
+non-windowed `TRITON_ATTN` path; other selected backends and windowed cases
+raise explicit errors. The legacy 0.24–0.25 route retains its prior behavior.
+Use the reviewed exact case filters for the initial eight context and eight
+generation cases (BF16 query, FP8 KV, head dimension 192). This does not qualify
+an unrestricted attention sweep.
+
+These 16 cases are fresh-path smoke measurements. They cannot establish reuse
+of the old Triton measurements: although the ordinary kernel math is stable,
+[vLLM 0.31 packs K/V together](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/triton_attn.py#L615)
+and changes their strides. The adapter delegates layout negotiation and cache
+views to vLLM and populates the current
+[serving metadata fields](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L2426).
+The measured boundary remains the production KV update plus attention forward,
+with history population outside timing and CUDA graph capture required.
+Run the GPU smoke gate before collecting the remaining qualified Triton cases.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)
