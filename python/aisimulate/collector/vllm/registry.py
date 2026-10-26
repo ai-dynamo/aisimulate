@@ -66,7 +66,10 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="mla_bmm_gen_post",
-        versions=(VersionRoute("0.0.0", "collector.vllm.collect_mla_bmm_v1"),),
+        versions=(
+            VersionRoute("0.31.0", "collector.vllm.collect_mla_bmm_v2"),
+            VersionRoute("0.0.0", "collector.vllm.collect_mla_bmm_v1"),
+        ),
         get_func="get_mla_gen_post_test_cases",
         run_func="run_mla_gen_post",
         perf_filename=PerfFile.MLA_BMM,

@@ -329,7 +329,7 @@ registered op resolves to exactly one pinned runtime. See
 `docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
 design.
 
-## vLLM 0.31.0 MLA pre-BMM qualification
+## vLLM 0.31.0 MLA BMM qualification
 
 `--ops mla_bmm_gen_pre` selects the 0.31.0 route when an external, hash-bound
 runtime manifest declares that version. The repository's default runtime pins
@@ -342,8 +342,11 @@ declares runtime identity and does not grant compatibility to other ops or GPUs.
 The new route measures BF16 `torch.bmm` with token-major
 output storage, matching the unpadded serving branch at
 [vLLM db9527a4](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L1080).
-Older qualified versions retain head-major output; post-BMM routing and layout
-are unchanged. The padded `CUTLASS_MLA` branch is outside this dataset's scope.
+Older qualified versions retain head-major pre-BMM output. The 0.31.0
+`--ops mla_bmm_gen_post` route shares the existing post-BMM implementation:
+its token-major output view and timed operation are unchanged. This enables
+the 48 B200 reuse probes; it does not approve performance reuse before their
+results are reviewed. The padded `CUTLASS_MLA` branch is outside this dataset's scope.
 
 The full pre-BMM sweep contains 300 cases: 25 token counts × 12 head counts,
 BF16 only, with two warmups and ten measured runs under CUDA graph replay.

@@ -83,6 +83,7 @@ def bmm_modules(monkeypatch):
         ("old", "run_mla_gen_pre", (2, 3, 512), (3 * 512, 512, 1), "mla_gen_pre"),
         ("new", "run_mla_gen_pre", (2, 3, 512), (512, 2 * 512, 1), "mla_gen_pre"),
         ("old", "run_mla_gen_post", (2, 3, 128), (128, 2 * 128, 1), "mla_gen_post"),
+        ("new", "run_mla_gen_post", (2, 3, 128), (128, 2 * 128, 1), "mla_gen_post"),
     ],
 )
 def test_bmm_output_storage_and_timing(bmm_modules, route, function, expected_shape, expected_strides, op_name):
@@ -118,7 +119,8 @@ def test_pre_bmm_route_is_exact_and_keeps_full_case_grid(bmm_modules):
     for version in ("0.25.0", "0.27.0"):
         assert resolve_module(pre, version) == old.__name__
     assert resolve_module(pre, "0.31.0") == new.__name__
-    assert resolve_module(post, "0.31.0") == old.__name__
+    assert resolve_module(post, "0.31.0") == new.__name__
+    assert new.get_mla_gen_post_test_cases() == old.get_mla_gen_post_test_cases()
     assert _check_compat(new.__compat__, "0.31.0+cu130")
     for version in ("0.30.0", "0.31.1", "0.32.0"):
         assert not _check_compat(new.__compat__, version)

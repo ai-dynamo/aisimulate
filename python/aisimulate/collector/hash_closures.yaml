@@ -243,6 +243,7 @@ collector.vllm.collect_mla_bmm_v1:
   - __model_cases__
 collector.vllm.collect_mla_bmm_v2:
   - collector/vllm/collect_mla_bmm_v1.py
+  - collector/cases/base_ops/mla_bmm_gen_post.yaml
   - collector/cases/base_ops/mla_bmm_gen_pre.yaml
   - __model_cases__
 collector.vllm.collect_kda:
