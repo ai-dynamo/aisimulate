@@ -74,7 +74,9 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   now splits large grids; the collector no longer rejects them before launch.
   Context callbacks emit both convolution and chunk rows; generation callbacks
   emit convolution and packed-recurrence rows. Compare donor convolution rows
-  separately from the newly measured recurrence implementations.
+  separately from the newly measured recurrence implementations. The manifest
+  contract test checks the audited 0.31.0 compatibility bound and retains the
+  exclusions for unqualified intervening releases.
 - The Kimi KDA benchmark callbacks support the target's native dtype-aware
   [resolvers and prefill buffers](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/kimi_k3/nvidia/kda.py#L217).
   FlashKDA output/state/workspace allocation stays outside timing. Default
