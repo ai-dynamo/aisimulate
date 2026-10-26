@@ -123,9 +123,10 @@ def test_allocation_error_and_other_backend_are_not_silent_fallbacks(adapter):
             False,
         )
     assert calls == {}
-    module.validate_backend("TRITON_ATTN")
-    with pytest.raises(NotImplementedError, match="FLASH_ATTN"):
-        module.validate_backend("FLASH_ATTN")
+    for name in ("TRITON_ATTN", "FLASHINFER", "FLASH_ATTN"):
+        module.validate_backend(name)
+    with pytest.raises(NotImplementedError, match="FLEX_ATTENTION"):
+        module.validate_backend("FLEX_ATTENTION")
 
 
 def test_current_route_is_exact_and_legacy_route_remains():
@@ -139,7 +140,18 @@ def test_current_route_is_exact_and_legacy_route_remains():
     assert not _check_compat(compat, "0.32.0")
 
 
-@pytest.mark.parametrize("case", [[1, 128, 64, 8, 192, True, True, 128], [1, 127, 64, 8, 192, True, False, 128]])
+@pytest.mark.parametrize(
+    "case",
+    [
+        [1, 128, 64, 8, 192, True, True, 128],
+        [1, 127, 64, 8, 192, True, False, 128],
+        [1, 1, 1, 1, 64, False, True, 0],
+        [2, 255, 8, 1, 128, True, False, 128],
+        [1, 128, 8, 1, 192, False, True, 0],
+        [1, 1024, 8, 1, 256, True, True, 1024],
+        [1, 1023, 8, 1, 512, False, False, 0],
+    ],
+)
 def test_retained_window_cases_reach_native_runner(adapter, case):
     module, _, _ = adapter
     calls = []
