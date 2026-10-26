@@ -6,5 +6,6 @@
 - Coverage: 300 planned, 300 passed, zero failed/unattempted/duplicate identities. Historical0.25 matched cases also have zero failures.
 - Numerical probes: Slurm2384643, three native eager/CUDA-graph shapes versus FP64; all passed.
 - Consumer validation: all 300 exact rows match both Python orchestration and native op queries with `shared_layer=False`. The old public `query()` API has retired on this main revision. Run `python/aisimulate/.venv/bin/python benchmarks/evidence/vllm031-b200-refresh/validate_prebmm.py`.
+- Backend facts: the B200/vLLM0.31 `mla_gen_pre` BF16 slice records `vllm_torch_bmm` → `cublas`, matching the native PyTorch BMM path. The facts draft was generated with `tools/perf_database/backend_facts.py` and the single-entry diff reviewed. Validate it with `python tools/perf_database/backend_facts.py --check` from `python/aisimulate`.
 - Data sanity: all seven collector-data checks pass. Remaining B200 campaign scopes are pending. No defaults are promoted; this is op measurement evidence, not end-to-end accuracy evidence.
 - Reuse-manifest generation scanned the full tree; only the affected `mla_bmm_perf/vllm_torch_bmm` group is updated here. Existing unrelated manifest drift is recorded separately.
