@@ -98,6 +98,14 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   Admission permits qualification/collection; publication still requires complete
   numerical and timing validation of the selected cases. Three-way prefill
   convolution and speculative verify need their own numerical evidence.
+  Prefill releases the completed convolution input and its views before
+  allocating independent core inputs, and releases native output/state/workspace
+  buffers after every point, including failures. This removes setup overlap;
+  it does not reduce the [native workspace](https://github.com/vllm-project/FlashKDA/blob/17a037d98da546deb4591e967cf961a43c034d8b/csrc/flash_kda.cpp#L11)
+  or change callback grids, inputs, dispatch, or timing. Oversized points still
+  run and retain explicit failure evidence; partial convolution rows do not
+  make a failed callback complete. CPU lifetime tests cover both prefill paths
+  and continuation after a core failure. GPU capacity remains a runtime check.
 - DeepSeek-V4 mHC remains gated on 0.31: its pre rows do not model the fused
   default serving path, and shared mHC identities omit architecture. A standalone
   post comparison may use an isolated research artifact, but cannot establish
