@@ -160,7 +160,12 @@ def _run_recommendation(
             output_callbacks.on_complete()
     except Exception as exc:
         if output_callbacks.on_failure is not None:
-            output_callbacks.on_failure(exc)
+            try:
+                output_callbacks.on_failure(exc)
+            except Exception as callback_exc:
+                exc.add_note(
+                    f"output adapter failure handling also failed: {type(callback_exc).__name__}: {callback_exc}"
+                )
         raise
     return result
 

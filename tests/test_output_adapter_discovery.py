@@ -250,3 +250,41 @@ def test_output_adapter_terminal_callback_failure_identifies_adapter_and_event(e
     args = (RuntimeError("search failed"),) if event == "on_failure" else ()
     with pytest.raises(OutputAdapterExecutionError, match=rf"dgd.*{event}.*ValueError: closed"):
         callback(*args)
+
+
+def test_output_adapter_failure_callbacks_attempt_all_and_aggregate_failures() -> None:
+    received: list[tuple[str, Exception]] = []
+
+    class FailureAdapter(_Adapter):
+        def __init__(self, name: str, *, fails: bool) -> None:
+            super().__init__(name)
+            self.fails = fails
+
+        def subscribe(self, config):
+            del config
+
+            def on_failure(error):
+                received.append((self.name, error))
+                if self.fails:
+                    raise ValueError(f"{self.name} cleanup failed")
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+    callbacks = resolve_output_callbacks(
+        {"first": {}, "publisher": {}, "last": {}},
+        injected={
+            "first": FailureAdapter("first", fails=True),
+            "publisher": FailureAdapter("publisher", fails=False),
+            "last": FailureAdapter("last", fails=True),
+        },
+        entry_points=[],
+    )
+    original = RuntimeError("search failed")
+
+    assert callbacks.on_failure is not None
+    with pytest.raises(ExceptionGroup, match="first.*on_failure.*last.*on_failure") as raised:
+        callbacks.on_failure(original)
+
+    assert received == [("first", original), ("publisher", original), ("last", original)]
+    assert len(raised.value.exceptions) == 2
+    assert all(isinstance(error, OutputAdapterExecutionError) for error in raised.value.exceptions)

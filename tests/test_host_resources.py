@@ -458,6 +458,174 @@ def test_recommendation_dispatches_terminal_output_callbacks(monkeypatch, failur
         ]
 
 
+@pytest.mark.parametrize("event", ["on_candidate", "on_round", "on_complete"])
+def test_recommendation_reports_progress_callback_failures_to_failure_hook(monkeypatch, event):
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import (
+        OUTPUT_ADAPTER_API_VERSION,
+        OutputAdapterExecutionError,
+        RecommendationOutputCallbacks,
+    )
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    callback_error = ValueError(f"{event} failed")
+    failures = []
+
+    def fail(*args):
+        del args
+        raise callback_error
+
+    class LifecycleAdapter:
+        name = "dgd"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+            callbacks = {event: fail, "on_failure": failures.append}
+            return RecommendationOutputCallbacks(**callbacks)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n
+            if event == "on_candidate":
+                assert on_candidate is not None
+                on_candidate(SimpleNamespace(candidate_id="candidate-000001"))
+            if event == "on_round":
+                assert on_round is not None
+                on_round(1, [])
+            return "result"
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    with pytest.raises(OutputAdapterExecutionError, match=rf"dgd.*{event}.*ValueError") as raised:
+        recommendation._run_recommendation(
+            config,
+            stack="engine",
+            runner_factory=object(),
+            output_configs={"dgd": {}},
+            output_adapters={"dgd": LifecycleAdapter()},
+        )
+
+    assert raised.value.__cause__ is callback_error
+    assert failures == [raised.value]
+
+
+def test_recommendation_preserves_error_and_attempts_all_failure_hooks(monkeypatch):
+    import threading
+
+    import aisimulate.recommend as recommendation
+    import aisimulate.sweeper.search as search
+    from aisimulate.output_adapter import OUTPUT_ADAPTER_API_VERSION, RecommendationOutputCallbacks
+    from aisimulate.resource_worker import _exception_message
+
+    config = CoreRecommendationConfig.model_validate(_config())
+    monkeypatch.setattr(recommendation, "resolve_budget", lambda *a, **kw: {"cpu_limit": 2})
+    search_error = RuntimeError("ORIGINAL_SEARCH_FAILURE")
+    stop = threading.Event()
+    started = threading.Event()
+    events = []
+    publishers = []
+
+    class FailingCleanupAdapter:
+        name = "first"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def on_failure(error):
+                events.append(("first_failure", error))
+                raise ValueError("CLEANUP_FAILURE")
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class PublisherAdapter:
+        name = "publisher"
+        api_version = OUTPUT_ADAPTER_API_VERSION
+
+        def subscribe(self, config):
+            del config
+
+            def publish():
+                events.append(("publisher_started",))
+                started.set()
+                stop.wait(5)
+                events.append(("publisher_stopped",))
+
+            publisher = threading.Thread(target=publish, daemon=False)
+            publishers.append(publisher)
+            publisher.start()
+            assert started.wait(1)
+
+            def on_failure(error):
+                events.append(("publisher_failure", error))
+                stop.set()
+                publisher.join(timeout=1)
+                assert not publisher.is_alive()
+                events.append(("publisher_joined",))
+
+            return RecommendationOutputCallbacks(on_failure=on_failure)
+
+        def write(self, config, *, result, output_dir):
+            del config, result, output_dir
+            return []
+
+    class CaptureSweeper:
+        def __init__(self, **kwargs):
+            pass
+
+        def run(self, smart, *, top_n, on_candidate=None, on_round=None):
+            del smart, top_n, on_candidate, on_round
+            raise search_error
+
+    monkeypatch.setattr(search, "Sweeper", CaptureSweeper)
+
+    try:
+        with pytest.raises(RuntimeError, match="ORIGINAL_SEARCH_FAILURE") as raised:
+            recommendation._run_recommendation(
+                config,
+                stack="engine",
+                runner_factory=object(),
+                output_configs={"first": {}, "publisher": {}},
+                output_adapters={
+                    "first": FailingCleanupAdapter(),
+                    "publisher": PublisherAdapter(),
+                },
+            )
+    finally:
+        stop.set()
+        for publisher in publishers:
+            publisher.join(timeout=1)
+
+    assert raised.value is search_error
+    assert events == [
+        ("publisher_started",),
+        ("first_failure", search_error),
+        ("publisher_failure", search_error),
+        ("publisher_stopped",),
+        ("publisher_joined",),
+    ]
+    assert all(not publisher.is_alive() for publisher in publishers)
+    message = _exception_message(raised.value)
+    assert message.startswith("RuntimeError: ORIGINAL_SEARCH_FAILURE")
+    assert "first" in message
+    assert "on_failure" in message
+    assert "CLEANUP_FAILURE" in message
+
+
 def test_recommendation_sweep_workers_keep_loaded_trace_graphs(monkeypatch):
     import aisimulate.recommend as recommendation
     import aisimulate.sweeper.search as search

@@ -217,8 +217,17 @@ def resolve_output_callbacks(
             _dispatch_callback(name, "on_complete", callback)
 
     def on_failure(error: Exception) -> None:
+        failures: list[OutputAdapterExecutionError] = []
         for name, callback in failure_callbacks:
-            _dispatch_callback(name, "on_failure", callback, error)
+            try:
+                _dispatch_callback(name, "on_failure", callback, error)
+            except OutputAdapterExecutionError as exc:
+                failures.append(exc)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            details = "; ".join(str(failure) for failure in failures)
+            raise ExceptionGroup(f"output adapter on_failure callbacks failed: {details}", failures)
 
     return RecommendationOutputCallbacks(
         on_candidate=on_candidate if candidate_callbacks else None,

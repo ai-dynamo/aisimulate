@@ -61,10 +61,13 @@ contract does not provide shared in-memory state.
 `on_complete` runs after the search and every progress callback has finished, but
 before the worker returns its successful result to the parent process.
 `on_failure` runs before an exception from the search or another callback leaves
-the worker. These
-terminal callbacks let the worker-local adapter stop and join live publishers
-before the separate final writer publishes authoritative output. An adapter that
-does not start background work can omit them.
+the worker. Every registered failure callback is attempted in subscription order
+even when an earlier callback fails. Failure-callback errors retain their adapter
+and event attribution and are reported after all callbacks have run. The original
+search or callback exception remains the primary error and carries any additional
+failure-callback diagnostics. These terminal callbacks let the worker-local adapter
+stop and join live publishers before the separate final writer publishes
+authoritative output. An adapter that does not start background work can omit them.
 
 ## Discovery and deployment limits
 
