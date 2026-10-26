@@ -82,9 +82,20 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   FlashKDA output/state/workspace allocation stays outside timing. Default
   generation records only the native-selected path; a failed selected backend
   raises rather than substituting another kernel. Preview callback behavior is
-  retained. These callbacks are for isolated qualification artifacts: the
-  architecture gate still excludes Kimi from the shared 0.31 table, whose GLM
-  rows overlap identities. Do not bypass that gate for publication.
+  retained. The Kimi entry point admits B200 0.31 context and nonspeculative
+  generation with SD convolution state, BF16 inputs and FP32 recurrence.
+  Callbacks fix gate bound −5 and omit RecoverSSM/checkpoint export. The native
+  layout probe rejects DS; other hardware and verify remain unaudited for this
+  target route and raise explicit failures. Preview and GLM routes are unchanged.
+  Existing labels retain their meaning: native decode includes convolution and
+  gated RMSNorm, while prefill emits convolution and recurrence separately.
+  Kimi structural keys (d_model 7168, heads 12/24/48/96) do not overlap current
+  GLM keys (d_model 4096, heads 8/16/32/64); model name is metadata, so a second
+  state/layout/speculation profile at the same key needs a separate contract.
+  Default framework versions, case grids and consumer routing are unchanged.
+  Admission permits qualification/collection; publication still requires complete
+  numerical and timing validation of the selected cases. Three-way prefill
+  convolution and speculative verify need their own numerical evidence.
 - DeepSeek-V4 mHC remains gated on 0.31: its pre rows do not model the fused
   default serving path, and shared mHC identities omit architecture. A standalone
   post comparison may use an isolated research artifact, but cannot establish

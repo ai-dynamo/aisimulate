@@ -77,7 +77,7 @@ def test_kda_context_seq_len_one_routes_through_decode_kernels(monkeypatch):
     namespace = {
         "WORKER_RESTART": 23,
         "_is_glm5_next_kda": lambda model_name: False,
-        "_require_audited_runtime": lambda model_name, version: None,
+        "_require_audited_runtime": lambda model_name, version, **kwargs: None,
         "run_kda_context_benchmark": record("context"),
         "run_kda_generation_benchmark": record("decode"),
         "run_kda_verify_benchmark": record("verify"),
@@ -177,7 +177,7 @@ def test_glm5_next_rows_route_to_the_glm5next_dispatch(monkeypatch, model_name, 
     calls = []
     namespace = {
         "WORKER_RESTART": 23,
-        "_require_audited_runtime": lambda model_name, version: None,
+        "_require_audited_runtime": lambda model_name, version, **kwargs: None,
         "run_glm5_next_kda_torch": lambda *args, **kwargs: calls.append(("glm", kwargs["vllm_version"])),
         "run_kda_generation_benchmark": lambda **kwargs: calls.append(("kimi", kwargs["vllm_version"])),
     }
@@ -554,3 +554,57 @@ def test_target_flashkda_buffers_are_allocated_before_timed_callback():
     assert calls[0]["workspace"].shape == (1234,)
     assert calls[0]["workspace"].dtype == "uint8"
     assert calls[1]["workspace"] is calls[0]["workspace"]
+
+
+@pytest.mark.parametrize("phase", ["context", "generation"])
+def test_kimi031_fixed_profile_gate_admits_only_b200_sd(monkeypatch, phase):
+    namespace = _gate_namespace()
+    namespace["torch"] = SimpleNamespace(cuda=SimpleNamespace(get_device_name=lambda device: "NVIDIA B200"))
+    native = ModuleType("vllm.model_executor.layers.mamba.mamba_utils")
+    native.is_conv_state_dim_first = lambda: False
+    monkeypatch.setitem(sys.modules, native.__name__, native)
+    gate = namespace["_require_audited_runtime"]
+    gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+    native.is_conv_state_dim_first = lambda: True
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="SD conv state"):
+        gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+    native.is_conv_state_dim_first = lambda: False
+    namespace["torch"].cuda.get_device_name = lambda device: "NVIDIA H100"
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="NVIDIA B200"):
+        gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+
+
+@pytest.mark.parametrize("phase", [None, "verify", "unknown"])
+def test_kimi031_verify_rejected_before_native_import(phase):
+    namespace = _gate_namespace()
+    with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="context/nonspec"):
+        namespace["_require_audited_runtime"]("moonshotai/Kimi-K3", "0.31.0", phase=phase)
+
+
+def test_kimi031_entrypoint_preserves_phase_at_gate(monkeypatch):
+    calls = []
+    namespace = {
+        "WORKER_RESTART": 23,
+        "_require_audited_runtime": lambda model, version, **kwargs: calls.append((model, version, kwargs)),
+        "_is_glm5_next_kda": lambda model: False,
+        "run_kda_generation_benchmark": lambda **kwargs: None,
+    }
+    _exec_functions({"run_kda_torch"}, namespace)
+    _fake_vllm_version(monkeypatch)
+    namespace["run_kda_torch"](
+        "generation", 7168, 4, 12, 128, 12, 128, [1], [1], "moonshotai/Kimi-K3", perf_filename="unused.txt"
+    )
+    assert calls == [("moonshotai/Kimi-K3", "0.31.0", {"phase": "generation", "device": "cuda:0"})]
+
+
+def test_kimi031_registered_structural_keys_remain_distinct_from_glm():
+    from collector.case_generator import get_common_kda_test_cases
+
+    keys = {"kimi": set(), "glm": set()}
+    for case in get_common_kda_test_cases():
+        family = "kimi" if case.model_name == "moonshotai/Kimi-K3" else "glm"
+        keys[family].add(
+            (case.d_model, case.d_conv, case.num_k_heads, case.head_k_dim, case.num_v_heads, case.head_v_dim)
+        )
+    assert len(keys["kimi"]) == len(keys["glm"]) == 4
+    assert keys["kimi"].isdisjoint(keys["glm"])
