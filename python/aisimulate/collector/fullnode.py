@@ -13,6 +13,7 @@ import random
 import traceback
 from datetime import datetime
 
+from collector.campaign_selection import select_campaign_cases
 from collector.capabilities import filter_cases
 from collector.helper import create_test_case_id
 from collector.version_resolver import _check_compat
@@ -75,6 +76,7 @@ def collect_sglang_fullnode_op(
     get_test_cases_for_model,
     resume_checkpoint_cls,
     logger,
+    case_exclude_filters: list[str] | None = None,
 ) -> list[dict]:
     """Run one SGLang full-node op with normal V3 checkpoint evidence."""
     op = collection["type"]
@@ -103,10 +105,7 @@ def collect_sglang_fullnode_op(
 
     cases = get_test_cases_for_model(get_func, model_path)
     cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
-    if case_filters:
-        before_count = len(cases)
-        cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
-        logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+    cases = select_campaign_cases(cases, case_filters, case_exclude_filters, op=op, logger=logger)
     if shuffle:
         rng = random.Random(shuffle_seed)
         rng.shuffle(cases)

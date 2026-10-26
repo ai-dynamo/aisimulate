@@ -2107,6 +2107,7 @@ def collect_ops(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    case_exclude_filters: list[str] | None = None,
 ) -> list[dict]:
     """Run collection for a list of resolved collection entries.
 
@@ -2187,10 +2188,9 @@ def collect_ops(
 
                 cases = _get_test_cases_for_model(get_func, model_path)
                 cases, _dropped = filter_cases(cases, op=op, sm_version=sm_version)
-                if case_filters:
-                    before_count = len(cases)
-                    cases = [case for case in cases if any(fragment in str(case) for fragment in case_filters)]
-                    logger.info(f"{op}: --case-filter kept {len(cases)}/{before_count} cases")
+                from collector.campaign_selection import select_campaign_cases
+
+                cases = select_campaign_cases(cases, case_filters, case_exclude_filters, op=op, logger=logger)
                 if shuffle:
                     rng = random.Random(shuffle_seed)
                     rng.shuffle(cases)
@@ -2238,6 +2238,7 @@ def collect_sglang(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    case_exclude_filters: list[str] | None = None,
 ):
     """Collect performance data for SGLang with enhanced error tracking"""
     os.environ["FLASHINFER_LOG_LEVEL"] = "ERROR"
@@ -2297,6 +2298,7 @@ def collect_sglang(
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=case_filters,
+            case_exclude_filters=case_exclude_filters,
         )
 
     for collection in fullnode_collections:
@@ -2313,6 +2315,7 @@ def collect_sglang(
                 case_plan=case_plan,
                 sm_version=sm_version,
                 case_filters=case_filters,
+                case_exclude_filters=case_exclude_filters,
                 get_test_cases_for_model=_get_test_cases_for_model,
                 resume_checkpoint_cls=ResumeCheckpoint,
                 logger=logger,
@@ -2340,6 +2343,7 @@ def collect_vllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    case_exclude_filters: list[str] | None = None,
 ):
     """Collect performance data for vLLM"""
     from collector.version_resolver import build_collections
@@ -2397,6 +2401,7 @@ def collect_vllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        case_exclude_filters=case_exclude_filters,
     )
 
     generate_collection_summary(all_errors, "vllm", version)
@@ -2420,6 +2425,7 @@ def collect_trtllm(
     case_plan=None,
     sm_version: int | None = None,
     case_filters: list[str] | None = None,
+    case_exclude_filters: list[str] | None = None,
 ):
     """Collect performance data for TensorRT LLM with enhanced error tracking"""
     from collector.trtllm.registry import REGISTRY
@@ -2468,6 +2474,7 @@ def collect_trtllm(
         case_plan=case_plan,
         sm_version=sm_version,
         case_filters=case_filters,
+        case_exclude_filters=case_exclude_filters,
     )
 
     generate_collection_summary(all_errors, "trtllm", version)
@@ -5933,6 +5940,15 @@ def main():
         "Ephemeral healing filter — never persisted to YAML.",
     )
     parser.add_argument(
+        "--case-exclude-filter",
+        action="append",
+        dest="case_exclude_filters",
+        default=None,
+        metavar="SUBSTR",
+        help="Exclude explicitly out-of-scope cases containing SUBSTR after inclusion filters "
+        "and before shuffle/limit (repeatable, OR semantics). Not a failure skip list.",
+    )
+    parser.add_argument(
         "--plan-only",
         action="store_true",
         help="Print the collector v2 case plan and exit without running collectors.",
@@ -6155,6 +6171,7 @@ def main():
             case_plan=case_plan,
             sm_version=sm_version,
             case_filters=args.case_filters,
+            case_exclude_filters=args.case_exclude_filters,
         )
 
     converted: list[Path] = []

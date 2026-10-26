@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
+
 from collector import fullnode, provenance
 from collector.framework_manifest import CollectorRuntime
 
@@ -54,6 +55,12 @@ class _Checkpoint:
 
 def _logger():
     return SimpleNamespace(info=lambda *_args: None, warning=lambda *_args: None, exception=lambda *_args: None)
+
+
+@pytest.fixture(autouse=True)
+def initialize_collect_logger(monkeypatch):
+    # Isolated file runs must not rely on a previous test initializing this global.
+    monkeypatch.setattr(collect_mod, "logger", _logger())
 
 
 def test_shape_index_selects_exact_case_before_limit(monkeypatch):

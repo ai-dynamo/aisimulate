@@ -149,6 +149,10 @@ python3 collect.py --backend trtllm
 
 # Ephemeral subset filter (healing): substring match, repeatable.
 python3 collect.py --backend trtllm --ops moe --case-filter "tp=4"
+
+# Predeclared campaign exclusions, applied after inclusion and before sampling.
+python3 collect.py --backend vllm --ops gemm --case-filter "bfloat16" \
+  --case-exclude-filter ", 99, 32]"
 ```
 
 Case files (see `cases/README.md` for the full authoring guide):
@@ -751,3 +755,9 @@ failures may try smaller eligible token counts; if every attempt fails, the
 case raises before timing or publishing rows. CUDA accelerator errors propagate
 immediately. The successful collection path and historical profile values are
 unchanged by this failure guard.
+
+Campaign scope filters are literal substrings, with OR semantics within each list.
+Exclusion wins over inclusion. Preserve the filter arguments with the campaign
+manifest and account for excluded backlog separately; never derive exclusions
+from failed cases or count them as successful collection. Case identities, native
+callbacks, checkpoint compatibility and failure classification are unchanged.
