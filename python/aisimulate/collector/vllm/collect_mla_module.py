@@ -412,7 +412,18 @@ def _initialize_nvfp4_parameters(module):
     untouched. vLLM subsequently performs its own layout conversion/dispatch.
     """
     from vllm import _custom_ops as ops
-    from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+
+    try:
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptNvFp4LinearMethod
+
+        method_type = ModelOptNvFp4LinearMethod
+        unified = False
+    except ImportError:
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptLinearMethod
+        from vllm.model_executor.layers.quantization.utils.quant_utils import kNvfp4Dynamic, kNvfp4Static
+
+        method_type = ModelOptLinearMethod
+        unified = True
 
     # Native API contracts at vLLM v0.25.1, commit 752a3a504485790a:
     # modelopt.py:1111-1199 stores two E2M1 values per uint8, one E4M3 scale
@@ -423,14 +434,22 @@ def _initialize_nvfp4_parameters(module):
     initialized = 0
     with torch.no_grad():
         for name, layer in module.named_modules():
-            if not isinstance(getattr(layer, "quant_method", None), ModelOptNvFp4LinearMethod):
+            method = getattr(layer, "quant_method", None)
+            if not isinstance(method, method_type):
                 continue
+            if unified:
+                # vLLM db9527a modelopt.py:2621-2630: W4A4 only; W4A16 has no activation key.
+                if method.spec.weight != kNvfp4Static or method.spec.activation != kNvfp4Dynamic:
+                    continue
+                group_size = method.ctx.group_size
+            else:
+                group_size = method.quant_config.group_size
             weight, scales = layer.weight, layer.weight_scale
             if weight.dtype != torch.uint8 or scales.dtype != torch.float8_e4m3fn:
                 raise ValueError(f"Unexpected native NVFP4 storage for {name}")
             if weight.ndim != 2 or tuple(scales.shape) != (weight.shape[0], weight.shape[1] // 8):
                 raise ValueError(f"Unexpected native NVFP4 block layout for {name}")
-            if layer.quant_method.quant_config.group_size != 16 or weight.shape[1] % 8:
+            if group_size != 16 or weight.shape[1] % 8:
                 raise ValueError(f"Native NVFP4 quantization requires 16-input blocks for {name}")
             input_size = weight.shape[1] * 2
             rows_per_chunk = max(1, 1048576 // input_size)
