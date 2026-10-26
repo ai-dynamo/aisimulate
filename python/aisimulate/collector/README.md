@@ -333,7 +333,13 @@ design.
 
 `--ops mla_bmm_gen_pre` selects the 0.31.0 route when an external, hash-bound
 runtime manifest declares that version. The repository's default runtime pins
-remain unchanged. The new route measures BF16 `torch.bmm` with token-major
+remain unchanged. The B200 qualification manifest is
+`collector/campaigns/vllm031-b200-runtime.json` (relative to `python/aisimulate`).
+Supply its absolute in-container path through `AISIM_COLLECTOR_RUNTIME_MANIFEST`
+and its file SHA-256 through `AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256`.
+The campaign must separately select `b200_sxm` and `mla_bmm_gen_pre`; the manifest
+declares runtime identity and does not grant compatibility to other ops or GPUs.
+The new route measures BF16 `torch.bmm` with token-major
 output storage, matching the unpadded serving branch at
 [vLLM db9527a4](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L1080).
 Older qualified versions retain head-major output; post-BMM routing and layout

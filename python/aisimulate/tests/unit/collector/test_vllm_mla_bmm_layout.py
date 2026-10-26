@@ -4,6 +4,7 @@
 """Exercise BMM storage and timing contracts on CPU without importing vLLM."""
 
 import ast
+import hashlib
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,7 @@ from types import ModuleType, SimpleNamespace
 import numpy as np
 import pytest
 from collector.case_generator import get_mla_bmm_case_specs
+from collector.framework_manifest import require_collector_runtime
 from collector.version_resolver import _check_compat, resolve_module
 from collector.vllm.registry import REGISTRY
 
@@ -128,3 +130,14 @@ def test_pre_bmm_route_is_exact_and_keeps_full_case_grid(bmm_modules):
         for case in get_mla_bmm_case_specs("vllm", "mla_bmm_gen_pre")
         if case.dtype == "bfloat16"
     }
+
+
+def test_b200_campaign_runtime_is_opt_in(monkeypatch):
+    with pytest.raises(RuntimeError, match="requires exactly 0.27.0"):
+        require_collector_runtime("vllm", "0.31.0", requested_ops={"mla_bmm_gen_pre"})
+    manifest = COLLECTOR.parent / "campaigns" / "vllm031-b200-runtime.json"
+    monkeypatch.setenv("AISIM_COLLECTOR_RUNTIME_MANIFEST", str(manifest))
+    monkeypatch.setenv("AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256", hashlib.sha256(manifest.read_bytes()).hexdigest())
+    runtime = require_collector_runtime("vllm", "0.31.0", requested_ops={"mla_bmm_gen_pre"})
+    assert runtime.source_commit == "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+    assert runtime.image().endswith("@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460")

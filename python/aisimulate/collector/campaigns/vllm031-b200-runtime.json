@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "frameworks": {
+    "vllm": {
+      "source_repo": "https://github.com/vllm-project/vllm.git",
+      "default": {
+        "version": "0.31.0",
+        "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+        "images": {
+          "default": "vllm/vllm-openai@sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460"
+        }
+      }
+    }
+  }
+}
