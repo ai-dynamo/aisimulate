@@ -246,6 +246,8 @@ fields report their nested paths. The supported namespaces are:
   [learned configuration field tables](fpm_ml/configuration.md).
 - `selector`: expert selection controls for learned
   `adaptation: causal_selector`, documented on the same learned configuration page.
+- `state_snapshot`: restores a model saved by `to_file`, including its tuned
+  state. See [state snapshots](#state-snapshots).
 - `correction`: `enabled` (false for standalone online learned mode, true otherwise),
   `mode` (`auto`), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
@@ -372,6 +374,108 @@ computation are owned by Rust.
 
 For fit configuration see [Online regression](methods/online-regression.md).
 For direct measurement coverage see [Whole-forward FPM](methods/whole-forward.md).
+
+### State snapshots
+
+Configuration describes a cold model. To keep what a model has learned from
+`tune_with_fpms()`, save it with `model.to_file(path)` (Rust:
+`ForwardPassPerfModel::to_file(path, &StateSnapshotOptions)`). Saving
+atomically writes a new directory and returns the pinned canonical
+configuration, which is also written to `path/config.json`. Restore through the
+same constructor: `RustForwardPassPerfModel.best_available(file=path)` reads
+that file, and passing the returned configuration is equivalent. There is no
+separate loader; `best_available` restores whenever
+`estimator_config.state_snapshot` is present.
+
+```python
+config = model.to_file("/tmp/decode-snapshot")
+frozen = RustForwardPassPerfModel.best_available(file="/tmp/decode-snapshot")
+config["estimator_config"]["state_snapshot"]["on_tune"] = "continue"
+resumed = RustForwardPassPerfModel.best_available(config)
+```
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `estimator_config.state_snapshot.path` | required | Snapshot directory written by `to_file`. A relative path resolves against the working directory; normalization records the canonical absolute path. |
+| `estimator_config.state_snapshot.sha256` | `null` | SHA-256 of `path/manifest.json`. Normalization fills it; a supplied value that differs is an error. |
+| `estimator_config.state_snapshot.on_tune` | `reject` | `reject` makes `tune_with_fpms()` and `flush_updates()` return an error. `continue` resumes tuning from the saved state exactly as the saving model would have continued. |
+
+A snapshot covers every estimator kind. The returned configuration is the
+model's resolved provenance configuration plus `state_snapshot`; files the
+snapshot owns are redirected into it:
+
+| Saved model | Snapshot contents |
+| --- | --- |
+| Native `op_level` or `fpm_interpolation` | Correction stores (fixed, dynamic local or hybrid). The engine is recompiled from the configuration; the manifest records the compiled engine-specification digest from construction and a performance-data fingerprint. An `op_level.execution_profile` file is copied. |
+| `fpm_regression` | Every workload store: retained samples, fits, incremental statistics, lazy-update and spline search clocks. |
+| `fpm_learned`, `frozen` | The forest (an artifact's exact bytes, or the checkpoint's forest exported unchanged) and correction stores. |
+| `fpm_learned`, `online` | An online runtime checkpoint with the current forest, retained and pending rows and fitting state. |
+| `fpm_learned`, `causal_selector` | The frozen expert, the adaptive expert's runtime checkpoint, every calibration store and all twelve selector evidence keys. |
+| `from_learned` model | The forest, its constructor options and correction stores. |
+
+Saving does not fit pending online rows or change the model. A restored model
+predicts bit-identically, reports the same readiness, store and correction
+diagnostics, and after the same later feedback holds byte-identical state,
+including in another process. Readiness follows the restored state: a cold
+regression saved before it fit is restored cold. The restored provenance
+describes the snapshot construction, so it records the explicit mode, no
+selection failures and no fallback warning; a not-ready regression that was
+originally selected by fallback therefore reports `insufficient_data`
+instead of `unsupported_config`. Direct-FPM query coverage counters and the
+online learner's `training_state_bytes` allocation estimate are not model
+state; the coverage counters restart empty and the estimate reflects the
+restored allocation.
+
+Restoration requires an explicit `estimation_mode` and `fallback_policy: deny`
+and fails, without selecting another estimator, when:
+
+- the manifest digest, a pinned file's size or digest, or the snapshot format
+  differs: snapshots load only in the same `aisimulate-core` version with the
+  same state layout and engine-specification schema;
+- the configuration, compared field by field after normalization, differs
+  from the saved identity (the error names the first differing field);
+- a native engine compiles to a different specification, or its performance
+  data no longer matches the fingerprint;
+- saved state is truncated, corrupt or internally inconsistent, for example a
+  sample stored under the wrong bucket, a dynamic correction row outside its
+  bounds, spline knots that do not fit the basis, or store kinds that do not
+  match the worker role; or
+- the restored diagnostics differ from those recorded when saving.
+
+Native snapshots reference performance data by content fingerprint: every
+file directly under the systems root and every file below the system's
+`data_dir`. Source resolution depends on which files exist, not only on those
+read so far, so additions and removals invalidate the fingerprint too; an
+external `fpm_parquet_path` and its sidecar are fingerprinted separately. Pass
+`include_perf_db=True` (Rust: `StateSnapshotOptions { include_perf_db: true }`)
+to copy exactly those files into the snapshot and point `systems_paths` at the
+copy. Packing `h200_sxm` copies 245 files (about 18 MB). All other inputs,
+including learned forests and online checkpoints, are always copied, so a
+packed snapshot needs no other file.
+
+Snapshots record absolute paths and are not relocatable; save a new snapshot
+instead of moving one. Online learner state is always saved and can be large
+(tens of megabytes to above a gigabyte for large forests). Native restoration
+recompiles through Python like any native construction. A `from_learned`
+model has no deployment identity: its snapshot configuration carries the
+placeholder identity `model: from_learned`, `system: from_learned`,
+`backend: vllm`, restoration checks only its estimator controls and files, and
+`deployment_topology()` returns `None`.
+
+Gates for replaying a saved model read the snapshot without loading it.
+`RustForwardPassPerfModel.inspect_state_snapshot(path)` returns the snapshot
+kind, versions, pinned identity, deployment topology and the readiness report
+recorded at save time. `model.readiness_report()` lists, for every logical
+workload store of the worker role, whether its iterations receive an estimate
+and why not (`insufficient_data`, `no_usable_fit` or `untrained_forest_store`),
+plus every correction store's readiness; native estimators are always ready.
+`model.deployment_topology()` reports the identity's worker role, parallelism,
+speculation, KV block size and fixed correction limits.
+`RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, file=path)`
+and `model.engine_launch_mismatches(engine_args)` apply the engine launch rules
+(for example `dp_size` against `attention_dp`) to the canonical launch arguments
+with the snapshot as the timing model and return every rule that fails; the
+Rust equivalent is `EngineLaunchConfig::timing_config_mismatches`.
 
 ## Unified CLI timing fields
 

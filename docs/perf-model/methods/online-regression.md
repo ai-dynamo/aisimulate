@@ -661,7 +661,10 @@ axes, and no `fit.linear` block. Evaluate fit choice against deployment-specific
 observations; a nonlinear fit does not guarantee lower prediction error.
 
 Configuration serialization saves controls, not observations, knots, or fitted
-state. Reconstructing a saved configuration creates a cold model. Offline CLI,
+state. Reconstructing a saved configuration creates a cold model. To keep the
+retained samples, fits, statistics and search clocks, save a
+[state snapshot](../configuration.md#state-snapshots) with `to_file`; restoring
+it predicts bit-identically and can continue tuning exactly. Offline CLI,
 Sweeper, and Replay reject an untrained regression even when its configuration
 parses successfully.
 

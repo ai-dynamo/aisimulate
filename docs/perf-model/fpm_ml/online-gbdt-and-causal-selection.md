@@ -493,9 +493,16 @@ Combined construction accepts a training seed and starts fresh stable
 calibration, online recent state and selector evidence. A standalone online
 runtime checkpoint does not contain the combined histories and is rejected.
 `save_online_checkpoint()` and `export_learned_artifact()` reject combined
-models until a format can preserve both experts, every correction store and
-every selector key together. `learned_selector_diagnostics()` exposes selection
-state; `learned_online_diagnostics()` exposes the adaptive fitting state. Neither
+models because neither format preserves both experts, every correction store
+and every selector key together. A
+[state snapshot](../configuration.md#state-snapshots) does: `to_file()` saves the
+frozen expert, the adaptive expert with its runtime checkpoint (including
+pending rows), every calibration store and all twelve selector keys, and
+`best_available` restores them together. Restoration validates the evidence
+against the selector configuration and the forest stores. Restored models
+predict bit-identically and continue with byte-identical state.
+`learned_selector_diagnostics()` exposes selection state;
+`learned_online_diagnostics()` exposes the adaptive fitting state. Neither
 diagnostic snapshot is a resumable model.
 
 The selector adds constant-size error state per key, while the stable forest
