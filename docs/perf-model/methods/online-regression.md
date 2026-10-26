@@ -495,10 +495,12 @@ The sampler uses $`\log(1+x_j)`$ of its selected retention coordinates to choose
 cells. The independent fit uses its selected feature values. Grid bounds expand
 with incoming observations and do not
 shrink on eviction. If the store exceeds its capacity, it evicts the oldest
-observation in a most-populated cell. Hash-map ordering can affect tied
-choices. Each retained observation has weight one; an evicted observation
-has weight zero. This is spatially balanced retention, not a FIFO window or
-exponential forgetting.
+observation in a most-populated cell. Among equally populated cells it picks
+the lexicographically greatest cell index, and refits read cells in index
+order, so identical inputs retain and fit identical samples in every process.
+Each retained observation has weight one; an evicted observation has weight
+zero. This is spatially balanced retention, not a FIFO window or exponential
+forgetting.
 
 Let $M$ be retained capacity, $B$ the bucket-map storage scanned to select an
 eviction. With two fixed features:

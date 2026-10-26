@@ -278,12 +278,12 @@ mod tests {
             };
             let ranges = vec![AxisRange::from_zero_to(100); ndim];
             let mut hybrid = CorrectionBuckets::with_options(&options, &ranges);
-            let CorrectionBuckets::Hybrid(stores) = &hybrid else {
+            let CorrectionBuckets::Hybrid(_) = &hybrid else {
                 panic!("hybrid must construct both stores");
             };
-            // Clone the sampler seed to avoid pre-existing fixed eviction tie
-            // nondeterminism obscuring a change in history or policy selection.
-            let mut fixed = stores.fixed.clone();
+            // An independently constructed fixed store must break eviction
+            // ties exactly like the hybrid's own fixed store.
+            let mut fixed = FixedCorrectionBuckets::with_options(&options, &ranges);
             let mut dynamic = DynamicCorrection::new(&options, ndim);
             for i in 0..80 {
                 let x = vec![[0.0, 25.0, 100.0, 200.0][i % 4]; ndim];
