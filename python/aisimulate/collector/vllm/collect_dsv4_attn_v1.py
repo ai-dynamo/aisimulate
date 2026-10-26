@@ -465,6 +465,7 @@ def _bench_attention_shape(
     perf_filename: str,
     warming_up: int,
     test_ite: int,
+    _runtime=None,
 ) -> float | None:
     is_context = mode == "context"
     # Module-generation ``seq_len`` is the decode step / past KV length used
@@ -486,14 +487,16 @@ def _bench_attention_shape(
             query_len=query_len,
         ) as (attn_module, vllm_config),
     ):
-        common = _make_common_metadata(
+        common = (_runtime._make_common_metadata if _runtime else _make_common_metadata)(
             batch_size=batch_size,
             seq_len=metadata_seq_len,
             is_context=is_context,
             device=device,
             query_len=query_len,
         )
-        metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
+        metadata = (_runtime._build_metadata_and_bind_caches if _runtime else _build_metadata_and_bind_caches)(
+            attn_module, vllm_config, common, device=device
+        )
 
         hf_config = vllm_config.model_config.hf_config
         concrete_layer = vllm_config.compilation_config.static_forward_context[attn_module.prefix]
@@ -726,6 +729,7 @@ def _bench_sparse_kernel_shape(
     perf_filename: str,
     warming_up: int,
     test_ite: int,
+    _runtime=None,
 ) -> float | None:
     if kernel not in SPARSE_KERNEL_TO_ATTN_KIND:
         raise ValueError(f"unknown sparse kernel={kernel}")
@@ -766,14 +770,16 @@ def _bench_sparse_kernel_shape(
                 query_len=query_len,
             ) as (attn_module, vllm_config),
         ):
-            common = _make_common_metadata(
+            common = (_runtime._make_common_metadata if _runtime else _make_common_metadata)(
                 batch_size=batch_size,
                 seq_len=full_seq_len,
                 is_context=is_context,
                 query_len=query_len,
                 device=device,
             )
-            metadata = _build_metadata_and_bind_caches(attn_module, vllm_config, common, device=device)
+            metadata = (_runtime._build_metadata_and_bind_caches if _runtime else _build_metadata_and_bind_caches)(
+                attn_module, vllm_config, common, device=device
+            )
             positions = common.positions
             hf_config = vllm_config.model_config.hf_config
             architecture = hf_config.architectures[0] if hf_config.architectures else ARCHITECTURE
@@ -952,6 +958,7 @@ def run_dsv4_attn_worker(
     *,
     perf_filename: str,
     device: str = "cuda:0",
+    _runtime=None,
 ) -> None:
     if attn_kind not in DSV4_ATTN_KINDS:
         raise ValueError(f"unknown attn_kind={attn_kind}")
@@ -984,6 +991,7 @@ def run_dsv4_attn_worker(
             perf_filename=perf_filename,
             warming_up=3 if "--smoke" in sys.argv else 5,
             test_ite=3 if "--smoke" in sys.argv else 10,
+            _runtime=_runtime,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {attn_kind} {mode} b={batch_size} s={seq_len} prefix={prefix_len}")
@@ -1004,6 +1012,7 @@ def run_dsv4_sparse_kernel_worker(
     *,
     perf_filename: str,
     device: str = "cuda:0",
+    _runtime=None,
 ) -> None:
     if kernel not in SPARSE_KERNEL_TO_ATTN_KIND:
         raise ValueError(f"unknown sparse kernel={kernel}")
@@ -1028,6 +1037,7 @@ def run_dsv4_sparse_kernel_worker(
             perf_filename=perf_filename,
             warming_up=3 if "--smoke" in sys.argv else 5,
             test_ite=3 if "--smoke" in sys.argv else 10,
+            _runtime=_runtime,
         )
     except (torch.cuda.OutOfMemoryError, torch.OutOfMemoryError):
         print(f"[vllm-dsv4] OOM: {kernel} b={batch_size} isl={isl} past_kv={past_kv} tp={tp_size}")

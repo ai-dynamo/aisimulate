@@ -85,7 +85,7 @@ def dsv4_module(monkeypatch):
         setup_distributed=lambda *_args, **_kwargs: None,
     )
 
-    module_name = "collector.vllm.collect_dsv4_attn"
+    module_name = "collector.vllm.collect_dsv4_attn_v1"
     sys.modules.pop(module_name, None)
     module = importlib.import_module(module_name)
     yield module
@@ -235,6 +235,7 @@ def test_sparse_worker_raises_beyond_max_position_embeddings(dsv4_module, monkey
         ("generation", 64, 0, 65, 1, 1, 64),
     ],
 )
+@pytest.mark.parametrize("native_runtime", [False, True])
 def test_bench_uses_total_cache_length_and_fresh_query_length(
     dsv4_module,
     monkeypatch,
@@ -245,6 +246,7 @@ def test_bench_uses_total_cache_length_and_fresh_query_length(
     query_len,
     logged_isl,
     logged_step,
+    native_runtime,
 ):
     mod = dsv4_module
     calls = {}
@@ -306,6 +308,14 @@ def test_bench_uses_total_cache_length_and_fresh_query_length(
     monkeypatch.setattr(mod.torch.cuda, "empty_cache", lambda: None)
     monkeypatch.setattr(mod.gc, "collect", lambda: None)
 
+    runtime = (
+        SimpleNamespace(_make_common_metadata=make_metadata, _build_metadata_and_bind_caches=lambda *args, **kwargs: {})
+        if native_runtime
+        else None
+    )
+    if native_runtime:
+        monkeypatch.setattr(mod, "_make_common_metadata", lambda **kwargs: pytest.fail("legacy metadata used"))
+
     latency = mod._bench_attention_shape(
         model_path="model",
         attn_kind="csa",
@@ -319,6 +329,7 @@ def test_bench_uses_total_cache_length_and_fresh_query_length(
         perf_filename="perf.txt",
         warming_up=1,
         test_ite=1,
+        _runtime=runtime,
     )
 
     assert latency == 1.25
@@ -342,7 +353,7 @@ def test_cli_past_kv_is_context_prefix_only(dsv4_module, monkeypatch, mode, expe
         sys,
         "argv",
         [
-            "collect_dsv4_attn.py",
+            "collect_dsv4_attn_v1.py",
             "--mode",
             mode,
             "--seq-len",
@@ -358,3 +369,17 @@ def test_cli_past_kv_is_context_prefix_only(dsv4_module, monkeypatch, mode, expe
 
     assert calls["prefix_len"] == expected_prefix
     assert calls["seq_len"] == 64
+
+
+def test_workers_forward_native_adapter(dsv4_module, monkeypatch):
+    mod = dsv4_module
+    calls = []
+    runtime = object()
+    monkeypatch.setattr(mod, "_init_cuda", lambda device: None)
+    monkeypatch.setattr(mod, "_bench_attention_shape", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(mod, "_bench_sparse_kernel_shape", lambda **kwargs: calls.append(kwargs))
+    mod.run_dsv4_attn_worker(
+        64, 1, 1, "fp8", "bfloat16", "fp8_block", "model", "csa", perf_filename="context.txt", _runtime=runtime
+    )
+    mod.run_dsv4_sparse_kernel_worker(1, 1, 8192, 1, "hca_attn", "model", perf_filename="sparse.txt", _runtime=runtime)
+    assert len(calls) == 2 and all(call["_runtime"] is runtime for call in calls)
