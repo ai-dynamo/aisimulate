@@ -60,6 +60,15 @@ For custom Rust composition, use `RoundRobinComposition::default()` or set its
   by the same operation.
 - `observe(observation, now_ms)`, `request_terminal(request_id, now_ms)` and
   `prefill_completed(request_id, now_ms)`, returning newly releasable placements.
+  Terminal notifications discard all request state, including tentative state
+  when cancellation precedes dispatch.
+- `dispatch_committed(request_id, now_ms)` confirms engine acceptance:
+  aggregated/prefill submission after tokenization, or P/D decode destination
+  reservation. `dispatch_aborted` discards tentative state on rejection or failed
+  commit; callback failure ends the run without a report, retaining cleanup errors.
+- `advance_clock(now_ms)` uses virtual time and releases pending placements at
+  existing replay events. It does not schedule timers. A queued request needs
+  a concrete engine event or lifecycle callback that can release it.
 - `cancel_pending(request_id) -> bool` and `pending_count()` for queued ownership.
 - `worker_ready`, `worker_draining`, `worker_removed`, and `topology_settled`
   lifecycle callbacks, also returning releasable placements.
@@ -96,6 +105,14 @@ the event queue and settles engine/transfer/admission work before telemetry
 and scaling. A policy must not advance time or implement a parallel replay loop.
 Fallible placement callbacks are classified as `ReplayError::Placement` at
 the runtime boundary.
+
+Agentic payloads carry optional `AgenticRuntimeIdentity.lineage` with schema
+`aisimulate.agentic.conversation-lineage.v1`, `root_conversation_id` and optional
+`parent_conversation_id`. AISim derives these from the full graph before snapshot
+filtering and namespaces snapshot/recycled plays. Later turns retain their
+conversation ancestry. Legacy `root_id` and `parent_id` remain request IDs;
+legacy or ambiguous ancestry leaves lineage absent. Consumers needing ancestry
+must reject absent or unknown schemas, and scope static conversation IDs by play.
 
 ## ScalingPolicy
 

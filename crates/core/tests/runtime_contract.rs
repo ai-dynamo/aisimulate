@@ -661,7 +661,20 @@ impl ReplayComposition for GeneralRoundRobinComposition {
     }
 }
 
-struct FailingPlacement;
+#[derive(Default)]
+struct DispatchProbe {
+    calls: Vec<(&'static str, f64)>,
+    fail: bool,
+}
+
+#[derive(Default)]
+struct FailingPlacement {
+    probe: Option<Rc<RefCell<DispatchProbe>>>,
+    pending: Vec<Placement>,
+    selected: bool,
+    committed: bool,
+    queue_on_clock: bool,
+}
 
 impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     type Metadata = NoReplayMetadata;
@@ -669,12 +682,64 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
 
     fn place(
         &mut self,
-        _request: &ReplayRequestPayload,
+        request: &ReplayRequestPayload,
         _metadata: Self::Metadata,
         _session_id: Option<String>,
         _now_ms: f64,
     ) -> anyhow::Result<PlacementEffects> {
-        anyhow::bail!("router placement callback failed")
+        anyhow::ensure!(self.probe.is_some(), "router placement callback failed");
+        let placement = Placement {
+            request_id: request.metadata().uuid.unwrap(),
+            scheduler_id: 0,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            kv_hints: None,
+            placement_replica_id: None,
+        };
+        let decision = if self.selected && (!self.committed || self.queue_on_clock) {
+            self.pending.push(placement);
+            aisimulate_core::replay::PlacementDecision::Queued
+        } else {
+            self.selected = true;
+            aisimulate_core::replay::PlacementDecision::Immediate(placement)
+        };
+        Ok(PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+
+    fn dispatch_committed(&mut self, _: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        let mut probe = self.probe.as_ref().unwrap().borrow_mut();
+        probe.calls.push(("commit", now_ms));
+        anyhow::ensure!(!probe.fail, "commit failed");
+        self.committed = true;
+        Ok(())
+    }
+
+    fn dispatch_aborted(&mut self, _: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        let mut probe = self.probe.as_ref().unwrap().borrow_mut();
+        probe.calls.push(("abort", now_ms));
+        anyhow::ensure!(!probe.fail, "abort failed");
+        Ok(())
+    }
+
+    fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        if self.committed && !self.pending.is_empty() {
+            let event = if self.queue_on_clock {
+                "decode_release"
+            } else {
+                "release"
+            };
+            self.probe
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .calls
+                .push((event, now_ms));
+            return Ok(std::mem::take(&mut self.pending));
+        }
+        Ok(Vec::new())
     }
 
     fn observe(
@@ -706,7 +771,7 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     }
 
     fn pending_count(&self) -> usize {
-        0
+        self.pending.len()
     }
 
     fn worker_ready(
@@ -738,8 +803,10 @@ impl PlacementPolicy<ReplayRequestPayload> for FailingPlacement {
     }
 }
 
+#[derive(Default)]
 struct FailingPlacementComposition {
     fail_construction: bool,
+    probe: Option<Rc<RefCell<DispatchProbe>>>,
 }
 
 impl ReplayComposition for FailingPlacementComposition {
@@ -756,7 +823,10 @@ impl ReplayComposition for FailingPlacementComposition {
         if self.fail_construction {
             anyhow::bail!("router placement construction failed");
         }
-        Ok(FailingPlacement)
+        Ok(FailingPlacement {
+            probe: self.probe.clone(),
+            ..Default::default()
+        })
     }
 
     fn create_disaggregated_placements(
@@ -769,7 +839,78 @@ impl ReplayComposition for FailingPlacementComposition {
         if self.fail_construction {
             anyhow::bail!("router placement construction failed");
         }
-        Ok((FailingPlacement, FailingPlacement))
+        Ok((
+            FailingPlacement {
+                probe: self.probe.clone(),
+                ..Default::default()
+            },
+            FailingPlacement {
+                probe: self.probe.clone(),
+                queue_on_clock: true,
+                ..Default::default()
+            },
+        ))
+    }
+}
+
+#[test]
+fn dispatch_hooks_commit_after_tokenization_and_release_waiters_at_the_same_time() {
+    for disagg in [false, true] {
+        for fail in [false, true] {
+            let probe = Rc::new(RefCell::new(DispatchProbe {
+                fail,
+                ..Default::default()
+            }));
+            let mut spec = aggregated_spec(
+                Backend::Vllm,
+                1,
+                0.0,
+                vec![request("first", 0.0, 4, 2), request("waiter", 0.0, 4, 2)],
+            );
+            if disagg {
+                spec.topology = ReplayTopology::Disaggregated {
+                    prefill: WorkerPoolSpec::default(),
+                    decode: WorkerPoolSpec::default(),
+                    handoff_latency_ms: 0.0,
+                };
+            }
+            let result = Replayer::with_composition(
+                spec,
+                ReplayEngineFactory::new(),
+                FailingPlacementComposition {
+                    probe: Some(probe.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .with_tokenization(1, 3.0, 0.0)
+            .unwrap()
+            .run();
+            let calls = &probe.borrow().calls;
+            if fail {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains("commit failed") && error.contains("abort failed"),
+                    "{error}"
+                );
+                assert_eq!(
+                    calls.iter().map(|call| call.0).collect::<Vec<_>>(),
+                    ["commit", "abort"]
+                );
+            } else {
+                assert_eq!(result.unwrap().request_counts.completed_requests, 2);
+                assert_eq!(
+                    calls.iter().filter(|call| call.0 == "commit").count(),
+                    if disagg { 4 } else { 2 }
+                );
+                assert!(calls.contains(&("commit", 3.0)));
+                assert!(calls.contains(&("release", 3.0)));
+                assert!(calls.contains(&("commit", 6.0)));
+                if disagg {
+                    assert!(calls.contains(&("decode_release", 23.0)), "{calls:?}");
+                }
+            }
+        }
     }
 }
 
@@ -830,6 +971,7 @@ fn placement_construction_failure_retains_its_error_provenance() {
         ReplayEngineFactory::new(),
         FailingPlacementComposition {
             fail_construction: true,
+            ..Default::default()
         },
     )
     .unwrap()
@@ -854,6 +996,7 @@ fn placement_callback_failure_retains_its_error_provenance() {
         ReplayEngineFactory::new(),
         FailingPlacementComposition {
             fail_construction: false,
+            ..Default::default()
         },
     )
     .unwrap()
