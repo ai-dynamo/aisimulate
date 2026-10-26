@@ -92,6 +92,18 @@ CPU tests cover resolver arguments, target native decode output/state contracts,
 selected-extension failures, and preservation of the publication gates. They do
 not establish numerical correctness, GPU launch validity, or timing reuse.
 
+vLLM0.31 MiniMax-M3 MSA constructs both main and indexer caches through the
+native layout resolver and byte-stride view builder. Public common metadata
+retains absolute positions, prefix lengths, and the current token in decode
+sequence lengths. Both layers use native cache-binding hooks; the indexer
+removes its singleton head axis. The model's own backend/implementation
+selector remains authoritative. On B200, default MSA decode is Triton;
+CUTLASS decode is an opt-in configuration and is not qualified by default runs.
+See [target cache binding](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/minimax_m3/common/indexer.py#L141)
+and [default decode selection](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/config/attention.py#L43).
+These adapters enable GPU qualification; older MSA timing data remains subject
+to the refresh audit.
+
 # Preparation
 
 The vLLM 0.31.0 MoE collector probes the callable `FusedMoEFactory` for native
