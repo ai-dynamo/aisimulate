@@ -684,7 +684,11 @@ class BaseModel:
         swa_per_token: float,
         global_per_token: float,
     ) -> int | None:
+<<<<<<< HEAD
         """Token count assuming the use of vLLM block-aligned SWA, or ``None``
+=======
+        """token count assuming the use of vLLM block-aligned SWA, or ``None``
+>>>>>>> aisimulate/fix/swa_accuracy
         if vLLM or a max sequence length isn't specified.
 
         For a given memory budget, returns the effective token capacity when
@@ -692,11 +696,14 @@ class BaseModel:
         otherwise so the caller falls back to its idealized inverse. Subclasses
         compute the model-specific ``swa_per_token`` and ``global_per_token``
         byte rates and call this function to perform the token calculation.
+<<<<<<< HEAD
 
         vLLM v0.14.0 ``SlidingWindowSpec`` reserves blocks based on the maximum
         tokens a single request can present to SWA layers in any iteration:
         ``sliding_window - 1`` previously cached tokens plus up to
         ``max_num_batched_tokens`` new tokens, capped at ``max_model_len``.
+=======
+>>>>>>> aisimulate/fix/swa_accuracy
         """
         if getattr(self, "_backend_name", None) != "vllm":
             return None
@@ -708,9 +715,14 @@ class BaseModel:
         if budget <= 0.0:
             return 0
 
+<<<<<<< HEAD
         block_size = getattr(self.config, "kv_block_size", None) or 16
         max_batched = getattr(self.config, "max_num_batched_tokens", None) or max_model_len
         swa_seq_tokens = min(window_size - 1 + max_batched, max_model_len)
+=======
+        block_size = 16
+        swa_seq_tokens = window_size - 1 + max_model_len
+>>>>>>> aisimulate/fix/swa_accuracy
         swa_reservation = (math.ceil(swa_seq_tokens / block_size) + 1) * block_size
 
         effective_per_token = global_per_token + swa_per_token * swa_reservation / max_model_len
