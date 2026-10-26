@@ -82,13 +82,15 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   FlashKDA output/state/workspace allocation stays outside timing. Default
   generation records only the native-selected path; a failed selected backend
   raises rather than substituting another kernel. Preview callback behavior is
-  retained. The Kimi entry point admits B200 0.31 context and nonspeculative
-  generation with SD convolution state, BF16 inputs and FP32 recurrence.
+  retained. The Kimi entry point admits B200 0.31 context, nonspeculative generation
+  and fixed non-RecoverSSM verify with SD convolution state, BF16 inputs and
+  FP32 recurrence.
   Target prefill reserves null cache slot 0 and assigns real requests slots
   1..batch, as required by the native convolution; preview slot allocation is
-  unchanged. Callbacks fix gate bound −5 and omit RecoverSSM/checkpoint export. The native
-  layout probe rejects DS; other hardware and verify remain unaudited for this
-  target route and raise explicit failures. Preview and GLM routes are unchanged.
+  unchanged. Callbacks fix gate bound −5 and omit RecoverSSM. Prefill does not
+  export checkpoints. The native layout probe rejects DS; other hardware
+  remains unaudited for this target route and raises explicit failures.
+  Preview and GLM routes are unchanged.
   Existing labels retain their meaning: native decode includes convolution and
   gated RMSNorm, while prefill emits convolution and recurrence separately.
   Kimi structural keys (d_model 7168, heads 12/24/48/96) do not overlap current
@@ -98,6 +100,21 @@ vLLM 0.31 recurrent qualification uses the same pinned source:
   Admission permits qualification/collection; publication still requires complete
   numerical and timing validation of the selected cases. Three-way prefill
   convolution and speculative verify need their own numerical evidence.
+  Verify uses the [native checkpoint and packed-input contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/models/kimi_k3/nvidia/kda.py#L954):
+  query width S in 2/4/8 means num_spec=S−1, accepted=S, positive checkpoint
+  IDs 1..B*S with null 0 reserved, and conv extent S+2. Native dtype/shape
+  calculators plus `MambaBase.bind_kv_cache` create unpadded per-layer shared
+  pages; packed Q/K/V views consume actual conv output, with shared recurrence
+  output and native projection/beta strides. This is pure uniform verify,
+  not mixed scheduling or a full-model page-padding claim. The four existing
+  H96/48/24/12 callbacks retain 108 shape points and 216 conv/recurrence rows.
+  Separate native timer callbacks, row keys and point failures are preserved.
+  CPU tests execute both callbacks and check IDs, strides, view sharing,
+  preview preservation and selected-backend failure propagation. This repair
+  enables qualification; fresh auto-collector smoke/full evidence is still
+  required before publication. Missing historical allocator provenance
+  prevents reuse approval. No forced fallback profile is added: the approved
+  B200 auto/nonspec decode cases all select native fused decode.
   Prefill releases the completed convolution input and its views before
   allocating independent core inputs, and releases native output/state/workspace
   buffers after every point, including failures. This removes setup overlap;

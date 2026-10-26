@@ -682,7 +682,7 @@ def test_prefill_releases_completed_phase_storage_and_failed_point_buffers(monke
     )
 
 
-@pytest.mark.parametrize("phase", ["context", "generation"])
+@pytest.mark.parametrize("phase", ["context", "generation", "verify"])
 def test_kimi031_fixed_profile_gate_admits_only_b200_sd(monkeypatch, phase):
     namespace = _gate_namespace()
     namespace["torch"] = SimpleNamespace(cuda=SimpleNamespace(get_device_name=lambda device: "NVIDIA B200"))
@@ -700,8 +700,8 @@ def test_kimi031_fixed_profile_gate_admits_only_b200_sd(monkeypatch, phase):
         gate("moonshotai/Kimi-K3", "0.31.0", phase=phase)
 
 
-@pytest.mark.parametrize("phase", [None, "verify", "unknown"])
-def test_kimi031_verify_rejected_before_native_import(phase):
+@pytest.mark.parametrize("phase", [None, "unknown"])
+def test_kimi031_unspecified_phase_rejected_before_native_import(phase):
     namespace = _gate_namespace()
     with pytest.raises(namespace["KdaRuntimeNotAuditedError"], match="context/nonspec"):
         namespace["_require_audited_runtime"]("moonshotai/Kimi-K3", "0.31.0", phase=phase)
