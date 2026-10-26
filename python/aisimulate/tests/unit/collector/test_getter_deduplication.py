@@ -115,6 +115,8 @@ def _install_vllm_stubs(monkeypatch):
         "vllm.model_executor",
         "vllm.model_executor.layers",
         "vllm.model_executor.layers.fused_moe",
+        "vllm.model_executor.layers.fused_moe.experts",
+        "vllm.model_executor.layers.fused_moe.experts.trtllm_bf16_moe",
     ):
         _stub_module(monkeypatch, package)
     sys.modules["vllm.model_executor.layers.fused_moe"].fused_experts = _noop
