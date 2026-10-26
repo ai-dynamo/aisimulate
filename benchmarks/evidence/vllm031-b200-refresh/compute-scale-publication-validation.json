@@ -1,0 +1,28 @@
+{
+  "source": "46bbd3472aa919ca63213a450c6336761621106c",
+  "source_job": 510166928,
+  "original_files_sha256": {
+    "computescale_perf.parquet": "48a22931abb0b084d9ffc93fae6133b765b135059897410f5611f48db7ef66f6",
+    "scale_matrix_perf.parquet": "61985fe2e286399464addc390d3c8535c4d2740cff9497b3f59b6458b54c10b2",
+    "collection_meta.yaml": "75d1b90ef3da12c0d68d0a06b5551ea299ff06ac971b99337c3bfacc69e82a61"
+  },
+  "unchanged_prior_files_sha256": {
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/collection_meta.yaml": "ca80533eeb2e97e146fbc0e9af06453c2f8ef3c90ff4469bab4366d19bfeac7b",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/gemm_perf.parquet": "265827609d7c201992f4963160cae06c3948f2d19d495082417095cc211b04f5",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/collection_meta.yaml": "bb5b2b9deeaaadae35f6147fa0efa3530cb05082789d9f82b9947a1765491c12",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/mla_bmm_perf.parquet": "9dc581b21ee9b4bfa8c6d6795a07aa3b3e5932a9c5ef5a69b8625b265fc6293e"
+  },
+  "prior_gemm_rows": 113557,
+  "prior_bmm_rows": 636,
+  "compute_scale_rows": 1628,
+  "scale_matrix_rows": 1628,
+  "raw_files_modified": false,
+  "validation": {
+    "collector_rules": "7/7 passed",
+    "backend_fact_slices": 2444,
+    "focused_tests": 51,
+    "ruff": "passed",
+    "prior_bmm_consumer_queries": 636,
+    "data_integrity": "3256 unique paired identities, four allowed overhead zeros, no invalid static latencies"
+  }
+}

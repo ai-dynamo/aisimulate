@@ -64,6 +64,7 @@ ops:
       - {framework: "vllm", version: "0.24.0", system: "l40s", op_name: "compute_scale", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant"]}
       - {framework: "vllm", version: "0.24.0", system: "rtx_pro_6000_server", op_name: "compute_scale", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant"]}
       - {framework: "sglang", version: "0.5.20", system: "gb300", op_name: "compute_scale", quant_dtype: "fp8", backends: ["sgl_kernel"], kernel_sources: ["sglang"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "compute_scale", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant"]}
       - {framework: "vllm", version: "0.31.0", system: "gb300", op_name: "compute_scale", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant"]}
   - op_file: context_attention_perf
     family: attention
@@ -2527,6 +2528,7 @@ ops:
       - {framework: "vllm", version: "0.24.0", system: "l40s", op_name: "scale_matrix", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["static_scaled_fp8_quant"]}
       - {framework: "vllm", version: "0.24.0", system: "rtx_pro_6000_server", op_name: "scale_matrix", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["static_scaled_fp8_quant"]}
       - {framework: "sglang", version: "0.5.20", system: "gb300", op_name: "scale_matrix", quant_dtype: "fp8", backends: ["sgl_kernel"], kernel_sources: ["sglang"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "scale_matrix", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["static_scaled_fp8_quant"]}
       - {framework: "vllm", version: "0.31.0", system: "gb300", op_name: "scale_matrix", quant_dtype: "fp8", backends: ["vllm_kernel"], kernel_sources: ["static_scaled_fp8_quant"]}
   - op_file: trtllm_alltoall_perf
     family: comm

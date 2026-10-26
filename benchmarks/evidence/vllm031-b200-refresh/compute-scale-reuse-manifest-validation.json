@@ -1,0 +1,101 @@
+{
+  "command": "generate_perf_data_reuse_manifest.py --op-file computescale_perf.parquet --op-file scale_matrix_perf.parquet",
+  "files_scanned": 54,
+  "rows_scanned": 87912,
+  "changes": [
+    {
+      "before": {
+        "op_file": "computescale_perf.parquet",
+        "kernel_source": "dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 12941,
+        "within_framework_dedup_rows": 0
+      },
+      "after": {
+        "op_file": "computescale_perf.parquet",
+        "kernel_source": "dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 16193,
+        "within_framework_dedup_rows": 19
+      }
+    },
+    {
+      "before": {
+        "op_file": "scale_matrix_perf.parquet",
+        "kernel_source": "static_scaled_fp8_quant",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 13024,
+        "within_framework_dedup_rows": 0
+      },
+      "after": {
+        "op_file": "scale_matrix_perf.parquet",
+        "kernel_source": "static_scaled_fp8_quant",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 16280,
+        "within_framework_dedup_rows": 12
+      }
+    }
+  ],
+  "unrelated_groups_byte_unchanged": true,
+  "membership_and_tiers_unchanged": true,
+  "new_rows_this_event": 3256,
+  "counter_notes": {
+    "compute_scale_new_rows_counted": 1624,
+    "compute_scale_preserved_zero_rows_not_counted_by_generator": 4,
+    "scale_matrix_new_rows_counted": 1628,
+    "existing_counter_drift_per_group": 1628,
+    "meaning": "Generator ignores nonpositive latencies in reuse statistics. All3256 measurements remain in data. Regenerated groups also absorb pre-existing1628-row counter drift each; counts do not approve performance reuse."
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "added": [
+    {
+      "framework": "vllm",
+      "version": "0.31.0",
+      "system": "b200_sxm",
+      "op_name": "compute_scale",
+      "quant_dtype": "fp8",
+      "backends": [
+        "vllm_kernel"
+      ],
+      "kernel_sources": [
+        "dynamic_per_token_scaled_fp8_quant_minus_static_scaled_fp8_quant"
+      ]
+    },
+    {
+      "framework": "vllm",
+      "version": "0.31.0",
+      "system": "b200_sxm",
+      "op_name": "scale_matrix",
+      "quant_dtype": "fp8",
+      "backends": [
+        "vllm_kernel"
+      ],
+      "kernel_sources": [
+        "static_scaled_fp8_quant"
+      ]
+    }
+  ],
+  "unrelated_entries_unchanged": true,
+  "new_total_fact_slices": 2444
+}

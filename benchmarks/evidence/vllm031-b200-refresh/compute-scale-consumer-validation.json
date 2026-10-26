@@ -1,0 +1,43 @@
+{
+  "system": "b200_sxm",
+  "framework": "vllm",
+  "version": "0.31.0",
+  "shared_layer": false,
+  "paired_shapes": 1628,
+  "table_identities_checked": 3256,
+  "failed": 0,
+  "python_and_native_table_views_exact": true,
+  "preserved_zero_overhead_keys": [
+    [
+      4353,
+      32
+    ],
+    [
+      8192,
+      32
+    ],
+    [
+      16384,
+      32
+    ],
+    [
+      32768,
+      32
+    ]
+  ],
+  "static_quantization_rows_strictly_positive": 1628,
+  "fp8_static_consumer_queries_per_interface": 3256,
+  "consumer_n": 256,
+  "consumer_source": "estimated",
+  "consumer_sol_floor_count": 0,
+  "prior_gemm_bmm_rows_byte_unchanged": 114193,
+  "interfaces": [
+    "Python fetch_table_view",
+    "native table_view_json",
+    "Python GEMM._engine_query",
+    "native evaluate_ops_json"
+  ],
+  "legacy_note": "Public query_compute_scale/query_scale_matrix APIs are retired. Both retained interfaces use the compiled engine; this is not an independent legacy implementation.",
+  "contract": "compute_scale is max(0, dynamic/5 - static/5); scale_matrix is static/5. fp8_static subtracts overhead, also static quantization for low-precision inputs, and applies the existing GEMM SOL floor.",
+  "limits": "No new GPU measurements, numerical proof for every shape, or end-to-end accuracy claim. The consumer probes do not turn estimated fp8_static GEMM into measured data."
+}
