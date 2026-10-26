@@ -138,8 +138,7 @@ def test_native_packed_groups_allocate_once_and_restore_capacity_override(alloca
             "UniformTypeKVCacheSpecs": Uniform,
             "AttentionGroup": Attention,
             "BatchSpec": lambda **kwargs: SimpleNamespace(**kwargs),
-            "get_supported_kv_cache_layouts": lambda backends: [SimpleNamespace(name="BLHNC")],
-            "resolve_kv_cache_layout": lambda *args: SimpleNamespace(name="BLHNC"),
+            "_resolve_model_cache_layout": lambda *args: SimpleNamespace(name="BLHNC"),
             "get_kv_cache_groups": lambda *args: groups,
             "get_kv_cache_config_from_groups": cache_config,
             "prepare_kernel_block_sizes": lambda cfg, attn: [256, 4],
@@ -164,3 +163,51 @@ def test_dsv4_routes_are_exact_and_legacy_is_retained():
         if entry.op.startswith("dsv4_"):
             assert resolve_module(entry, "0.31.0") == "collector.vllm.collect_dsv4_attn_v2"
             assert resolve_module(entry, "0.25.0") == "collector.vllm.collect_dsv4_attn_v1"
+
+
+@pytest.mark.parametrize(
+    "has_indexer,backend_name,expected",
+    [
+        (False, "FLASHMLA_SPARSE_DSV4", "BLHNC"),
+        (True, "FLASHMLA_SPARSE_DSV4", "BLHNC"),
+        (False, "OTHER_BACKEND", "LBNHC"),
+    ],
+)
+def test_isolated_hca_preserves_full_model_layout_constraint(has_indexer, backend_name, expected):
+    indexer_backend = object()
+    main_backend = SimpleNamespace(get_name=lambda: backend_name)
+    backends = {"main": main_backend}
+    if has_indexer:
+        backends["indexer"] = indexer_backend
+    original_backends = backends.copy()
+    module_layer = SimpleNamespace(indexer=object() if has_indexer else None, get_attn_backend=lambda: main_backend)
+    config = SimpleNamespace(resolved=None)
+    specs = {"main": object()}
+
+    def supported(actual_backends):
+        # Native indexer advertises BLHNC/BLNHC; otherwise the native default
+        # prefers LBNHC. Returning first preference models this regression.
+        names = ["BLHNC", "BLNHC"] if indexer_backend in actual_backends else ["LBNHC", "BLHNC"]
+        return [SimpleNamespace(name=name) for name in names]
+
+    def resolve(cfg, layouts, actual_specs):
+        assert cfg is config and list(actual_specs) == list(specs.values())
+        return SimpleNamespace(name=cfg.resolved or layouts[0][0])
+
+    module = load(
+        {"_resolve_model_cache_layout"},
+        {
+            "DeepseekV4IndexerBackend": indexer_backend,
+            "get_supported_kv_cache_layouts": supported,
+            "resolve_kv_cache_layout": resolve,
+        },
+    )
+    assert module._resolve_model_cache_layout(module_layer, config, specs, backends).name == expected
+    assert backends == original_backends
+    config.resolved = "UNSUPPORTED"
+    with pytest.raises(ValueError, match="unsupported"):
+        module._resolve_model_cache_layout(module_layer, config, specs, backends)
+    if expected == "BLHNC":
+        config.resolved = "LBNHC"
+        with pytest.raises(ValueError, match="unsupported"):
+            module._resolve_model_cache_layout(module_layer, config, specs, backends)

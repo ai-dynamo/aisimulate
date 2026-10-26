@@ -22,6 +22,7 @@ import torch
 from collector.vllm import collect_dsv4_attn_v1 as legacy
 from collector.vllm.runtime_031 import create_common_metadata
 from collector.vllm.utils import BatchSpec
+from vllm.v1.attention.backends.mla.indexer import DeepseekV4IndexerBackend
 from vllm.v1.attention.backends.utils import get_supported_kv_cache_layouts, resolve_kv_cache_layout
 from vllm.v1.core.kv_cache_utils import get_kv_cache_config_from_groups, get_kv_cache_groups
 from vllm.v1.kv_cache_interface import UniformTypeKVCacheSpecs
@@ -61,6 +62,20 @@ def _group_common_metadata(common, batch, block_size, kernel_block_size, num_blo
     return grouped
 
 
+def _resolve_model_cache_layout(attn_module, vllm_config, specs, backends):
+    layout_backends = list(backends.values())
+    if attn_module.indexer is None and attn_module.get_attn_backend().get_name() == "FLASHMLA_SPARSE_DSV4":
+        # Full-model CSA indexers constrain HCA too: vLLM db9527a4,
+        # v1/attention/backends/mla/indexer.py:254-257. Keep that constraint
+        # when isolating HCA; this does not instantiate or dispatch an indexer.
+        layout_backends.append(DeepseekV4IndexerBackend)
+    supported = [layout.name for layout in get_supported_kv_cache_layouts(layout_backends)]
+    layout = resolve_kv_cache_layout(vllm_config, [supported], specs.values())
+    if layout.name not in supported:
+        raise ValueError(f"Resolved DSV4 cache layout {layout.name} is unsupported")
+    return layout
+
+
 def _build_metadata_and_bind_caches(attn_module, vllm_config, common, *, device):
     static_ctx = vllm_config.compilation_config.static_forward_context
     layers = [attn_module, attn_module.swa_cache_layer]
@@ -76,10 +91,7 @@ def _build_metadata_and_bind_caches(attn_module, vllm_config, common, *, device)
         if spec is not None:
             specs[layer.prefix] = spec
     backends = {name: static_ctx[name].get_attn_backend() for name in specs}
-    supported = [layout.name for layout in get_supported_kv_cache_layouts(backends.values())]
-    layout = resolve_kv_cache_layout(vllm_config, [supported], specs.values())
-    if layout.name not in supported:
-        raise ValueError(f"Resolved DSV4 cache layout {layout.name} is unsupported")
+    layout = _resolve_model_cache_layout(attn_module, vllm_config, specs, backends)
     groups = get_kv_cache_groups(vllm_config, specs)
     seq_lens = common.seq_lens_cpu_upper_bound.tolist()
     starts = common.query_start_loc_cpu.tolist()
