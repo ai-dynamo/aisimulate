@@ -57,6 +57,15 @@ collection measures unfused pre/post mapping, while rc29 enables fused HC by
 default. The existing rc23 exception does not cover rc29; an unfused smoke
 result alone does not qualify rc29's default serving path.
 
+vLLM `compute_scale` admits 0.31.0 after a source API audit against
+[`db9527a4`](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/_custom_ops.py#L1823).
+It retains dynamic per-token quantization, static per-tensor quantization with
+`group_shape=(-1, -1)`, and five calls per timed component. The two outputs
+remain `max(0, dynamic - static)` and the static latency. This permits GPU
+qualification; it does not approve historical timing reuse. Compare both
+components when the difference is clipped to zero. Other newly intervening
+release versions remain excluded pending their own API audit.
+
 # Preparation
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.

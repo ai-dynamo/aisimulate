@@ -8065,6 +8065,7 @@ def test_finalize_raises_when_existing_sidecar_is_legacy_tier(tmp_path):
         ("sglang", "0.5.14", False),
         ("sglang", "0.5.14", True),
         ("vllm", "0.24.0", False),
+        ("vllm", "0.31.0", False),
         ("trtllm", "1.3.0rc29", False),
     ],
 )
