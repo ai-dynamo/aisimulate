@@ -335,6 +335,9 @@ impl ForwardPassPerfModelConfig {
         if self.estimation_mode == EstimationMode::FpmLearned {
             self.estimator_config.fpm_learned.resolve_source()?;
         }
+        if let Some(snapshot) = self.estimator_config.state_snapshot.as_mut() {
+            snapshot.resolve_source()?;
+        }
         if let Some(speculation) = &self.speculation {
             #[cfg(feature = "python")]
             {
@@ -413,6 +416,16 @@ impl ForwardPassPerfModelConfig {
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
         crate::perfmodel::execution_profile::validate_config(self)?;
+        if self.estimator_config.state_snapshot.is_some()
+            && (self.estimation_mode == EstimationMode::Auto
+                || self.fallback_policy != ForwardPassFallbackPolicy::Deny)
+        {
+            // A snapshot pins one saved model. Neither automatic search nor
+            // fallback may turn a failed restoration into a different model.
+            return Err(invalid_config(
+                "estimator_config.state_snapshot requires an explicit estimation_mode and fallback_policy='deny'",
+            ));
+        }
         let learned = &self.estimator_config.fpm_learned;
         if self.estimator_config.selector != super::SelectorConfig::default()
             && (self.estimation_mode != EstimationMode::FpmLearned

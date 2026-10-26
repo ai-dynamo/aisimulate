@@ -289,6 +289,17 @@ impl OnlineLearner {
         checkpoint::load(path, learned, config, identity)
     }
 
+    /// Load the adaptive expert of a causal selector from the runtime
+    /// checkpoint inside a state snapshot.
+    pub(crate) fn load_combined_runtime(
+        path: &Path,
+        learned: &mut LearnedForwardPassModel,
+        config: &FpmLearnedConfig,
+        identity: &ForwardPassPerfModelConfig,
+    ) -> Result<Self, AicError> {
+        checkpoint::load_with(path, learned, config, identity, true)
+    }
+
     pub(crate) fn restored_correction_json(&self) -> Option<&str> {
         self.restored_corrections.as_deref()
     }
@@ -305,6 +316,16 @@ impl OnlineLearner {
         correction_json: &str,
     ) -> Result<(), AicError> {
         checkpoint::save(path, learned, self, correction_json)
+    }
+
+    /// Save into a state snapshot: like [`Self::save`], with source
+    /// locations cleared so identical state writes identical bytes.
+    pub(crate) fn save_source_free(
+        &self,
+        path: &Path,
+        learned: &LearnedForwardPassModel,
+    ) -> Result<(), AicError> {
+        checkpoint::save_with(path, learned, self, "{}", true)
     }
 
     pub(crate) fn observe(
