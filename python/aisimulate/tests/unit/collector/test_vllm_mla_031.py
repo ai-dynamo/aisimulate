@@ -29,6 +29,33 @@ class Tensor(np.ndarray):
         return self.astype(dtype)
 
 
+def test_metadata_builder_uses_serving_factory_for_backend_required_arguments():
+    calls = []
+    backend, spec, config, builder = object(), object(), object(), object()
+    device = object()
+
+    class NativeGroup:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+        def create_metadata_builders(self, actual_config, actual_device):
+            assert actual_config is config and actual_device is device
+            self.ready = True
+
+        def get_metadata_builder(self):
+            assert self.ready
+            return builder
+
+    module = load(
+        "collect_mla_module_v2.py",
+        {"create_metadata_builder"},
+        {"AttentionGroup": NativeGroup, "torch": SimpleNamespace(device=lambda _: device)},
+    )
+    result = module.create_metadata_builder(backend, spec, ["indexer"], config, "cuda")
+    assert result is builder
+    assert calls == [dict(backend=backend, layer_names=["indexer"], kv_cache_spec=spec, kv_cache_group_id=0)]
+
+
 def test_native_binding_and_history_writer_use_same_physical_page_table():
     writes, bound = [], []
     raw = np.zeros((8, 1, 2, 576))

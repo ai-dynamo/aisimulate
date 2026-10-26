@@ -22,6 +22,7 @@ import torch
 from collector.vllm import collect_mla_module
 from collector.vllm.runtime_031 import allocate_cache
 from collector.vllm.runtime_031 import create_common_metadata as _create_common_metadata
+from vllm.v1.worker.utils import AttentionGroup
 
 
 def get_mla_context_module_test_cases():
@@ -35,6 +36,15 @@ def get_mla_generation_module_test_cases():
 def create_common_metadata(*args):
     # Preserve ordered pages and avoid CUDA RNG after native module construction.
     return _create_common_metadata(*args, randomize_blocks=False)
+
+
+def create_metadata_builder(backend, spec, layer_names, config, device):
+    # Serving factory supplies required backend arguments, including the DSA
+    # indexer's aligned block-table width (vllm/v1/worker/utils.py:269-312
+    # at db9527a46873454610df6dbedf79a36d6bf1a7f6).
+    group = AttentionGroup(backend=backend, layer_names=layer_names, kv_cache_spec=spec, kv_cache_group_id=0)
+    group.create_metadata_builders(config, torch.device(device))
+    return group.get_metadata_builder()
 
 
 def bind_cache(config, layer, spec, num_blocks, device):

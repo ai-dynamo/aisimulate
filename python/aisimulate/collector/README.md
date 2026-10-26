@@ -394,6 +394,9 @@ MLA history through the native `update_kv_cache` method. The indexer retains its
 native quantized cache producer. See the target
 [MLA cache contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L733)
 and [indexer binding](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/models/deepseek_v2.py#L647).
+Metadata builders use vLLM's serving `AttentionGroup` factory, including the
+DSA indexer's required, aligned `block_table_width`. This avoids reconstructing
+backend-specific constructor arguments in the collector.
 
 Model construction, native backend selection, precision checks, case identities,
 and the complete module-forward CUDA graph timing remain unchanged. The existing
