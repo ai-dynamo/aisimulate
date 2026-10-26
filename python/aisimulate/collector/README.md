@@ -411,6 +411,21 @@ registered op resolves to exactly one pinned runtime. See
 `docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
 design.
 
+## B200 vLLM 0.31 qualification campaign source
+
+The composed qualification source retains the case declarations and generator
+from `ff8b7a30d75d09e4db07fe892149ef9762e69fb1`. Its MLA/DSA, DSV4 and MSA
+adapters change native runtime metadata/cache handling; they preserve the
+ordered case plans. It also includes communication dispatch/failure evidence
+and the version-route-aware CI change detector.
+
+Keep each run's immutable source SHA, runtime manifest hash and explicit campaign
+exclusions together. Existing native SiTU handling and include/exclude filters
+remain part of this source. Pin a new source revision only for a new qualification
+run; an in-flight run retains its original source and case identity. Each newly
+adapted family still requires its own numerical and runtime gates before full
+collection or publication.
+
 ## vLLM 0.31.0 MLA BMM qualification
 
 `--ops mla_bmm_gen_pre` selects the 0.31.0 route when an external, hash-bound
