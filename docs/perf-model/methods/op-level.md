@@ -103,14 +103,26 @@ escape the root or traverse symlinks; hardware `data_dir`, backend versions and
 `misc.nccl_version`/`misc.oneccl_version` must remain bundle-relative. Missing retained inputs fail normally
 during database loading or readiness checks.
 
-Use `predict_prefill_latency(batch, total_input_length, prefix)` or
-`predict_decode_latency_total(batch, total_past_kv_tokens)` for the selected
-phase. Decode requires equal past-KV lengths across the batch and supports one
-decode forward step per query. Multi-step decode trajectories are rejected even
-when every intermediate measured cell is present. The other phase,
-mixed steps and aggregate telemetry fail explicitly. These profiles do not
-qualify scheduler-inclusive Replay, Planner sizing, or end-to-end serving
-accuracy. Broader support requires separately qualified execution and data.
+The model returned by `RustForwardPassPerfModel.best_available(config)` accepts
+`estimate_forward_pass_time_ms(metrics_by_rank)` and
+`estimate_forward_pass_detailed(metrics_by_rank)` for execution profiles. Callers
+use the same interface as other estimators; AISimulate dispatches the scheduled
+work to the selected profile. Queued metrics do not contribute to the estimate.
+
+Supported metrics contain one rank and one phase: equal uncached prefill prompts,
+one prefill request with a known KV prefix, or one decode step with equal context
+lengths. Totals must identify integral per-request lengths. Prefill prompt variance
+does not establish equal chunk/prefix pairs, so multi-request prefill with nonzero
+past KV remains unsupported. Existing aggregate fields are used; no telemetry
+schema change is required. Missing cells, unsupported shapes, and a mismatched
+phase raise the same prediction errors through the common interface, without
+switching estimators or relaxing the selected fallback policy.
+
+Direct `predict_prefill_latency(batch, total_input_length, prefix)` and
+`predict_decode_latency_total(batch, total_past_kv_tokens)` calls remain supported.
+Multi-step decode trajectories and mixed steps remain unsupported. Successful
+queries do not establish scheduler-inclusive Replay, Planner sizing, or end-to-end
+serving accuracy. Caller workload approximations remain the caller's responsibility.
 
 Profile files, saved configurations and diagnostics can reveal runtime
 identities or private paths. Keep them with their source dataset; the package

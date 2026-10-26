@@ -2618,10 +2618,14 @@ impl Engine {
         capture: bool,
         mut coverage: Option<&mut FpmQueryCoverage>,
     ) -> Result<crate::ForwardPassEstimate, AicError> {
-        self.reject_profile_telemetry()?;
         if metrics_by_rank.is_empty() {
             return Err(AicError::InvalidForwardPassMetrics(
                 "at least one attention-DP rank metric required".to_string(),
+            ));
+        }
+        if self.profile_phase.is_some() && metrics_by_rank.len() != 1 {
+            return Err(crate::operators::measured_composite::invalid(
+                "execution profile metrics require exactly one attention-DP rank",
             ));
         }
         if self.fpm_execution_profile.is_some() && metrics_by_rank.len() != 1 {
@@ -2684,6 +2688,42 @@ impl Engine {
         // and price decode as marginal work riding a pass that does not exist.
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
+
+        if self.profile_phase.is_some() {
+            if has_prefill && has_decode {
+                return Err(crate::operators::measured_composite::invalid(
+                    "execution profiles do not support mixed forward passes",
+                ));
+            }
+            if has_prefill {
+                if sched.var_prefill_length != 0.0
+                    || (sched.num_prefill_requests > 1 && sched.sum_prefill_kv_tokens != 0)
+                {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "prefill profile metrics require equal uncached prompts or one request",
+                    ));
+                }
+                return self.predict_prefill_latency_total_with_coverage(
+                    sched.num_prefill_requests,
+                    sched.sum_prefill_tokens,
+                    sched.sum_prefill_kv_tokens,
+                    coverage,
+                );
+            }
+            if has_decode {
+                if sched.var_decode_kv_tokens != 0.0 {
+                    return Err(crate::operators::measured_composite::invalid(
+                        "decode profile metrics require equal context lengths",
+                    ));
+                }
+                return self.predict_decode_latency_total_with_coverage(
+                    sched.num_decode_requests,
+                    sched.sum_decode_kv_tokens,
+                    coverage,
+                );
+            }
+            return Ok(0.0);
+        }
 
         // The whole-forward rewrite retains the original stage graph in
         // sol_ops. Apply the same replay restriction before its table lookup
@@ -3186,6 +3226,39 @@ pub(crate) mod tests {
             (vec![], vec![op])
         };
         Engine::build(EngineSpec::new(config, context, generation), db).unwrap()
+    }
+
+    #[test]
+    fn execution_profile_common_forward_pass_query() {
+        for prefill in [false, true] {
+            let engine = measured_profile_engine(prefill, true);
+            let metrics = ForwardPassMetrics {
+                scheduled_requests: if prefill {
+                    crate::ScheduledRequestMetrics {
+                        num_prefill_requests: 2,
+                        sum_prefill_tokens: 10,
+                        ..Default::default()
+                    }
+                } else {
+                    crate::ScheduledRequestMetrics {
+                        num_decode_requests: 2,
+                        sum_decode_kv_tokens: 8,
+                        ..Default::default()
+                    }
+                },
+                ..Default::default()
+            };
+            // The first exact cell is a 2 ms scope repeated three times.
+            assert_eq!(
+                engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+                6.0
+            );
+            let detailed = engine
+                .forward_pass_estimate(&[metrics], true, None)
+                .unwrap();
+            assert_eq!(detailed.latency_ms, Some(6.0));
+            assert_eq!(detailed.native_latency_ms, Some(6.0));
+        }
     }
 
     #[test]

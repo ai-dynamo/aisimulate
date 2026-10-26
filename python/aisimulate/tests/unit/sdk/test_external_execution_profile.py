@@ -301,12 +301,78 @@ def test_pinned_hardware_cannot_escape_snapshot(profile):
         RustForwardPassPerfModel.best_available(config)
 
 
-def test_profile_rejects_aggregate_telemetry(profile):
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_profile_common_forward_pass_api(profile, phase):
+    config, payload, publish, _, _ = profile
+    config["worker_type"] = payload["worker_type"] = phase
+    op = payload["ops"][0]["MeasuredComposite"]
+    op["is_context"] = phase == "prefill"
+    op["cells"] = [{"shape": [2, 5, 0], "latency_ms": 2.0}]
+    publish()
+    model = RustForwardPassPerfModel.best_available(config)
+    scheduled = (
+        {"num_prefill_requests": 2, "sum_prefill_tokens": 10}
+        if phase == "prefill"
+        else {"num_decode_requests": 2, "sum_decode_kv_tokens": 8}
+    )
+    metrics = [{"scheduled_requests": scheduled}]
+    # Independent oracle: three repetitions of the measured 2 ms scope.
+    assert model.estimate_forward_pass_time_ms(metrics) == 6.0
+    detailed = model.estimate_forward_pass_detailed(metrics)
+    assert detailed["latency_ms"] == detailed["native_latency_ms"] == 6.0
+    saved = model.diagnostics()["provenance"]["config"]
+    assert RustForwardPassPerfModel.best_available(saved).estimate_forward_pass_time_ms(metrics) == 6.0
+    assert model.estimate_forward_pass_time_ms([{"scheduled_requests": {}}]) == 0.0
+    with pytest.raises(ValueError, match="exactly one attention-DP rank"):
+        model.estimate_forward_pass_time_ms(metrics * 2)
+    count = "num_prefill_requests" if phase == "prefill" else "num_decode_requests"
+    tokens = "sum_prefill_tokens" if phase == "prefill" else "sum_decode_kv_tokens"
+    variance = "var_prefill_length" if phase == "prefill" else "var_decode_kv_tokens"
+    for extra, pattern in [
+        ({tokens: scheduled[tokens] + 1}, "homogeneous"),
+        ({variance: 1.0}, "equal"),
+        ({tokens: scheduled[tokens] + 2}, "no exact cell"),
+        ({count: 0}, "token sum|token sums"),
+    ]:
+        with pytest.raises(ValueError, match=pattern):
+            model.estimate_forward_pass_time_ms([{"scheduled_requests": scheduled | extra}])
+    with pytest.raises(ValueError, match="mixed forward passes"):
+        model.estimate_forward_pass_time_ms(
+            [
+                {
+                    "scheduled_requests": {
+                        "num_prefill_requests": 2,
+                        "sum_prefill_tokens": 10,
+                        "num_decode_requests": 2,
+                        "sum_decode_kv_tokens": 8,
+                    }
+                }
+            ]
+        )
+    other_phase = (
+        {"num_decode_requests": 2, "sum_decode_kv_tokens": 8}
+        if phase == "prefill"
+        else {"num_prefill_requests": 2, "sum_prefill_tokens": 10}
+    )
+    with pytest.raises(ValueError, match="phase is not qualified"):
+        model.estimate_forward_pass_time_ms([{"scheduled_requests": other_phase}])
+
+
+def test_profile_common_prefill_prefix_geometry(profile):
     config, _, _, _, _ = profile
     model = RustForwardPassPerfModel.best_available(config)
-    with pytest.raises(ValueError, match="direct homogeneous phase queries"):
+    # One request has four new tokens and four past KV tokens: 5 ms x 3.
+    scheduled = {"num_prefill_requests": 1, "sum_prefill_tokens": 4, "sum_prefill_kv_tokens": 4}
+    assert model.estimate_forward_pass_time_ms([{"scheduled_requests": scheduled}]) == 15.0
+    # Prompt variance does not establish per-request chunk/prefix pairs.
+    with pytest.raises(ValueError, match="equal uncached prompts or one request"):
         model.estimate_forward_pass_time_ms(
-            [{"scheduled_requests": {"num_prefill_requests": 1, "sum_prefill_tokens": 4}}]
+            [
+                {
+                    "scheduled_requests": scheduled
+                    | {"num_prefill_requests": 2, "sum_prefill_tokens": 8, "sum_prefill_kv_tokens": 8}
+                }
+            ]
         )
 
 
