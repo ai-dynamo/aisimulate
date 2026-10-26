@@ -94,6 +94,16 @@ not establish numerical correctness, GPU launch validity, or timing reuse.
 
 # Preparation
 
+The vLLM 0.31.0 MoE collector probes the callable `FusedMoEFactory` for native
+SiTU parameters and forwards both model beta values. Factories without these
+parameters retain the existing, explicitly labeled `_situ_as_silu` Marlin
+approximation. Native SiTU measurements require fresh qualification; the old
+approximation is not evidence of native activation or backend equivalence.
+The stock compressed-tensors CUTLASS MXFP4 path quantizes activations to MXFP4
+(W4A4). It now fails before timing when requested under the `w4a16_mxfp4`
+label. B200 Kimi-K3 native SiTU needs a separate approved precision contract;
+do not force Marlin or publish W4A4 timings as W4A16 to bypass this failure.
+
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
 On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
 so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
