@@ -39,15 +39,25 @@ def test_b200_sglang_gdn_conv_donor_fill_is_pinned():
     lane = _gdn_context_lane(db, "causal_conv1d_fn", key)
     # Donor-served coordinate: the sglang grid stops at the collection token
     # budget, so batch=32 x seq=16384 exists ONLY via the cross-backend fill.
-    # PR #219 added the vLLM 0.25.0 donor at this exact coordinate, replacing
-    # 0.24.0's 6.3917822265624995 ms with its measured 6.34266845703125 ms.
+    # PR #593 adds the vLLM 0.31.0 donor at this exact coordinate, replacing
+    # 0.25.0's 6.34266845703125 ms with its measured 6.039310913085937 ms.
     # The pin makes that donor revision and graft visible and frozen.
-    assert lane[32][16384]["latency"] == pytest.approx(6.34266845703125, rel=1e-9)
+    assert lane[32][16384]["latency"] == pytest.approx(6.039310913085937, rel=1e-9)
+    donor = get_database("b200_sxm", "vllm", "0.31.0", shared_layer=False)
+    donor_lane = _gdn_context_lane(donor, "causal_conv1d_fn", key)
+    assert lane[32][16384]["latency"] == donor_lane[32][16384]["latency"]
     # Own-row coordinate (sglang's own measurement): first-wins must keep
     # shielding it from every donor.
     assert lane[32][4096]["latency"] == pytest.approx(1.46670654296875, rel=1e-9)
     channels = {record["channel"] for record in db.data_provenance.get("gdn_perf.parquet", []) if record["exists"]}
     assert "cross_backend" in channels  # the donor sources are admitted
+    assert any(
+        record["exists"]
+        and record["channel"] == "cross_backend"
+        and record["version"] == "0.31.0"
+        and record["path"].endswith("linear_attention/vllm/0.31.0/gdn_perf.parquet")
+        for record in db.data_provenance["gdn_perf.parquet"]
+    )
 
 
 def test_h200_vllm_gdn_chunk_own_physical_lane_rows_are_pinned_and_logical_lane_stays_absent():
