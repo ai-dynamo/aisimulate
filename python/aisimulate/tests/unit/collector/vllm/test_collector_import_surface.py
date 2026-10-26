@@ -134,6 +134,7 @@ _MOE_COMMON_SURFACE = {
     "vllm.config": {"VllmConfig": _Dummy, "set_current_vllm_config": _null_context},
     "vllm.forward_context": {"get_forward_context": _dummy, "set_forward_context": _null_context},
     "vllm.model_executor.layers.fused_moe.experts.fallback": {"FallbackExperts": _Dummy},
+    "vllm.model_executor.layers.fused_moe.experts.trtllm_bf16_moe": {},
     "vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors": {
         "CompressedTensorsConfig": _Dummy
     },
@@ -525,3 +526,34 @@ def test_moe_checks_selected_precision_after_loading_before_timing():
     guard = source.index("_require_moe_activation_precision(moe_type, quant_method, loaded=True)")
     timing = source.index("benchmark_with_power(", guard)
     assert loaded < guard < timing
+
+
+@pytest.mark.parametrize("version", ["0.31.0", "0.31.0+build"])
+def test_moe_rejects_native_bf16_input_weighting(monkeypatch, version):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    native_type = type("TrtLlmBf16ExpertsMonolithic", (), {})
+    module.trtllm_bf16_moe.TrtLlmBf16ExpertsMonolithic = native_type
+    module.vllm_version = version
+    with pytest.raises(RuntimeError, match="routing-contract mismatch"):
+        module._require_moe_input_weighting({"apply_router_weight_on_input": True}, native_type())
+    module._require_moe_input_weighting({"apply_router_weight_on_input": False}, native_type())
+    # Even a same-named unrelated class must not be mistaken for the native leaf.
+    unrelated = type("TrtLlmBf16ExpertsMonolithic", (), {})
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, unrelated())
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, None)
+
+
+def test_moe_keeps_older_bf16_class_surface(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0240_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.24.0"
+    module._require_moe_input_weighting({"apply_router_weight_on_input": True}, _Dummy())
+
+
+def test_moe_checks_selected_leaf_before_timing():
+    source = _COLLECT_MOE_PATH.read_text()
+    selected = source.index("leaf_experts = experts_impl._select_experts_impl(")
+    guard = source.index("_require_moe_input_weighting(runtime_config, leaf_experts)", selected)
+    timing = source.index("benchmark_with_power(", guard)
+    assert selected < guard < timing

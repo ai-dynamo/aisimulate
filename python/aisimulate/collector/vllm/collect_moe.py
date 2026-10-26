@@ -184,6 +184,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from vllm.model_executor.layers.fused_moe.experts import trtllm_bf16_moe
 from vllm.version import __version__ as vllm_version
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
@@ -526,6 +527,26 @@ def _require_moe_activation_precision(moe_type, quant_method, *, loaded=False):
             f"backend={getattr(quant_method, 'mxfp4_backend', 'unknown')} "
             f"selects activation quantization {dtypes}; "
             "a separate collector/data precision contract is required"
+        )
+
+
+def _require_moe_input_weighting(runtime_config, leaf_experts):
+    # FIXME(kernel-limit): re-qualify on framework upgrades. vLLM db9527a
+    # experts/trtllm_bf16_moe.py:257-310 accepts but drops input weighting;
+    # FlashInfer 946200de trtllm_fused_moe_kernel_launcher.cu:5304 passes false.
+    # Only the observed native class is rejected; never substitute a backend.
+    native_type = getattr(trtllm_bf16_moe, "TrtLlmBf16ExpertsMonolithic", None)
+    if (
+        vllm_version.split("+")[0] == "0.31.0"
+        and runtime_config["apply_router_weight_on_input"]
+        and native_type is not None
+        and type(leaf_experts) is native_type
+    ):
+        raise RuntimeError(
+            "Native TrtLlmBf16ExpertsMonolithic does not preserve "
+            "apply_router_weight_on_input=True on vLLM 0.31.0; "
+            "refusing to time this routing-contract mismatch. "
+            "Native implementation repair and numerical qualification are required"
         )
 
 
@@ -940,6 +961,7 @@ def run_moe_torch(
                     raise RuntimeError(f"vLLM MoE wrapper {wrapper_name} did not select an experts implementation")
             else:
                 leaf_experts = experts_impl
+            _require_moe_input_weighting(runtime_config, leaf_experts)
             experts_name = type(leaf_experts).__name__ if leaf_experts is not None else "direct"
             print(f"vLLM MoE experts: wrapper={wrapper_name} leaf={experts_name}")
             source = f"vllm_{method_name}_{backend_name}_{experts_name}".lower()
