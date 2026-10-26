@@ -1195,8 +1195,8 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm]
     frameworks: [vllm]
-    total_raw_rows: 8068
-    within_framework_dedup_rows: 12
+    total_raw_rows: 8368
+    within_framework_dedup_rows: 14
   - op_file: mla_context_module_perf.parquet
     kernel_source: 'FLASHINFER_MLA'
     tier: shared

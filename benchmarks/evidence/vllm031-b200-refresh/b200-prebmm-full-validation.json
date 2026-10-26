@@ -1,0 +1,32 @@
+{
+  "scope": "vllm031 B200 MLA pre-BMM",
+  "planned": 300,
+  "passed": 300,
+  "failed": 0,
+  "unattempted": 0,
+  "output_rows": 300,
+  "duplicate_identities": 0,
+  "baseline": {
+    "version": "0.25.0",
+    "planned": 300,
+    "passed": 300,
+    "failed": 0,
+    "error_rate": 0
+  },
+  "target_error_rate": 0,
+  "numerical_probes": {
+    "slurm_job": 2384643,
+    "passed": 3,
+    "failed": 0,
+    "native_output_layout": "token major",
+    "reference": "FP64 BMM",
+    "cuda_graph_replay": true
+  },
+  "publication_status": "Validated pre-BMM scope; draft PR while remaining B200 campaign is incomplete",
+  "consumer_validation": {
+    "passed": 300,
+    "failed": 0,
+    "fallback_enabled": false,
+    "report": "prebmm-consumer-validation.json"
+  }
+}

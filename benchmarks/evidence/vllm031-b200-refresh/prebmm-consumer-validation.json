@@ -1,0 +1,3015 @@
+{
+  "version": "0.31.0",
+  "system": "b200_sxm",
+  "shared_layer": false,
+  "planned": 300,
+  "passed": 300,
+  "failed": 0,
+  "interfaces": [
+    "Python orchestration _engine_query",
+    "native evaluate_ops_json"
+  ],
+  "legacy_note": "The public legacy query method has been removed from this main revision; both retained interfaces use the native engine.",
+  "observations": [
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        128
+      ],
+      "latency_ms": 0.0067552000284194945,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        96
+      ],
+      "latency_ms": 0.006387200206518173,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        64
+      ],
+      "latency_ms": 0.004566400125622749,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        48
+      ],
+      "latency_ms": 0.004476799815893173,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        32
+      ],
+      "latency_ms": 0.0046016000211238865,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        24
+      ],
+      "latency_ms": 0.004492799937725067,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        16
+      ],
+      "latency_ms": 0.004403200000524521,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        12
+      ],
+      "latency_ms": 0.0044895999133586885,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        8
+      ],
+      "latency_ms": 0.004377600178122521,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        4
+      ],
+      "latency_ms": 0.0044319998472929,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        2
+      ],
+      "latency_ms": 0.004460800066590309,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1,
+        1
+      ],
+      "latency_ms": 0.004268800094723702,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        128
+      ],
+      "latency_ms": 0.006646399945020675,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        96
+      ],
+      "latency_ms": 0.0063680000603199005,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        64
+      ],
+      "latency_ms": 0.004553600028157234,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        48
+      ],
+      "latency_ms": 0.004540799930691719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        32
+      ],
+      "latency_ms": 0.004495999962091446,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        24
+      ],
+      "latency_ms": 0.004483199864625931,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        16
+      ],
+      "latency_ms": 0.004479999840259552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        12
+      ],
+      "latency_ms": 0.004464000090956688,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        8
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        4
+      ],
+      "latency_ms": 0.004332799836993218,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        2
+      ],
+      "latency_ms": 0.004323200136423111,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2,
+        1
+      ],
+      "latency_ms": 0.004521600157022476,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        128
+      ],
+      "latency_ms": 0.006639999896287918,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        96
+      ],
+      "latency_ms": 0.0064800001680850984,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        64
+      ],
+      "latency_ms": 0.004508800059556961,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        48
+      ],
+      "latency_ms": 0.004467200115323066,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        32
+      ],
+      "latency_ms": 0.004566400125622749,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        24
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        16
+      ],
+      "latency_ms": 0.004473600164055824,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        12
+      ],
+      "latency_ms": 0.004310400038957596,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        8
+      ],
+      "latency_ms": 0.0046016000211238865,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        4
+      ],
+      "latency_ms": 0.004527999833226204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        2
+      ],
+      "latency_ms": 0.004320000112056732,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4,
+        1
+      ],
+      "latency_ms": 0.004518400132656098,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        128
+      ],
+      "latency_ms": 0.0064800001680850984,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        96
+      ],
+      "latency_ms": 0.006390400230884552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        64
+      ],
+      "latency_ms": 0.004479999840259552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        48
+      ],
+      "latency_ms": 0.00445760004222393,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        32
+      ],
+      "latency_ms": 0.004502400010824204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        24
+      ],
+      "latency_ms": 0.004518400132656098,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        16
+      ],
+      "latency_ms": 0.004479999840259552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        12
+      ],
+      "latency_ms": 0.004374400153756142,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        8
+      ],
+      "latency_ms": 0.004502400010824204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        4
+      ],
+      "latency_ms": 0.0044895999133586885,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        2
+      ],
+      "latency_ms": 0.004438399896025657,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8,
+        1
+      ],
+      "latency_ms": 0.004396799951791763,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        128
+      ],
+      "latency_ms": 0.006617599725723266,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        96
+      ],
+      "latency_ms": 0.006505600363016129,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        64
+      ],
+      "latency_ms": 0.004495999962091446,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        48
+      ],
+      "latency_ms": 0.005340800061821938,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        32
+      ],
+      "latency_ms": 0.004527999833226204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        24
+      ],
+      "latency_ms": 0.004412800073623657,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        16
+      ],
+      "latency_ms": 0.004454400017857551,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        12
+      ],
+      "latency_ms": 0.004323200136423111,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        8
+      ],
+      "latency_ms": 0.004454400017857551,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        4
+      ],
+      "latency_ms": 0.004329600185155868,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        2
+      ],
+      "latency_ms": 0.00398080013692379,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        16,
+        1
+      ],
+      "latency_ms": 0.004556800052523613,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        128
+      ],
+      "latency_ms": 0.006492800265550614,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        96
+      ],
+      "latency_ms": 0.006470400094985962,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        64
+      ],
+      "latency_ms": 0.0050976000726222995,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        48
+      ],
+      "latency_ms": 0.004467200115323066,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        32
+      ],
+      "latency_ms": 0.004470400139689445,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        24
+      ],
+      "latency_ms": 0.004518400132656098,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        16
+      ],
+      "latency_ms": 0.00448639988899231,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        12
+      ],
+      "latency_ms": 0.004399999976158142,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        8
+      ],
+      "latency_ms": 0.004470400139689445,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        4
+      ],
+      "latency_ms": 0.004454400017857551,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        2
+      ],
+      "latency_ms": 0.004473600164055824,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        32,
+        1
+      ],
+      "latency_ms": 0.00411520004272461,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        128
+      ],
+      "latency_ms": 0.008524800091981888,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        96
+      ],
+      "latency_ms": 0.00655680000782013,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        64
+      ],
+      "latency_ms": 0.004476799815893173,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        48
+      ],
+      "latency_ms": 0.0046431999653577805,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        32
+      ],
+      "latency_ms": 0.004467200115323066,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        24
+      ],
+      "latency_ms": 0.0044351998716592785,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        16
+      ],
+      "latency_ms": 0.0044351998716592785,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        12
+      ],
+      "latency_ms": 0.004527999833226204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        8
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        4
+      ],
+      "latency_ms": 0.0046431999653577805,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        2
+      ],
+      "latency_ms": 0.004527999833226204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        48,
+        1
+      ],
+      "latency_ms": 0.00453759990632534,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        128
+      ],
+      "latency_ms": 0.00658240020275116,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        96
+      ],
+      "latency_ms": 0.006496000289916992,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        64
+      ],
+      "latency_ms": 0.006118400022387505,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        48
+      ],
+      "latency_ms": 0.006361600011587143,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        32
+      ],
+      "latency_ms": 0.0045855998992919925,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        24
+      ],
+      "latency_ms": 0.005475199967622757,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        16
+      ],
+      "latency_ms": 0.004575999826192856,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        12
+      ],
+      "latency_ms": 0.004575999826192856,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        8
+      ],
+      "latency_ms": 0.004479999840259552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        4
+      ],
+      "latency_ms": 0.0044096000492572784,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        2
+      ],
+      "latency_ms": 0.004518400132656098,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        64,
+        1
+      ],
+      "latency_ms": 0.0044319998472929,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        128
+      ],
+      "latency_ms": 0.006563200056552887,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        96
+      ],
+      "latency_ms": 0.006569600105285645,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        64
+      ],
+      "latency_ms": 0.006310400366783142,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        48
+      ],
+      "latency_ms": 0.006524799764156342,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        32
+      ],
+      "latency_ms": 0.0044064000248909,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        24
+      ],
+      "latency_ms": 0.004495999962091446,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        16
+      ],
+      "latency_ms": 0.00448639988899231,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        12
+      ],
+      "latency_ms": 0.004540799930691719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        8
+      ],
+      "latency_ms": 0.004444799944758415,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        4
+      ],
+      "latency_ms": 0.004473600164055824,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        2
+      ],
+      "latency_ms": 0.0044064000248909,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        80,
+        1
+      ],
+      "latency_ms": 0.004483199864625931,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        128
+      ],
+      "latency_ms": 0.0064640000462532045,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        96
+      ],
+      "latency_ms": 0.00658240020275116,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        64
+      ],
+      "latency_ms": 0.00658240020275116,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        48
+      ],
+      "latency_ms": 0.0065311998128890995,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        32
+      ],
+      "latency_ms": 0.004502400010824204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        24
+      ],
+      "latency_ms": 0.004438399896025657,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        16
+      ],
+      "latency_ms": 0.00453759990632534,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        12
+      ],
+      "latency_ms": 0.004422400146722794,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        8
+      ],
+      "latency_ms": 0.004499199986457825,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        4
+      ],
+      "latency_ms": 0.004524800181388855,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        2
+      ],
+      "latency_ms": 0.004447999969124794,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        96,
+        1
+      ],
+      "latency_ms": 0.004416000097990036,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        128
+      ],
+      "latency_ms": 0.008374399691820144,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        96
+      ],
+      "latency_ms": 0.008502399921417237,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        64
+      ],
+      "latency_ms": 0.0065600000321865085,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        48
+      ],
+      "latency_ms": 0.00642239972949028,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        32
+      ],
+      "latency_ms": 0.006505600363016129,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        24
+      ],
+      "latency_ms": 0.004524800181388855,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        16
+      ],
+      "latency_ms": 0.004502400010824204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        12
+      ],
+      "latency_ms": 0.004543999955058098,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        8
+      ],
+      "latency_ms": 0.004467200115323066,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        4
+      ],
+      "latency_ms": 0.004447999969124794,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        2
+      ],
+      "latency_ms": 0.004527999833226204,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        128,
+        1
+      ],
+      "latency_ms": 0.004470400139689445,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        128
+      ],
+      "latency_ms": 0.008659200370311737,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        96
+      ],
+      "latency_ms": 0.008345600217580795,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        64
+      ],
+      "latency_ms": 0.006534399837255478,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        48
+      ],
+      "latency_ms": 0.006585600227117539,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        32
+      ],
+      "latency_ms": 0.006592000275850296,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        24
+      ],
+      "latency_ms": 0.00634239986538887,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        16
+      ],
+      "latency_ms": 0.004460800066590309,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        12
+      ],
+      "latency_ms": 0.004460800066590309,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        8
+      ],
+      "latency_ms": 0.0044895999133586885,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        4
+      ],
+      "latency_ms": 0.004521600157022476,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        2
+      ],
+      "latency_ms": 0.004499199986457825,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        160,
+        1
+      ],
+      "latency_ms": 0.004470400139689445,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        128
+      ],
+      "latency_ms": 0.010473600029945374,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        96
+      ],
+      "latency_ms": 0.008566399663686752,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        64
+      ],
+      "latency_ms": 0.00671359971165657,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        48
+      ],
+      "latency_ms": 0.006499200314283371,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        32
+      ],
+      "latency_ms": 0.006566400080919266,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        24
+      ],
+      "latency_ms": 0.006319999694824219,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        16
+      ],
+      "latency_ms": 0.004534399881958961,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        12
+      ],
+      "latency_ms": 0.004572800174355507,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        8
+      ],
+      "latency_ms": 0.0044351998716592785,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        4
+      ],
+      "latency_ms": 0.0044096000492572784,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        2
+      ],
+      "latency_ms": 0.004444799944758415,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        192,
+        1
+      ],
+      "latency_ms": 0.00448639988899231,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        128
+      ],
+      "latency_ms": 0.012297599762678146,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        96
+      ],
+      "latency_ms": 0.010489600151777268,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        64
+      ],
+      "latency_ms": 0.008502399921417237,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        48
+      ],
+      "latency_ms": 0.006588800251483918,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        32
+      ],
+      "latency_ms": 0.006579200178384781,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        24
+      ],
+      "latency_ms": 0.006563200056552887,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        16
+      ],
+      "latency_ms": 0.004710400104522705,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        12
+      ],
+      "latency_ms": 0.004495999962091446,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        8
+      ],
+      "latency_ms": 0.0044319998472929,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        4
+      ],
+      "latency_ms": 0.004499199986457825,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        2
+      ],
+      "latency_ms": 0.004460800066590309,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        256,
+        1
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        128
+      ],
+      "latency_ms": 0.012851199507713318,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        96
+      ],
+      "latency_ms": 0.010742399841547012,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        64
+      ],
+      "latency_ms": 0.008560000360012055,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        48
+      ],
+      "latency_ms": 0.008463999629020691,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        32
+      ],
+      "latency_ms": 0.0064800001680850984,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        24
+      ],
+      "latency_ms": 0.007321599870920181,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        16
+      ],
+      "latency_ms": 0.006275200098752975,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        12
+      ],
+      "latency_ms": 0.006380800157785416,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        8
+      ],
+      "latency_ms": 0.004492799937725067,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        4
+      ],
+      "latency_ms": 0.00451200008392334,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        2
+      ],
+      "latency_ms": 0.004560000076889992,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        320,
+        1
+      ],
+      "latency_ms": 0.0045311998575925825,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        128
+      ],
+      "latency_ms": 0.014713600277900696,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        96
+      ],
+      "latency_ms": 0.012559999525547028,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        64
+      ],
+      "latency_ms": 0.010463999956846238,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        48
+      ],
+      "latency_ms": 0.008575999736785888,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        32
+      ],
+      "latency_ms": 0.006540799885988236,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        24
+      ],
+      "latency_ms": 0.006627199798822403,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        16
+      ],
+      "latency_ms": 0.006579200178384781,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        12
+      ],
+      "latency_ms": 0.004499199986457825,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        8
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        4
+      ],
+      "latency_ms": 0.004495999962091446,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        2
+      ],
+      "latency_ms": 0.004534399881958961,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        384,
+        1
+      ],
+      "latency_ms": 0.004467200115323066,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        128
+      ],
+      "latency_ms": 0.018751999735832213,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        96
+      ],
+      "latency_ms": 0.016816000640392303,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        64
+      ],
+      "latency_ms": 0.012768000364303589,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        48
+      ],
+      "latency_ms": 0.010655999928712846,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        32
+      ],
+      "latency_ms": 0.008636800199747085,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        24
+      ],
+      "latency_ms": 0.008371199667453765,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        16
+      ],
+      "latency_ms": 0.006588800251483918,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        12
+      ],
+      "latency_ms": 0.006524799764156342,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        8
+      ],
+      "latency_ms": 0.004659200087189674,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        4
+      ],
+      "latency_ms": 0.004447999969124794,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        2
+      ],
+      "latency_ms": 0.004479999840259552,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        512,
+        1
+      ],
+      "latency_ms": 0.004515200108289719,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        128
+      ],
+      "latency_ms": 0.02719680070877075,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        96
+      ],
+      "latency_ms": 0.022873599827289582,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        64
+      ],
+      "latency_ms": 0.014713600277900696,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        48
+      ],
+      "latency_ms": 0.01271360069513321,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        32
+      ],
+      "latency_ms": 0.010531199723482132,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        24
+      ],
+      "latency_ms": 0.008575999736785888,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        16
+      ],
+      "latency_ms": 0.0065600000321865085,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        12
+      ],
+      "latency_ms": 0.006499200314283371,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        8
+      ],
+      "latency_ms": 0.006329599767923355,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        4
+      ],
+      "latency_ms": 0.004419200122356415,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        2
+      ],
+      "latency_ms": 0.004441599920392036,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        768,
+        1
+      ],
+      "latency_ms": 0.004569600149989128,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        128
+      ],
+      "latency_ms": 0.035964798927307126,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        96
+      ],
+      "latency_ms": 0.02696320116519928,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        64
+      ],
+      "latency_ms": 0.018751999735832213,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        48
+      ],
+      "latency_ms": 0.016777600347995757,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        32
+      ],
+      "latency_ms": 0.010623999685049058,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        24
+      ],
+      "latency_ms": 0.01064639985561371,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        16
+      ],
+      "latency_ms": 0.008476799726486206,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        12
+      ],
+      "latency_ms": 0.009113600105047226,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        8
+      ],
+      "latency_ms": 0.0064800001680850984,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        4
+      ],
+      "latency_ms": 0.004470400139689445,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        2
+      ],
+      "latency_ms": 0.0045855998992919925,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1024,
+        1
+      ],
+      "latency_ms": 0.0044351998716592785,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        128
+      ],
+      "latency_ms": 0.04905920028686524,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        96
+      ],
+      "latency_ms": 0.03906559944152832,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        64
+      ],
+      "latency_ms": 0.027260801196098326,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        48
+      ],
+      "latency_ms": 0.022889600694179536,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        32
+      ],
+      "latency_ms": 0.014694400131702423,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        24
+      ],
+      "latency_ms": 0.01266240030527115,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        16
+      ],
+      "latency_ms": 0.010633599758148194,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        12
+      ],
+      "latency_ms": 0.008633600175380706,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        8
+      ],
+      "latency_ms": 0.00655680000782013,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        4
+      ],
+      "latency_ms": 0.006540799885988236,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        2
+      ],
+      "latency_ms": 0.004521600157022476,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        1536,
+        1
+      ],
+      "latency_ms": 0.004476799815893173,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        128
+      ],
+      "latency_ms": 0.06454079747200012,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        96
+      ],
+      "latency_ms": 0.04767360091209412,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        64
+      ],
+      "latency_ms": 0.03503040075302124,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        48
+      ],
+      "latency_ms": 0.028992000222206115,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        32
+      ],
+      "latency_ms": 0.017161600291728973,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        24
+      ],
+      "latency_ms": 0.01686079949140549,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        16
+      ],
+      "latency_ms": 0.010585600137710571,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        12
+      ],
+      "latency_ms": 0.010592000186443329,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        8
+      ],
+      "latency_ms": 0.008579199761152267,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        4
+      ],
+      "latency_ms": 0.006467200070619583,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        2
+      ],
+      "latency_ms": 0.004569600149989128,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        2048,
+        1
+      ],
+      "latency_ms": 0.004438399896025657,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        128
+      ],
+      "latency_ms": 0.09271680116653443,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        96
+      ],
+      "latency_ms": 0.06902719736099243,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        64
+      ],
+      "latency_ms": 0.04784640073776245,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        48
+      ],
+      "latency_ms": 0.03769600093364715,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        32
+      ],
+      "latency_ms": 0.027008000016212463,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        24
+      ],
+      "latency_ms": 0.022873599827289582,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        16
+      ],
+      "latency_ms": 0.014752000570297241,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        12
+      ],
+      "latency_ms": 0.012508800625801087,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        8
+      ],
+      "latency_ms": 0.010639999806880952,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        4
+      ],
+      "latency_ms": 0.006553599983453751,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        2
+      ],
+      "latency_ms": 0.00655680000782013,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        3072,
+        1
+      ],
+      "latency_ms": 0.004473600164055824,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        128
+      ],
+      "latency_ms": 0.11644159555435181,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        96
+      ],
+      "latency_ms": 0.09041919708251953,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        64
+      ],
+      "latency_ms": 0.06627200245857238,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        48
+      ],
+      "latency_ms": 0.04749760031700134,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        32
+      ],
+      "latency_ms": 0.03449600040912628,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        24
+      ],
+      "latency_ms": 0.0290336012840271,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        16
+      ],
+      "latency_ms": 0.017340800166130065,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        12
+      ],
+      "latency_ms": 0.014748799800872802,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        8
+      ],
+      "latency_ms": 0.01061440035700798,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        4
+      ],
+      "latency_ms": 0.00854720026254654,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        2
+      ],
+      "latency_ms": 0.006540799885988236,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        4096,
+        1
+      ],
+      "latency_ms": 0.004464000090956688,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        128
+      ],
+      "latency_ms": 0.17139519453048707,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        96
+      ],
+      "latency_ms": 0.12953920364379884,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        64
+      ],
+      "latency_ms": 0.09087039828300476,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        48
+      ],
+      "latency_ms": 0.06876479983329772,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        32
+      ],
+      "latency_ms": 0.047049599885940555,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        24
+      ],
+      "latency_ms": 0.037833601236343384,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        16
+      ],
+      "latency_ms": 0.02701759934425354,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        12
+      ],
+      "latency_ms": 0.02285760045051575,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        8
+      ],
+      "latency_ms": 0.014752000570297241,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        4
+      ],
+      "latency_ms": 0.01043199971318245,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        2
+      ],
+      "latency_ms": 0.006646399945020675,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        6144,
+        1
+      ],
+      "latency_ms": 0.0063391998410224915,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        128
+      ],
+      "latency_ms": 0.22497279644012452,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        96
+      ],
+      "latency_ms": 0.1732192039489746,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        64
+      ],
+      "latency_ms": 0.11690880060195923,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        48
+      ],
+      "latency_ms": 0.09026880264282226,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        32
+      ],
+      "latency_ms": 0.062431997060775755,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        24
+      ],
+      "latency_ms": 0.04747200012207031,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        16
+      ],
+      "latency_ms": 0.035139200091362,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        12
+      ],
+      "latency_ms": 0.026966398954391478,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        8
+      ],
+      "latency_ms": 0.016764800250530242,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        4
+      ],
+      "latency_ms": 0.010611200332641601,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        2
+      ],
+      "latency_ms": 0.008531200140714646,
+      "source": "silicon"
+    },
+    {
+      "identity": [
+        "mla_gen_pre",
+        "bfloat16",
+        8192,
+        1
+      ],
+      "latency_ms": 0.006585600227117539,
+      "source": "silicon"
+    }
+  ]
+}
