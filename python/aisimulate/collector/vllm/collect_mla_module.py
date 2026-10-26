@@ -866,7 +866,11 @@ def _create_kv_cache_and_metadata(
     builder_cls = backend_cls.get_builder_cls()
 
     layer_names = [attn_layer_name]
-    builder = builder_cls(kv_cache_spec, layer_names, vllm_config, torch.device(device))
+    builder = (
+        builder_cls(kv_cache_spec, layer_names, vllm_config, torch.device(device))
+        if _runtime is None
+        else _runtime.create_metadata_builder(backend_cls, kv_cache_spec, layer_names, vllm_config, device)
+    )
 
     # Fail closed on the framework's own prefill query dtype decision:
     # vLLM silently falls back to the model dtype when FP8 prefill query
@@ -912,7 +916,13 @@ def _create_kv_cache_and_metadata(
                 vllm_config, indexer_layer, indexer_spec, num_kv_cache_blocks, device
             )
         indexer_builder_cls = indexer_layer.get_attn_backend().get_builder_cls()
-        indexer_builder = indexer_builder_cls(indexer_spec, [indexer_layer_name], vllm_config, torch.device(device))
+        indexer_builder = (
+            indexer_builder_cls(indexer_spec, [indexer_layer_name], vllm_config, torch.device(device))
+            if _runtime is None
+            else _runtime.create_metadata_builder(
+                indexer_layer.get_attn_backend(), indexer_spec, [indexer_layer_name], vllm_config, device
+            )
+        )
         indexer_metadata = indexer_builder.build(
             common_prefix_len=prefix_len,
             common_attn_metadata=common_attn_metadata,
