@@ -417,6 +417,18 @@ and provenance. Run exact small cases for each model and precision before a
 full sweep; a source-qualified adapter does not establish runtime support for
 all declared cases. Failures remain visible and must not become broad skips.
 
+NVFP4 module inputs retain ModelOpt's native W4A4 checkpoint contract. vLLM
+0.31 stores it in `ModelOptLinearMethod` with the exact static-NVFP4 weight and
+dynamic-NVFP4 activation keys; older runtimes keep `ModelOptNvFp4LinearMethod`.
+The initializer reads the native 16-element group size, fills the existing
+packed weights, block scales and dequantizing global scales, then lets vLLM
+perform its own post-load layout conversion and kernel selection. W4A16 and
+other unified ModelOpt formats are not mistaken for W4A4. See the
+[native format resolution](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/quantization/modelopt.py#L2621).
+This compatibility repair does not qualify ModelOpt numerical output from
+CompressedTensors GEMM evidence; module-specific native numerical checks remain
+required. Case grids, output keys and timing are unchanged.
+
 ### B200 DSV4 qualification
 
 The six `dsv4_*` operations have an exact 0.31.0 route. It retains the existing
