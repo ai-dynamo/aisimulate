@@ -1,0 +1,51 @@
+{
+  "scope": "b200_sxm/gemm/vllm/0.31.0",
+  "draft_tool": "tools/perf_database/backend_facts.py",
+  "facts": {
+    "gemm_perf": [
+      {
+        "framework": "vllm",
+        "version": "0.31.0",
+        "system": "b200_sxm",
+        "op_name": "gemm",
+        "gemm_dtype": "bfloat16",
+        "backends": [
+          "cublas"
+        ],
+        "kernel_sources": [
+          "torch.nn.functional.linear"
+        ]
+      },
+      {
+        "framework": "vllm",
+        "version": "0.31.0",
+        "system": "b200_sxm",
+        "op_name": "gemm",
+        "gemm_dtype": "fp8",
+        "backends": [
+          "cutlass"
+        ],
+        "kernel_sources": [
+          "CutlassFP8ScaledMMLinearKernel"
+        ]
+      },
+      {
+        "framework": "vllm",
+        "version": "0.31.0",
+        "system": "b200_sxm",
+        "op_name": "gemm",
+        "gemm_dtype": "fp8_block",
+        "backends": [
+          "cutlass",
+          "deepgemm"
+        ],
+        "kernel_sources": [
+          "CutlassFp8BlockScaledMMKernel",
+          "DeepGemmFp8BlockScaledMMKernel"
+        ]
+      }
+    ]
+  },
+  "unmapped": [],
+  "catalog_inconsistencies": []
+}

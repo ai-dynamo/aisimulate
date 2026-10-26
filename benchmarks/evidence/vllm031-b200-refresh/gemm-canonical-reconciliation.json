@@ -1,0 +1,47 @@
+{
+  "policy": "Stable keep-last over all non-latency columns; later completed resumed-attempt measurement, never fastest",
+  "raw_sha256": "9ca5d42c7429f0a89c643fe246ee5ee434d07a20455170f7934bef6e803173a8",
+  "canonical_sha256": "90f0a1a91ddefd321841732a8606a213499018a0c82c5faccc7b611b2f8e4cca",
+  "raw_rows": 74435,
+  "canonical_rows": 74433,
+  "removed_rows": [
+    {
+      "row_index": 46733,
+      "row": {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B200",
+        "op_name": "gemm",
+        "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+        "gemm_dtype": "fp8_block",
+        "m": 96,
+        "n": 5120,
+        "k": 6144,
+        "latency": 0.016789333273967106
+      },
+      "retained_row_index": 46735
+    },
+    {
+      "row_index": 46734,
+      "row": {
+        "framework": "VLLM",
+        "version": "0.31.0",
+        "device": "NVIDIA B200",
+        "op_name": "gemm",
+        "kernel_source": "torch.nn.functional.linear",
+        "gemm_dtype": "bfloat16",
+        "m": 96,
+        "n": 5120,
+        "k": 5120,
+        "latency": 0.011866666376590729
+      },
+      "retained_row_index": 46736
+    }
+  ],
+  "historical_failure_report": "b200-gemm-full-failure-triage.json",
+  "planned": 75543,
+  "passed": 74433,
+  "failed": 1110,
+  "unattempted": 0,
+  "status": "CANONICAL_ARTIFACT_VALIDATED_CONSUMER_PUBLICATION_PENDING"
+}

@@ -1269,6 +1269,9 @@ ops:
       - {framework: "sglang", version: "0.5.20", system: "h100_sxm", op_name: "gemm", gemm_dtype: "fp8_block", backends: ["deepgemm", "triton"], kernel_sources: ["sglang_deepgemm_gemm_nt_f8f8bf16", "sglang_triton_w8a8_block_fp8"]}
       - {framework: "sglang", version: "0.5.20", system: "h200_sxm", op_name: "gemm", gemm_dtype: "bfloat16", backends: ["cublas"], kernel_sources: ["sglang_torch_linear"]}
       - {framework: "sglang", version: "0.5.20", system: "h200_sxm", op_name: "gemm", gemm_dtype: "fp8_block", backends: ["deepgemm", "triton"], kernel_sources: ["sglang_deepgemm_gemm_nt_f8f8bf16", "sglang_triton_w8a8_block_fp8"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "gemm", gemm_dtype: "bfloat16", backends: ["cublas"], kernel_sources: ["torch.nn.functional.linear"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "gemm", gemm_dtype: "fp8", backends: ["cutlass"], kernel_sources: ["CutlassFP8ScaledMMLinearKernel"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "gemm", gemm_dtype: "fp8_block", backends: ["cutlass", "deepgemm"], kernel_sources: ["CutlassFp8BlockScaledMMKernel", "DeepGemmFp8BlockScaledMMKernel"]}
       - {framework: "vllm", version: "0.31.0", system: "b300_sxm", op_name: "gemm", gemm_dtype: "bfloat16", backends: ["cublas"], kernel_sources: ["torch.nn.functional.linear"]}
       - {framework: "vllm", version: "0.31.0", system: "b300_sxm", op_name: "gemm", gemm_dtype: "fp8", backends: ["cutlass"], kernel_sources: ["CutlassFP8ScaledMMLinearKernel"]}
       - {framework: "vllm", version: "0.31.0", system: "b300_sxm", op_name: "gemm", gemm_dtype: "fp8_block", backends: ["cutlass", "deepgemm"], kernel_sources: ["CutlassFp8BlockScaledMMKernel", "DeepGemmFp8BlockScaledMMKernel"]}

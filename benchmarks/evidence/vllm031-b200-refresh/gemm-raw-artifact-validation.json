@@ -1,0 +1,92 @@
+{
+  "rows": 74435,
+  "unique": 74433,
+  "duplicate_identities": [
+    {
+      "key": [
+        "fp8_block",
+        96,
+        5120,
+        6144
+      ],
+      "rows": [
+        {
+          "framework": "VLLM",
+          "version": "0.31.0",
+          "device": "NVIDIA B200",
+          "op_name": "gemm",
+          "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+          "gemm_dtype": "fp8_block",
+          "m": 96,
+          "n": 5120,
+          "k": 6144,
+          "latency": 0.016789333273967106
+        },
+        {
+          "framework": "VLLM",
+          "version": "0.31.0",
+          "device": "NVIDIA B200",
+          "op_name": "gemm",
+          "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+          "gemm_dtype": "fp8_block",
+          "m": 96,
+          "n": 5120,
+          "k": 6144,
+          "latency": 0.01718933383623759
+        }
+      ]
+    },
+    {
+      "key": [
+        "bfloat16",
+        96,
+        5120,
+        5120
+      ],
+      "rows": [
+        {
+          "framework": "VLLM",
+          "version": "0.31.0",
+          "device": "NVIDIA B200",
+          "op_name": "gemm",
+          "kernel_source": "torch.nn.functional.linear",
+          "gemm_dtype": "bfloat16",
+          "m": 96,
+          "n": 5120,
+          "k": 5120,
+          "latency": 0.011866666376590729
+        },
+        {
+          "framework": "VLLM",
+          "version": "0.31.0",
+          "device": "NVIDIA B200",
+          "op_name": "gemm",
+          "kernel_source": "torch.nn.functional.linear",
+          "gemm_dtype": "bfloat16",
+          "m": 96,
+          "n": 5120,
+          "k": 5120,
+          "latency": 0.01203733351495531
+        }
+      ]
+    }
+  ],
+  "invalid_latencies": 0,
+  "runtime_identities": [
+    [
+      "VLLM",
+      "0.31.0",
+      "NVIDIA B200",
+      "gemm"
+    ]
+  ],
+  "parquet_sha256": "9ca5d42c7429f0a89c643fe246ee5ee434d07a20455170f7934bef6e803173a8",
+  "status": "PENDING_DUPLICATE_RECONCILIATION",
+  "row_identity_matches_checkpoint_done": true,
+  "checkpoint_unique_passed": 74433,
+  "checkpoint_unique_failed": 1110,
+  "planned_unique": 75543,
+  "unattempted": 0,
+  "numerical_validation": "Prior bounded GEMM correctness gates; not numerical validation of every full timing case",
+  "raw_artifact_preserved": true
+}

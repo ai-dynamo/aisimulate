@@ -1,0 +1,182 @@
+{
+  "command": "python python/aisimulate/tools/perf_database/generate_perf_data_reuse_manifest.py --op-file gemm_perf.parquet --out-json /tmp/b200-pr593-gemm-groups.json --out-manifest /tmp/b200-pr593-gemm-manifest.yaml",
+  "files_scanned": 60,
+  "rows_scanned": 5948299,
+  "groups_scanned": 105,
+  "scope": "Only four groups present in new B200 vLLM 0.31 GEMM data replaced in committed manifest. All other groups remain byte-identical. Prior full-tree generation remains in reuse-manifest-generation.json.",
+  "changes": [
+    {
+      "kernel_source": "CutlassFP8ScaledMMLinearKernel",
+      "before": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "CutlassFP8ScaledMMLinearKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 654580,
+        "within_framework_dedup_rows": 347
+      },
+      "after": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "CutlassFP8ScaledMMLinearKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 838088,
+        "within_framework_dedup_rows": 659
+      }
+    },
+    {
+      "kernel_source": "CutlassFp8BlockScaledMMKernel",
+      "before": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "CutlassFp8BlockScaledMMKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 51726,
+        "within_framework_dedup_rows": 0
+      },
+      "after": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "CutlassFp8BlockScaledMMKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 82584,
+        "within_framework_dedup_rows": 59
+      }
+    },
+    {
+      "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+      "before": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 296224,
+        "within_framework_dedup_rows": 0
+      },
+      "after": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "DeepGemmFp8BlockScaledMMKernel",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 469749,
+        "within_framework_dedup_rows": 248
+      }
+    },
+    {
+      "kernel_source": "torch.nn.functional.linear",
+      "before": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "torch.nn.functional.linear",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 654534,
+        "within_framework_dedup_rows": 1104
+      },
+      "after": {
+        "op_file": "gemm_perf.parquet",
+        "kernel_source": "torch.nn.functional.linear",
+        "tier": "shared",
+        "systems": [
+          "b200_sxm",
+          "b300_sxm",
+          "gb200",
+          "gb300",
+          "h100_sxm",
+          "h200_sxm",
+          "l40s",
+          "rtx_pro_6000_server"
+        ],
+        "frameworks": [
+          "vllm"
+        ],
+        "total_raw_rows": 875054,
+        "within_framework_dedup_rows": 2089
+      }
+    }
+  ],
+  "preexisting_drift_note": "Changes in affected group totals also repair pre-existing stale counters; differences from committed totals exceed this publication. Tier, systems and frameworks are unchanged. Other groups remain byte-identical.",
+  "new_rows_by_group": {
+    "CutlassFP8ScaledMMLinearKernel": 507,
+    "CutlassFp8BlockScaledMMKernel": 5328,
+    "DeepGemmFp8BlockScaledMMKernel": 31080,
+    "torch.nn.functional.linear": 37518
+  }
+}

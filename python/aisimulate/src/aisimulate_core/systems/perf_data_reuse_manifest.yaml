@@ -687,22 +687,22 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [vllm]
-    total_raw_rows: 654580
-    within_framework_dedup_rows: 347
+    total_raw_rows: 838088
+    within_framework_dedup_rows: 659
   - op_file: gemm_perf.parquet
     kernel_source: 'CutlassFp8BlockScaledMMKernel'
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, rtx_pro_6000_server]
     frameworks: [vllm]
-    total_raw_rows: 51726
-    within_framework_dedup_rows: 0
+    total_raw_rows: 82584
+    within_framework_dedup_rows: 59
   - op_file: gemm_perf.parquet
     kernel_source: 'DeepGemmFp8BlockScaledMMKernel'
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm]
     frameworks: [vllm]
-    total_raw_rows: 296224
-    within_framework_dedup_rows: 0
+    total_raw_rows: 469749
+    within_framework_dedup_rows: 248
   - op_file: gemm_perf.parquet
     kernel_source: 'FlashInferCuteDslNvFp4LinearKernel'
     tier: shared
@@ -799,8 +799,8 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [vllm]
-    total_raw_rows: 654534
-    within_framework_dedup_rows: 1104
+    total_raw_rows: 875054
+    within_framework_dedup_rows: 2089
   - op_file: gemm_perf.parquet
     kernel_source: 'torch_flow'
     tier: shared

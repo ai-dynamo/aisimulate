@@ -1,0 +1,28 @@
+{
+  "source_ref": "8a411395d3161f1320a9de0e8670deacb40b314c",
+  "collector_module": "collector.vllm.collect_gemm",
+  "collector_hash": "sha256:6d4803ec62128aa4dcba359579e531392d9f8c56281523c2e89bcdd889895770",
+  "collector_hash_verified_from_git_archive": true,
+  "case_plan_hash": "sha256:e91de7b721b3cb46beff342a6eae095e29533e262a9611cdfd02e2769901c712",
+  "case_plan_hash_verified_from_checkpoint_union": true,
+  "checkpoint_sha256": "728b2a82dadcb270ce3fc0adf99670f6a54251f7730b8e3464735e9c6cbc392e",
+  "checkpoint_done_count": 74433,
+  "checkpoint_failed_count": 1110,
+  "checkpoint_attempted_count": 0,
+  "canonical_keys_exactly_equal_checkpoint_done": true,
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "image": "vllm/vllm-openai",
+    "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+    "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+  },
+  "consumer_validation": "gemm-consumer-validation.json",
+  "data_integrity": "All seven check_collector_data.py rules passed",
+  "backend_facts": "backend_facts.py --check passed, 2441 fact slices",
+  "canonical_matches_stable_keep_last_of_raw": true,
+  "raw_sha256": "9ca5d42c7429f0a89c643fe246ee5ee434d07a20455170f7934bef6e803173a8",
+  "raw_rows": 74435,
+  "canonical_rows": 74433,
+  "duplicates_removed": 2
+}

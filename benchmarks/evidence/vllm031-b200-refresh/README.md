@@ -1,6 +1,6 @@
 # vLLM 0.31.0 B200 refresh evidence
 
-- Draft scope: 636 fresh MLA BMM cases: 300 pre-BMM and 336 post-BMM. The shared table is complete for these two operations.
+- Draft scope: 74,433 fresh GEMM rows plus 636 fresh MLA BMM rows. GEMM remains partial; the BMM table covers all 300 pre-BMM and 336 post-BMM cases.
 - Collection: [pipeline 76699456](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/76699456), job509597082, source079052e6f73984fd73540de724d0d99b4de34442.
 - Pinned runtime: adjacent manifest; official vLLM0.31 image digest3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460.
 - Coverage: 300 planned, 300 passed, zero failed/unattempted/duplicate identities. Historical0.25 matched cases also have zero failures.
@@ -12,3 +12,14 @@
 
 - Post-BMM: [pipeline 76758344](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/76758344), job510044171, source8a411395d3161f1320a9de0e8670deacb40b314c. All336 cases passed; zero failures, unattempted cases, duplicate identities or invalid latencies. Historical matched failures:0/336. Numerical evidence: four native eager/graph checks in Slurm2385040. Both collection events remain in the sidecar.
 - `validate_prebmm.py` now checks both pre/post rows; its historical pre-only report remains archived. The current report is `bmm-consumer-validation.json`.
+
+## GEMM publication
+
+- [Pipeline 76706015](https://gitlab-master.nvidia.com/dl/ai-dynamo/aisim-auto-collector/-/pipelines/76706015), job 509647192, collected 75,543 selected callbacks at source `8a411395d3161f1320a9de0e8670deacb40b314c`: 74,433 successes, 1,110 classified failures, zero unattempted cases.
+- Accepted rows: BF16 37,518; block FP8 36,408 (CUTLASS 5,328 / DeepGEMM 31,080); tensor FP8 at M=1 507. NVFP4 and FP8 M>=2 are outside this publication. The schema-2 sidecar records partial coverage; the adjacent evidence records the 1,110 failures because this main revision’s consumer schema does not accept `classified_failures` inside an event. No version defaults change.
+- The 1,110 failures are the same 15 N/K lanes × 74 M values found in the frozen vLLM 0.25 baseline. The native unaligned block-FP8 path rejects the scale layout. `gemm-failure-triage.json` and `.md` preserve exact lanes, original source citations and historical artifact hashes. They are gaps, not synthetic measurements or broad skips.
+- Raw output had two resume duplicates. `gemm-canonical-reconciliation.json` records stable keep-last over full identities, keeping the later completed attempt regardless of latency. Both original measurements remain in `gemm-raw-artifact-validation.json`; raw SHA256 is `9ca5d42c7429f0a89c643fe246ee5ee434d07a20455170f7934bef6e803173a8`. The published 74,433-row derivative SHA256 is `90f0a1a91ddefd321841732a8606a213499018a0c82c5faccc7b611b2f8e4cca`.
+- Independent provenance checks rebuilt the authored collector hash from the exact source archive and the case-plan hash from the checkpoint union. Canonical keys equal all successful checkpoint keys, are disjoint from failures, and exactly match stable keep-last of the raw rows. See `gemm-provenance-validation.json`. The copied reconciliation/triage files retain their original pre-publication status and campaign filenames.
+- Run `python/aisimulate/.venv/bin/python benchmarks/evidence/vllm031-b200-refresh/validate_gemm.py`. All 74,433 rows pass Python orchestration and native op queries with `shared_layer=False`; every query reports silicon provenance. The existing memory/math speed-of-light floor applies to 39 BF16 rows. Raw latency stays unchanged; the test checks the exact documented floor rather than relaxing tolerances. No FP8-static subtraction applies to these three quant modes. See `gemm-consumer-validation.json`.
+- All seven collector-data rules pass; backend facts match all 2,441 slices. Only the three new GEMM dtype slices were added. The four affected reuse-manifest groups were regenerated from all 60 GEMM files / 5,948,299 rows; tiers, systems and frameworks remain unchanged. Their counters also incorporate pre-existing stale data counts. Other groups and the 636 BMM measurements remain unchanged; see `gemm-reuse-manifest-validation.json`.
+- These checks validate data publication and consumers. They do not establish end-to-end accuracy or approve reuse for the remaining NVFP4/FP8 scopes.
