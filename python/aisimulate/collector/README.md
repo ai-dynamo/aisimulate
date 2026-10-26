@@ -168,6 +168,9 @@ The source evidence is vLLM
 (passes false). A native repair and numerical requalification are required
 before retiring this version-scoped guard; unchanged class names alone are
 not evidence that an upgraded implementation still has the defect.
+CPU regression checks include the strict import-surface tests and the shared
+getter/GLM case-plan tests. Their fake vLLM tree includes the BF16 expert module
+import without running or replacing its GPU implementation.
 
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
 On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
