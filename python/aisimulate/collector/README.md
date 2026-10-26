@@ -453,25 +453,35 @@ sample limit for the full sweep. CPU tests qualify layout and routing, not GPU
 performance. Retain failures and provenance; do not reuse checkpoints from the
 old output layout or claim post-BMM coverage from a pre-only table.
 
-### B200 native Triton attention qualification
+### B200 native dense attention qualification
 
-With the same opt-in manifest, `attention_context` and `attention_generation`
-select the exact 0.31.0 adapter. It accepts the framework-selected,
-`TRITON_ATTN` path, including native sliding-window handling; other selected
-backends raise explicit errors. The legacy 0.24–0.25 route retains its prior behavior.
-Use the reviewed exact case filters for the initial eight context and eight
-generation cases (BF16 query, FP8 KV, head dimension 192, window 0 or 128). This does not qualify
-an unrestricted attention sweep.
+`attention_context` and `attention_generation` select the exact 0.31.0 adapter.
+It accepts native `FLASHINFER`, `FLASH_ATTN` and `TRITON_ATTN` selection, with
+no forced backend or fallback. FlashInfer's own metadata builder chooses its
+native or TRTLLM prefill/decode path; FlashAttention chooses its own FA version.
+Other selected backends still fail explicitly. Case grids and old routes stay
+unchanged.
 
-These 16 cases are fresh-path smoke measurements. They cannot establish reuse
-of the old Triton measurements: although the ordinary kernel math is stable,
-[vLLM 0.31 packs K/V together](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/triton_attn.py#L615)
-and changes their strides. The adapter delegates layout negotiation and cache
-views to vLLM and populates the current
+The adapter delegates layout negotiation and packed cache views to vLLM and
+populates the current
 [serving metadata fields](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L2426).
-The measured boundary remains the production KV update plus attention forward,
-with history population outside timing and CUDA graph capture required.
-Run the GPU smoke gate before collecting the remaining qualified Triton cases.
+The existing single-layer parameters match
+[the native FlashInfer builder](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/flashinfer.py#L882).
+Query conversion follows the selected implementation's quantized-query capability;
+metadata construction and history population remain outside timing. The measured
+boundary remains the production KV update plus forward, with unchanged warmup,
+repeats, CUDA graph timing and perf keys. `kernel_source` records the actual
+FlashInfer phase-metadata class or selected FlashAttention version; retain native
+FlashInfer logs identifying `trtllm-gen`, `xqa` or `flashinfer-native` as well.
+
+This enables qualification; it does not establish correctness or full coverage.
+Before a full sweep, use exact case filters to smoke every planned head-size,
+KV-dtype and window group, check the native dispatch/cache layout and validate
+outputs outside timing. Include context length one: FlashInfer classifies that
+input as decode even though the collector writes a context row. Keep every
+failure visible. A successful Triton or encoder test does not qualify dense
+FlashInfer/FA4. Existing 16 Triton smoke cases are fresh-path measurements because
+[vLLM 0.31 changed the packed K/V cache contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/triton_attn.py#L615).
 
 `encoder_attention` also has an exact 0.31.0 route for the existing BF16 grid.
 It retains the native ViT selector, selected FlashAttention version, and wrapper
