@@ -236,6 +236,7 @@ def run_kda_context_benchmark(
     for batch_size in batch_size_list:
         for seq_len in seq_len_list:
             nt = batch_size * seq_len
+            flashkda_buffers = {}
             try:
                 # Resolved at the 0.27.0 era bump: the former FIXME
                 # kernel-limit guard (nt * proj >= 2**31 rejected) is
@@ -364,6 +365,8 @@ def run_kda_context_benchmark(
                         results["power_stats"],
                     )
 
+                # Conv timing has finished; these views retain an unused 3*nt*proj input.
+                mixed = q_in = k_in = v_in = None
                 q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
@@ -376,7 +379,6 @@ def run_kda_context_benchmark(
                 if prefill_source == "flashkda_fwd":
                     # kda.py:684-691 allocates these before forward; the new
                     # :312-356 API requires them. Do not time allocation.
-                    flashkda_buffers = {}
                     if _check_compat("vllm==0.31.0", vllm_version):
                         workspace_size = torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size)
                         flashkda_buffers = {
@@ -442,6 +444,7 @@ def run_kda_context_benchmark(
                 cu = idx = has_init = conv_state = q_cs = k_cs = v_cs = None
                 mixed = q_in = k_in = v_in = q = k = v = raw_g = raw_beta = None
                 a_log = dt_bias = init_state = None
+                flashkda_buffers.clear()
                 _cleanup("context")
 
     summary = f"ok={ok} error={err} skip=0"
@@ -1429,9 +1432,8 @@ def run_kda_torch(
 if __name__ == "__main__":
     import sys
 
-    from vllm.version import __version__ as _v
-
     from collector.registry_types import PerfFile
+    from vllm.version import __version__ as _v
 
     print(f"KDA Collector - vLLM {_v}")
     print(f"SM Version: {get_sm_version()}")

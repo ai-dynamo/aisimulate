@@ -7,6 +7,7 @@
 
 import ast
 import sys
+import weakref
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -541,6 +542,7 @@ def test_target_flashkda_buffers_are_allocated_before_timed_callback():
         "q": _ContractTensor(1, 128, 12, 128, dtype="bf16"),
         "init_state": _ContractTensor(2, 12, 128, 128, dtype="fp32"),
         "flashkda_prefill": lambda *args, **kwargs: calls.append(kwargs),
+        "flashkda_buffers": {},
     }
     namespace.update(dict.fromkeys(["k", "v", "raw_g", "raw_beta", "a_log", "dt_bias", "cu"], object()))
     exec(compile(ast.Module(body=branch.body, type_ignores=[]), str(SOURCE_PATH), "exec"), namespace)
@@ -554,6 +556,130 @@ def test_target_flashkda_buffers_are_allocated_before_timed_callback():
     assert calls[0]["workspace"].shape == (1234,)
     assert calls[0]["workspace"].dtype == "uint8"
     assert calls[1]["workspace"] is calls[0]["workspace"]
+
+
+@pytest.mark.parametrize("backend", ["flashkda_fwd", "chunk_kda_with_fused_gate"])
+@pytest.mark.parametrize("first_core_fails", [False, True])
+def test_prefill_releases_completed_phase_storage_and_failed_point_buffers(monkeypatch, backend, first_core_fails):
+    from collector.version_resolver import _check_compat
+
+    mixed_refs, buffer_refs, core_calls, conv_calls, timings, published, cleanups = [], [], [], [], [], [], []
+
+    class Storage:
+        pass
+
+    class Tensor(_ContractTensor):
+        def __init__(self, *shape, dtype=None, storage=None, **kwargs):
+            super().__init__(*shape, dtype=dtype)
+            self.storage = storage if storage is not None else Storage()
+
+        def transpose(self, first, second):
+            shape = list(self.shape)
+            shape[first], shape[second] = shape[second], shape[first]
+            return Tensor(*shape, dtype=self.dtype, storage=self.storage)
+
+        def split(self, sizes, dim=0):
+            return [
+                Tensor(*self.shape[:dim], size, *self.shape[dim + 1 :], dtype=self.dtype, storage=self.storage)
+                for size in sizes
+            ]
+
+    def randn(*shape, **kwargs):
+        if len(shape) == 2 and shape[1] == 4608:
+            assert all(ref() is None for ref in buffer_refs), "Previous point retains native buffers"
+        if len(shape) == 4:
+            assert all(ref() is None for ref in mixed_refs), "Completed conv storage overlaps core"
+        tensor = Tensor(*shape, **kwargs)
+        if len(shape) == 2 and shape[1] == 4608:
+            mixed_refs.append(weakref.ref(tensor.storage))
+        return tensor
+
+    def buffer(*shape, **kwargs):
+        tensor = Tensor(*shape, **kwargs)
+        buffer_refs.append(weakref.ref(tensor.storage))
+        return tensor
+
+    def native(*args, **kwargs):
+        core_calls.append(args[0].shape)
+        if backend == "flashkda_fwd":
+            assert kwargs["out"].shape == args[0].shape
+            assert kwargs["final_state"].shape == (1, 12, 128, 128)
+            assert kwargs["final_state"].dtype == "fp32"
+            assert kwargs["workspace"].shape == (1234,)
+        if first_core_fails and len(core_calls) == 1:
+            raise MemoryError("native core allocation failed")
+
+    def conv(x, weight, bias, **kwargs):
+        assert x.storage is mixed_refs[-1]()
+        assert kwargs["metadata"].num_prefills == 1
+        conv_calls.append(x.shape)
+
+    def cleanup(tag):
+        assert all(ref() is None for ref in buffer_refs), "Point cleanup retains native buffers"
+        cleanups.append(tag)
+
+    for name, attrs in {
+        "vllm.model_executor.layers.mamba.ops.causal_conv1d": {"causal_conv1d_fn": conv},
+        "vllm.models.kimi_k3.nvidia.ops.third_party.kda": {"chunk_kda_with_fused_gate": native},
+        "vllm.v1.attention.backends.gdn_attn": {"GDNAttentionMetadata": SimpleNamespace},
+        "vllm.v1.attention.backends.utils": {"compute_causal_conv1d_metadata": lambda *a, **kw: ({}, None, None)},
+        "vllm.model_executor.layers.mamba.mamba_utils": {"is_conv_state_dim_first": lambda: False},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    @contextmanager
+    def benchmark(**kwargs):
+        timings.append((kwargs["num_warmups"], kwargs["num_runs"], kwargs["repeat_n"]))
+        kwargs["kernel_func"]()
+        yield {"latency_ms": 1.0, "power_stats": None}
+
+    torch = SimpleNamespace(
+        device=lambda device: device,
+        cuda=SimpleNamespace(set_device=lambda device: None),
+        bfloat16="bf16",
+        float32="fp32",
+        int32="int32",
+        bool="bool",
+        uint8="uint8",
+        randn=randn,
+        zeros=Tensor,
+        arange=Tensor,
+        empty=buffer,
+        empty_like=lambda t: buffer(*t.shape, dtype=t.dtype),
+        ops=SimpleNamespace(_flashkda_C=SimpleNamespace(get_workspace_size=lambda *args: 1234)),
+    )
+    run = _compile_function(
+        "run_kda_context_benchmark",
+        {
+            "torch": torch,
+            "_check_compat": _check_compat,
+            "KDA_LOWER_BOUND": -5.0,
+            "NUM_WARMUPS": 3,
+            "NUM_RUNS": 10,
+            "benchmark_with_power": benchmark,
+            "_resolve_prefill_kernel": lambda *args: (backend, native),
+            "_log": lambda common, latency, source, *args: published.append((common.copy(), source)),
+            "_cleanup": cleanup,
+            "_format_failures": lambda failures: ";".join(failures),
+        },
+    )
+    args = (7168, 4, 12, 128, 12, 128, [1], [2, 4], "moonshotai/Kimi-K3", "unused.txt", "0.31.0")
+    if first_core_fails:
+        with pytest.raises(RuntimeError, match="batch_size=1 seq_len=2: MemoryError"):
+            run(*args)
+    else:
+        run(*args)
+    assert core_calls == [(1, 2, 12, 128), (1, 4, 12, 128)]
+    assert conv_calls == [(1536, 2)] * 3 + [(1536, 4)] * 3
+    assert timings == [(3, 10, 10), (3, 10, 1)] * 2
+    assert cleanups == ["context", "context"]
+    assert [(row["seq_len"], source) for row, source in published] == (
+        [(2, "causal_conv1d_fn_qkv3")]
+        + ([] if first_core_fails else [(2, backend)])
+        + [(4, "causal_conv1d_fn_qkv3"), (4, backend)]
+    )
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])
