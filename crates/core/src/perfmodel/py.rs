@@ -2335,6 +2335,56 @@ impl PyForwardPassPerfModel {
             .map_err(aic_to_py)
     }
 
+    /// Write the complete tuned state to a new directory and return the
+    /// pinned canonical configuration JSON that restores it.
+    #[pyo3(signature = (path, include_perf_db=false))]
+    fn to_file(&self, py: Python<'_>, path: &str, include_perf_db: bool) -> PyResult<String> {
+        let options = crate::StateSnapshotOptions { include_perf_db };
+        let config = py
+            .allow_threads(|| self.inner.to_file(path, &options))
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Read a snapshot manifest summary as JSON without restoring the model.
+    #[staticmethod]
+    fn inspect_state_snapshot(path: &str) -> PyResult<String> {
+        let summary =
+            crate::ForwardPassPerfModel::inspect_state_snapshot(path).map_err(aic_to_py)?;
+        serde_json::to_string(&summary).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Launch rules that reject `config_json` as the timing model of the
+    /// engine described by `engine_args_json`; empty when compatible.
+    #[staticmethod]
+    fn engine_launch_mismatches(
+        config_json: &str,
+        engine_args_json: &str,
+    ) -> PyResult<Vec<String>> {
+        let config = parse_forward_pass_config(config_json)?;
+        let engine_args: serde_json::Value = serde_json::from_str(engine_args_json)
+            .map_err(|error| PyValueError::new_err(format!("invalid engine arguments: {error}")))?;
+        crate::engine::EngineLaunchConfig::timing_config_mismatches(engine_args, &config)
+            .map_err(|error| PyValueError::new_err(format!("{error:#}")))
+    }
+
+    /// Per-store estimation and correction readiness as JSON.
+    fn readiness_report(&self) -> PyResult<String> {
+        serde_json::to_string(&self.inner.readiness_report())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Deployment topology of the construction identity as JSON, or `None`.
+    fn deployment_topology(&self) -> PyResult<Option<String>> {
+        self.inner
+            .deployment_topology()
+            .map(|topology| {
+                serde_json::to_string(&topology)
+                    .map_err(|error| PyValueError::new_err(error.to_string()))
+            })
+            .transpose()
+    }
+
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
     /// a single FPM object or a per-attention-DP-rank array. Returns `None` for
     /// regression models without enough data yet and for learned models whose

@@ -159,8 +159,16 @@ class ForwardPassPerfModelConfig:
     Use chronological estimate/tune pairs with complete iteration metrics;
     phase-only replay, prediction and Sweeper callers reject learned modes.
     ``learned_selector_diagnostics()`` exposes the per-key evidence. Combined
-    artifact export and full-state checkpoint saving are unsupported; standalone
-    online checkpoint continuation remains available.
+    artifact export and standalone online checkpoint saving are unsupported;
+    ``RustForwardPassPerfModel.to_file`` saves every model kind, including the
+    combined selector.
+
+    ``estimator_config["state_snapshot"]`` restores a model saved by
+    ``to_file``: ``{"path": ..., "sha256": ..., "on_tune": "reject"}``. Rust
+    resolves ``path``, pins ``sha256`` to the snapshot manifest and requires
+    the rest of the configuration to equal the saved identity, an explicit
+    ``estimation_mode`` and ``fallback_policy="deny"``. ``on_tune="reject"``
+    (the default) makes tuning an error; ``"continue"`` resumes it.
     """
 
     model: str
@@ -347,7 +355,7 @@ class RustForwardPassPerfModel:
     during spline startup or outside the retained feature bounds. Spline
     predictions require an available linear prediction for the same query.
     Saving the resolved configuration preserves settings, not samples or learned
-    state.
+    state; ``to_file`` saves the complete state for exact restoration.
 
     Queued request fields are accepted for schema compatibility but ignored by
     this AIC forward-pass model. ``estimate_forward_pass_time_ms()`` treats FPM
@@ -400,7 +408,12 @@ class RustForwardPassPerfModel:
         self._inner = inner
 
     @classmethod
-    def best_available(cls, config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> RustForwardPassPerfModel:
+    def best_available(
+        cls,
+        config: ForwardPassPerfModelConfig | Mapping[str, Any] | None = None,
+        *,
+        file: str | os.PathLike[str] | None = None,
+    ) -> RustForwardPassPerfModel:
         """Construct one estimator from the canonical role-bound configuration.
 
         Auto searches op_level, fpm_interpolation, then fpm_regression even
@@ -408,10 +421,64 @@ class RustForwardPassPerfModel:
         Native correction retains its existing workload feature space.
         Nested estimator controls, including an explicit ``None`` rebuild
         interval, are preserved in resolved configuration and provenance.
+
+        Pass exactly one of ``config`` and ``file``. ``file`` names a snapshot
+        directory written by :meth:`to_file`; its ``config.json`` is passed to
+        the same Rust constructor unchanged, so ``best_available(file=path)``
+        and ``best_available(config=json.load(open(path / "config.json")))``
+        are equivalent. A configuration with
+        ``estimator_config.state_snapshot`` restores the saved model and fails
+        on any mismatch instead of selecting another estimator.
         """
         import aisimulate_core
 
+        if (config is None) == (file is None):
+            raise TypeError("best_available requires exactly one of config or file")
+        if file is not None:
+            config = _snapshot_config(file)
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+
+    @staticmethod
+    def inspect_state_snapshot(file: str | os.PathLike[str]) -> dict[str, Any]:
+        """Read a snapshot's manifest summary without restoring the model.
+
+        Returns ``kind``, ``manifest_sha256``, ``aisimulate_core_version``,
+        ``state_layout_version``, ``worker_type``, ``selected_estimation_mode``,
+        the pinned ``identity`` configuration (``None`` for ``from_learned``
+        snapshots), its deployment ``topology``, and the ``readiness`` report
+        recorded at save time, which restoration verifies. Requires the same
+        format versions as restoration; the state file is not read.
+        """
+        import aisimulate_core
+
+        return json.loads(aisimulate_core.RustForwardPassPerfModel.inspect_state_snapshot(os.fspath(file)))
+
+    @staticmethod
+    def config_engine_launch_mismatches(
+        engine_args: Mapping[str, Any],
+        *,
+        config: ForwardPassPerfModelConfig | Mapping[str, Any] | None = None,
+        file: str | os.PathLike[str] | None = None,
+    ) -> list[str]:
+        """List engine-launch rules that reject a configuration as an engine's timing model.
+
+        ``engine_args`` uses the canonical engine launch shape (``engine``,
+        ``dp_size``, ``tensor_parallel_size``, ...). Its timing model is
+        replaced by ``config`` (or a snapshot's ``config.json`` via ``file``)
+        and checked with the same Rust rules engine launch enforces, such as
+        ``dp_size`` against ``attention_dp``. An empty list means the launch
+        accepts the combination; malformed inputs raise ``ValueError``.
+        """
+        import aisimulate_core
+
+        if (config is None) == (file is None):
+            raise TypeError("config_engine_launch_mismatches requires exactly one of config or file")
+        if file is not None:
+            config = _snapshot_config(file)
+        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+        return aisimulate_core.RustForwardPassPerfModel.engine_launch_mismatches(
+            _json_dumps(payload), _json_dumps(dict(engine_args))
+        )
 
     @staticmethod
     def normalize_config(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
@@ -529,9 +596,67 @@ class RustForwardPassPerfModel:
         fitting with retained state.
 
         Combined selectors reject this operation: one forest cannot represent
-        both experts, calibration, and selection evidence.
+        both experts, calibration, and selection evidence. ``to_file`` saves them.
         """
         return json.loads(self._inner.export_learned_artifact())
+
+    def to_file(self, path: str | os.PathLike[str], *, include_perf_db: bool = False) -> dict[str, Any]:
+        """Atomically save the complete tuned state to the new directory ``path``.
+
+        Returns the pinned canonical configuration, also written to
+        ``path/config.json``; pass it, or ``file=path``, to
+        :meth:`best_available` to restore a model that predicts bit-identically.
+        The returned ``estimator_config.state_snapshot.on_tune`` is
+        ``"reject"``; set it to ``"continue"`` to resume tuning exactly where
+        this model stopped. ``path`` must not exist. Saving never fits pending
+        online rows or changes this model.
+
+        Native estimators reference their performance data by content
+        fingerprint unless ``include_perf_db=True`` packs a copy into the
+        snapshot. Learned forests, online checkpoints and causal-selector
+        experts are always copied. ``from_learned`` models have no deployment
+        identity, so their snapshot configuration carries placeholder
+        identity fields and is restored without identity checks.
+        """
+        return json.loads(self._inner.to_file(os.fspath(path), include_perf_db))
+
+    def readiness_report(self) -> dict[str, Any]:
+        """Return per-store estimation and correction readiness for every estimator kind.
+
+        ``stores`` has one entry per logical workload store of the worker role
+        (``pure_decode``, ``contains_locally_mixed``, ``cross_rank_aggregated``,
+        ``pure_prefill`` for aggregated workers) with ``ready``,
+        ``not_ready_reason`` (``insufficient_data``, ``no_usable_fit`` or
+        ``untrained_forest_store``) and ``retained_observations``. Native
+        estimators are always ready. ``corrections`` lists correction stores
+        by ``query_type`` (per forest ``workload_kind`` for the causal selector)
+        with ``enabled``, ``ready``, ``retained_observations`` and
+        ``ready_buckets``. Gate on the stores a caller actually queries.
+        """
+        return json.loads(self._inner.readiness_report())
+
+    def deployment_topology(self) -> dict[str, Any] | None:
+        """Return the deployment topology of this model's canonical identity.
+
+        Includes ``worker_type``, ``tp``, ``pp``, ``attention_dp``, ``dcp``,
+        ``cp_size``, ``moe_tp_size``, ``moe_ep_size``, ``nextn``,
+        ``speculation`` kind, ``kv_block_size`` and, when fixed-grid
+        correction applies, ``correction_limits``. ``None`` for models without
+        construction provenance such as ``from_learned``.
+        """
+        raw = self._inner.deployment_topology()
+        return None if raw is None else json.loads(raw)
+
+    def engine_launch_mismatches(self, engine_args: Mapping[str, Any]) -> list[str]:
+        """List engine-launch rules that reject this model's configuration for ``engine_args``.
+
+        See :meth:`config_engine_launch_mismatches`; this uses the model's
+        resolved provenance configuration.
+        """
+        provenance = self.diagnostics().get("provenance")
+        if provenance is None:
+            raise ValueError("model has no construction provenance")
+        return RustForwardPassPerfModel.config_engine_launch_mismatches(engine_args, config=provenance["config"])
 
     def save_online_checkpoint(self, path: str | os.PathLike[str]) -> None:
         """Save the adaptive forest and retained fitting state for exact continuation.
@@ -539,8 +664,7 @@ class RustForwardPassPerfModel:
         Reload with ``best_available`` and ``fpm_learned.checkpoint_path``.
         Configuration alone does not contain admitted observations. The target
         directory must not already exist, even if empty.
-        Combined selectors do not support full-state persistence and reject
-        this operation.
+        Combined selectors reject this operation; save them with ``to_file``.
         """
         self._inner.save_online_checkpoint(os.fspath(path))
 
@@ -711,6 +835,12 @@ class RustForwardPassPerfModel:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _snapshot_config(file: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read a snapshot's pinned configuration without interpreting it."""
+    with open(os.path.join(os.fspath(file), "config.json"), encoding="utf-8") as handle:
+        return json.load(handle)
 
 
 def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:

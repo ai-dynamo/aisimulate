@@ -1033,6 +1033,65 @@ mod tests {
             .unwrap();
         assert!(driver.agentic_profile_report().is_some());
     }
+
+    #[test]
+    fn state_snapshots_save_and_restore_through_the_canonical_constructor() {
+        use aisimulate_core::engine::EngineLaunchConfig;
+        use aisimulate_core::{
+            ForwardPassReadinessReport, STATE_SNAPSHOT_LAYOUT_VERSION, ScheduledRequestMetrics,
+            StateSnapshotConfig, StateSnapshotKind, StateSnapshotOptions, StateSnapshotTuning,
+        };
+        let fpm = |decode: u32, kv: u32, wall_ms: f64| ForwardPassMetrics {
+            wall_time: wall_ms / 1000.0,
+            scheduled_requests: ScheduledRequestMetrics {
+                num_decode_requests: decode,
+                sum_decode_kv_tokens: kv,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut model = regression_model().unwrap();
+        let observations: Vec<Vec<ForwardPassMetrics>> = (1..40u32)
+            .map(|i| vec![fpm(i % 13 + 1, i * 977, 2.0 + 0.003 * f64::from(i * 977))])
+            .collect();
+        model.tune_with_fpms(&observations).unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "aisimulate-public-api-snapshot-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let pinned = model
+            .to_file(&directory, &StateSnapshotOptions::default())
+            .unwrap();
+        let snapshot: &StateSnapshotConfig = pinned.estimator_config.state_snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.on_tune, StateSnapshotTuning::Reject);
+        let mut restored = ForwardPassPerfModel::best_available(pinned.clone()).unwrap();
+        let query = [fpm(9, 40_000, 0.0)];
+        assert_eq!(
+            restored
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits),
+            model
+                .estimate_forward_pass_time_ms(&query)
+                .unwrap()
+                .map(f64::to_bits)
+        );
+        assert!(restored.tune_with_fpms(&observations).is_err());
+        let report: ForwardPassReadinessReport = restored.readiness_report();
+        assert_eq!(report, model.readiness_report());
+        let summary = ForwardPassPerfModel::inspect_state_snapshot(&directory).unwrap();
+        assert_eq!(summary.kind, StateSnapshotKind::Regression);
+        assert_eq!(summary.state_layout_version, STATE_SNAPSHOT_LAYOUT_VERSION);
+        assert_eq!(summary.topology, model.deployment_topology());
+        let mismatches = EngineLaunchConfig::timing_config_mismatches(
+            serde_json::json!({"dp_size": 2}),
+            &pinned,
+        )
+        .unwrap();
+        assert_eq!(mismatches, ["dp_size conflicts with canonical attention_dp"]);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }
 
 /// Exhaustive downstream literals for the coordinated 0.13 report migration.
