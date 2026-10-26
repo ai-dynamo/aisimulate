@@ -10,8 +10,8 @@ collector_code, case_plan), the `systems`/`tables` derivation, determinism,
 and the design-§8 output schema. One test also runs against the REAL repo
 with base=HEAD head=HEAD, which must report everything unchanged.
 
-Also covers: VersionRoute-versioned registry entries failing closed
-(NotImplementedError, FIX 1), SHARED_CORE being read per-revision from
+Also covers: literal VersionRoute modules and routing changes, unknown route
+syntax failing closed, SHARED_CORE being read per-revision from
 `collector/provenance.py` rather than imported live (FIX 2), a pre-Collector-V3
 `--base` exiting loudly on a dedicated code (FIX 2), and two frameworks
 sharing one physical `data_backend` directory disambiguating `systems` by
@@ -20,6 +20,7 @@ table stem (FIX 4).
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import shutil
 import subprocess
@@ -183,21 +184,12 @@ collector.vllm.collect_gemm_xpu:
     - collector/vllm/utils_xpu.py
 """
 
-# A registry whose REGISTRY list contains a VersionRoute-versioned OpEntry
-# (no literal `module=`) — the shape _parse_registry_entries does not support
-# and must fail closed on (FIX 1) rather than silently skip.
-REGISTRY_PY_WITH_VERSION_ROUTE = """from collector.registry_types import OpEntry, PerfFile, VersionRoute
-
-REGISTRY: list[OpEntry] = [
-    OpEntry(
-        op="x",
-        get_func="get_x_test_cases",
-        run_func="run_x",
-        perf_filename=PerfFile.GEMM,
-        versions=(VersionRoute(min_version="1.0", module="m"),),
-    ),
-]
-"""
+# Both keyword and positional VersionRoute forms occur in authored registries.
+REGISTRY_PY_WITH_VERSION_ROUTE = REGISTRY_PY.replace(
+    'module="collector.sglang.collect_gemm",',
+    'versions=(VersionRoute("1.0", "collector.sglang.collect_gemm_v2"), '
+    'VersionRoute(min_version="0.0.0", module="collector.sglang.collect_gemm")),',
+)
 
 
 def _manifest_yaml(*, version: str = "0.5.14", digest: str = "0" * 64, family_override: str | None = None) -> str:
@@ -372,16 +364,123 @@ class TestCollectorCode:
 
 
 # --------------------------------------------------------------------------
-# registry parsing: unsupported shapes (FIX 1)
+# registry parsing: version routes
 # --------------------------------------------------------------------------
 
 
-class TestVersionRouteUnsupported:
-    def test_version_route_entry_raises_not_implemented(self, mod, repo):
-        _write_tree(repo, _default_files() | {"collector/sglang/registry.py": REGISTRY_PY_WITH_VERSION_ROUTE})
-        base_sha = _commit_all(repo, "base")
+def _versioned_files():
+    return _default_files() | {
+        "collector/sglang/registry.py": REGISTRY_PY_WITH_VERSION_ROUTE,
+        "collector/sglang/collect_gemm_v2.py": "# collect_gemm v2\n",
+        "collector/hash_closures.yaml": CLOSURES_YAML + "collector.sglang.collect_gemm_v2: []\n",
+    }
+
+
+class TestVersionRoutes:
+    def test_identical_routes_are_unchanged(self, mod, repo):
+        _write_tree(repo, _versioned_files())
+        sha = _commit_all(repo, "versioned registry")
+        changed, unchanged = mod.compute_changed_ops(repo, sha, sha)
+        assert changed == []
+        assert {d.family for d in unchanged} == {"gemm", "attention"}
+
+    @pytest.mark.parametrize("module", ["collect_gemm", "collect_gemm_v2"])
+    def test_every_route_module_contributes_even_above_manifest_pin(self, mod, repo, module):
+        files = _versioned_files()
+        _write_tree(repo, files)
+        base = _commit_all(repo, "base")
+        _write_tree(repo, {f"collector/sglang/{module}.py": "# changed route implementation\n"})
+        head = _commit_all(repo, "head")
+        changed, unchanged = mod.compute_changed_ops(repo, base, head)
+        assert _diff_for(changed, "sglang", "gemm").reasons == ("collector_code",)
+        assert _diff_for(unchanged, "sglang", "attention").reasons == ()
+
+    @pytest.mark.parametrize("change", ["threshold", "order", "remove", "unversioned"])
+    def test_routing_changes_are_collector_code(self, mod, repo, change):
+        files = _versioned_files()
+        _write_tree(repo, files)
+        base = _commit_all(repo, "base")
+        registry = REGISTRY_PY_WITH_VERSION_ROUTE
+        new = 'VersionRoute("1.0", "collector.sglang.collect_gemm_v2")'
+        old = 'VersionRoute(min_version="0.0.0", module="collector.sglang.collect_gemm")'
+        if change == "threshold":
+            registry = registry.replace('"1.0"', '"0.8"')
+        elif change == "order":
+            registry = registry.replace(f"{new}, {old}", f"{old}, {new}")
+        elif change == "remove":
+            registry = registry.replace(f"{new}, {old}", f"{old},")
+        else:
+            registry = REGISTRY_PY
+        _write_tree(repo, {"collector/sglang/registry.py": registry})
+        head = _commit_all(repo, "head")
+        changed, unchanged = mod.compute_changed_ops(repo, base, head)
+        assert "collector_code" in _diff_for(changed, "sglang", "gemm").reasons
+        assert _diff_for(unchanged, "sglang", "attention").reasons == ()
+
+    def test_new_route_requires_hash_closure(self, mod, repo):
+        files = _versioned_files() | {"collector/hash_closures.yaml": CLOSURES_YAML}
+        _write_tree(repo, files)
+        sha = _commit_all(repo, "missing closure")
+        with pytest.raises(KeyError, match="collect_gemm_v2"):
+            mod.compute_changed_ops(repo, sha, sha)
+
+    def test_route_case_inputs_contribute(self, mod, repo):
+        files = _versioned_files()
+        files["collector/hash_closures.yaml"] = CLOSURES_YAML + (
+            "collector.sglang.collect_gemm_v2:\n  - collector/cases/base_ops/new.yaml\n"
+        )
+        files["collector/cases/base_ops/new.yaml"] = "# cases v1\n"
+        _write_tree(repo, files)
+        base = _commit_all(repo, "base")
+        _write_tree(repo, {"collector/cases/base_ops/new.yaml": "# cases v2\n"})
+        head = _commit_all(repo, "head")
+        changed, _ = mod.compute_changed_ops(repo, base, head)
+        assert _diff_for(changed, "sglang", "gemm").reasons == ("collector_code", "case_plan")
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "ROUTES",
+            "(make_route(),)",
+            "(*ROUTES,)",
+            '(VersionRoute("1", dynamic_module),)',
+            '(VersionRoute(version, "module"),)',
+            '(VersionRoute("1"),)',
+            '(VersionRoute("1", "module", "extra"),)',
+            '(VersionRoute("1", "module", module="other"),)',
+            '(VersionRoute("1", "module", unexpected=True),)',
+            "(VersionRoute(**route),)",
+            '(VersionRoute("", "module"),)',
+        ],
+    )
+    def test_unknown_route_syntax_fails_closed(self, mod, expression):
         with pytest.raises(NotImplementedError, match="VersionRoute"):
-            mod.compute_changed_ops(repo, base_sha, base_sha)
+            mod._parse_version_routes(ast.parse(expression, mode="eval").body, "gemm")
+
+    def test_list_and_mixed_arguments(self, mod):
+        node = ast.parse('[VersionRoute("1", module="collector.test")]', mode="eval").body
+        assert mod._parse_version_routes(node, "gemm") == (("1", "collector.test"),)
+
+    @pytest.mark.parametrize("extra", ['module="collector.other",', "module=dynamic_module,", "**extra,"])
+    def test_unknown_or_conflicting_entry_arguments_fail_closed(self, mod, repo, extra):
+        files = _versioned_files()
+        files["collector/sglang/registry.py"] = REGISTRY_PY_WITH_VERSION_ROUTE.replace(
+            'op="gemm",', f'op="gemm", {extra}'
+        )
+        _write_tree(repo, files)
+        sha = _commit_all(repo, "ambiguous versioned entry")
+        with pytest.raises((ValueError, NotImplementedError), match="VersionRoute"):
+            mod.compute_changed_ops(repo, sha, sha)
+
+    def test_empty_routes_without_module_fail_closed(self, mod, repo):
+        files = _versioned_files()
+        files["collector/sglang/registry.py"] = REGISTRY_PY.replace(
+            'module="collector.sglang.collect_gemm",', "versions=(),"
+        )
+        _write_tree(repo, files)
+        sha = _commit_all(repo, "invalid empty routes")
+        with pytest.raises(NotImplementedError, match="Empty VersionRoute"):
+            mod.compute_changed_ops(repo, sha, sha)
 
 
 # --------------------------------------------------------------------------
