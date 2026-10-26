@@ -60,12 +60,14 @@ Output:
 # architecture is additionally gated at runtime to its own audited release by
 # _KDA_ARCHITECTURE_COMPAT: the preview and GLM routes remain unchanged.
 # A separate fixed-profile gate admits Kimi context/nonspec generation on
-# B200 0.31.0 with SD convolution state; verify remains preview-only.
+# B200 0.31.0 with SD convolution state, including fixed non-RecoverSSM verify.
 # Intervening releases still raise KdaRuntimeNotAuditedError.
 __compat__ = "vllm>=0.1.dev19262,<=0.31.0"
 
 import gc
+import math
 import os
+from types import SimpleNamespace
 
 import torch
 
@@ -654,6 +656,33 @@ def run_kda_generation_benchmark(
         )
 
 
+def _kimi031_verify_state_pool(batch_size, query_len, nh, hd, cw, device):
+    """Bind the native unpadded per-layer cache; slot zero stays reserved."""
+    # Version-local imports preserve the preview module's import surface.
+    # vLLM db9527a4 mamba_utils.py:133-149,303-326 and
+    # mamba/abstract.py:28-44 own dtype/shape/byte-stride construction.
+    from vllm.model_executor.layers.mamba.abstract import MambaBase
+    from vllm.model_executor.layers.mamba.mamba_utils import MambaStateDtypeCalculator, MambaStateShapeCalculator
+    from vllm.models.kimi_k3.nvidia.kda import resolve_kda_decode_backend
+
+    dtypes = MambaStateDtypeCalculator.kda_state_dtype(torch.bfloat16, "auto")
+    selected = resolve_kda_decode_backend("auto", nh, hd, cw, query_len - 1, torch.bfloat16, *dtypes)
+    if selected != "triton":
+        raise KdaRuntimeNotAuditedError(f"Kimi verify expected native auto Triton dispatch, selected {selected}")
+    shapes = MambaStateShapeCalculator.kda_state_shape(
+        tp_world_size=1, num_heads=nh, head_dim=hd, conv_kernel_size=cw, num_spec=query_len - 1
+    )
+    page_bytes = sum(
+        math.prod(shape) * torch.empty((), dtype=dtype).element_size()
+        for shape, dtype in zip(shapes, dtypes, strict=True)
+    )
+    pages = torch.zeros((batch_size * query_len + 1, 1, 1, page_bytes), dtype=torch.int8, device=device)
+    holder = SimpleNamespace(get_state_shape=lambda: shapes, get_state_dtype=lambda: dtypes)
+    MambaBase.bind_kv_cache(holder, pages)
+    conv, state = holder.kv_cache
+    return conv.transpose(-1, -2), state
+
+
 def run_kda_verify_benchmark(
     d_model,
     d_conv,
@@ -682,6 +711,14 @@ def run_kda_verify_benchmark(
     nh, hd, cw = num_v_heads, head_v_dim, d_conv
     dim = nh * hd
 
+    target_runtime = model_name == "moonshotai/Kimi-K3" and _check_compat("vllm==0.31.0", vllm_version)
+    if target_runtime:
+        _require_audited_runtime(model_name, vllm_version, phase="verify", device=device)
+        if (d_model, cw, hd) != (7168, 4, 128) or nh not in (12, 24, 48, 96):
+            raise KdaRuntimeNotAuditedError("Kimi verify requires the audited hidden7168/conv4/head128 profile")
+        if any(width not in (2, 4, 8) for width in draft_token_list):
+            raise KdaRuntimeNotAuditedError("Kimi verify requires the audited query widths 2/4/8")
+
     conv_weight = torch.randn(3 * dim, cw, dtype=torch.float32, device=device)
     ok = err = 0
     failures: list[str] = []
@@ -691,23 +728,41 @@ def run_kda_verify_benchmark(
             nb = batch_size
             nt = nb * ns
             try:
-                x = torch.randn(nt, 3 * dim, dtype=dtype, device=device)
-                # spec conv cache carries num_spec extra columns
-                conv_state = torch.zeros(nb, cw - 1 + ns, 3 * dim, dtype=dtype, device=device).transpose(1, 2)
+                if target_runtime:
+                    # db9527a4 kda.py:549-567,789-795: aligned projection row,
+                    # packed qkv and narrow beta shard. Pure verify keeps these
+                    # views (kda.py:922-927); no mixed scheduler reordering.
+                    projection_width = ((4 * dim + hd + nh + 15) // 16) * 16
+                    projected = torch.randn(nt, projection_width, dtype=dtype, device=device)
+                    x = projected[:, : 3 * dim]
+                    raw_beta = projected[:, 4 * dim + hd : 4 * dim + hd + nh].unsqueeze(0)
+                    conv_state, state = _kimi031_verify_state_pool(nb, ns, nh, hd, cw, device)
+                    # kda.py:954-1027: spec conv uses first checkpoint column;
+                    # fused_recurrent.py:196,277 reserves null checkpoint zero.
+                    ssm_idx = torch.arange(1, nt + 1, dtype=torch.int32, device=device).view(nb, ns)
+                    idx = ssm_idx[:, 0]
+                else:
+                    x = torch.randn(nt, 3 * dim, dtype=dtype, device=device)
+                    conv_state = torch.zeros(nb, cw - 1 + ns, 3 * dim, dtype=dtype, device=device).transpose(1, 2)
+                    idx = torch.arange(nb, dtype=torch.int32, device=device)
                 cu = torch.arange(0, nt + 1, ns, dtype=torch.int32, device=device)
-                idx = torch.arange(nb, dtype=torch.int32, device=device)
                 accepted = torch.full((nb,), ns, dtype=torch.int32, device=device)
                 conv_out = torch.empty_like(x)
-
-                q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                if target_runtime:
+                    # kda.py:978-986: actual conv output, packed token stride 3HD.
+                    q, k, v = [part.view(1, nt, nh, hd) for part in conv_out.split(dim, -1)]
+                else:
+                    q = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                    k = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
+                    v = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
                 raw_g = torch.randn(1, nt, nh, hd, dtype=dtype, device=device)
-                raw_beta = torch.randn(1, nt, nh, dtype=dtype, device=device)
+                if not target_runtime:
+                    raw_beta = torch.randn(1, nt, nh, dtype=dtype, device=device)
                 a_log = torch.zeros(nh, dtype=torch.float32, device=device)
                 dt_bias_hd = 0.1 * torch.randn(nh, hd, dtype=torch.float32, device=device)
-                state = torch.zeros(nb * (ns + 1), nh, hd, hd, dtype=torch.float32, device=device)
-                ssm_idx = torch.arange(nb * ns, dtype=torch.int32, device=device).view(nb, ns)
+                if not target_runtime:
+                    state = torch.zeros(nb * (ns + 1), nh, hd, hd, dtype=torch.float32, device=device)
+                    ssm_idx = torch.arange(nb * ns, dtype=torch.int32, device=device).view(nb, ns)
                 out = torch.empty(1, nt, nh, hd, dtype=dtype, device=device)
 
                 common = {
@@ -916,12 +971,13 @@ def _require_audited_runtime(
         # and no-spec inputs are constructed by our callbacks. Prefill uses
         # the same FP32 state and auto resolver (kda.py:394-433), with no
         # exported checkpoints. kda.py:858-861 honors the native SD/DS layout;
-        # only SD is qualified here. No additional row dimensions are needed
-        # for this one profile; verify/RecoverSSM and DS need separate audits.
-        if phase not in {"context", "generation"}:
+        # only SD is qualified here. Verify fixes num_spec=query_width-1,
+        # accepted=query_width, native cache pages/packed inputs and no
+        # RecoverSSM; query width already exists in the row identity.
+        if phase not in {"context", "generation", "verify"}:
             raise KdaRuntimeNotAuditedError(
-                "Kimi KDA 0.31.0 is not an audited KDA runtime for verify or unspecified phase; "
-                "only the fixed context/nonspec generation profile is qualified"
+                "Kimi KDA 0.31.0 is not an audited KDA runtime for unspecified phase; "
+                "only fixed context/nonspec generation/non-RecoverSSM verify profiles are qualified"
             )
         from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
 
