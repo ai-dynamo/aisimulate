@@ -1,0 +1,20 @@
+{
+  "merged_parquet_sha256": "dc4fc90b468518aa7f9ad0e6c5b6cc1cc32ecc512601522a58aedc3ec98202df",
+  "merged_rows": 111951,
+  "concatenation": "Existing canonical 74433 rows followed by all 37518 NVFP4 rows; no cross-event duplicate identities; no source rows modified.",
+  "events": [
+    {
+      "rows": 74433,
+      "parquet_sha256": "90f0a1a91ddefd321841732a8606a213499018a0c82c5faccc7b611b2f8e4cca",
+      "ordered_rows_sha256": "8e148167b135e331833643a2a2bf3b89c67c15abbf3b7de5bc8742ed486b29fa"
+    },
+    {
+      "rows": 37518,
+      "parquet_sha256": "8b5b51b84c23923f598d0025ba438e5a35326446aee067a9a9cd1cf7bf171df4",
+      "ordered_rows_sha256": "946b56344182f1b49a59263ebac77c04f0f28d150653cb0cae68f1e8c099a2e8"
+    }
+  ],
+  "row_fingerprint_format": "SHA256 of json.dumps(rows,sort_keys=True,separators=(comma,colon)), UTF-8",
+  "status": "partial",
+  "remaining": "FP8 M>=2 not yet published; 740 GLM-specific cases per dtype were explicitly excluded from these campaign requests; 1110 historical block-FP8 failures remain."
+}

@@ -1,0 +1,126 @@
+{
+  "system": "b200_sxm",
+  "framework": "vllm",
+  "version": "0.31.0",
+  "parquet_sha256": "90f0a1a91ddefd321841732a8606a213499018a0c82c5faccc7b611b2f8e4cca",
+  "shared_layer": false,
+  "passed": 74433,
+  "failed": 0,
+  "unique_consumer_identities": 74433,
+  "counts": {
+    "bfloat16/torch.nn.functional.linear": 37518,
+    "fp8_block/DeepGemmFp8BlockScaledMMKernel": 31080,
+    "fp8_block/CutlassFp8BlockScaledMMKernel": 5328,
+    "fp8/CutlassFP8ScaledMMLinearKernel": 507
+  },
+  "sources": {
+    "silicon": 74433
+  },
+  "sol_floor_counts": {
+    "bfloat16": 39
+  },
+  "sol_floor_examples": [
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        128,
+        1024
+      ],
+      "measured_ms": 0.009308444129096137,
+      "sol_ms": 0.00983891116883117,
+      "query_ms": 0.00983891116883117
+    },
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        64,
+        1024
+      ],
+      "measured_ms": 0.007782222496138678,
+      "sol_ms": 0.009277174025974026,
+      "query_ms": 0.009277174025974026
+    },
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        64,
+        768
+      ],
+      "measured_ms": 0.00627377794848548,
+      "sol_ms": 0.00709405922077922,
+      "query_ms": 0.00709405922077922
+    },
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        32,
+        1024
+      ],
+      "measured_ms": 0.006684444430801604,
+      "sol_ms": 0.008996305454545455,
+      "query_ms": 0.008996305454545455
+    },
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        32,
+        768
+      ],
+      "measured_ms": 0.005576888720194499,
+      "sol_ms": 0.006815318441558442,
+      "query_ms": 0.006815318441558442
+    },
+    {
+      "identity": [
+        "bfloat16",
+        32768,
+        32,
+        512
+      ],
+      "measured_ms": 0.004554666578769684,
+      "sol_ms": 0.0046343314285714286,
+      "query_ms": 0.0046343314285714286
+    },
+    {
+      "identity": [
+        "bfloat16",
+        16384,
+        128,
+        2560
+      ],
+      "measured_ms": 0.010500444306267632,
+      "sol_ms": 0.011524122597402597,
+      "query_ms": 0.011524122597402597
+    },
+    {
+      "identity": [
+        "bfloat16",
+        16384,
+        128,
+        2048
+      ],
+      "measured_ms": 0.008325333396593729,
+      "sol_ms": 0.009328241038961039,
+      "query_ms": 0.009328241038961039
+    }
+  ],
+  "expected_value": "max(measured latency, mathematical SOL, memory SOL); raw measurements remain unchanged",
+  "loader_contract": "First source wins; all published dtype/M/N/K identities are unique; no fp8_static correction applies.",
+  "interfaces": [
+    "Python orchestration _engine_query",
+    "native evaluate_ops_json"
+  ],
+  "legacy_note": "Public legacy query was removed; the retained Python orchestration delegates to the native engine.",
+  "coverage": {
+    "selected": 75543,
+    "measured": 74433,
+    "historical_framework_failures": 1110,
+    "unattempted": 0
+  },
+  "table_status": "partial: NVFP4 and FP8 M>=2 remain outside this publication"
+}

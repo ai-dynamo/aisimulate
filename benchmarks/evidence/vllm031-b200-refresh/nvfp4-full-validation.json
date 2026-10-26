@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "parent_pipeline": 76765385,
+  "child_pipeline": 76765436,
+  "job": 510097837,
+  "collector_source": "8a411395d3161f1320a9de0e8670deacb40b314c",
+  "runner_source": "3715eaf11590df65a6d4ec7c67d56f45ff76fd19",
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "image": "vllm/vllm-openai",
+    "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+    "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+  },
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "collector_hash": "sha256:6d4803ec62128aa4dcba359579e531392d9f8c56281523c2e89bcdd889895770",
+  "case_plan_hash": "sha256:ac15c6379b8de03e49c419d74c5b702b2596c387a07d78f833da2ff288133956",
+  "artifact_zip_sha256": "f09d4f6c95e4c8ae0685f4161fdd81e74399774f549ea52a98a9906b84d3d780",
+  "parquet_sha256": "8b5b51b84c23923f598d0025ba438e5a35326446aee067a9a9cd1cf7bf171df4",
+  "checkpoint_sha256": "888705f3f1a3b490cab04815284fc66a1c98a489cd5be8a6930ffd1bab8baad9",
+  "counts": {
+    "generated_all_dtypes": 153032,
+    "nvfp4_before_exclusions": 38258,
+    "explicitly_excluded": 740,
+    "planned": 37518,
+    "passed": 37518,
+    "failed": 0,
+    "unattempted": 0,
+    "unique_identities": 37518,
+    "duplicates": 0,
+    "invalid_latencies": 0
+  },
+  "kernel_counts": {
+    "FlashInferCuteDslNvFp4LinearKernel": 37518
+  },
+  "include_filters": [
+    "['nvfp4',"
+  ],
+  "exclude_filters": [
+    ", 288, 4096]",
+    ", 3336, 4096]",
+    ", 6416, 4096]",
+    ", 12576, 4096]",
+    ", 19360, 4096]",
+    ", 24576, 4096]",
+    ", 24896, 4096]",
+    ", 38720, 4096]",
+    ", 77440, 4096]",
+    ", 154880, 4096]"
+  ],
+  "checks": {
+    "pinned_getter_plan_equals_checkpoint_done_equals_parquet_keys": true,
+    "collector_hash_rebuilt_from_exact_source": true,
+    "plan_hash_rebuilt": true,
+    "runtime_manifest_hash_rebuilt": true,
+    "prior_numerical_collector_file_byte_identical": true
+  },
+  "source_numerical_gate": {
+    "job": 2384885,
+    "planned": 20,
+    "note": "Prior independent eager/CUDA-graph quantized-operand numerical checks; collector/vllm/collect_gemm.py byte-identical from tested 079052e6 to collected 8a411395. Not a numerical check of all 37518 shapes.",
+    "status": "passed",
+    "unattempted": 0,
+    "result_sha256": "3886ee66acc178347117d41f4aa8cf3783d6313f085961182a56e28bb32cfde4",
+    "tested_source": "079052e6f73984fd73540de724d0d99b4de34442",
+    "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593"
+  },
+  "historical_baseline": {
+    "success_tables": [
+      {
+        "version": "0.25.0",
+        "parquet_sha256": "ed7c42ae8477ff754b1450ac9a1177eaba8950d27371a2101796b04e0d7e9f1f",
+        "nvfp4_rows": 37518,
+        "matched_current_success_keys": 37518,
+        "current_keys_absent_from_historical_table": 0,
+        "duplicate_historical_keys": 0,
+        "latency_diagnostic": {
+          "median_signed_delta_pct": -12.327751656498753,
+          "median_abs_delta_pct": 12.53908865790423,
+          "min_signed_delta_pct": -48.56574737908479,
+          "max_signed_delta_pct": 156.4409539288536,
+          "note": "Historical runtime/clocks are not controlled; diagnostic distribution is not an accuracy or regression verdict."
+        }
+      },
+      {
+        "version": "0.27.1",
+        "parquet_sha256": "e574270a362a422a963bafd25f41135a2163f560967ff769b6fb53310fb55081",
+        "nvfp4_rows": 35890,
+        "matched_current_success_keys": 35890,
+        "current_keys_absent_from_historical_table": 1628,
+        "duplicate_historical_keys": 0,
+        "latency_diagnostic": {
+          "median_signed_delta_pct": -7.866723899263739,
+          "median_abs_delta_pct": 8.2031312873656,
+          "min_signed_delta_pct": -85.34107030215459,
+          "max_signed_delta_pct": 119.85840106094945,
+          "note": "Historical runtime/clocks are not controlled; diagnostic distribution is not an accuracy or regression verdict."
+        }
+      }
+    ],
+    "v0_25_failure_archive_sha256": "da3fab62c25e5b35fa2a2bafa4d3ac94adff1a7c5a885ee8e33cde678554adf0",
+    "v0_25_all_gemm_failed_keys": 1110,
+    "v0_25_failed_keys_matching_selected_nvfp4": 0,
+    "note": "Baseline counts compare exact keys; older latencies are diagnostic only, never substituted for newly collected rows."
+  },
+  "consumer_validation": {
+    "new_nvfp4_rows": 37518,
+    "combined_gemm_rows": 111951,
+    "python_passed": 111951,
+    "native_passed": 111951,
+    "shared_layer": false,
+    "sol_floor_counts": {
+      "bfloat16": 39
+    },
+    "nvfp4_memory_bytes_per_element": 0.5625,
+    "nvfp4_tc_flops": 9000000000000000
+  }
+}

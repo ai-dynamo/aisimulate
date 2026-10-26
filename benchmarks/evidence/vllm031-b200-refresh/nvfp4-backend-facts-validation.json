@@ -1,0 +1,18 @@
+{
+  "scope": "b200_sxm/gemm/vllm/0.31.0/nvfp4",
+  "derived": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "system": "b200_sxm",
+    "op_name": "gemm",
+    "gemm_dtype": "nvfp4",
+    "backends": [
+      "flashinfer_cutedsl"
+    ],
+    "kernel_sources": [
+      "FlashInferCuteDslNvFp4LinearKernel"
+    ]
+  },
+  "unmapped": [],
+  "catalog_inconsistencies": []
+}

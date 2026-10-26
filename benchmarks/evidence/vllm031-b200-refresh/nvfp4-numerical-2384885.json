@@ -1,0 +1,815 @@
+{
+  "kind": "numerical_correctness_only",
+  "collector_sha": "079052e6f73984fd73540de724d0d99b4de34442",
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "planned": 20,
+  "cases": [
+    {
+      "case": [
+        "nvfp4",
+        1,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.003083412302657962
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0030818702653050423
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.5839030146598816,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        16,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0029106284491717815
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.002910798415541649
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.6693522334098816,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        17,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0029064854606986046
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.002906629117205739
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.6693522334098816,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        64,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.003120597219094634
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.003119328059256077
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7073296308517456,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        65,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0031197259668260813
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0031184484250843525
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7073296308517456,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        256,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        256,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0028954804874956608
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.002894675126299262
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7453070878982544,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        4096,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        4096,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.002973377937451005
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0029716750141233206
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 1.0206434726715088,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        1,
+        1,
+        8192
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        32,
+        4096
+      ],
+      "activation_scale_shape": [
+        128,
+        512
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 0.5,
+        "normalized_rms_error": 0.012500000186264515
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 0.5,
+        "normalized_rms_error": 0.012345679104328156
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.46044921875,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        17,
+        16,
+        8192
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        32,
+        4096
+      ],
+      "activation_scale_shape": [
+        128,
+        512
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0030449973419308662
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0030453831423074007
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.5699055790901184,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        2,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0031133031006902456
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.00311156059615314
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.5839030146598816,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        32,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0031127785332500935
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0031115200836211443
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7073296308517456,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        128,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.003116540377959609
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0031153145246207714
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7073296308517456,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        257,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        384,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.002895231358706951
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0028944271616637707
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7453070878982544,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        512,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        512,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.00307889049872756
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0030771212186664343
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.9273274540901184,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        1024,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        1024,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.00296998699195683
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0029682968743145466
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 1.0206434726715088,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        2048,
+        4096,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        2048
+      ],
+      "activation_scale_shape": [
+        2048,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0029724889900535345
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0029707886278629303
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 1.0206434726715088,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        1,
+        8192,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        8192,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.003220091573894024
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 1.0,
+        "normalized_rms_error": 0.0032176929526031017
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7173665165901184,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        1,
+        4096,
+        8192
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        4096
+      ],
+      "activation_scale_shape": [
+        128,
+        512
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0031701738480478525
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.003168199211359024
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.7173665165901184,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        64,
+        8192,
+        4096
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        8192,
+        2048
+      ],
+      "activation_scale_shape": [
+        128,
+        256
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0032611333299428225
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0032592169009149075
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.8690049052238464,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    },
+    {
+      "case": [
+        "nvfp4",
+        64,
+        4096,
+        8192
+      ],
+      "selected_kernel": "FlashInferCuteDslNvFp4LinearKernel",
+      "weight_shape": [
+        4096,
+        4096
+      ],
+      "activation_scale_shape": [
+        128,
+        512
+      ],
+      "tolerance": {
+        "rtol": 0.1,
+        "atol": 0.1
+      },
+      "eager": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "legacy_bf16_operand_reference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.0032513178884983063
+      },
+      "reference_rounding_difference": {
+        "max_absolute_error": 2.0,
+        "normalized_rms_error": 0.003249472239986062
+      },
+      "reference_contract": "FP4*FP8 blocks, FP32 accumulation, FP32 alpha, final BF16 cast",
+      "alpha": 0.8690049052238464,
+      "graph_replay": {
+        "max_absolute_error": 0.0,
+        "normalized_rms_error": 0.0
+      },
+      "status": "passed"
+    }
+  ],
+  "vllm": "0.31.0",
+  "flashinfer": "0.7.0.post1",
+  "torch": "2.13.0+cu130",
+  "cuda": "13.0",
+  "source_contract": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "status": "passed",
+  "unattempted": []
+}

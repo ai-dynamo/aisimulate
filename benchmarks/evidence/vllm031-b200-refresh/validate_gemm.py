@@ -22,11 +22,20 @@ def main():
     systems = evidence.parents[2] / "python/aisimulate/src/aisimulate_core/systems"
     table = systems / "data/b200_sxm/gemm/vllm/0.31.0/gemm_perf.parquet"
     digest = hashlib.sha256(table.read_bytes()).hexdigest()
-    reconciliation = json.loads(
-        (evidence / "gemm-canonical-reconciliation.json").read_text()
+    publication = json.loads(
+        (evidence / "gemm-publication-validation.json").read_text()
     )
-    assert digest == reconciliation["canonical_sha256"]
+    assert digest == publication["merged_parquet_sha256"]
     rows = pq.read_table(table).to_pylist()
+    offset = 0
+    for event in publication["events"]:
+        event_rows = rows[offset : offset + event["rows"]]
+        fingerprint = hashlib.sha256(
+            json.dumps(event_rows, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert fingerprint == event["ordered_rows_sha256"]
+        offset += event["rows"]
+    assert offset == len(rows)
     spec = yaml.safe_load((systems / "b200_sxm.yaml").read_text())["gpu"]
     database = PerfDatabase(
         "b200_sxm", "vllm", "0.31.0", systems_root=str(systems), shared_layer=False
@@ -49,13 +58,19 @@ def main():
         assert all(isinstance(v, int) and v > 0 for v in (m, n, k))
         raw = row["latency"]
         assert math.isfinite(raw) and raw > 0, row
-        assert quant in ("bfloat16", "fp8", "fp8_block"), row
+        assert quant in ("bfloat16", "fp8", "fp8_block", "nvfp4"), row
         assert quant != "fp8" or m == 1, row
         counts[f"{quant}/{row['kernel_source']}"] += 1
         # Mirrors gemm.rs::gemm_sol_with_flops; no fp8_static overhead
-        # subtraction applies to these three measured quant modes.
-        width = 2 if quant == "bfloat16" else 1
-        flops = spec["bfloat16_tc_flops" if width == 2 else "fp8_tc_flops"]
+        # subtraction applies to these measured quant modes. NVFP4's
+        # 9/16 bytes includes its scale overhead (common/enums.rs).
+        width, flops_key = {
+            "bfloat16": (2, "bfloat16_tc_flops"),
+            "fp8": (1, "fp8_tc_flops"),
+            "fp8_block": (1, "fp8_tc_flops"),
+            "nvfp4": (9 / 16, "fp4_tc_flops"),
+        }[quant]
+        flops = spec[flops_key]
         sol = (
             max(2 * m * n * k / flops, width * (m * n + m * k + n * k) / spec["mem_bw"])
             * 1000
@@ -92,12 +107,13 @@ def main():
                         "query_ms": native_value,
                     }
                 )
-    assert len(rows) == len(identities) == 74433
+    assert len(rows) == len(identities) == 111951
     assert counts == {
         "bfloat16/torch.nn.functional.linear": 37518,
         "fp8/CutlassFP8ScaledMMLinearKernel": 507,
         "fp8_block/CutlassFp8BlockScaledMMKernel": 5328,
         "fp8_block/DeepGemmFp8BlockScaledMMKernel": 31080,
+        "nvfp4/FlashInferCuteDslNvFp4LinearKernel": 37518,
     }, counts
     result = {
         "system": "b200_sxm",
@@ -120,12 +136,12 @@ def main():
         ],
         "legacy_note": "Public legacy query was removed; the retained Python orchestration delegates to the native engine.",
         "coverage": {
-            "selected": 75543,
-            "measured": 74433,
+            "selected": 113061,
+            "measured": 111951,
             "historical_framework_failures": 1110,
             "unattempted": 0,
         },
-        "table_status": "partial: NVFP4 and FP8 M>=2 remain outside this publication",
+        "table_status": "partial: FP8 M>=2 and explicitly excluded GLM-specific cases remain outside this publication",
     }
     (evidence / "gemm-consumer-validation.json").write_text(
         json.dumps(result, indent=2) + "\n"
