@@ -1,0 +1,15 @@
+{
+  "schema_version": 2,
+  "frameworks": {
+    "vllm": {
+      "source_repo": "https://github.com/vllm-project/vllm.git",
+      "default": {
+        "version": "0.31.0",
+        "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+        "images": {
+          "default": "gitlab-master.nvidia.com:5005/dl/ai-dynamo/aisim-auto-collector/nccl-tests@sha256:4dd43aadd0cd541b4e04448fac3806fbb92ff8783a8b64afa272489ec6919cfb"
+        }
+      }
+    }
+  }
+}

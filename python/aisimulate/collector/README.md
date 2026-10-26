@@ -947,3 +947,24 @@ Exclusion wins over inclusion. Preserve the filter arguments with the campaign
 manifest and account for excluded backlog separately; never derive exclusions
 from failed cases or count them as successful collection. Case identities, native
 callbacks, checkpoint compatibility and failure classification are unchanged.
+
+## Pinned B200 communication qualification runtime
+
+Use `collector/campaigns/vllm031-b200-comm-runtime.json` for the B200/vLLM
+0.31.0 communication smoke and subsequent full collection. Its SHA256 is
+`3e9a843bd12cf4d5a87b86494344651ad6496ef9572820a51c5244f998cb1b9f`.
+The provider image preserves all 40 layers of the official amd64 vLLM image
+`sha256:5db2b6de97e4f1ca6424f3319f1edffaee0091e2c8b75744fc4be5e380e90cc2`.
+It adds nccl-tests v2.17.9 at source
+`2535da805b34e96d1dc08be66289be1a6d57f5ad`, built against the existing
+NCCL 2.30.7; it does not replace framework libraries. The derived image digest
+is separate from vLLM's source commit and original image digest.
+
+In the auto collector, set `AISIM_COMM_MODE=smoke`, `AISIM_OPS=comm`,
+`AISIM_GPU_NUM=8`, and `AISIM_COLLECT_NCCL=1`, with the committed manifest
+path/hash and its exact image digest. The smoke runs 24 NCCL correctness commands
+(half/int8, four primitives, TP2/4/8) and three native vLLM commands covering
+eager/graph BF16 at five sizes. Native numerical and dispatch evidence must pass
+on every rank. Smoke output is qualification evidence, never full coverage or
+automatic publication. Use a separate `full` run after reviewing the smoke.
+CPU build/CI success does not establish GPU correctness or performance.
