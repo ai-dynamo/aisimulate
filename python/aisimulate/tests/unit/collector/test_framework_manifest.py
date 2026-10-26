@@ -73,6 +73,12 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
         "mla_generation_module",
         "dsa_context_module",
         "dsa_generation_module",
+        "dsv4_csa_context_module",
+        "dsv4_hca_context_module",
+        "dsv4_csa_generation_module",
+        "dsv4_hca_generation_module",
+        "dsv4_paged_mqa_logits_module",
+        "dsv4_hca_attn_module",
     }
 
     # Each module pins the runtime that actually collects it: the manifest

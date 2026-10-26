@@ -260,7 +260,12 @@ collector.vllm.collect_mla_bmm_v2:
 collector.vllm.collect_kda:
   - collector/cases/base_ops/kda.yaml
   - __model_cases__
-collector.vllm.collect_dsv4_attn:
+collector.vllm.collect_dsv4_attn_v2:
+  - collector/vllm/collect_dsv4_attn_v1.py
+  - collector/vllm/runtime_031.py
+  - collector/vllm/utils.py
+  - __model_cases__
+collector.vllm.collect_dsv4_attn_v1:
   - collector/vllm/utils.py
   - __model_cases__
 collector.vllm.glm53flash_attention_runner:

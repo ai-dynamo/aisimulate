@@ -453,6 +453,24 @@ and provenance. Run exact small cases for each model and precision before a
 full sweep; a source-qualified adapter does not establish runtime support for
 all declared cases. Failures remain visible and must not become broad skips.
 
+### B200 DSV4 qualification
+
+The six `dsv4_*` operations have an exact 0.31.0 route. It retains the existing
+case grids, native attention selector, TP shard simulation, and timing calls.
+Full CSA/HCA and isolated HCA use vLLM's native cache groups, shared allocation,
+layer binding, kernel block sizes, and metadata builders. Each group receives
+disjoint physical page IDs in the shared buffer; layers packed within a group
+use the same page table. This avoids overwriting attention KV with compressor
+state. See the native [allocator](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/utils.py#L395)
+and [group placement](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/core/kv_cache_utils.py#L1669).
+
+Standalone paged MQA retains its FP8 packed-cache inputs and native DeepGEMM
+wrapper call, whose target signature remains compatible. All six operations
+require fresh target measurements and a GPU smoke gate. CPU checks verify page
+and slot mappings, shared-allocation delegation, capacity restoration on error,
+version routing, and unchanged case/measurement fields. Use fresh checkpoint
+identities after this adapter change; no performance reuse is implied.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)
