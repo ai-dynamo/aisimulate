@@ -269,3 +269,67 @@ def test_vllm_standalone_full_sweep_keeps_declared_prefixes_and_quick_defaults_t
     monkeypatch.setattr(sys, "argv", ["collect_msa_module.py", "--mode", "context", "--quick"])
     module.main()
     assert [call["prefix_len"] for call in calls] == [0]
+
+
+@pytest.mark.parametrize("is_context,expected_query", [(True, 128), (False, 1)])
+def test_vllm031_msa_uses_native_views_and_public_metadata(monkeypatch, is_context, expected_query):
+    module = _load_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(module, "vllm_version", "0.31.0")
+    requests, allocations, builds = [], [], []
+    common = object()
+
+    def metadata(batch, block_size, num_blocks, device, context, *, randomize_blocks):
+        requests.append((batch.seq_lens, batch.query_lens, block_size, num_blocks, context, randomize_blocks))
+        return common, object()
+
+    def allocate(config, backend, spec, num_blocks, device):
+        value = object()
+        allocations.append((backend, spec, num_blocks, value))
+        return value
+
+    _stub_module(monkeypatch, "collector.vllm.runtime_031", create_common_metadata=metadata, allocate_cache=allocate)
+
+    class Builder:
+        def __init__(self, spec, names, config, device):
+            self.names = names
+
+        def build(self, **kwargs):
+            builds.append((self.names, kwargs))
+            return self.names
+
+    # Deliberately no get_kv_cache_shape: target removed that API.
+    backend = SimpleNamespace(get_builder_cls=lambda: Builder)
+    main_spec, index_spec = object(), object()
+    index = SimpleNamespace(get_attn_backend=lambda: backend, get_kv_cache_spec=lambda config: index_spec)
+    layer = SimpleNamespace(
+        get_attn_backend=lambda: backend,
+        get_kv_cache_spec=lambda config: main_spec,
+        indexer=SimpleNamespace(index_cache=index),
+    )
+    config = SimpleNamespace(cache_config=SimpleNamespace(block_size=128))
+    result = module._create_kv_caches_and_metadata(config, layer, 2, 128, is_context, prefix_len=128)
+    total = 256 if is_context else 129
+    assert requests == [([total, total], [expected_query, expected_query], 128, 5, is_context, False)]
+    assert [entry[1] for entry in allocations] == [main_spec, index_spec]
+    assert [entry[2] for entry in allocations] == [5, 5]
+    assert result[:2] == (allocations[0][3], allocations[1][3])
+    assert result[-1] is common
+    assert [b[0] for b in builds] == [[module._ATTN_LAYER_NAME], [module._INDEX_CACHE_LAYER_NAME]]
+    assert all(b[1]["common_attn_metadata"] is common for b in builds)
+    assert all(b[1]["common_prefix_len"] == (128 if is_context else 0) for b in builds)
+
+
+def test_vllm031_msa_binds_both_native_layer_views(monkeypatch):
+    module = _load_backend(monkeypatch, "vllm")
+    monkeypatch.setattr(module, "vllm_version", "0.31.0")
+    bindings = []
+    context = {
+        name: SimpleNamespace(bind_kv_cache=lambda cache, name=name: bindings.append((name, cache)))
+        for name in [module._ATTN_LAYER_NAME, module._INDEX_CACHE_LAYER_NAME]
+    }
+    main, index = object(), object()
+    module._bind_msa_caches(context, main, index)
+    assert bindings == [(module._ATTN_LAYER_NAME, main), (module._INDEX_CACHE_LAYER_NAME, index)]
+    # The indexer hook transforms the4D native view; bypassing it via direct
+    # assignment leaves the wrong rank, even though allocation succeeded.
+    assert not hasattr(context[module._INDEX_CACHE_LAYER_NAME], "kv_cache")

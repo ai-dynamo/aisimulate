@@ -10,7 +10,10 @@
 # test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version).
 # B200 0.25.0 validation: job 1968755 passed 8 context and 6 generation
 # cases after matching serving inference mode, positions, and THK top-k layout.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# Target0.31 native metadata/cache APIs: db9527a4, common/sparse_attention.py
+# :238-330 and common/indexer.py:141-154. Default decode remains Triton;
+# CUTLASS is opt-in (config/attention.py:43), not implied by an MSA class name.
+__compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.27.1,!=0.28.0,!=0.29.0,!=0.30.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
@@ -50,6 +53,7 @@ import sys
 import traceback
 
 import torch
+from packaging.version import Version
 from vllm.config import set_current_vllm_config
 from vllm.forward_context import set_forward_context
 
@@ -529,6 +533,17 @@ def _msa_query_positions(batch_size: int, seq_len: int, is_context: bool, prefix
     return [position for _ in range(batch_size) for position in range(start, start + width)]
 
 
+def _bind_msa_caches(forward_ctx, kv_cache, index_kv_cache):
+    for name, cache in ((_ATTN_LAYER_NAME, kv_cache), (_INDEX_CACHE_LAYER_NAME, index_kv_cache)):
+        if Version(vllm_version).base_version == "0.31.0":
+            # Native indexer binding squeezes the H=1 axis from its 4D view;
+            # main attention retains its native packed K/V view. Serving calls
+            # these hooks (common/indexer.py:141-143 / AttentionLayerBase:27).
+            forward_ctx[name].bind_kv_cache(cache)
+        else:
+            forward_ctx[name].kv_cache = cache
+
+
 def _create_kv_caches_and_metadata(
     vllm_config,
     attn_module,
@@ -575,18 +590,31 @@ def _create_kv_caches_and_metadata(
             query_lens=[1] * batch_size,
         )
 
-    common_attn_metadata = create_common_attn_metadata(batch_spec, block_size, torch_device, arange_block_indices=True)
-    # vLLM dd10e03f9 supplies CommonAttentionMetadata.positions in
-    # gpu_model_runner.py:2393; its values are cached-token count plus the
-    # query-local offset (:1946-1949). MSA's new indexer consumes this field
-    # at models/minimax_m3/nvidia/indexer_msa.py:169-172. The field already
-    # exists in 0.24.0; leaving it None fails the 0.25.0 MSA builder.
-    common_attn_metadata.positions = torch.tensor(
-        _msa_query_positions(batch_size, seq_len, is_context, prefix_len),
-        dtype=torch.long,
-        device=torch_device,
-    )
-    num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
+    target_runtime = Version(vllm_version).base_version == "0.31.0"
+    if target_runtime:
+        from collector.vllm.runtime_031 import create_common_metadata
+
+        # Public target metadata carries seq_lens_cpu_upper_bound and
+        # positions; private CPU caches accepted by older versions are gone.
+        num_blocks = 1 + sum(_ceil_div(length, block_size) for length in batch_spec.seq_lens)
+        common_attn_metadata, _history_slots = create_common_metadata(
+            batch_spec, block_size, num_blocks, torch_device, is_context, randomize_blocks=False
+        )
+    else:
+        common_attn_metadata = create_common_attn_metadata(
+            batch_spec, block_size, torch_device, arange_block_indices=True
+        )
+        # vLLM dd10e03f9 supplies CommonAttentionMetadata.positions in
+        # gpu_model_runner.py:2393; its values are cached-token count plus the
+        # query-local offset (:1946-1949). MSA's new indexer consumes this field
+        # at models/minimax_m3/nvidia/indexer_msa.py:169-172. The field already
+        # exists in 0.24.0; leaving it None fails the 0.25.0 MSA builder.
+        common_attn_metadata.positions = torch.tensor(
+            _msa_query_positions(batch_size, seq_len, is_context, prefix_len),
+            dtype=torch.long,
+            device=torch_device,
+        )
+        num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
 
     # Main paged K/V cache: shape from the layer's own backend
     # ((num_blocks, 2, block_size, num_kv_heads, head_size) — MiniMaxM3
@@ -602,11 +630,18 @@ def _create_kv_caches_and_metadata(
     # (common/sparse_attention.py:298-306, view at :352).
     backend_cls = attn_module.get_attn_backend()
     kv_cache_spec = attn_module.get_kv_cache_spec(vllm_config)
-    kv_cache = torch.zeros(
-        backend_cls.get_kv_cache_shape(num_blocks, block_size, kv_cache_spec.num_kv_heads, kv_cache_spec.head_size),
-        dtype=kv_cache_spec.dtype,
-        device=torch_device,
-    )
+    if target_runtime:
+        from collector.vllm.runtime_031 import allocate_cache
+
+        # Target cache views come from the negotiated native layout and spec,
+        # not removed backend.get_kv_cache_shape (kv_cache_interface.py:296-420).
+        kv_cache = allocate_cache(vllm_config, backend_cls, kv_cache_spec, num_blocks, torch_device)
+    else:
+        kv_cache = torch.zeros(
+            backend_cls.get_kv_cache_shape(num_blocks, block_size, kv_cache_spec.num_kv_heads, kv_cache_spec.head_size),
+            dtype=kv_cache_spec.dtype,
+            device=torch_device,
+        )
 
     # Indexer key side-cache: (num_blocks, block_size, head_size), dtype from
     # the index cache module (bf16 for the default indexer_kv_dtype "bf16",
@@ -615,11 +650,14 @@ def _create_kv_caches_and_metadata(
     index_cache_layer = attn_module.indexer.index_cache
     index_backend_cls = index_cache_layer.get_attn_backend()
     index_spec = index_cache_layer.get_kv_cache_spec(vllm_config)
-    index_kv_cache = torch.zeros(
-        index_backend_cls.get_kv_cache_shape(num_blocks, block_size, 1, index_spec.head_size),
-        dtype=index_cache_layer.dtype,
-        device=torch_device,
-    )
+    if target_runtime:
+        index_kv_cache = allocate_cache(vllm_config, index_backend_cls, index_spec, num_blocks, torch_device)
+    else:
+        index_kv_cache = torch.zeros(
+            index_backend_cls.get_kv_cache_shape(num_blocks, block_size, 1, index_spec.head_size),
+            dtype=index_cache_layer.dtype,
+            device=torch_device,
+        )
 
     main_builder = backend_cls.get_builder_cls()(kv_cache_spec, [_ATTN_LAYER_NAME], vllm_config, torch_device)
     attn_metadata = main_builder.build(
@@ -712,8 +750,7 @@ def run_msa_module(
     # @v0.24.0; the model reads self.kv_cache / index_cache.kv_cache directly,
     # nvidia/model.py:606-607).
     forward_ctx = vllm_config.compilation_config.static_forward_context
-    forward_ctx[_ATTN_LAYER_NAME].kv_cache = kv_cache
-    forward_ctx[_INDEX_CACHE_LAYER_NAME].kv_cache = index_kv_cache
+    _bind_msa_caches(forward_ctx, kv_cache, index_kv_cache)
 
     # 2c. Prove the requested KV precision actually reached the framework
     # path — a benchmark that silently ran bf16 under an "fp8" label would be
