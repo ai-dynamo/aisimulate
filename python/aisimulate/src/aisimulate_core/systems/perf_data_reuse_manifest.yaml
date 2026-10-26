@@ -827,8 +827,8 @@ groups:
     tier: shared
     systems: [a100_sxm, b60]
     frameworks: [vllm]
-    total_raw_rows: 48762
-    within_framework_dedup_rows: 0
+    total_raw_rows: 70938
+    within_framework_dedup_rows: 1
   - op_file: generation_attention_perf.parquet
     kernel_source: 'fa3'
     tier: shared

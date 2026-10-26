@@ -72,6 +72,13 @@ CLI, set `engine.backend_version: current` or a version the error names.
 but it does not qualify that version for the CLI and later stages can still
 fail.
 
+Older, unlisted data versions can still fill missing shapes in a queryable
+version. For example, B60 vLLM `previous` (0.26.0) needs the retained 0.20.0
+GEMM table for `k=16384` and `k=32768`; its primary grid stops at `k=12288`.
+The 0.28.0 measurements cannot fill those gaps because automatic fallback
+only uses earlier versions. Keep this older table until the supported versions
+have replacement coverage. Primary measurements still take precedence.
+
 ## Accuracy and replay
 
 The [accuracy dashboards](https://ai-dynamo.org/aisimulate/) publish separate
