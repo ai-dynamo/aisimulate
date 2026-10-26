@@ -804,3 +804,4 @@ def test_learned_fit_uses_the_small_tree_hyperparameters(monkeypatch):
     assert calls == [{"features": ("num_prefill_requests",), **HYPERPARAMETERS}]
     assert HYPERPARAMETERS == {"max_iter": 150, "max_leaf_nodes": 15, "learning_rate": 0.2}
     assert predictor.diagnostics()["hyperparameters"] == HYPERPARAMETERS
+    assert predictor.diagnostics()["hyperparameters"] is not HYPERPARAMETERS
