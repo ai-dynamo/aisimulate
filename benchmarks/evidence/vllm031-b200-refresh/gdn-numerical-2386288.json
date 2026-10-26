@@ -1,0 +1,3884 @@
+{
+  "source_sha": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "collector_contract_sha": "53fb6dd38f234a260c3e9a4b6b75aee12733f754",
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "runner_sha256": "5aaa94b1621d96c9157929836b23c0960827db3a06f5e57d1cb4a402dadd6506",
+  "runtime": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1"
+  },
+  "cuda": "13.0",
+  "runtime_failure": null,
+  "records": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1700,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 8.040698594413698e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 3.2923733073175754e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          1280,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1701,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.720383373069126e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1702,
+      "checks": {
+        "output": {
+          "max_abs": 4.76837158203125e-07,
+          "nrmse": 1.6338735804311e-06
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 2.1919847270623904e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          2560,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1703,
+      "checks": {
+        "output": {
+          "max_abs": 9.5367431640625e-07,
+          "nrmse": 2.8662209388130577e-06
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.671986530979666e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          2624,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1704,
+      "checks": {
+        "output": {
+          "max_abs": 7.450580596923828e-09,
+          "nrmse": 1.2703038620998086e-08
+        },
+        "state": {
+          "max_abs": 1.4901161193847656e-07,
+          "nrmse": 3.1205686923385656e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          5120,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 5,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1705,
+      "checks": {
+        "output": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 1.0205786082906343e-07
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 3.954912131121091e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          5184,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 6,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1706,
+      "checks": {
+        "output": {
+          "max_abs": 7.62939453125e-06,
+          "nrmse": 1.1722816452675033e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.2369961882873213e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          10240,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 7,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1707,
+      "checks": {
+        "output": {
+          "max_abs": 6.103515625e-05,
+          "nrmse": 7.45398283470422e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.2862748017569174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          10304,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 256,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 8,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1708,
+      "checks": {
+        "output": {
+          "max_abs": 2.9802322387695312e-08,
+          "nrmse": 2.9953156399642467e-08
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.6217522375304725e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 9,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1709,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 1.2059031178068835e-05
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.2799129573722894e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          20544,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 512,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 10,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "request_id": "gdn-00483"
+      },
+      "seed": 1710,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.340590737366256e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 2,
+        "head_ratio": 1,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 11,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "request_id": "gdn-01590"
+      },
+      "seed": 1711,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 4.0868517459102804e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          576,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 2,
+        "head_ratio": 2,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 12,
+      "case": {
+        "family": "gdn",
+        "heads": 6,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "request_id": "gdn-02697"
+      },
+      "seed": 1712,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.4847950303174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 6,
+        "head_ratio": 3,
+        "grid_product": 24,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 13,
+      "case": {
+        "family": "gdn",
+        "heads": 4,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "request_id": "gdn-04542"
+      },
+      "seed": 1713,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 2.6185738022377336e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 4,
+        "head_ratio": 4,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 14,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "key_heads": 16,
+        "batch": 512,
+        "strided": false,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 512,
+          "seq_len": 1,
+          "num_tokens": 512,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 16,
+          "head_k_dim": 128,
+          "num_v_heads": 128,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "request_id": "gdn-02827"
+      },
+      "seed": 1714,
+      "checks": {
+        "output": {
+          "max_abs": 0.0001220703125,
+          "nrmse": 2.206938006565906e-05
+        },
+        "state": {
+          "max_abs": 2.384185791015625e-07,
+          "nrmse": 8.066357537472868e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188,
+          189,
+          190,
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207,
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235,
+          236,
+          237,
+          238,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          248,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254,
+          255,
+          256,
+          257,
+          258,
+          259,
+          260,
+          261,
+          262,
+          263,
+          264,
+          265,
+          266,
+          267,
+          268,
+          269,
+          270,
+          271,
+          272,
+          273,
+          274,
+          275,
+          276,
+          277,
+          278,
+          279,
+          280,
+          281,
+          282,
+          283,
+          284,
+          285,
+          286,
+          287,
+          288,
+          289,
+          290,
+          291,
+          292,
+          293,
+          294,
+          295,
+          296,
+          297,
+          298,
+          299,
+          300,
+          301,
+          302,
+          303,
+          304,
+          305,
+          306,
+          307,
+          308,
+          309,
+          310,
+          311,
+          312,
+          313,
+          314,
+          315,
+          316,
+          317,
+          318,
+          319,
+          320,
+          321,
+          322,
+          323,
+          324,
+          325,
+          326,
+          327,
+          328,
+          329,
+          330,
+          331,
+          332,
+          333,
+          334,
+          335,
+          336,
+          337,
+          338,
+          339,
+          340,
+          341,
+          342,
+          343,
+          344,
+          345,
+          346,
+          347,
+          348,
+          349,
+          350,
+          351,
+          352,
+          353,
+          354,
+          355,
+          356,
+          357,
+          358,
+          359,
+          360,
+          361,
+          362,
+          363,
+          364,
+          365,
+          366,
+          367,
+          368,
+          369,
+          370,
+          371,
+          372,
+          373,
+          374,
+          375,
+          376,
+          377,
+          378,
+          379,
+          380,
+          381,
+          382,
+          383,
+          384,
+          385,
+          386,
+          387,
+          388,
+          389,
+          390,
+          391,
+          392,
+          393,
+          394,
+          395,
+          396,
+          397,
+          398,
+          399,
+          400,
+          401,
+          402,
+          403,
+          404,
+          405,
+          406,
+          407,
+          408,
+          409,
+          410,
+          411,
+          412,
+          413,
+          414,
+          415,
+          416,
+          417,
+          418,
+          419,
+          420,
+          421,
+          422,
+          423,
+          424,
+          425,
+          426,
+          427,
+          428,
+          429,
+          430,
+          431,
+          432,
+          433,
+          434,
+          435,
+          436,
+          437,
+          438,
+          439,
+          440,
+          441,
+          442,
+          443,
+          444,
+          445,
+          446,
+          447,
+          448,
+          449,
+          450,
+          451,
+          452,
+          453,
+          454,
+          455,
+          456,
+          457,
+          458,
+          459,
+          460,
+          461,
+          462,
+          463,
+          464,
+          465,
+          466,
+          467,
+          468,
+          469,
+          470,
+          471,
+          472,
+          473,
+          474,
+          475,
+          476,
+          477,
+          478,
+          479,
+          480,
+          481,
+          482,
+          483,
+          484,
+          485,
+          486,
+          487,
+          488,
+          489,
+          490,
+          491,
+          492,
+          493,
+          494,
+          495,
+          496,
+          497,
+          498,
+          499,
+          500,
+          501,
+          502,
+          503,
+          504,
+          505,
+          506,
+          507,
+          508,
+          509,
+          510,
+          511,
+          512
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 65536,
+        "state_slots": 513
+      },
+      "status": "passed"
+    }
+  ],
+  "total": 15,
+  "attempted": 15,
+  "passed": 15,
+  "failed": 0,
+  "unattempted": 0,
+  "planned_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1700
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1701
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1702
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1703
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1704
+    },
+    {
+      "index": 5,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1705
+    },
+    {
+      "index": 6,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1706
+    },
+    {
+      "index": 7,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1707
+    },
+    {
+      "index": 8,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1708
+    },
+    {
+      "index": 9,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1709
+    },
+    {
+      "index": 10,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "request_id": "gdn-00483"
+      },
+      "seed": 1710
+    },
+    {
+      "index": 11,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "request_id": "gdn-01590"
+      },
+      "seed": 1711
+    },
+    {
+      "index": 12,
+      "case": {
+        "family": "gdn",
+        "heads": 6,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "request_id": "gdn-02697"
+      },
+      "seed": 1712
+    },
+    {
+      "index": 13,
+      "case": {
+        "family": "gdn",
+        "heads": 4,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "request_id": "gdn-04542"
+      },
+      "seed": 1713
+    },
+    {
+      "index": 14,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "key_heads": 16,
+        "batch": 512,
+        "strided": false,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 512,
+          "seq_len": 1,
+          "num_tokens": 512,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 16,
+          "head_k_dim": 128,
+          "num_v_heads": 128,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "request_id": "gdn-02827"
+      },
+      "seed": 1714
+    }
+  ],
+  "attempted_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1700,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 8.040698594413698e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 3.2923733073175754e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          1280,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1701,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.720383373069126e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1702,
+      "checks": {
+        "output": {
+          "max_abs": 4.76837158203125e-07,
+          "nrmse": 1.6338735804311e-06
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 2.1919847270623904e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          2560,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1703,
+      "checks": {
+        "output": {
+          "max_abs": 9.5367431640625e-07,
+          "nrmse": 2.8662209388130577e-06
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.671986530979666e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          2624,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1704,
+      "checks": {
+        "output": {
+          "max_abs": 7.450580596923828e-09,
+          "nrmse": 1.2703038620998086e-08
+        },
+        "state": {
+          "max_abs": 1.4901161193847656e-07,
+          "nrmse": 3.1205686923385656e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          5120,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 5,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1705,
+      "checks": {
+        "output": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 1.0205786082906343e-07
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 3.954912131121091e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          5184,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 6,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1706,
+      "checks": {
+        "output": {
+          "max_abs": 7.62939453125e-06,
+          "nrmse": 1.1722816452675033e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.2369961882873213e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          10240,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 7,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1707,
+      "checks": {
+        "output": {
+          "max_abs": 6.103515625e-05,
+          "nrmse": 7.45398283470422e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.2862748017569174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          10304,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 256,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 8,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1708,
+      "checks": {
+        "output": {
+          "max_abs": 2.9802322387695312e-08,
+          "nrmse": 2.9953156399642467e-08
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.6217522375304725e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 9,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1709,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 1.2059031178068835e-05
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.2799129573722894e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          20544,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 512,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 10,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "request_id": "gdn-00483"
+      },
+      "seed": 1710,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.340590737366256e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 2,
+        "head_ratio": 1,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 11,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "request_id": "gdn-01590"
+      },
+      "seed": 1711,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 4.0868517459102804e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          576,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 2,
+        "head_ratio": 2,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 12,
+      "case": {
+        "family": "gdn",
+        "heads": 6,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "request_id": "gdn-02697"
+      },
+      "seed": 1712,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.4847950303174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 6,
+        "head_ratio": 3,
+        "grid_product": 24,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 13,
+      "case": {
+        "family": "gdn",
+        "heads": 4,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "request_id": "gdn-04542"
+      },
+      "seed": 1713,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 2.6185738022377336e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 4,
+        "head_ratio": 4,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 14,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "key_heads": 16,
+        "batch": 512,
+        "strided": false,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 512,
+          "seq_len": 1,
+          "num_tokens": 512,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 16,
+          "head_k_dim": 128,
+          "num_v_heads": 128,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "request_id": "gdn-02827"
+      },
+      "seed": 1714,
+      "checks": {
+        "output": {
+          "max_abs": 0.0001220703125,
+          "nrmse": 2.206938006565906e-05
+        },
+        "state": {
+          "max_abs": 2.384185791015625e-07,
+          "nrmse": 8.066357537472868e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188,
+          189,
+          190,
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207,
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235,
+          236,
+          237,
+          238,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          248,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254,
+          255,
+          256,
+          257,
+          258,
+          259,
+          260,
+          261,
+          262,
+          263,
+          264,
+          265,
+          266,
+          267,
+          268,
+          269,
+          270,
+          271,
+          272,
+          273,
+          274,
+          275,
+          276,
+          277,
+          278,
+          279,
+          280,
+          281,
+          282,
+          283,
+          284,
+          285,
+          286,
+          287,
+          288,
+          289,
+          290,
+          291,
+          292,
+          293,
+          294,
+          295,
+          296,
+          297,
+          298,
+          299,
+          300,
+          301,
+          302,
+          303,
+          304,
+          305,
+          306,
+          307,
+          308,
+          309,
+          310,
+          311,
+          312,
+          313,
+          314,
+          315,
+          316,
+          317,
+          318,
+          319,
+          320,
+          321,
+          322,
+          323,
+          324,
+          325,
+          326,
+          327,
+          328,
+          329,
+          330,
+          331,
+          332,
+          333,
+          334,
+          335,
+          336,
+          337,
+          338,
+          339,
+          340,
+          341,
+          342,
+          343,
+          344,
+          345,
+          346,
+          347,
+          348,
+          349,
+          350,
+          351,
+          352,
+          353,
+          354,
+          355,
+          356,
+          357,
+          358,
+          359,
+          360,
+          361,
+          362,
+          363,
+          364,
+          365,
+          366,
+          367,
+          368,
+          369,
+          370,
+          371,
+          372,
+          373,
+          374,
+          375,
+          376,
+          377,
+          378,
+          379,
+          380,
+          381,
+          382,
+          383,
+          384,
+          385,
+          386,
+          387,
+          388,
+          389,
+          390,
+          391,
+          392,
+          393,
+          394,
+          395,
+          396,
+          397,
+          398,
+          399,
+          400,
+          401,
+          402,
+          403,
+          404,
+          405,
+          406,
+          407,
+          408,
+          409,
+          410,
+          411,
+          412,
+          413,
+          414,
+          415,
+          416,
+          417,
+          418,
+          419,
+          420,
+          421,
+          422,
+          423,
+          424,
+          425,
+          426,
+          427,
+          428,
+          429,
+          430,
+          431,
+          432,
+          433,
+          434,
+          435,
+          436,
+          437,
+          438,
+          439,
+          440,
+          441,
+          442,
+          443,
+          444,
+          445,
+          446,
+          447,
+          448,
+          449,
+          450,
+          451,
+          452,
+          453,
+          454,
+          455,
+          456,
+          457,
+          458,
+          459,
+          460,
+          461,
+          462,
+          463,
+          464,
+          465,
+          466,
+          467,
+          468,
+          469,
+          470,
+          471,
+          472,
+          473,
+          474,
+          475,
+          476,
+          477,
+          478,
+          479,
+          480,
+          481,
+          482,
+          483,
+          484,
+          485,
+          486,
+          487,
+          488,
+          489,
+          490,
+          491,
+          492,
+          493,
+          494,
+          495,
+          496,
+          497,
+          498,
+          499,
+          500,
+          501,
+          502,
+          503,
+          504,
+          505,
+          506,
+          507,
+          508,
+          509,
+          510,
+          511,
+          512
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 65536,
+        "state_slots": 513
+      },
+      "status": "passed"
+    }
+  ],
+  "passed_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1700,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 8.040698594413698e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 3.2923733073175754e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          1280,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn",
+        "heads": 8,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1701,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.720383373069126e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 8,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1702,
+      "checks": {
+        "output": {
+          "max_abs": 4.76837158203125e-07,
+          "nrmse": 1.6338735804311e-06
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 2.1919847270623904e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          2560,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn",
+        "heads": 16,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1703,
+      "checks": {
+        "output": {
+          "max_abs": 9.5367431640625e-07,
+          "nrmse": 2.8662209388130577e-06
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.671986530979666e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          2624,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 16,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1704,
+      "checks": {
+        "output": {
+          "max_abs": 7.450580596923828e-09,
+          "nrmse": 1.2703038620998086e-08
+        },
+        "state": {
+          "max_abs": 1.4901161193847656e-07,
+          "nrmse": 3.1205686923385656e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          5120,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 32,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 5,
+      "case": {
+        "family": "gdn",
+        "heads": 32,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1705,
+      "checks": {
+        "output": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 1.0205786082906343e-07
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 3.954912131121091e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          5184,
+          1
+        ],
+        "key_heads": 4,
+        "value_heads": 32,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 6,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1706,
+      "checks": {
+        "output": {
+          "max_abs": 7.62939453125e-06,
+          "nrmse": 1.1722816452675033e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.2369961882873213e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          10240,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 64,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 7,
+      "case": {
+        "family": "gdn",
+        "heads": 64,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1707,
+      "checks": {
+        "output": {
+          "max_abs": 6.103515625e-05,
+          "nrmse": 7.45398283470422e-05
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 4.2862748017569174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          10304,
+          1
+        ],
+        "key_heads": 8,
+        "value_heads": 64,
+        "head_ratio": 8,
+        "grid_product": 256,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 8,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 1,
+        "strided": false
+      },
+      "seed": 1708,
+      "checks": {
+        "output": {
+          "max_abs": 2.9802322387695312e-08,
+          "nrmse": 2.9953156399642467e-08
+        },
+        "state": {
+          "max_abs": 1.1920928955078125e-07,
+          "nrmse": 2.6217522375304725e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 128,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 9,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "batch": 4,
+        "strided": true
+      },
+      "seed": 1709,
+      "checks": {
+        "output": {
+          "max_abs": 1.52587890625e-05,
+          "nrmse": 1.2059031178068835e-05
+        },
+        "state": {
+          "max_abs": 1.7881393432617188e-07,
+          "nrmse": 4.2799129573722894e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          20544,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 512,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 10,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "request_id": "gdn-00483"
+      },
+      "seed": 1710,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.340590737366256e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 2,
+        "head_ratio": 1,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 11,
+      "case": {
+        "family": "gdn",
+        "heads": 2,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "request_id": "gdn-01590"
+      },
+      "seed": 1711,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 4.0868517459102804e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          576,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 2,
+        "head_ratio": 2,
+        "grid_product": 8,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 12,
+      "case": {
+        "family": "gdn",
+        "heads": 6,
+        "key_heads": 2,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "request_id": "gdn-02697"
+      },
+      "seed": 1712,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 5.960464477539063e-08,
+          "nrmse": 3.4847950303174e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          1344,
+          1
+        ],
+        "key_heads": 2,
+        "value_heads": 6,
+        "head_ratio": 3,
+        "grid_product": 24,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 13,
+      "case": {
+        "family": "gdn",
+        "heads": 4,
+        "key_heads": 1,
+        "batch": 4,
+        "strided": true,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 4,
+          "seq_len": 1,
+          "num_tokens": 4,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "request_id": "gdn-04542"
+      },
+      "seed": 1713,
+      "checks": {
+        "output": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "state": {
+          "max_abs": 8.940696716308594e-08,
+          "nrmse": 2.6185738022377336e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "indices": [
+          3,
+          1,
+          0,
+          -1
+        ],
+        "qkv_stride": [
+          832,
+          1
+        ],
+        "key_heads": 1,
+        "value_heads": 4,
+        "head_ratio": 4,
+        "grid_product": 16,
+        "state_slots": 5
+      },
+      "status": "passed"
+    },
+    {
+      "index": 14,
+      "case": {
+        "family": "gdn",
+        "heads": 128,
+        "key_heads": 16,
+        "batch": 512,
+        "strided": false,
+        "registered_identity": {
+          "phase": "generation",
+          "batch_size": 512,
+          "seq_len": 1,
+          "num_tokens": 512,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 16,
+          "head_k_dim": 128,
+          "num_v_heads": 128,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "request_id": "gdn-02827"
+      },
+      "seed": 1714,
+      "checks": {
+        "output": {
+          "max_abs": 0.0001220703125,
+          "nrmse": 2.206938006565906e-05
+        },
+        "state": {
+          "max_abs": 2.384185791015625e-07,
+          "nrmse": 8.066357537472868e-08
+        },
+        "untouched_slots": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "null_outputs": "No null rows in this probe",
+        "indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137,
+          138,
+          139,
+          140,
+          141,
+          142,
+          143,
+          144,
+          145,
+          146,
+          147,
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159,
+          160,
+          161,
+          162,
+          163,
+          164,
+          165,
+          166,
+          167,
+          168,
+          169,
+          170,
+          171,
+          172,
+          173,
+          174,
+          175,
+          176,
+          177,
+          178,
+          179,
+          180,
+          181,
+          182,
+          183,
+          184,
+          185,
+          186,
+          187,
+          188,
+          189,
+          190,
+          191,
+          192,
+          193,
+          194,
+          195,
+          196,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207,
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          225,
+          226,
+          227,
+          228,
+          229,
+          230,
+          231,
+          232,
+          233,
+          234,
+          235,
+          236,
+          237,
+          238,
+          239,
+          240,
+          241,
+          242,
+          243,
+          244,
+          245,
+          246,
+          247,
+          248,
+          249,
+          250,
+          251,
+          252,
+          253,
+          254,
+          255,
+          256,
+          257,
+          258,
+          259,
+          260,
+          261,
+          262,
+          263,
+          264,
+          265,
+          266,
+          267,
+          268,
+          269,
+          270,
+          271,
+          272,
+          273,
+          274,
+          275,
+          276,
+          277,
+          278,
+          279,
+          280,
+          281,
+          282,
+          283,
+          284,
+          285,
+          286,
+          287,
+          288,
+          289,
+          290,
+          291,
+          292,
+          293,
+          294,
+          295,
+          296,
+          297,
+          298,
+          299,
+          300,
+          301,
+          302,
+          303,
+          304,
+          305,
+          306,
+          307,
+          308,
+          309,
+          310,
+          311,
+          312,
+          313,
+          314,
+          315,
+          316,
+          317,
+          318,
+          319,
+          320,
+          321,
+          322,
+          323,
+          324,
+          325,
+          326,
+          327,
+          328,
+          329,
+          330,
+          331,
+          332,
+          333,
+          334,
+          335,
+          336,
+          337,
+          338,
+          339,
+          340,
+          341,
+          342,
+          343,
+          344,
+          345,
+          346,
+          347,
+          348,
+          349,
+          350,
+          351,
+          352,
+          353,
+          354,
+          355,
+          356,
+          357,
+          358,
+          359,
+          360,
+          361,
+          362,
+          363,
+          364,
+          365,
+          366,
+          367,
+          368,
+          369,
+          370,
+          371,
+          372,
+          373,
+          374,
+          375,
+          376,
+          377,
+          378,
+          379,
+          380,
+          381,
+          382,
+          383,
+          384,
+          385,
+          386,
+          387,
+          388,
+          389,
+          390,
+          391,
+          392,
+          393,
+          394,
+          395,
+          396,
+          397,
+          398,
+          399,
+          400,
+          401,
+          402,
+          403,
+          404,
+          405,
+          406,
+          407,
+          408,
+          409,
+          410,
+          411,
+          412,
+          413,
+          414,
+          415,
+          416,
+          417,
+          418,
+          419,
+          420,
+          421,
+          422,
+          423,
+          424,
+          425,
+          426,
+          427,
+          428,
+          429,
+          430,
+          431,
+          432,
+          433,
+          434,
+          435,
+          436,
+          437,
+          438,
+          439,
+          440,
+          441,
+          442,
+          443,
+          444,
+          445,
+          446,
+          447,
+          448,
+          449,
+          450,
+          451,
+          452,
+          453,
+          454,
+          455,
+          456,
+          457,
+          458,
+          459,
+          460,
+          461,
+          462,
+          463,
+          464,
+          465,
+          466,
+          467,
+          468,
+          469,
+          470,
+          471,
+          472,
+          473,
+          474,
+          475,
+          476,
+          477,
+          478,
+          479,
+          480,
+          481,
+          482,
+          483,
+          484,
+          485,
+          486,
+          487,
+          488,
+          489,
+          490,
+          491,
+          492,
+          493,
+          494,
+          495,
+          496,
+          497,
+          498,
+          499,
+          500,
+          501,
+          502,
+          503,
+          504,
+          505,
+          506,
+          507,
+          508,
+          509,
+          510,
+          511,
+          512
+        ],
+        "qkv_stride": [
+          20480,
+          1
+        ],
+        "key_heads": 16,
+        "value_heads": 128,
+        "head_ratio": 8,
+        "grid_product": 65536,
+        "state_slots": 513
+      },
+      "status": "passed"
+    }
+  ],
+  "failed_cases": [],
+  "unattempted_cases": [],
+  "limitations": "Numerical-only bounded probes; no timing or reuse approval. Does not cover GDN chunk recurrence, GDN native MTP, KDA speculation/checkpoints, retained fallback, or mHC pre/fused semantics."
+}

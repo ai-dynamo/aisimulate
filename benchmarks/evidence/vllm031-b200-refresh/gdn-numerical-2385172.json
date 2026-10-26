@@ -1,0 +1,843 @@
+{
+  "source_sha": "db9527a46873454610df6dbedf79a36d6bf1a7f6",
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "runner_sha256": "0b6cd19f0257062a546c6cafbe72609b5f8d5bfd22e72a49e12db558c89c1321",
+  "runtime": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1"
+  },
+  "cuda": "13.0",
+  "runtime_failure": null,
+  "records": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 8,
+        "lengths": [
+          2
+        ]
+      },
+      "seed": 1700,
+      "checks": {
+        "output_max_abs": 0.015625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          2
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          1280
+        ],
+        "cache_stride": [
+          3840,
+          1,
+          1280
+        ],
+        "channels": 1280,
+        "num_prefill_tokens": 2,
+        "metadata_block8_programs": 1,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 16,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1701,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          2560
+        ],
+        "cache_stride": [
+          7680,
+          1,
+          2560
+        ],
+        "channels": 2560,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 32,
+        "lengths": [
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128
+        ]
+      },
+      "seed": 1702,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128,
+          256,
+          384,
+          512,
+          640,
+          768,
+          896,
+          1024
+        ],
+        "cache_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "input_stride": [
+          1,
+          5120
+        ],
+        "cache_stride": [
+          15360,
+          1,
+          5120
+        ],
+        "channels": 5120,
+        "num_prefill_tokens": 1024,
+        "metadata_block8_programs": 128,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 64,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1703,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          10240
+        ],
+        "cache_stride": [
+          30720,
+          1,
+          10240
+        ],
+        "channels": 10240,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 128,
+        "lengths": [
+          32768
+        ]
+      },
+      "seed": 1704,
+      "checks": {
+        "output_max_abs": 0.125,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          32768
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          20480
+        ],
+        "cache_stride": [
+          61440,
+          1,
+          20480
+        ],
+        "channels": 20480,
+        "num_prefill_tokens": 32768,
+        "metadata_block8_programs": 4096,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    }
+  ],
+  "total": 5,
+  "attempted": 5,
+  "passed": 5,
+  "failed": 0,
+  "unattempted": 0,
+  "planned_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 8,
+        "lengths": [
+          2
+        ]
+      },
+      "seed": 1700
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 16,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1701
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 32,
+        "lengths": [
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128
+        ]
+      },
+      "seed": 1702
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 64,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1703
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 128,
+        "lengths": [
+          32768
+        ]
+      },
+      "seed": 1704
+    }
+  ],
+  "attempted_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 8,
+        "lengths": [
+          2
+        ]
+      },
+      "seed": 1700,
+      "checks": {
+        "output_max_abs": 0.015625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          2
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          1280
+        ],
+        "cache_stride": [
+          3840,
+          1,
+          1280
+        ],
+        "channels": 1280,
+        "num_prefill_tokens": 2,
+        "metadata_block8_programs": 1,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 16,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1701,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          2560
+        ],
+        "cache_stride": [
+          7680,
+          1,
+          2560
+        ],
+        "channels": 2560,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 32,
+        "lengths": [
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128
+        ]
+      },
+      "seed": 1702,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128,
+          256,
+          384,
+          512,
+          640,
+          768,
+          896,
+          1024
+        ],
+        "cache_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "input_stride": [
+          1,
+          5120
+        ],
+        "cache_stride": [
+          15360,
+          1,
+          5120
+        ],
+        "channels": 5120,
+        "num_prefill_tokens": 1024,
+        "metadata_block8_programs": 128,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 64,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1703,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          10240
+        ],
+        "cache_stride": [
+          30720,
+          1,
+          10240
+        ],
+        "channels": 10240,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 128,
+        "lengths": [
+          32768
+        ]
+      },
+      "seed": 1704,
+      "checks": {
+        "output_max_abs": 0.125,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          32768
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          20480
+        ],
+        "cache_stride": [
+          61440,
+          1,
+          20480
+        ],
+        "channels": 20480,
+        "num_prefill_tokens": 32768,
+        "metadata_block8_programs": 4096,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    }
+  ],
+  "passed_cases": [
+    {
+      "index": 0,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 8,
+        "lengths": [
+          2
+        ]
+      },
+      "seed": 1700,
+      "checks": {
+        "output_max_abs": 0.015625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          2
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          1280
+        ],
+        "cache_stride": [
+          3840,
+          1,
+          1280
+        ],
+        "channels": 1280,
+        "num_prefill_tokens": 2,
+        "metadata_block8_programs": 1,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 16,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1701,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          2560
+        ],
+        "cache_stride": [
+          7680,
+          1,
+          2560
+        ],
+        "channels": 2560,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 32,
+        "lengths": [
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128,
+          128
+        ]
+      },
+      "seed": 1702,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128,
+          256,
+          384,
+          512,
+          640,
+          768,
+          896,
+          1024
+        ],
+        "cache_indices": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "input_stride": [
+          1,
+          5120
+        ],
+        "cache_stride": [
+          15360,
+          1,
+          5120
+        ],
+        "channels": 5120,
+        "num_prefill_tokens": 1024,
+        "metadata_block8_programs": 128,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 64,
+        "lengths": [
+          128
+        ]
+      },
+      "seed": 1703,
+      "checks": {
+        "output_max_abs": 0.0625,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          128
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          10240
+        ],
+        "cache_stride": [
+          30720,
+          1,
+          10240
+        ],
+        "channels": 10240,
+        "num_prefill_tokens": 128,
+        "metadata_block8_programs": 16,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "case": {
+        "family": "gdn-prefill-conv",
+        "heads": 128,
+        "lengths": [
+          32768
+        ]
+      },
+      "seed": 1704,
+      "checks": {
+        "output_max_abs": 0.125,
+        "output_atol": 0.05,
+        "output_rtol": 0.01,
+        "full_cache": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "reserved_slot": {
+          "max_abs": 0.0,
+          "nrmse": 0.0
+        },
+        "cu_seqlens": [
+          0,
+          32768
+        ],
+        "cache_indices": [
+          1
+        ],
+        "input_stride": [
+          1,
+          20480
+        ],
+        "cache_stride": [
+          61440,
+          1,
+          20480
+        ],
+        "channels": 20480,
+        "num_prefill_tokens": 32768,
+        "metadata_block8_programs": 4096,
+        "reference_chunk_tokens": 256,
+        "contract": "Fresh packed prefill, BF16 QKV/weights, bias=None, SiLU, native precomputed metadata, SD cache; all outputs and final cache checked"
+      },
+      "status": "passed"
+    }
+  ],
+  "failed_cases": [],
+  "unattempted_cases": [],
+  "limitations": "Numerical-only bounded probes; no timing or reuse approval. Does not cover GDN chunk recurrence, GDN native MTP, KDA speculation/checkpoints, retained fallback, or mHC pre/fused semantics."
+}

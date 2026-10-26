@@ -1,0 +1,1122 @@
+{
+  "collector_sha": "53fb6dd38f234a260c3e9a4b6b75aee12733f754",
+  "collector_module_sha256": "cd7669c6d79614b6e8cc3b63bf893d7083487a5c55354878c7286cb19cc366a5",
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "runner_sha256": "dede6f462914954597ea21f7861921fa426e495a25da00f17a11ff7411c81df9",
+  "plan_sha256": "c8cb5c7c485d8d9541e742f0b03e02acb2721cde53dff156b974b0a30e3cfa57",
+  "runtime": {
+    "vllm": "0.31.0",
+    "torch": "2.13.0+cu130",
+    "triton": "3.7.1",
+    "flashinfer-python": "0.7.0.post1"
+  },
+  "runtime_failure": null,
+  "planned": 6,
+  "attempted": 6,
+  "passed": 6,
+  "failed": 0,
+  "unattempted": 0,
+  "planned_cases": [
+    {
+      "index": 0,
+      "seed": 2700,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "registered_callback_id": 6,
+        "request_id": "gdn-00379",
+        "expected_wrapper_dispatch": "CP"
+      }
+    },
+    {
+      "index": 1,
+      "seed": 2701,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 2,
+          "seq_len": 1024,
+          "num_tokens": 2048,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "registered_callback_id": 24,
+        "request_id": "gdn-01502",
+        "expected_wrapper_dispatch": "CP"
+      }
+    },
+    {
+      "index": 2,
+      "seed": 2702,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "registered_callback_id": 42,
+        "request_id": "gdn-02593",
+        "expected_wrapper_dispatch": "CP"
+      }
+    },
+    {
+      "index": 3,
+      "seed": 2703,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "registered_callback_id": 72,
+        "request_id": "gdn-04438",
+        "expected_wrapper_dispatch": "CP"
+      }
+    },
+    {
+      "index": 4,
+      "seed": 2704,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 8,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 52,
+        "request_id": "gdn-03208",
+        "expected_wrapper_dispatch": "CP"
+      }
+    },
+    {
+      "index": 5,
+      "seed": 2705,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 8,
+          "seq_len": 128,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 4,
+          "head_k_dim": 128,
+          "num_v_heads": 32,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 48,
+        "request_id": "gdn-03007",
+        "expected_wrapper_dispatch": "non-CP"
+      }
+    }
+  ],
+  "attempted_cases": [
+    {
+      "index": 0,
+      "seed": 2700,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "registered_callback_id": 6,
+        "request_id": "gdn-00379",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              2,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 1,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          262144,
+          256,
+          128,
+          1
+        ],
+        "state_stride": [
+          32768,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.000244140625,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0022047758102416992,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "seed": 2701,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 2,
+          "seq_len": 1024,
+          "num_tokens": 2048,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "registered_callback_id": 24,
+        "request_id": "gdn-01502",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              2048,
+              2,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 2048,
+              "num_seqs": 2,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 384
+          }
+        ],
+        "head_ratio": 2,
+        "cu_seqlens": [
+          0,
+          1024,
+          2048
+        ],
+        "q_stride": [
+          262144,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          32768,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0022817254066467285,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "seed": 2702,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "registered_callback_id": 42,
+        "request_id": "gdn-02593",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              6,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 3,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          262144,
+          256,
+          128,
+          1
+        ],
+        "state_stride": [
+          98304,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.002130746841430664,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "seed": 2703,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "registered_callback_id": 72,
+        "request_id": "gdn-04438",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              4,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 4,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          131072,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          65536,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0016925930976867676,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "seed": 2704,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 8,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 52,
+        "request_id": "gdn-03208",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              8,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 8,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          131072,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          131072,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.002605825662612915,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 5,
+      "seed": 2705,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 8,
+          "seq_len": 128,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 4,
+          "head_k_dim": 128,
+          "num_v_heads": 32,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 48,
+        "request_id": "gdn-03007",
+        "expected_wrapper_dispatch": "non-CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "non-CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [],
+        "head_ratio": 8,
+        "cu_seqlens": [
+          0,
+          128,
+          256,
+          384,
+          512,
+          640,
+          768,
+          896,
+          1024
+        ],
+        "q_stride": [
+          524288,
+          512,
+          128,
+          1
+        ],
+        "state_stride": [
+          524288,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0036393404006958008,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    }
+  ],
+  "passed_cases": [
+    {
+      "index": 0,
+      "seed": 2700,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 1024,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-0.8B"
+        },
+        "registered_callback_id": 6,
+        "request_id": "gdn-00379",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              2,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 1,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          262144,
+          256,
+          128,
+          1
+        ],
+        "state_stride": [
+          32768,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.000244140625,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0022047758102416992,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 1,
+      "seed": 2701,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 2,
+          "seq_len": 1024,
+          "num_tokens": 2048,
+          "d_model": 2560,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 2,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-4B"
+        },
+        "registered_callback_id": 24,
+        "request_id": "gdn-01502",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              2048,
+              2,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 2048,
+              "num_seqs": 2,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 384
+          }
+        ],
+        "head_ratio": 2,
+        "cu_seqlens": [
+          0,
+          1024,
+          2048
+        ],
+        "q_stride": [
+          262144,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          32768,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0022817254066467285,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 2,
+      "seed": 2702,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 5120,
+          "d_conv": 4,
+          "num_k_heads": 2,
+          "head_k_dim": 128,
+          "num_v_heads": 6,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-27B"
+        },
+        "registered_callback_id": 42,
+        "request_id": "gdn-02593",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              6,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 3,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          262144,
+          256,
+          128,
+          1
+        ],
+        "state_stride": [
+          98304,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.002130746841430664,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 3,
+      "seed": 2703,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 3072,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 4,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.5-122B-A10B"
+        },
+        "registered_callback_id": 72,
+        "request_id": "gdn-04438",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              4,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 4,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          131072,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          65536,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0016925930976867676,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 4,
+      "seed": 2704,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 1,
+          "seq_len": 1024,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 1,
+          "head_k_dim": 128,
+          "num_v_heads": 8,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 52,
+        "request_id": "gdn-03208",
+        "expected_wrapper_dispatch": "CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [
+          {
+            "args": [
+              1024,
+              8,
+              148
+            ],
+            "kwargs": {
+              "chunk_len_granularity": 512,
+              "device_capability": [
+                10,
+                0
+              ],
+              "total_seqlen": 1024,
+              "num_seqs": 1,
+              "device_name": "NVIDIA B200"
+            },
+            "chosen_chunk_length": 256
+          }
+        ],
+        "head_ratio": 8,
+        "cu_seqlens": [
+          0,
+          1024
+        ],
+        "q_stride": [
+          131072,
+          128,
+          128,
+          1
+        ],
+        "state_stride": [
+          131072,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.002605825662612915,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    },
+    {
+      "index": 5,
+      "seed": 2705,
+      "case": {
+        "identity": {
+          "phase": "context",
+          "batch_size": 8,
+          "seq_len": 128,
+          "num_tokens": 1024,
+          "d_model": 8192,
+          "d_conv": 4,
+          "num_k_heads": 4,
+          "head_k_dim": 128,
+          "num_v_heads": 32,
+          "head_v_dim": 128,
+          "model_name": "Qwen/Qwen3.8-2.4T-A95B"
+        },
+        "registered_callback_id": 48,
+        "request_id": "gdn-03007",
+        "expected_wrapper_dispatch": "non-CP"
+      },
+      "checks": {
+        "native_backend": "flashinfer",
+        "dispatch": [
+          "non-CP"
+        ],
+        "sm_count": 148,
+        "chunk_choices": [],
+        "head_ratio": 8,
+        "cu_seqlens": [
+          0,
+          128,
+          256,
+          384,
+          512,
+          640,
+          768,
+          896,
+          1024
+        ],
+        "q_stride": [
+          524288,
+          512,
+          128,
+          1
+        ],
+        "state_stride": [
+          524288,
+          16384,
+          128,
+          1
+        ],
+        "output": {
+          "max_abs": 0.00048828125,
+          "atol": 0.01,
+          "rtol": 0.01
+        },
+        "final_state": {
+          "max_abs": 0.0036393404006958008,
+          "atol": 0.005,
+          "rtol": 0.001
+        },
+        "initial_state_unchanged": {
+          "max_abs": 0.0,
+          "atol": 0,
+          "rtol": 0
+        }
+      },
+      "status": "passed"
+    }
+  ],
+  "failed_cases": [],
+  "unattempted_cases": [],
+  "limitations": "Numerical-only registered chunk scope; no timing, data publication or exhaustive full-grid correctness claim."
+}

@@ -1,0 +1,16 @@
+{
+  "system": "b200_sxm",
+  "framework": "vllm",
+  "version": "0.31.0",
+  "shared_layer": false,
+  "callbacks": 84,
+  "exact_measurement_identities": 10332,
+  "unique_consumer_keys": 10332,
+  "python_queries": 15036,
+  "native_queries": 15036,
+  "logical_recurrence_queries_per_interface": 5166,
+  "silicon_queries_per_interface": 15036,
+  "failed": 0,
+  "prior_rows_byte_unchanged": 117449,
+  "limits": "Python orchestration and native evaluation share the same compiled engine. No standalone retired legacy API, independent second implementation, new GPU measurement, reuse approval, or end-to-end accuracy claim."
+}

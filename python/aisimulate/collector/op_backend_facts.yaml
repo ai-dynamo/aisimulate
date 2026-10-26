@@ -1099,6 +1099,8 @@ ops:
       - {framework: "vllm", version: "0.27.1", system: "gb200", op_name: "gdn", phase: "generation", backends: ["fla_triton", "triton"], kernel_sources: ["causal_conv1d_update", "fused_recurrent_gated_delta_rule_packed_decode"]}
       - {framework: "vllm", version: "0.27.1", system: "gb300", op_name: "gdn", phase: "context", backends: ["flashinfer", "triton"], kernel_sources: ["causal_conv1d_fn", "chunk_gated_delta_rule_flashinfer"]}
       - {framework: "vllm", version: "0.27.1", system: "gb300", op_name: "gdn", phase: "generation", backends: ["fla_triton", "triton"], kernel_sources: ["causal_conv1d_update", "fused_recurrent_gated_delta_rule_packed_decode"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "gdn", phase: "context", backends: ["flashinfer", "triton"], kernel_sources: ["causal_conv1d_fn", "chunk_gated_delta_rule_flashinfer"]}
+      - {framework: "vllm", version: "0.31.0", system: "b200_sxm", op_name: "gdn", phase: "generation", backends: ["fla_triton", "triton"], kernel_sources: ["causal_conv1d_update", "fused_recurrent_gated_delta_rule_packed_decode"]}
   - op_file: gemm_perf
     family: gemm
     axes: [op_name, gemm_dtype]

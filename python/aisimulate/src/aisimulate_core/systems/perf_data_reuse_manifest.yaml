@@ -627,17 +627,17 @@ groups:
     tier: shared
     systems: [a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [sglang, trtllm, vllm]
-    total_raw_rows: 104767
-    within_framework_dedup_rows: 31
-    median_pct_divergence: 5.39
+    total_raw_rows: 109471
+    within_framework_dedup_rows: 39
+    median_pct_divergence: 4.32
   - op_file: gdn_perf.parquet
     kernel_source: 'causal_conv1d_update'
     tier: shared
     systems: [a100_sxm, b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [sglang, trtllm, vllm]
-    total_raw_rows: 10506
+    total_raw_rows: 10968
     within_framework_dedup_rows: 7
-    median_pct_divergence: 10.20
+    median_pct_divergence: 12.13
   - op_file: gdn_perf.parquet
     kernel_source: 'chunk_gated_delta_rule'
     tier: shared
@@ -651,7 +651,7 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm]
     frameworks: [vllm]
-    total_raw_rows: 55303
+    total_raw_rows: 60007
     within_framework_dedup_rows: 3
   - op_file: gdn_perf.parquet
     kernel_source: 'chunk_gated_delta_rule_triton'
@@ -679,8 +679,8 @@ groups:
     tier: shared
     systems: [b200_sxm, b300_sxm, gb200, gb300, h100_sxm, h200_sxm, l40s, rtx_pro_6000_server]
     frameworks: [sglang, vllm]
-    total_raw_rows: 9638
-    within_framework_dedup_rows: 6
+    total_raw_rows: 10100
+    within_framework_dedup_rows: 11
     median_pct_divergence: 1.08
   - op_file: gemm_perf.parquet
     kernel_source: 'CutlassFP8ScaledMMLinearKernel'

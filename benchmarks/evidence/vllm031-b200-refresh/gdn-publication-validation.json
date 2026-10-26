@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "status": "accepted for draft publication; full CI pending",
+  "run": {
+    "source": "46bbd3472aa919ca63213a450c6336761621106c",
+    "pipeline": 76788402,
+    "job": 510272971,
+    "slurm": 5315347,
+    "framework": "vllm",
+    "version": "0.31.0",
+    "system": "b200_sxm"
+  },
+  "planned_callbacks": 84,
+  "passed_callbacks": 84,
+  "failed_callbacks": 0,
+  "unattempted_callbacks": 0,
+  "shape_points": 5166,
+  "unique_rows": 10332,
+  "duplicate_rows": 0,
+  "invalid_latencies": 0,
+  "per_kernel": {
+    "causal_conv1d_fn": 4704,
+    "chunk_gated_delta_rule_flashinfer": 4704,
+    "causal_conv1d_update": 462,
+    "fused_recurrent_gated_delta_rule_packed_decode": 462
+  },
+  "exact_frozen_getter_checkpoint_and_measurement_keys_match": true,
+  "source_inputs_verified": 53,
+  "collector_hash": "sha256:a7b1f3af9fc0e91b6b74f8a183cbe8c6632fbbb116f69e89c32bbcf16951e760",
+  "case_plan_hash": "sha256:ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.31.0",
+    "image": "vllm/vllm-openai",
+    "image_digest": "sha256:3fb023cc987cc7c2bca7ca14c1e0aff5ae06bd9431bf07773731ce7e8a682460",
+    "source_commit": "db9527a46873454610df6dbedf79a36d6bf1a7f6"
+  },
+  "runtime_manifest_sha256": "7e72f1e62a667c0ab2f3f6eb115f9e4539aa1bceacb0a024c95ea84db95eb593",
+  "historical025": {
+    "matched_successful_rows": 10326,
+    "previous_missing_rows_now_measured": 6,
+    "failed_callback_ids_now_complete": [
+      45,
+      47,
+      65,
+      75
+    ],
+    "observed_callback_failures": 4,
+    "note": "Four original callback failures explain six absent measurement rows; the old logs do not identify within-callback attempted/unattempted splits."
+  },
+  "qualified_donor_conv_rows_remeasured": 614,
+  "numerical_gates": {
+    "2385172": 5,
+    "2386231": 6,
+    "2386288": 15
+  },
+  "prior_rows_byte_unchanged": 117449,
+  "unchanged_prior_files_sha256": {
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/collection_meta.yaml": "ca80533eeb2e97e146fbc0e9af06453c2f8ef3c90ff4469bab4366d19bfeac7b",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.31.0/gemm_perf.parquet": "265827609d7c201992f4963160cae06c3948f2d19d495082417095cc211b04f5",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/collection_meta.yaml": "75d1b90ef3da12c0d68d0a06b5551ea299ff06ac971b99337c3bfacc69e82a61",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/scale_matrix_perf.parquet": "61985fe2e286399464addc390d3c8535c4d2740cff9497b3f59b6458b54c10b2",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/quantize/vllm/0.31.0/computescale_perf.parquet": "48a22931abb0b084d9ffc93fae6133b765b135059897410f5611f48db7ef66f6",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/collection_meta.yaml": "bb5b2b9deeaaadae35f6147fa0efa3530cb05082789d9f82b9947a1765491c12",
+    "python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/mla_bmm/vllm/0.31.0/mla_bmm_perf.parquet": "9dc581b21ee9b4bfa8c6d6795a07aa3b3e5932a9c5ef5a69b8625b265fc6293e"
+  },
+  "original_files_sha256": {
+    "gdn_perf.parquet": "77894627b71687fc023726295c49d4f6702968c9c29b32fa82a55fb4048006d8",
+    "collection_meta.yaml": "ded3cf4e9dbe91cb18feff3ad709c1f201f3b4fad4a009654deae0c7b131b061"
+  },
+  "raw_artifacts_sha256": {
+    "data_collection/result.tar.gz": "54b15a2fc2ee911feda088504ff11cd53103b2776b3d57eca302c9d756472411",
+    "artifacts_b200_sxm_vllm_0.31.0/job_result.tar.gz": "54b15a2fc2ee911feda088504ff11cd53103b2776b3d57eca302c9d756472411",
+    "data_collection/slurm_1.log": "081fad7d957d8904fd97ef02561580b668b8005d89baf526c7b0bd0a65c3ab18",
+    "data_collection/extracted/result/collector_checkpoint/vllm/vllm.gdn.json": "d312937a8ce1b475b7e615fe0181faeca9d1f3652a85f4fcd545a6e838105db2",
+    "data_collection/extracted/result/gdn_20261026_161636/collection_summary_vllm.json": "afe0f096e51a228207af1e3585dbcef2394a2feec7f8e8c3afd36ca31f49820d"
+  },
+  "latency_ms": {
+    "min": 0.0014720000326633453,
+    "max": 71.12248046875
+  },
+  "limits": [
+    "Numerical gates are bounded samples, not per-shape arithmetic proof or end-to-end accuracy.",
+    "Auto host driver 615.71.10 differs from personal numerical driver 580.82.07. Container runtime is pinned; realized per-case clocks were not recorded.",
+    "614 donor-qualified convolution companions were freshly measured; do not count them twice or label new measurements as reuse.",
+    "Generation packed-decode physical labels normalize during loading; context logical alias is version-scoped to FlashInfer."
+  ],
+  "numerical_artifacts_sha256": {
+    "gdn-numerical-2385172.json": "ce9a6961c1567fb4f13ea4780f870fd304575de34ee4a3717d859c1d75cc1324",
+    "gdn-numerical-2386231.json": "a16e5e501f2018bd854271161836f7f03447d410e6e3f2972a7b2ca9118ef6ed",
+    "gdn-numerical-2386288.json": "bb6012093aa13d8932d965222cb54211c77fab28da00bac9a956883d9b5aefcd"
+  },
+  "numerical_source_binding": {
+    "collector_numerical_revision": "53fb6dd38f234a260c3e9a4b6b75aee12733f754",
+    "collection_revision": "46bbd3472aa919ca63213a450c6336761621106c",
+    "gdn_module_timer_and_case_generator_byte_identical": true,
+    "standalone_prefill_conv_gate": "Native vLLM source and runtime pinned; it is a separate arithmetic/cache contract fixture, not a timing recollection."
+  },
+  "validation": {
+    "exact_consumer_queries_per_interface": 15036,
+    "collector_data_rules_passed": 7,
+    "backend_fact_slices": 2446,
+    "focused_tests_passed": 55,
+    "ruff": "passed",
+    "diff_check": "passed"
+  }
+}

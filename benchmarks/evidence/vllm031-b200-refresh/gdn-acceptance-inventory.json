@@ -1,0 +1,937 @@
+{
+  "schema_version": 1,
+  "purpose": "Acceptance baseline; not a completed-run validation or performance reuse approval",
+  "run": {
+    "source": "46bbd3472aa919ca63213a450c6336761621106c",
+    "pipeline": 76788402,
+    "job": 510272971,
+    "slurm": 5315347,
+    "framework": "vllm",
+    "version": "0.31.0",
+    "system": "b200_sxm"
+  },
+  "frozen_inputs": {
+    "53_source_hashes_match": true,
+    "getter84_exact_order_and_arguments_match": true,
+    "case_accounting_sha256": "9b53411c5af49a74c482c809c8252b9a1209aab5dccc34364e5ab5b45cd39792",
+    "case_plan_hash": "sha256:ba375a4c3a8dbbe8b77cec5cfd0f9dafd245e18b99ace763cc738c9645962dda",
+    "request_sha256": "e9dee798984aec3c06ccf6521f0d61c293f6ded53de97a5e968d541cb57a2d55"
+  },
+  "expected": {
+    "callbacks": 84,
+    "context_callbacks": 42,
+    "generation_callbacks": 42,
+    "shape_points": 5166,
+    "measurement_identities": 10332,
+    "per_kernel": {
+      "causal_conv1d_fn": 4704,
+      "chunk_gated_delta_rule_flashinfer": 4704,
+      "causal_conv1d_update": 462,
+      "fused_recurrent_gated_delta_rule_packed_decode": 462
+    },
+    "maximum_context_tokens": 2097152,
+    "identity_fields": [
+      "phase",
+      "batch_size",
+      "seq_len",
+      "num_tokens",
+      "d_model",
+      "d_conv",
+      "num_k_heads",
+      "head_k_dim",
+      "num_v_heads",
+      "head_v_dim",
+      "model_name",
+      "kernel_source"
+    ],
+    "identity_set_sha256": "8391266f06e1d07b4f91b9c3c03db0487729f3c6c2e2574443916480a2ea4dae"
+  },
+  "historical025": {
+    "planned_callbacks": 84,
+    "successful_callbacks": 80,
+    "failed_callbacks": 4,
+    "unattempted_callbacks": 0,
+    "matched_unique_rows": 10326,
+    "extra_rows": 0,
+    "missing_rows": [
+      {
+        "registered_callback_id": 45,
+        "phase": "generation",
+        "batch_size": 512,
+        "seq_len": 1,
+        "num_tokens": 512,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "registered_callback_id": 65,
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 3072,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 64,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.5-122B-A10B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "registered_callback_id": 75,
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 4096,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 64,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.5-397B-A17B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "registered_callback_id": 47,
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 8,
+        "head_k_dim": 128,
+        "num_v_heads": 64,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "registered_callback_id": 45,
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "causal_conv1d_update"
+      },
+      {
+        "registered_callback_id": 45,
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      }
+    ],
+    "warning": "Six absent measurement rows are coverage gaps, not six observed failures. Original four callback records do not establish the attempted/unattempted split within each interrupted callback.",
+    "source_artifact_hashes": {
+      "vllm-0.25.0-collection-report.json": "7cb2dce07de182ff78a958f58f16e8fe4ef246bef552501264aa4ad810cefd01",
+      "vllm-0.25.0-failures.json.gz": "da3fab62c25e5b35fa2a2bafa4d3ac94adff1a7c5a885ee8e33cde678554adf0",
+      "linear_attention/vllm/0.25.0/gdn_perf.parquet": "32cbb26e64f8013fca358a652062a2b0eab263ce0b11f77deb41d068c012fb10"
+    }
+  },
+  "historical0271": {
+    "matched_unique_rows": 1226,
+    "expected_Qwen38_rows": 1230,
+    "missing_rows": [
+      {
+        "phase": "generation",
+        "batch_size": 512,
+        "seq_len": 1,
+        "num_tokens": 512,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 8,
+        "head_k_dim": 128,
+        "num_v_heads": 64,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      },
+      {
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "causal_conv1d_update"
+      },
+      {
+        "phase": "generation",
+        "batch_size": 1024,
+        "seq_len": 1,
+        "num_tokens": 1024,
+        "d_model": 8192,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 128,
+        "head_v_dim": 128,
+        "model_name": "Qwen/Qwen3.8-2.4T-A95B",
+        "kernel_source": "fused_recurrent_gated_delta_rule_packed_decode"
+      }
+    ],
+    "qualified_convolution_companions": 614,
+    "warning": "1226 rows cover only Qwen3.8. Sidecar documents two raises; unavailable original attempt logs prevent a callback failure-rate claim. 614 qualified convolution rows are remeasured in the full paired run, not skipped or appended as duplicates."
+  },
+  "callbacks": [
+    {
+      "registered_callback_id": 0,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 1024, 4, 16, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 1,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 1024, 4, 16, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 2,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 1024, 4, 8, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 3,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 1024, 4, 8, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 4,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 1024, 4, 4, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 5,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 1024, 4, 4, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 6,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 1024, 4, 2, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 7,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 1024, 4, 2, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-0.8B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 8,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 16, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 9,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 16, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 10,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 8, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 11,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 8, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 12,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 4, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 13,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 4, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 14,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 2, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 15,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 2, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-2B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 16,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2560, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 17,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2560, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 18,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2560, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 19,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2560, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 20,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2560, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 21,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2560, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 22,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2560, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 23,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2560, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 24,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2560, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 25,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2560, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-4B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 26,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 27,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 28,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 29,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 30,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 31,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 32,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 33,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 34,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 35,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-9B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 36,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 5120, 4, 16, 128, 48, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 37,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 5120, 4, 16, 128, 48, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 38,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 5120, 4, 8, 128, 24, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 39,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 5120, 4, 8, 128, 24, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 40,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 5120, 4, 4, 128, 12, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 41,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 5120, 4, 4, 128, 12, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 42,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 5120, 4, 2, 128, 6, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 43,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 5120, 4, 2, 128, 6, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-27B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 44,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 8192, 4, 16, 128, 128, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 45,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 8192, 4, 16, 128, 128, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "failed",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 19
+    },
+    {
+      "registered_callback_id": 46,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 8192, 4, 8, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 47,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 8192, 4, 8, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "failed",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 21
+    },
+    {
+      "registered_callback_id": 48,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 8192, 4, 4, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 49,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 8192, 4, 4, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 50,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 8192, 4, 2, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 51,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 8192, 4, 2, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 52,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 8192, 4, 1, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 53,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 8192, 4, 1, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.8-2.4T-A95B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 54,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 55,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 16, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 56,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 57,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 8, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 58,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 59,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 4, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 60,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 61,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 2, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 62,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 2048, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 63,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 2048, 4, 1, 128, 2, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-35B-A3B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 64,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 3072, 4, 16, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 65,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 3072, 4, 16, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "failed",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 21
+    },
+    {
+      "registered_callback_id": 66,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 3072, 4, 8, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 67,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 3072, 4, 8, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 68,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 3072, 4, 4, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 69,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 3072, 4, 4, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 70,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 3072, 4, 2, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 71,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 3072, 4, 2, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 72,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 3072, 4, 1, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 73,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 3072, 4, 1, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-122B-A10B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 74,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 16, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 75,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 16, 128, 64, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "failed",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 21
+    },
+    {
+      "registered_callback_id": 76,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 8, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 77,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 8, 128, 32, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 78,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 4, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 79,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 4, 128, 16, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 80,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 2, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 81,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 2, 128, 8, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    },
+    {
+      "registered_callback_id": 82,
+      "case_id": "vllm.gdn:run_gdn_torch:['context', 4096, 4, 1, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64], [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768], 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 112,
+      "planned_measurements": 224,
+      "historical_matching_rows": 224
+    },
+    {
+      "registered_callback_id": 83,
+      "case_id": "vllm.gdn:run_gdn_torch:['generation', 4096, 4, 1, 128, 4, 128, [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024], None, 'Qwen/Qwen3.5-397B-A17B']",
+      "historical_callback_outcome": "successful",
+      "planned_points": 11,
+      "planned_measurements": 22,
+      "historical_matching_rows": 22
+    }
+  ],
+  "numerical_evidence": {
+    "2385172": "5/5 prefill convolution output/cache/reserved-slot probes passed",
+    "2386231": "6/6 chunk recurrence probes passed, all grouped-head ratios and CP/non-CP paths",
+    "2386288": "15/15 packed decode probes passed, including split-grid B512/HV128 and strided/null-slot cases",
+    "2384930": "9 timing points, 18 unique paired identities, 54 raw rows across three batches; full run intentionally recollects these"
+  },
+  "artifact_acceptance": [
+    "Check exact source/image/runtime-manifest/case-plan identities and B200/version metadata, driver/clocks and timing source closure.",
+    "Reconcile all 84 case IDs across checkpoint done/failed/unattempted and original error traces; no exclusions for historical IDs 45/47/65/75.",
+    "Read finalized Parquet and raw CSV; require finite positive latency and unique full 12-field identities. Match expected set; report extra, missing and emitted partial pairs separately.",
+    "Check expected kernel counts 4704/4704/462/462 only if all planned measurements complete. Preserve successful rows and classify actual failures without inventing rows.",
+    "Metadata table status complete is not proof of all callbacks succeeding: reconcile failure records and identity coverage independently.",
+    "Record fresh rows including all 614 remeasured convolution companions; preserve original donor and smoke evidence separately. No default promotion in this task."
+  ],
+  "consumer_acceptance": {
+    "current_blocker": "Context-only omission repaired in PR593 commit4dbc51c54cbd59098db217f4cf82be941c142532; exact-head FullCI40360820615 pending. Packed-decode Parquet rows already normalize to the logical generation name; no decode mapping defect was established.",
+    "logical_to_physical": {
+      "chunk_gated_delta_rule": "chunk_gated_delta_rule_flashinfer",
+      "fused_sigmoid_gating_delta_rule_update": "fused_recurrent_gated_delta_rule_packed_decode"
+    },
+    "required_probes": [
+      "Probe every accepted persisted identity through Python GDNKernel and native evaluate_ops_json, using its actual consumer key (packed decode normalizes to the logical name), exact batch/sequence/local-head geometry, FP32 state and shared_layer=False.",
+      "Probe logical recurrence names for every accepted recurrence row; assert same measured latency and silicon provenance, not merely a finite SOL fallback.",
+      "Current Python operation delegates to the Rust engine; these are two interfaces, not independent implementations. Legacy query_gdn no longer exists.",
+      "Check model_name-free consumer-key collisions before import; no implicit cross-model/head interpolation approval.",
+      "Negative tests: no 0.31 Triton/CuteDSL donor alias without evidence, no non-FP32 recurrence reuse, no missing-geometry or ambiguous-source acceptance."
+    ],
+    "decode_contract": "load_gdn_parquet calls normalize_gdn_kernel_source: fused_recurrent_gated_delta_rule_packed_decode becomes fused_sigmoid_gating_delta_rule_update. Persisted physical identity stays unchanged; probe its canonical consumer name, not an unsupported direct packed-label query.",
+    "repair_validation": {
+      "commit": "4dbc51c54cbd59098db217f4cf82be941c142532",
+      "github_signature": "verified",
+      "full_ci": 40360820615,
+      "rust_state_space_tests": 22,
+      "python_gdn_tests": 21,
+      "engine_parity_tests": 389,
+      "goldens_changed": false,
+      "data_changed": false
+    }
+  },
+  "limits": [
+    "No new GPU job or source changes made for this inventory.",
+    "No whole-model accuracy claim; native MTP/speculative row44 and projection kernels are outside this GDN collection.",
+    "Older fresh-scope numerical-pending text is superseded by the completed numerical jobs listed here."
+  ]
+}
