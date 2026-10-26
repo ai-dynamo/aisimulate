@@ -112,7 +112,43 @@ struct BincodeWire {
     vision: Option<VisionSpec>,
 }
 
+/// Borrowed twin of [`BincodeWire`]; identical encoding without cloning ops.
+#[derive(Serialize)]
+struct BincodeWireRef<'a> {
+    schema_version: u32,
+    engine_json: String,
+    context_ops: &'a [OpSpec],
+    generation_ops: &'a [OpSpec],
+    vision: &'a Option<VisionSpec>,
+}
+
 impl EngineSpec {
+    /// SHA-256 of this spec's bincode wire encoding with its storage
+    /// locations (`systems_path`, `fpm_parquet_path`) cleared. Their contents
+    /// are fingerprinted separately, so a relocated copy of the same data
+    /// compiles to the same digest.
+    pub(crate) fn content_sha256(&self) -> Result<String, AicError> {
+        use sha2::{Digest, Sha256};
+        let mut engine = self.engine.clone();
+        engine.systems_path = None;
+        engine.fpm_parquet_path = None;
+        let engine_json = serde_json::to_string(&engine)
+            .map_err(|e| AicError::EngineSpec(format!("engine JSON encode: {e}")))?;
+        let mut digest = Sha256::new();
+        bincode::serialize_into(
+            &mut digest,
+            &BincodeWireRef {
+                schema_version: self.schema_version,
+                engine_json,
+                context_ops: &self.context_ops,
+                generation_ops: &self.generation_ops,
+                vision: &self.vision,
+            },
+        )
+        .map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))?;
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
     /// Build a spec, stamping the current [`ENGINE_SPEC_SCHEMA_VERSION`].
     pub fn new(
         engine: EngineConfig,

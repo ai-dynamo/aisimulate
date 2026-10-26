@@ -58,6 +58,11 @@ impl DerefMut for EngineLaunchConfig {
 impl EngineLaunchConfig {
     /// Parse the canonical launch shape. No downstream argument aliases are accepted.
     pub fn from_value(value: Value) -> Result<Self> {
+        Self::parse_value(value)?.normalized()
+    }
+
+    /// Parse and derive omitted launch controls without validating them.
+    fn parse_value(value: Value) -> Result<Self> {
         let mut result: Self = serde_path_to_error::deserialize(value.clone())
             .context("invalid engine launch config")?;
         if value.get("num_gpu_blocks_is_explicit").is_none() {
@@ -74,7 +79,72 @@ impl EngineLaunchConfig {
                 result.aic_nextn = Some(config.nextn as usize);
             }
         }
-        result.normalized()
+        Ok(result)
+    }
+
+    /// Check whether `config` can time the engine described by launch
+    /// arguments `engine_args`, as when a saved AIS configuration replaces the
+    /// engine's timing model. The arguments use the [`Self::from_value`] shape;
+    /// their timing model, if any, is replaced by `config`, and omitted launch
+    /// controls derive from it exactly as at launch. Returns every launch rule
+    /// that would reject the combination, in the order launch validation
+    /// checks them; an empty list means the launch would accept it.
+    /// Malformed arguments or an invalid `config` are errors, not mismatches.
+    pub fn timing_config_mismatches(
+        mut engine_args: Value,
+        config: &ForwardPassPerfModelConfig,
+    ) -> Result<Vec<String>> {
+        config.validate()?;
+        let engine = engine_args
+            .as_object_mut()
+            .context("engine launch arguments must be an object")?
+            .entry("engine")
+            .or_insert_with(|| json!({}));
+        engine
+            .as_object_mut()
+            .context("engine launch arguments field 'engine' must be an object")?
+            .insert(
+                "timing_model".into(),
+                json!({"type": "external", "provider": "ais", "config": config}),
+            );
+        let launch = Self::parse_value(engine_args)?;
+        launch.engine.validate()?;
+        launch.timing_identity_mismatches(config)
+    }
+
+    /// Launch rules relating a canonical AIS timing identity to this engine.
+    fn timing_identity_mismatches(
+        &self,
+        config: &ForwardPassPerfModelConfig,
+    ) -> Result<Vec<String>> {
+        let mut mismatches = Vec::new();
+        if config.pp != 1 {
+            mismatches.push(format!(
+                "engine launch supports only pp=1; got pp={}",
+                config.pp
+            ));
+        }
+        if config.tp as usize != self.tensor_parallel_size {
+            mismatches.push("tensor_parallel_size conflicts with canonical tp".into());
+        }
+        if config.attention_dp != self.dp_size {
+            mismatches.push("dp_size conflicts with canonical attention_dp".into());
+        }
+        let identity = serde_json::to_value(config)?;
+        if identity["worker_type"] != serde_json::to_value(self.worker_type)? {
+            mismatches.push("AIS worker_type must match engine role".into());
+        }
+        if identity
+            .pointer("/speculation/kind")
+            .and_then(Value::as_str)
+            == Some("ngram")
+        {
+            mismatches.push("engine launch does not implement ngram draft scheduling".into());
+        }
+        if config.nextn as usize != self.aic_nextn.unwrap_or(0) {
+            mismatches.push("canonical nextn conflicts with scheduler aic_nextn".into());
+        }
+        Ok(mismatches)
     }
 
     pub fn performance_config(&self) -> Result<Option<ForwardPassPerfModelConfig>> {
@@ -166,35 +236,9 @@ impl EngineLaunchConfig {
         }
         if let Some(config) = self.performance_config()? {
             config.validate()?;
-            ensure!(
-                config.pp == 1,
-                "engine launch supports only pp=1; got pp={}",
-                config.pp
-            );
-            ensure!(
-                config.tp as usize == self.tensor_parallel_size,
-                "tensor_parallel_size conflicts with canonical tp"
-            );
-            ensure!(
-                config.attention_dp == self.dp_size,
-                "dp_size conflicts with canonical attention_dp"
-            );
-            let identity = serde_json::to_value(&config)?;
-            ensure!(
-                identity["worker_type"] == serde_json::to_value(self.worker_type)?,
-                "AIS worker_type must match engine role"
-            );
-            ensure!(
-                identity
-                    .pointer("/speculation/kind")
-                    .and_then(Value::as_str)
-                    != Some("ngram"),
-                "engine launch does not implement ngram draft scheduling"
-            );
-            ensure!(
-                config.nextn as usize == self.aic_nextn.unwrap_or(0),
-                "canonical nextn conflicts with scheduler aic_nextn"
-            );
+            if let Some(first) = self.timing_identity_mismatches(&config)?.into_iter().next() {
+                anyhow::bail!(first);
+            }
         }
         Ok(())
     }
@@ -205,5 +249,76 @@ impl EngineLaunchConfig {
 
     pub fn is_decode(&self) -> bool {
         self.worker_type == WorkerType::Decode
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BackendKind, EstimationMode, ForwardPassWorkerType};
+
+    fn timing() -> ForwardPassPerfModelConfig {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "test/model",
+            "test",
+            BackendKind::Vllm,
+            ForwardPassWorkerType::Aggregated,
+        );
+        config.estimation_mode = EstimationMode::FpmRegression;
+        config
+    }
+
+    #[test]
+    fn timing_config_mismatches_list_every_launch_rule_in_validation_order() {
+        let mut config = timing();
+        config.pp = 2;
+        config.tp = 2;
+        config.attention_dp = 4;
+        let args =
+            json!({"dp_size": 2, "tensor_parallel_size": 1, "engine": {"worker_type": "decode"}});
+        let mismatches =
+            EngineLaunchConfig::timing_config_mismatches(args.clone(), &config).unwrap();
+        assert_eq!(
+            mismatches,
+            [
+                "engine launch supports only pp=1; got pp=2",
+                "tensor_parallel_size conflicts with canonical tp",
+                "dp_size conflicts with canonical attention_dp",
+                "AIS worker_type must match engine role",
+            ]
+        );
+        // Launch itself rejects the same combination with the first rule.
+        let mut launch = args;
+        launch["engine"]["timing_model"] =
+            json!({"type": "external", "provider": "ais", "config": config});
+        let error = EngineLaunchConfig::from_value(launch).unwrap_err();
+        assert!(format!("{error:#}").contains(&mismatches[0]), "{error:#}");
+    }
+
+    #[test]
+    fn timing_config_mismatches_derive_omitted_controls_like_launch() {
+        let mut config = timing();
+        config.tp = 2;
+        config.attention_dp = 4;
+        // Omitted tensor_parallel_size and dp_size derive from the timing identity.
+        let args = json!({"engine": {}});
+        assert!(
+            EngineLaunchConfig::timing_config_mismatches(args.clone(), &config)
+                .unwrap()
+                .is_empty()
+        );
+        let mut launch = args;
+        launch["engine"]["timing_model"] =
+            json!({"type": "external", "provider": "ais", "config": config});
+        let launched = EngineLaunchConfig::from_value(launch).unwrap();
+        assert_eq!((launched.tensor_parallel_size, launched.dp_size), (2, 4));
+        // Invalid timing identities and malformed arguments are errors, not mismatches.
+        config.tp = 0;
+        assert!(EngineLaunchConfig::timing_config_mismatches(json!({}), &config).is_err());
+        assert!(EngineLaunchConfig::timing_config_mismatches(json!([]), &timing()).is_err());
+        assert!(
+            EngineLaunchConfig::timing_config_mismatches(json!({"dp_size": "two"}), &timing())
+                .is_err()
+        );
     }
 }
