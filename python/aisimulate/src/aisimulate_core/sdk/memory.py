@@ -309,6 +309,7 @@ class KVCacheEstimator:
         nextn: int = 0,
         systems_path: str | None = None,
         max_model_len: int | None = None,
+        kv_block_size: int | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
 
@@ -369,6 +370,14 @@ class KVCacheEstimator:
         _validate_max_model_len(max_model_len)
         if max_model_len is not None:
             model_config.max_model_len = max_model_len
+        # Expose per-iteration token budget (max_num_tokens is the caller's
+        # max_num_batched_tokens) so the vLLM SWA block reservation can cap
+        # (window - 1 + batched_tokens) at max_model_len.
+        max_num_batched_tokens = int(max_num_tokens)
+        if max_num_batched_tokens > 0:
+            model_config.max_num_batched_tokens = max_num_batched_tokens
+        if kv_block_size is not None and int(kv_block_size) > 0:
+            model_config.kv_block_size = int(kv_block_size)
         # Capacity needs model/system metadata, including when external FPM
         # timing has no backend data directory.
         database = perf_database.get_database(
@@ -1085,6 +1094,7 @@ def estimate_kv_cache(
     worker_type: str = "aggregated",
     context_length: int | None = None,
     request_occupancy_tokens: int | None = None,
+    kv_block_size: int | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
@@ -1297,6 +1307,7 @@ def estimate_kv_cache(
             nextn=int(nextn),
             systems_path=systems_path,
             max_model_len=context_length,
+            kv_block_size=kv_block_size,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if isinstance(exc, NotImplementedError) and (int(cp_size) > 1 or int(dcp_size) > 1):
@@ -1459,6 +1470,7 @@ def estimate_num_gpu_blocks(
         fpm_profile=fpm_profile,
         worker_type=worker_type,
         context_length=context_length,
+        kv_block_size=int(scheduler_block_size),
     )
 
     if estimate.get("cache_layout") == "grouped":

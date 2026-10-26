@@ -183,10 +183,17 @@ class ModelConfig:
     # Selection emits a warning with the original model mode and matched cell IDs.
     # Exact table-label matching is not independent runtime-precision proof.
     fpm_fmha_quant_mode: common.FMHAQuantMode | None = field(default=None, kw_only=True)
-    # Maximum sequence length for the deployment (vLLM's --max-model-len).
-    # Set by the KV-cache estimator from the caller's max_num_tokens so
+    # Maximum sequence length (ISL+OSL) for the deployment (vLLM's --max-model-len).
+    # Set by the KV-cache estimator from the caller's context_length so
     # sliding-window models can compute block-level reservation overhead.
     max_model_len: int | None = field(default=None, kw_only=True)
+    # Maximum tokens scheduled per iteration (vLLM's --max-num-batched-tokens).
+    # Set by the KV-cache estimator from the caller's max_num_tokens so the
+    # vLLM SWA block reservation can cap (window-1 + max_num_batched_tokens) at max_model_len.
+    max_num_batched_tokens: int | None = field(default=None, kw_only=True)
+    # KV cache block size in tokens (vLLM's --block-size). Set by the KV-cache
+    # estimator so the SWA reservation rounds to the same blocks the scheduler uses.
+    kv_block_size: int | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
         validate_parallel_size("cp_size", self.cp_size)
@@ -198,6 +205,16 @@ class ModelConfig:
             isinstance(self.max_model_len, bool) or not isinstance(self.max_model_len, int) or self.max_model_len <= 0
         ):
             raise ValueError(f"max_model_len must be a positive integer, got {self.max_model_len!r}")
+        if self.max_num_batched_tokens is not None and (
+            isinstance(self.max_num_batched_tokens, bool)
+            or not isinstance(self.max_num_batched_tokens, int)
+            or self.max_num_batched_tokens <= 0
+        ):
+            raise ValueError(f"max_num_batched_tokens must be a positive integer, got {self.max_num_batched_tokens!r}")
+        if self.kv_block_size is not None and (
+            isinstance(self.kv_block_size, bool) or not isinstance(self.kv_block_size, int) or self.kv_block_size <= 0
+        ):
+            raise ValueError(f"kv_block_size must be a positive integer, got {self.kv_block_size!r}")
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,
