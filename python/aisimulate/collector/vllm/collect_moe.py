@@ -544,7 +544,7 @@ def get_moe_test_cases():
     return test_cases
 
 
-def _require_moe_activation_precision(moe_type, quant_method):
+def _require_moe_activation_precision(moe_type, quant_method, *, loaded=False):
     # CT MXFP4's device-selected CUTLASS path quantizes activations as well
     # as weights (compressed_tensors_moe_w4a4_mxfp4.py:151-160 @v0.31.0).
     # A native SiTU factory must not turn a declared W4A16 row into W4A4.
@@ -552,6 +552,22 @@ def _require_moe_activation_precision(moe_type, quant_method):
         raise ValueError(
             "w4a16_mxfp4 requires BF16 activations, but the selected compressed-tensors "
             "CUTLASS MXFP4 method quantizes activations to MXFP4 (W4A4); "
+            "a separate collector/data precision contract is required"
+        )
+    if not loaded or moe_type != "w4a16_mxfp4" or vllm_version.split("+")[0] != "0.31.0":
+        return
+    # vLLM db9527a: oracle/mxfp4.py:1898 and fused_moe/config.py:704
+    # select MXFP8 for both activations even for an OCP weight-only checkpoint.
+    config = getattr(quant_method, "moe_quant_config", None)
+    activations = [getattr(config, name, None) for name in ("_a1", "_a2")]
+    if any(not hasattr(activation, "dtype") for activation in activations):
+        raise ValueError("Cannot verify selected W4A16 activation precision after native weight loading")
+    dtypes = tuple(activation.dtype for activation in activations)
+    if any(dtype is not None for dtype in dtypes):
+        raise ValueError(
+            f"w4a16_mxfp4 requires BF16 activations, but {type(quant_method).__name__} "
+            f"backend={getattr(quant_method, 'mxfp4_backend', 'unknown')} "
+            f"selects activation quantization {dtypes}; "
             "a separate collector/data precision contract is required"
         )
 
@@ -952,6 +968,8 @@ def run_moe_torch(
                     _mc.num_experts = _global_e
                 except AttributeError:
                     object.__setattr__(_mc, "num_experts", _global_e)
+
+        _require_moe_activation_precision(moe_type, quant_method, loaded=True)
 
         selected_backend = None
         for backend_attr in (

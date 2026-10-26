@@ -153,6 +153,12 @@ The stock compressed-tensors CUTLASS MXFP4 path quantizes activations to MXFP4
 (W4A4). It now fails before timing when requested under the `w4a16_mxfp4`
 label. B200 Kimi-K3 native SiTU needs a separate approved precision contract;
 do not force Marlin or publish W4A4 timings as W4A16 to bypass this failure.
+For vLLM 0.31.0, the collector also checks both native activation quantization
+descriptors after weight loading. OCP GPT-OSS can select MXFP8 activations on
+B200 despite a declared W4A16 case; that selection now raises before timing.
+Explicitly unquantized descriptors remain valid. Unknown descriptors raise an
+unverified-precision error. Each queued geometry is checked independently;
+this is not a hardware exclusion, backend override or new data identity.
 
 The vLLM 0.31.0 collector also rejects an actual selected
 `TrtLlmBf16ExpertsMonolithic` leaf when the model requires
