@@ -1,5 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
+// Modified event-cadence adaptation of SGLang v0.5.20; see THIRD_PARTY_NOTICES.md.
+// Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 
 //! Iteration structure that turns one AIS pass into one SGLang loop iteration.
 //!
@@ -21,9 +24,9 @@
 //! sees `finished()` after that result is processed. Everything a forward
 //! produces for the scheduler's bookkeeping travels with the batch: its output
 //! tokens and the prefix-cache commits of `maybe_cache_unfinished_req` become
-//! visible together when the batch is observed, and a retracted or cancelled
-//! request takes its share of that payload with it while the device work stays
-//! charged.
+//! visible together when the batch is observed. Retraction or cancellation
+//! discards the request's outputs while the device work stays charged; a
+//! cancelled running request retains its KV until that observation cleans it up.
 //!
 //! The scheduler thread itself is modeled as free: request preparation is
 //! priced in the frontend stages ahead of the inbox, and batch selection,
@@ -52,10 +55,14 @@ pub(super) struct IterationTiming {
 /// What a forward produced for the scheduler, held back until it is observed.
 #[derive(Debug, Default)]
 pub(super) struct ForwardOutputs {
+    /// The observed batch selects the KV-event publication cadence.
+    pub(super) prefill: bool,
     pub(super) output_signals: Vec<OutputSignal>,
     /// Requests whose prefix the radix cache learns when this batch is observed,
     /// with the sequence length the forward materialized for them.
     pub(super) cache_commits: Vec<(Uuid, usize)>,
+    /// Cancelled running requests whose KV cannot be cached or released before observation.
+    pub(super) cancelled_requests: Vec<SglangRequest>,
 }
 
 impl ForwardOutputs {
@@ -129,6 +136,19 @@ impl HostLoop {
             .map_or(0, |batch| batch.outputs.discard_request(uuid))
     }
 
+    /// Keep a cancelled request's KV until the current forward is observed.
+    /// Return it for immediate cleanup when no forward is in flight.
+    pub(super) fn defer_cancelled_request(
+        &mut self,
+        request: SglangRequest,
+    ) -> Option<SglangRequest> {
+        let Some(batch) = &mut self.in_flight else {
+            return Some(request);
+        };
+        batch.outputs.cancelled_requests.push(request);
+        None
+    }
+
     /// Lay this iteration's forward and result observation on the GPU timeline.
     /// `forward` is the launched batch's modeled device time and what it
     /// produces for the scheduler; they are held back and returned by the next
@@ -182,7 +202,7 @@ mod tests {
     fn outputs(signals: Vec<OutputSignal>) -> ForwardOutputs {
         ForwardOutputs {
             output_signals: signals,
-            cache_commits: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -227,6 +247,7 @@ mod tests {
                 ForwardOutputs {
                     output_signals: vec![signal(cancelled), signal(Uuid::nil())],
                     cache_commits: vec![(cancelled, 4), (Uuid::nil(), 4)],
+                    ..Default::default()
                 },
             )),
         );

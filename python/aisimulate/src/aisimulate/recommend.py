@@ -149,12 +149,25 @@ def _run_recommendation(
         injected=output_adapters,
         context=RecommendationOutputContext(workload=smart.workload),
     )
-    return sweeper.run(
-        smart,
-        top_n=None,
-        on_candidate=output_callbacks.on_candidate,
-        on_round=output_callbacks.on_round,
-    )
+    try:
+        result = sweeper.run(
+            smart,
+            top_n=None,
+            on_candidate=output_callbacks.on_candidate,
+            on_round=output_callbacks.on_round,
+        )
+        if output_callbacks.on_complete is not None:
+            output_callbacks.on_complete()
+    except Exception as exc:
+        if output_callbacks.on_failure is not None:
+            try:
+                output_callbacks.on_failure(exc)
+            except Exception as callback_exc:
+                exc.add_note(
+                    f"output adapter failure handling also failed: {type(callback_exc).__name__}: {callback_exc}"
+                )
+        raise
+    return result
 
 
 def recommendation_to_sweeper(

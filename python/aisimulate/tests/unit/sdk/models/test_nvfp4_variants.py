@@ -367,3 +367,27 @@ def test_dsv4_nvfp4_experts_preserve_fp8_block_nonexpert_lane(hf_id):
         op._gemm_quant_mode for op in model.context_ops + model.generation_ops if hasattr(op, "_gemm_quant_mode")
     }
     assert module_modes == {common.GEMMQuantMode.fp8_block}
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm", "sglang"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_nemotron_super_omni_preserves_backend_and_explicit_moe_modes(backend, explicit):
+    from aisimulate_core.sdk.models.helpers import _apply_model_quant_defaults
+    from aisimulate_core.sdk.utils import _infer_quantization_fields
+
+    model_config = _model_config()
+    if explicit:
+        model_config.moe_quant_mode = common.MoEQuantMode.w4a16_nvfp4
+    raw_config = {
+        "architectures": ["NemotronH_Omni_Reasoning_V3"],
+        "llm_config": {
+            "quantization_config": {
+                "quant_algo": "MIXED_PRECISION",
+                "quantized_layers": {"backbone.layers.1.mixer.experts.0.up_proj": {"quant_algo": "W4A16_NVFP4"}},
+            }
+        },
+    }
+    raw_config.update(_infer_quantization_fields(raw_config))
+    _apply_model_quant_defaults(model_config, raw_config, "NemotronH_Omni_Reasoning_V3", backend)
+    expected = common.MoEQuantMode.nvfp4 if backend == "vllm" and not explicit else common.MoEQuantMode.w4a16_nvfp4
+    assert model_config.moe_quant_mode == expected

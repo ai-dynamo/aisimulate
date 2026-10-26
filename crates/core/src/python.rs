@@ -393,8 +393,10 @@ impl AicTimingConfig {
                 mode == EstimationMode::FpmInterpolation,
             )?;
         }
+        let mut estimator_input = serde_json::Value::Object(self.estimator_config.clone());
+        EstimatorConfig::apply_context_defaults(&mut estimator_input, mode);
         let estimator_config = EstimatorConfig::migrate_legacy_inputs(
-            Some(&serde_json::to_string(&self.estimator_config)?),
+            Some(&serde_json::to_string(&estimator_input)?),
             None,
             self.fpm_interpolation.map(|method| method.as_str()),
             self.fpm_parquet_path.as_deref(),
@@ -4177,7 +4179,7 @@ mod tests {
         config.model = "Qwen/Qwen3.8-2.4T-A95B-FP8".into();
         config.system = "gb300".into();
         config.backend = "sglang".into();
-        config.backend_version = Some("0.5.17".into());
+        config.backend_version = Some("next".into());
         config.tp = 16;
         config.moe_tp_size = Some(4);
         config.moe_ep_size = Some(4);

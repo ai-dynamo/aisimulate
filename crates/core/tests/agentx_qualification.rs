@@ -659,22 +659,22 @@ fn snapshot_warmup_and_profile_reports_are_pinned() {
     // mismatch the change did not intend must first be diffed semantically
     // against the previous report, per-request and lifecycle output.
     let expected = [
-        "g2 snapshot agg: 5 5e02e9f17a77658f",
-        "g2 snapshot disagg: 5 a6573f2379f39c15",
-        "g2 warmup agg: 5 21a10bcd0843bc96",
-        "g2 warmup disagg: 5 a0834d087069f92e",
-        "g2 profile agg: 168 44441ca085ad970c",
-        "g2 profile disagg: 151 8f4f03ccf36a2a4e",
-        "g2 profile-cold agg: 168 be8fa4bd9231255a",
-        "g2 profile-cold disagg: 151 9a175b25b7cdd899",
-        "two-plays snapshot agg: 3 19563e804401e8a2",
-        "two-plays snapshot disagg: 3 88c3919df99f7ce1",
-        "two-plays warmup agg: 3 2bb148e6548bb88a",
-        "two-plays warmup disagg: 3 f784df450822621a",
-        "two-plays profile agg: 821 35351cf48f3958c3",
-        "two-plays profile disagg: 667 6b252248d748175a",
-        "two-plays profile-cold agg: 820 20ee4611dbaa1e83",
-        "two-plays profile-cold disagg: 601 e2d4f4e93360d22e",
+        "g2 snapshot agg: 5 6b28fe341f87b490",
+        "g2 snapshot disagg: 5 515ff132fcdc6b08",
+        "g2 warmup agg: 5 b89358b190c66046",
+        "g2 warmup disagg: 5 1a9c63bc1919b472",
+        "g2 profile agg: 168 b8aa80a7a5d00b2b",
+        "g2 profile disagg: 151 f3062f253ba53636",
+        "g2 profile-cold agg: 168 0cbdef689a45e540",
+        "g2 profile-cold disagg: 151 1a03cbac9330a961",
+        "two-plays snapshot agg: 3 6ee98c82ab648f45",
+        "two-plays snapshot disagg: 3 a01db8613f512a83",
+        "two-plays warmup agg: 3 0f7ad48710c5d7c6",
+        "two-plays warmup disagg: 3 26a20280546a6cc7",
+        "two-plays profile agg: 821 e20edce760494c3c",
+        "two-plays profile disagg: 667 53b97fda7fd727e0",
+        "two-plays profile-cold agg: 820 556b4f20c32324af",
+        "two-plays profile-cold disagg: 601 21257dffb47e3779",
     ];
     assert_eq!(actual, expected);
 }

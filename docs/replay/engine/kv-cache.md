@@ -75,17 +75,38 @@ on. Partial blocks are never reused. When G1 is full, each backend applies its
 own policy: requests wait or are preempted, and unused cached blocks are
 evicted least recently used first.
 
+For SGLang, complete prompt pages enter the radix cache after prefill; decoded
+pages enter when a request finishes or a running request is cancelled. In overlap
+mode, prefill reuse becomes visible when the forward result is observed. A
+completed disaggregated source publishes its prompt before the transfer hold;
+the hold retains its path lock and partial tail. A transferred destination keeps
+its prompt private until running admission, or caches its full pages when a
+ready request is cancelled.
+
+SGLang KV events follow those radix insertions, rather than page allocation.
+Compatible consecutive stores and removals are batched, with stores retaining
+their parent links and session IDs. Events flush after prefill, every 40 decode
+forwards and on idle. Under memory pressure, decode retraction stably orders
+requests by descending output length and then ascending prompt length, retracts
+from the end, and evicts unused cache toward a 20-token reserve per survivor.
+These contracts follow [SGLang v0.5.20](https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e).
+
 To see what was reused, run with `--capture-per-request` and read these fields
 in `requests.jsonl`:
 
 | Field | Meaning |
 | --- | --- |
+| `first_admission_reused_input_tokens` | Prompt tokens reused from all tiers when the request was first admitted; later readmissions do not change it. |
+| `reused_input_tokens` | Largest reuse across the request's prefill admissions, or across all admissions without a prefill stage. |
 | `first_admission_g1_reused_input_tokens` | Prompt tokens served from G1 when the request was first admitted. |
 | `first_admission_host_reused_input_tokens` | Prompt tokens restored from G2, including G3 restores and KVCR pulls. |
 | `admission_history` | Every admission of the request, including after preemption, with the pool it reused from. |
 
 The Dynamo KV Router's overlap score is a routing estimate; these fields record
-what Replay actually reused.
+what Replay actually reused. A readmission after preemption can reuse KV the
+request itself computed, which raises `reused_input_tokens` but not
+`first_admission_reused_input_tokens`; the summary's
+`first_admission_prefix_cache_reused_ratio` aggregates the latter.
 
 <a id="host-offload-g2"></a>
 <a id="native-vllm-host-offload-prediction"></a>

@@ -241,7 +241,9 @@ class TestParseHFConfig:
         assert "E" not in extra_params.hybrid_override_pattern  # No MoE layers
         assert extra_params.moe_shared_expert_intermediate_size == 0
 
-    def test_parse_nemotronh_layers_block_type_config(self):
+    @pytest.mark.parametrize("architecture", ["NemotronHForCausalLM", "NemotronH_Omni_Reasoning_V3"])
+    @pytest.mark.parametrize("attention_names", [("mamba", "attention"), ("linear_attention", "full_attention")])
+    def test_parse_nemotronh_layers_block_type_config(self, architecture, attention_names, tmp_path):
         """Test parsing NemotronH configs that use explicit layer block names."""
         config = {
             "architectures": ["NemotronHForCausalLM"],
@@ -255,7 +257,7 @@ class TestParseHFConfig:
             "n_routed_experts": 512,
             "moe_intermediate_size": 5120,
             "head_dim": 128,
-            "layers_block_type": ["mamba", "moe", "mamba", "attention", "mlp"],
+            "layers_block_type": [attention_names[0], "moe", attention_names[0], attention_names[1], "mlp"],
             "mamba_num_heads": 256,
             "mamba_head_dim": 64,
             "ssm_state_size": 128,
@@ -265,9 +267,11 @@ class TestParseHFConfig:
             "moe_shared_expert_intermediate_size": 10240,
         }
 
+        if architecture == "NemotronH_Omni_Reasoning_V3":
+            config = {"architectures": [architecture], "llm_config": config}
         result = _parse_hf_config_json(config)
 
-        assert result["architecture"] == "NemotronHForCausalLM"
+        assert result["architecture"] == architecture
         assert result["layers"] == 5
         assert result["hidden_size"] == 8192
         assert result["topk"] == 22
@@ -277,6 +281,13 @@ class TestParseHFConfig:
         assert extra_params.hybrid_override_pattern == "MEM*-"
         assert extra_params.mamba_num_heads == 256
         assert extra_params.moe_shared_expert_intermediate_size == 10240
+
+        from aisimulate.sdk import models
+        from aisimulate.sdk.config import ModelConfig
+
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        model = models.get_model(str(tmp_path), ModelConfig(tp_size=1, moe_tp_size=1), "vllm")
+        assert isinstance(model, models.NemotronHModel)
 
     def test_parse_qwen35_dense_config(self):
         """Test parsing Qwen3.5-27B (dense hybrid) config → Qwen35Config."""

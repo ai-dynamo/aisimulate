@@ -46,14 +46,28 @@ A callable `subscribe(config)` may return `RecommendationOutputCallbacks` or
 ```python
 on_candidate(record: CandidateRecord) -> None
 on_round(round_no: int, candidates: list[Candidate]) -> None
+on_complete() -> None
+on_failure(error: Exception) -> None
 ```
 
-Subscription runs in the supervised recommendation worker. Each callback
-receives a deep copy of its event data and executes synchronously on the search
-path. Return promptly; failure aborts the recommendation through
-`OutputAdapterExecutionError`. A subscription returning another type is invalid.
+Subscription runs in the supervised recommendation worker. Progress callbacks
+receive a deep copy of their event data, and every callback executes
+synchronously on the search path. Return promptly; failure aborts the
+recommendation through `OutputAdapterExecutionError`. A subscription returning
+another type is invalid.
 Callbacks and final `write()` may run on different adapter instances, so their
 contract does not provide shared in-memory state.
+
+`on_complete` runs after the search and every progress callback has finished, but
+before the worker returns its successful result to the parent process.
+`on_failure` runs before an exception from the search or another callback leaves
+the worker. Every registered failure callback is attempted in subscription order
+even when an earlier callback fails. Failure-callback errors retain their adapter
+and event attribution and are reported after all callbacks have run. The original
+search or callback exception remains the primary error and carries any additional
+failure-callback diagnostics. These terminal callbacks let the worker-local adapter
+stop and join live publishers before the separate final writer publishes
+authoritative output. An adapter that does not start background work can omit them.
 
 ## Discovery and deployment limits
 

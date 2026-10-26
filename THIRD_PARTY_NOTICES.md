@@ -1296,6 +1296,17 @@ https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c1800
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
 the repository Apache-2.0 license text applies to these adaptations.
 
+The Hopper SGLang FP8-KV attention precision in
+`crates/core/src/perfmodel/operators/glm53flash.rs` and its arithmetic tests
+is a modified, independently expressed analytical adaptation of
+`python/sglang/kernels/ops/attention/dsa/tilelang_kernel.py` at
+https://github.com/sgl-project/sglang/tree/9336681310c7a7153c4fbd7c2b9ae62011899014
+(Copyright SGLang contributors, Apache-2.0). Changes: express the raw-FP8
+TileLang QK/PV precision as a tensor-core roofline rate on SM90 and verify
+the mathematical work with hand-calculated examples; no kernel source is
+vendored. The upstream license is preserved by the repository and packaged
+Apache-2.0 `LICENSE` text.
+
 ## vLLM DeepSeek V4 cache sizing
 
 `src/aisimulate_core/sdk/memory/deepseek_v4.py` and the indexer cache-dtype
@@ -1443,3 +1454,94 @@ https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a06
 
 The AISimulate files are modified re-implementations, not verbatim copies.
 Both derived files carry the source URLs and revisions in their headers.
+
+## SGLang v0.5.20 transferred-prompt publication at running admission and release on ready-queue cancellation
+
+The following repository-root files independently model transferred-prompt publication at running admission and release on ready-queue cancellation:
+
+- `crates/core/src/engine/kv_manager/sglang_backend.rs`
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+- `crates/core/src/replay/disagg_tests.rs`
+- `crates/core/src/replay/handoff.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/decode.py (get_new_prebuilt_batch), python/sglang/srt/disaggregation/decode_schedule_batch_mixin.py (process_prebuilt), and python/sglang/srt/managers/scheduler.py (waiting-queue cancellation).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 partial-edge access recency and reinsertion of an already cached prefix
+
+The following repository-root files independently model partial-edge access recency and reinsertion of an already cached prefix:
+
+- `crates/core/src/engine/cache/radix_cache.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/mem_cache/radix_cache.py (_match_prefix_helper and _insert_helper).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 stable length-policy retraction order and post-release cache eviction toward the survivor reserve
+
+The following repository-root files independently model stable length-policy retraction order and post-release cache eviction toward the survivor reserve:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/decode.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/managers/schedule_batch.py (_get_decode_retraction_order, retract_decode and release_req).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang v0.5.20 completed source-prompt publication before the transfer hold
+
+The following repository-root files independently model completed source-prompt publication before the transfer hold:
+
+- `crates/core/src/engine/scheduler/sglang/core.rs`
+- `crates/core/src/engine/scheduler/sglang/tests.rs`
+
+The modified Rust behavior and synthetic regression fixtures adapt the contract
+observed in SGLang v0.5.20, commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`.
+Original source paths: python/sglang/srt/disaggregation/prefill.py (process_batch_result_disagg_prefill).
+
+Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
+
+Copyright 2023-2024 SGLang Team and SGLang contributors. Apache-2.0;
+the upstream license is at
+https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/LICENSE
+and its full text is included in this repository as `LICENSE`.
+Modified for AISimulate request leases, physical page accounting and replay.
+No serving implementation, production request content or upstream test fixture is vendored.
+
+## SGLang cache publication and KV event cadence
+
+The modified behavior and synthetic tests in `crates/core/src/engine/kv_manager/sglang_backend.rs`, `crates/core/src/engine/scheduler/sglang/core.rs`, `crates/core/src/engine/scheduler/sglang/decode.rs`, `crates/core/src/engine/scheduler/sglang/host_loop.rs`, and `crates/core/src/engine/scheduler/sglang/tests.rs` adapt the cache insert points and event queue/publish contract from SGLang v0.5.20, immutable commit `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`: `python/sglang/srt/mem_cache/radix_cache.py`, `python/sglang/srt/mem_cache/events.py`, `python/sglang/srt/managers/scheduler.py`, `python/sglang/srt/managers/scheduler_components/batch_result_processor.py`, and `python/sglang/srt/managers/scheduler_components/metrics_reporter.py`. Source: https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e . Copyright 2023-2024 SGLang Team and contributors, Apache-2.0. The license text is included as `LICENSE`. Modified for AISimulate request leases, overlap observation, and physical page accounting. No production fixture is included.
+
+Running-request cancellation retains its KV lease until the in-flight forward
+is observed, adapting `Scheduler.abort_request` and result-time
+`release_kv_cache` from the same pinned scheduler and batch-result sources.
