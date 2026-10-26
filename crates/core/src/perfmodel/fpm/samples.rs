@@ -536,8 +536,7 @@ mod tests {
             ..ForwardPassPerfOptions::default()
         };
         let mut with_events = BucketedSamples::new_dynamic(&options, 2);
-        // Clone the initial hasher so tied bucket choices are comparable.
-        let mut boolean_only = with_events.clone();
+        let mut boolean_only = BucketedSamples::new_dynamic(&options, 2);
         for i in 0..100 {
             let x = vec![(i % 17) as f64, ((i * 7) % 23) as f64];
             assert!(boolean_only.add(x.clone(), i));

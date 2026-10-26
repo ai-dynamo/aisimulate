@@ -435,8 +435,9 @@ minimum bound of 1 for an unused axis. The report records maxima, bounds, and
 the training-file hash. These bounds are fixed before evaluation; the original
 fixed and hybrid arms and cohort labels still use the default limits.
 The caller must ensure the training and evaluation observations are disjoint.
-Fixed-grid eviction ties depend on hash-map iteration order, so independently
-constructed fixed stores can differ across runs.
+Fixed-grid eviction ties evict from the lexicographically greatest cell (see
+[online regression](../methods/online-regression.md)), so independently
+constructed fixed stores retain the same samples in every run.
 
 Iterations whose workload kind has no trained
 store return `None`; empty iterations return `0.0`. `diagnostics()["source"]`
