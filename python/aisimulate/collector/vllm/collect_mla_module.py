@@ -763,6 +763,7 @@ def _create_kv_cache_and_metadata(
     compute_dtype: str = "bfloat16",
     device: str = "cuda:0",
     indexer=None,
+    _runtime=None,
 ):
     """Create KV cache and attention metadata for benchmarking."""
     hf_config = vllm_config.model_config.hf_text_config
@@ -792,9 +793,14 @@ def _create_kv_cache_and_metadata(
         8192,
     )
 
-    common_attn_metadata = create_common_attn_metadata(
-        batch_spec, block_size, torch.device(device), arange_block_indices=True
-    )
+    if _runtime is None:
+        common_attn_metadata = create_common_attn_metadata(
+            batch_spec, block_size, torch.device(device), arange_block_indices=True
+        )
+    else:
+        common_attn_metadata, _ = _runtime.create_common_metadata(
+            batch_spec, block_size, num_kv_cache_blocks, device, is_context
+        )
 
     # TRT-LLM Gen MLA (and cutlass_mla) require the page table's block
     # dimension to be a multiple of ``128 / block_size``; for block_size=64
@@ -831,19 +837,31 @@ def _create_kv_cache_and_metadata(
         device=device,
     )
 
-    kv_cache = create_and_prepopulate_kv_cache_mla(
-        kv_c_contexts=kv_c_contexts,
-        k_pe_contexts=k_pe_contexts,
-        block_size=block_size,
-        head_size=kv_cache_spec.head_size,
-        dtype=cache_dtype,
-        device=torch.device(device),
-        num_blocks=num_kv_cache_blocks,
-        common_attn_metadata=common_attn_metadata,
-        randomize_blocks=False,
-        kv_cache_dtype=kv_cache_dtype_str,
-        scale=attn_layer._k_scale,
-    )
+    if _runtime is None:
+        kv_cache = create_and_prepopulate_kv_cache_mla(
+            kv_c_contexts=kv_c_contexts,
+            k_pe_contexts=k_pe_contexts,
+            block_size=block_size,
+            head_size=kv_cache_spec.head_size,
+            dtype=cache_dtype,
+            device=torch.device(device),
+            num_blocks=num_kv_cache_blocks,
+            common_attn_metadata=common_attn_metadata,
+            randomize_blocks=False,
+            kv_cache_dtype=kv_cache_dtype_str,
+            scale=attn_layer._k_scale,
+        )
+    else:
+        kv_cache = _runtime.populate_mla_cache(
+            vllm_config,
+            attn_layer,
+            kv_cache_spec,
+            num_kv_cache_blocks,
+            common_attn_metadata,
+            kv_c_contexts,
+            k_pe_contexts,
+            device,
+        )
 
     builder_cls = backend_cls.get_builder_cls()
 
@@ -881,13 +899,18 @@ def _create_kv_cache_and_metadata(
         indexer_layer_name = "model.layers.0.self_attn.indexer.k_cache"
         indexer_layer = vllm_config.compilation_config.static_forward_context[indexer_layer_name]
         indexer_spec = indexer_layer.get_kv_cache_spec(vllm_config)
-        indexer_kv_cache = torch.zeros(
-            num_kv_cache_blocks,
-            block_size,
-            indexer_spec.head_size,
-            dtype=indexer_spec.dtype,
-            device=device,
-        )
+        if _runtime is None:
+            indexer_kv_cache = torch.zeros(
+                num_kv_cache_blocks,
+                block_size,
+                indexer_spec.head_size,
+                dtype=indexer_spec.dtype,
+                device=device,
+            )
+        else:
+            indexer_kv_cache = _runtime.bind_cache(
+                vllm_config, indexer_layer, indexer_spec, num_kv_cache_blocks, device
+            )
         indexer_builder_cls = indexer_layer.get_attn_backend().get_builder_cls()
         indexer_builder = indexer_builder_cls(indexer_spec, [indexer_layer_name], vllm_config, torch.device(device))
         indexer_metadata = indexer_builder.build(
@@ -926,6 +949,7 @@ def run_mla_module(
     device: str = "cuda:0",
     warming_up: int = 10,
     test_ite: int = 6,
+    _runtime=None,
 ):
     """Run a single MLA / DSA module-level benchmark point."""
     if attn_type not in {"mla", "dsa"}:
@@ -997,17 +1021,19 @@ def run_mla_module(
                 compute_dtype=compute_dtype,
                 device=device,
                 indexer=getattr(attn_module, "indexer", None),
+                _runtime=_runtime,
             )
         )
 
     # 2b. Bind KV cache to the 0.24.0 attention layer.
     attn_layer_name = "model.layers.0.self_attn.attn"
     forward_ctx = vllm_config.compilation_config.static_forward_context
-    forward_ctx[attn_layer_name].kv_cache = kv_cache
+    if _runtime is None:
+        forward_ctx[attn_layer_name].kv_cache = kv_cache
 
     # For DSA, also bind the indexer's KV cache.
     indexer_layer_name = "model.layers.0.self_attn.indexer.k_cache"
-    if indexer_kv_cache is not None and indexer_layer_name in forward_ctx:
+    if _runtime is None and indexer_kv_cache is not None and indexer_layer_name in forward_ctx:
         forward_ctx[indexer_layer_name].kv_cache = indexer_kv_cache
 
     # 3. Input tensors
@@ -1230,6 +1256,7 @@ def run_mla_module_worker(
     *,
     perf_filename: str,
     device: str = "cuda:0",
+    _runtime=None,
 ):
     """Worker-compatible positional wrapper used by collector/collect.py."""
     # Serving executes model forward under inference mode (vLLM dd10e03f9,
@@ -1249,6 +1276,7 @@ def run_mla_module_worker(
             model_path=model_path,
             attn_type=attn_type,
             device=device,
+            _runtime=_runtime,
         )
 
 

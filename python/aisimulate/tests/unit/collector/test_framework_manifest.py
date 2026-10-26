@@ -69,6 +69,10 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
         "attention_context",
         "attention_generation",
         "encoder_attention",
+        "mla_context_module",
+        "mla_generation_module",
+        "dsa_context_module",
+        "dsa_generation_module",
     }
 
     # Each module pins the runtime that actually collects it: the manifest
