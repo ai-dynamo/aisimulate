@@ -15,8 +15,9 @@ ct-mxfp4+situ checkpoint is MarlinExperts W4A16 on every SM (the preview
 build's CUTLASS activation whitelist rejects SITU), so the collector
 forces the same Marlin selection on stock, runs the elementwise epilogue
 as silu (<~3% of the op), and marks the rows' kernel_source with
-`_situ_as_silu`. On the preview build itself the betas pass through
-natively. Re-verify at every version bump: when upstream wires SITU into
+`_situ_as_silu`. Builds exposing SiTU parameters on their factory, including
+stock 0.31.0, receive the betas natively and retain framework dispatch.
+Re-verify at every version bump: when upstream wires SITU into
 a quantized-activation kernel (the preview already carries an unwired
 trtllm-gen SITU mapping), the serving kernel class changes and this
 approximation must be retired.
@@ -165,6 +166,7 @@ __compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0
 import contextlib
 import json
 import os
+from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -499,6 +501,18 @@ def get_moe_test_cases():
     return test_cases
 
 
+def _require_moe_activation_precision(moe_type, quant_method):
+    # CT MXFP4's device-selected CUTLASS path quantizes activations as well
+    # as weights (compressed_tensors_moe_w4a4_mxfp4.py:151-160 @v0.31.0).
+    # A native SiTU factory must not turn a declared W4A16 row into W4A4.
+    if moe_type == "w4a16_mxfp4" and getattr(quant_method, "use_cutlass_mxfp4", False):
+        raise ValueError(
+            "w4a16_mxfp4 requires BF16 activations, but the selected compressed-tensors "
+            "CUTLASS MXFP4 method quantizes activations to MXFP4 (W4A4); "
+            "a separate collector/data precision contract is required"
+        )
+
+
 def run_moe_torch(
     moe_type,
     num_tokens_lists,
@@ -739,10 +753,11 @@ def run_moe_torch(
     # and the rank-0 expert map exactly as in a multi-rank model.
     logical_parallel_size = moe_ep_size if moe_ep_size > 1 else moe_tp_size
 
-    # SITU activation (Kimi-K3) exists only on the kimi-k3 preview build
-    # (stock v0.24.0 has no situ path — upstream v0.24.0 activation.py).
-    # Probe the constructor instead of predicting: on the preview build,
-    # pass the betas through. On stock, apply the owner-approved
+    # FusedMoE is a factory function, not the returned layer class. Inspect
+    # that callable: layer.py:88-112 @v0.31.0 exposes both SiTU betas, as used
+    # by models/kimi_k3/nvidia/model.py:708-716. Inspecting its __init__ would
+    # miss them and incorrectly replace native SiTU with the legacy fallback.
+    # On older factories without SiTU parameters, apply the owner-approved
     # approximation (2026-08-02): serving truth for (ct-mxfp4, situ) is
     # MarlinExperts weight-only W4A16 — the preview rejects SITU in its
     # CUTLASS activation whitelist and falls to Marlin
@@ -757,9 +772,7 @@ def run_moe_torch(
     situ_kwargs = {}
     situ_marlin_approx = False
     if runtime_config["activation"] == "situ":
-        from inspect import signature as _sig
-
-        if "activation_situ_beta" in _sig(FusedMoE.__init__).parameters:
+        if "activation_situ_beta" in signature(FusedMoE).parameters:
             situ_kwargs = {
                 "activation_situ_beta": runtime_config["activation_situ_beta"],
                 "activation_situ_linear_beta": runtime_config["activation_situ_linear_beta"],
@@ -839,6 +852,7 @@ def run_moe_torch(
                     parameter.zero_()
 
         quant_method = routed_experts.quant_method
+        _require_moe_activation_precision(moe_type, quant_method)
         # API-compat shim for stock v0.24.0 Marlin weight prep under EP:
         # prepare_moe_fp4_layer_for_marlin sizes its repack loop and shape
         # assert from moe_config.num_experts (GLOBAL), while create_weights

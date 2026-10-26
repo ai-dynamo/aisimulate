@@ -38,6 +38,17 @@ fn checkpoint_with_forest(
         super::super::super::LearnedUpdateMode::LeafOnly;
     config.estimator_config.fpm_learned.update_every = 1;
     config.estimator_config.fpm_learned.recent_window = 8;
+    // Preserve the unweighted expert oracle independently of recipe defaults.
+    config.estimator_config.fpm_learned.history_weight = None;
+    config
+        .estimator_config
+        .fpm_learned
+        .history_weight_ramp_observations = 0;
+    config.estimator_config.fpm_learned.history_bin_grouping = false;
+    config.estimator_config.fpm_learned.derivative_refresh =
+        super::super::super::LearnedDerivativeRefresh::Eager;
+    config.estimator_config.fpm_learned.split_sampling_rate = 1.0;
+    config.estimator_config.fpm_learned.split_rank_tolerance = 0.0;
     config.estimator_config.correction.min_observations = 1;
     config.estimator_config.correction.sampling.bins_per_axis = [2, 2];
     config.estimator_config.selector.alpha = 0.4;

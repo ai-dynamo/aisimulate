@@ -32,10 +32,12 @@ collector file actually under test, not on re-proving that separately-
 verified surface every time.
 """
 
+import ast
 import importlib.util
 import re
 import sys
 import types
+from inspect import signature
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -157,6 +159,56 @@ VLLM_0271_MOE_SURFACE = {
 
 _COLLECT_MOE_PATH = COLLECTOR_DIR / "vllm" / "collect_moe.py"
 _COLLECT_MOE_DOTTED = "collector.vllm.collect_moe"
+
+
+@pytest.mark.parametrize("native_situ", [False, True])
+@pytest.mark.parametrize("activation", ["situ", "silu"])
+def test_moe_activation_probe_uses_factory_callable(native_situ, activation):
+    def native_factory(*, activation, activation_situ_beta=None, activation_situ_linear_beta=None):
+        return activation, activation_situ_beta, activation_situ_linear_beta
+
+    def legacy_factory(*, activation):
+        return activation, None, None
+
+    # Execute the real activation-selection block without importing CUDA.
+    # A function's __init__ has no SiTU parameters even for the native factory.
+    tree = ast.parse(_COLLECT_MOE_PATH.read_text())
+    worker = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_moe_torch")
+    start = next(
+        i
+        for i, n in enumerate(worker.body)
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "situ_kwargs" for t in n.targets)
+    )
+    stop = next(
+        i
+        for i, n in enumerate(worker.body)
+        if isinstance(n, ast.FunctionDef) and n.name == "_serving_truth_marlin_selection"
+    )
+    runtime = {"activation": activation, "activation_situ_beta": 4.0, "activation_situ_linear_beta": 25.0}
+    factory = native_factory if native_situ else legacy_factory
+    namespace = {"runtime_config": runtime, "FusedMoE": factory, "signature": signature}
+    exec(compile(ast.Module(body=worker.body[start:stop], type_ignores=[]), str(_COLLECT_MOE_PATH), "exec"), namespace)
+    result = factory(activation=runtime["activation"], **namespace["situ_kwargs"])
+    if native_situ and activation == "situ":
+        assert result == ("situ", 4.0, 25.0)
+    else:
+        assert result == ("silu", None, None)
+    assert namespace["situ_marlin_approx"] is (activation == "situ" and not native_situ)
+
+
+@pytest.mark.parametrize("quant_method", [types.SimpleNamespace(), types.SimpleNamespace(use_cutlass_mxfp4=False)])
+def test_moe_keeps_weight_only_mxfp4_methods(monkeypatch, quant_method):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module._require_moe_activation_precision("w4a16_mxfp4", quant_method)
+
+
+def test_moe_rejects_mxfp4_activation_under_weight_only_label(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    with pytest.raises(ValueError, match="quantizes activations to MXFP4"):
+        module._require_moe_activation_precision("w4a16_mxfp4", types.SimpleNamespace(use_cutlass_mxfp4=True))
+
 
 # run_moe_torch() runs its whole vllm import preamble (10 statements, 9 of
 # them vllm-rooted) as the first lines of the function body, strictly before

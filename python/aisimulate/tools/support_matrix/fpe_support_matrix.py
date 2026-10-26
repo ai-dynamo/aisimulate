@@ -501,6 +501,23 @@ def _exception_chain(error: BaseException) -> list[BaseException]:
 def classify_failure(error: BaseException, *, stage: str) -> str:
     """Map native/Python failures to stable, conservative matrix categories."""
     chain = _exception_chain(error)
+    # A known runtime-version limitation is not an unexpected engine failure.
+    # Keep the complete diagnostic and build stage narrow: query errors and
+    # changed native diagnostics must still block qualification.
+    hopper_kv_rejection = (
+        r"invalid engine config: GLM-5\.3-Flash on GPU [\w.-]+ \(SM9\d\) "
+        r"cannot use FP8 sparse-MLA KV with (vllm|sglang): the "
+        r"requested backend_version=\S+ requires \1 >= (0\.32\.0|0\.5\.22)\. "
+        r"Select a supported runtime \(SGLang requires TileLang DSA prefill and decode\), "
+        r'or pass kvcache_quant_mode="bfloat16"\.'
+    )
+    if stage == "build":
+        for item in chain:
+            if not isinstance(item, ValueError):
+                continue
+            match = re.fullmatch(hopper_kv_rejection, str(item).strip())
+            if match and match.groups() in {("vllm", "0.32.0"), ("sglang", "0.5.22")}:
+                return STATUS_FRAMEWORK_INCOMPATIBLE
     # Explicit SDK preflights from moe_comm_resolver and models/base, moe,
     # hybrid_moe, gemma4, deepseek_v41, glm53flash. Match type and complete diagnostic only while building;
     # unrelated or query-time failures must retain their blocking category.
@@ -528,7 +545,12 @@ def classify_failure(error: BaseException, *, stage: str) -> str:
         ),
         (
             NotImplementedError,
-            r"GLM-5\.3-Flash baseline requires TP1/2/4/8, MoE TP=TP, DP=PP=CP=EP=1",
+            r"GLM-5\.3-Flash requires TP1/2/4/8 attention with DP=PP=CP=1 and MoE TP x EP = TP; "
+            r"data-parallel attention is not supported",
+        ),
+        (
+            NotImplementedError,
+            r"GLM-5\.3-Flash vLLM expert parallelism requires MoE TP=1 and EP=TP",
         ),
         (
             NotImplementedError,

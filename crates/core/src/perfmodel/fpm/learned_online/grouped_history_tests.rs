@@ -251,10 +251,10 @@ fn grouped_runtime_validation_rejects_corrupt_multiplicity_and_duplicate_bins() 
 #[test]
 fn grouping_control_roundtrips_and_legacy_runtime_schema_is_explicitly_rejected() {
     let default = FpmLearnedConfig::default();
-    assert!(!default.history_bin_grouping);
+    assert!(default.history_bin_grouping);
     let config: FpmLearnedConfig =
-        serde_json::from_value(serde_json::json!({"history_bin_grouping":true})).unwrap();
-    assert!(config.history_bin_grouping);
+        serde_json::from_value(serde_json::json!({"history_bin_grouping":false})).unwrap();
+    assert!(!config.history_bin_grouping);
     assert_eq!(
         serde_json::from_str::<FpmLearnedConfig>(&serde_json::to_string(&config).unwrap()).unwrap(),
         config

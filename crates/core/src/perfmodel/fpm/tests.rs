@@ -3072,6 +3072,7 @@ fn canonical_learned_fixture(path: &std::path::Path) -> crate::ForwardPassPerfMo
     config.backend_version = Some("test-version".into());
     config.estimation_mode = crate::EstimationMode::FpmLearned;
     config.estimator_config.fpm_learned.artifact_path = Some(path.to_owned());
+    config.estimator_config.fpm_learned.adaptation = crate::LearnedAdaptation::Frozen;
     config
 }
 

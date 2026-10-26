@@ -20,6 +20,7 @@ import contextlib
 import copy
 import io
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,11 @@ class EngineStepParityCase:
     # False on identities whose perf tables ship no power columns — there the
     # sums are 0.0 on both engines and the comparison would be vacuous.
     compare_energy: bool = False
+    # Frozen data coordinate outside the queryable version slots (see
+    # systems/query_versions.yaml): the live engine-spec build resolves it
+    # through the AIC_ALLOW_UNLISTED_VERSIONS fixture escape, matching the
+    # allow_unlisted_version=True database load in `_case_database`.
+    allow_unlisted_version: bool = False
     # Attention kernel-lane override (`ModelConfig.attention_backend`,
     # AIC-1715/1716). `None` = no override, i.e. the framework-default lane
     # heads the precedence order. The op carries the RESOLVED walk order into
@@ -492,13 +498,16 @@ SMOKE_CASES = [
     # needs tp=16 to fit its estimated weight footprint. Keep EP node-local
     # on GB300's four-GPU node (the current engine rejects cross-node EP),
     # while the wider aggregate batch exercises the IFB batch dimension at
-    # this model scale.
+    # this model scale. 0.5.17 and vLLM 0.27.1 are data coordinates, not
+    # queryable slots (the fleet next is newer), so these cases opt into
+    # allow_unlisted_version and keep their sparse-data identity.
     pytest.param(
         EngineStepParityCase(
             model_path="Qwen/Qwen3.8-2.4T-A95B-FP8",
             system_name="gb300",
             backend_name="sglang",
             backend_version="0.5.17",
+            allow_unlisted_version=True,
             tp_size=16,
             moe_tp_size=4,
             moe_ep_size=4,
@@ -517,6 +526,7 @@ SMOKE_CASES = [
             system_name="gb300",
             backend_name="sglang",
             backend_version="0.5.17",
+            allow_unlisted_version=True,
             moe_quant_mode="nvfp4",
             moe_tp_size=2,
             moe_ep_size=4,
@@ -538,6 +548,7 @@ SMOKE_CASES = [
             system_name="gb300",
             backend_name="vllm",
             backend_version="0.27.1",
+            allow_unlisted_version=True,
             tp_size=16,
             moe_tp_size=16,
             moe_ep_size=1,
@@ -556,6 +567,7 @@ SMOKE_CASES = [
             system_name="gb300",
             backend_name="vllm",
             backend_version="0.27.1",
+            allow_unlisted_version=True,
             tp_size=16,
             pp_size=2,
             moe_tp_size=16,
@@ -1014,6 +1026,19 @@ def _surface_metrics(
 ) -> dict[str, float | _ErrorSentinel]:
     """LIVE compiled-engine metrics for a (case, surface) pair.
 
+    Shared by the parity tests and ``pin_goldens.py``; a case pinned to an
+    unlisted version is admitted for both through `_unlisted_version_scope`.
+    """
+    with _unlisted_version_scope(case):
+        return _unscoped_surface_metrics(case, surface)
+
+
+def _unscoped_surface_metrics(
+    case: EngineStepParityCase,
+    surface: str,
+) -> dict[str, float | _ErrorSentinel]:
+    """Surface dispatch for `_surface_metrics`.
+
     There is no engine selector anymore: the helpers pin
     ``engine_step_backend="rust"`` internally (passing "python" would be a
     silent rust-vs-rust self-comparison via the deprecation no-op — exactly
@@ -1051,6 +1076,25 @@ def _surface_metrics(
             "disagg_request": metrics["request_latency_ms"],
         }
     raise ValueError(f"unknown parity surface: {surface!r}")
+
+
+@contextlib.contextmanager
+def _unlisted_version_scope(case: EngineStepParityCase):
+    """Admit a case's pinned unlisted version for the live engine-spec build only."""
+    if not case.allow_unlisted_version:
+        yield
+        return
+    previous = os.environ.get("AIC_ALLOW_UNLISTED_VERSIONS")
+    os.environ["AIC_ALLOW_UNLISTED_VERSIONS"] = "1"
+    rust_engine_step._engine_handle_cache_clear()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("AIC_ALLOW_UNLISTED_VERSIONS", None)
+        else:
+            os.environ["AIC_ALLOW_UNLISTED_VERSIONS"] = previous
+        rust_engine_step._engine_handle_cache_clear()
 
 
 def _comparison_metrics(

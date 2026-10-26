@@ -223,6 +223,36 @@ def test_aic_provider_preserves_oom_category_provenance_and_context_guidance(mon
     assert "reduce KV memory" in caught.value.detail
 
 
+def test_aic_provider_rejects_gpus_per_node_mismatch_as_invalid_topology(monkeypatch):
+    from aisimulate.sweeper import afd_measure
+
+    monkeypatch.setattr(
+        afd_measure,
+        "_load_database",
+        lambda *args: (SimpleNamespace(system_spec={"node": {"num_gpus_per_node": 8}}), "test-version"),
+    )
+    monkeypatch.setattr(afd_measure, "get_backend", lambda name: SimpleNamespace(name=name))
+
+    class UnexpectedSession:
+        def __init__(self, **kwargs):
+            pytest.fail("a gpus_per_node mismatch must be rejected before the session is built")
+
+    for resolver in ("resolve_context_fmha_by_data", "resolve_dsv4_moe_arch", "resolve_nvfp4_for_system"):
+        monkeypatch.setattr(afd_measure, resolver, lambda *args, **kwargs: None)
+    monkeypatch.setattr(afd_measure, "AFDInferenceSession", UnexpectedSession)
+    request = measurement_request_from_candidate(_sample(_topology()), {"isl": 128, "osl": 32})
+
+    with pytest.raises(AFDInfeasible, match="gpus_per_node=4 disagrees") as caught:
+        AICAFDPerformanceModel().measure(request)
+
+    assert caught.value.category is AFDReasonCategory.INVALID_TOPOLOGY
+    assert caught.value.provenance == {
+        "system": "example_sku",
+        "topology_gpus_per_node": 4,
+        "system_spec_gpus_per_node": 8,
+    }
+
+
 def test_attach_measurements_replaces_unresolved_metadata():
     topology = _topology()
     sample = _sample(topology)

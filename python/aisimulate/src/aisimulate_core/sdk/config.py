@@ -399,11 +399,9 @@ class AFDConfig:
     # AFD decode pool with a regular prefill pool (or vice versa); the
     # combined estimate is the number a sizing exercise actually needs.
     #
-    # TODO(afd, Phase-2): extend pareto_analysis to merge the AFD
-    # frontier with the agg / disagg frontiers so end-to-end Pareto
-    # evaluation across mixed AFD + P/D deployments is possible. Today
-    # the CLI single-point combine path is in place, but the Pareto
-    # sweep does not yet enumerate AFD-combined-with-PD points.
+    # The legacy ``sdk.pareto_analysis`` agg / disagg frontier does not
+    # include AFD. AFD and ``afd+pd`` candidates are searched by the
+    # unified sweeper (``aisimulate recommend``).
     combined_with_pd: bool = True
     # Boundary-op assignment: ``add_norm_2`` and ``logits_gemm`` sit at
     # the natural Attention/FFN boundary and can be assigned to either
