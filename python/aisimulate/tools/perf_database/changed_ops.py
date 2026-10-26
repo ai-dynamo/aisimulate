@@ -49,12 +49,13 @@ this keeps the tool revision-safe (a framework's registry path is exactly
 what that revision's manifest says it is) and independently testable with
 small fixture trees that do not need to replicate all five real registries.
 
-Known gaps
-----------
-- VersionRoute-versioned registry entries (`OpEntry(..., versions=(...))`,
-  no literal `module=`) are not parsed: `_parse_registry_entries` raises
-  `NotImplementedError` rather than silently dropping them (fail-closed, not
-    a silent gap). No registry uses this shape today.
+Versioned registries
+--------------------
+All literal VersionRoute modules contribute to the family, including routes
+for versions other than the manifest pin (as with CUDA/XPU registry siblings).
+Route thresholds and order are compared too: routing-only edits must not be
+reported unchanged. Dynamic or unknown route syntax raises NotImplementedError
+rather than silently omitting a module; no runtime resolver is executed.
 
 Exit codes
 ----------
@@ -268,6 +269,7 @@ class RegistryEntry:
     op: str
     module: str
     table_stem: str
+    versions: tuple[tuple[str, str], ...] = ()
 
 
 @cache
@@ -337,6 +339,33 @@ def _find_registry_lists(tree: ast.Module, registry_names: tuple[str, ...]) -> l
     return registry_lists
 
 
+def _parse_version_routes(node: ast.expr, op: str | None) -> tuple[tuple[str, str], ...]:
+    """Read literal VersionRoute pairs without evaluating registry source."""
+    error = f"Unsupported VersionRoute syntax (op: {op}); expected literal min_version/module pairs"
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        raise NotImplementedError(error)
+    routes = []
+    fields = ("min_version", "module")
+    for route in node.elts:
+        if not (
+            isinstance(route, ast.Call)
+            and isinstance(route.func, ast.Name)
+            and route.func.id == "VersionRoute"
+            and len(route.args) <= 2
+        ):
+            raise NotImplementedError(error)
+        values = dict(zip(fields, route.args, strict=False))
+        for keyword in route.keywords:
+            if keyword.arg not in fields or keyword.arg in values:
+                raise NotImplementedError(error)
+            values[keyword.arg] = keyword.value
+        pair = tuple(_ast_str(values.get(field)) for field in fields)
+        if not all(pair):
+            raise NotImplementedError(error)
+        routes.append(pair)
+    return tuple(routes)
+
+
 def _parse_registry_entries(repo_root: Path, rev: str, manifest: dict[str, Any], framework: str) -> list[RegistryEntry]:
     spec = manifest.get("frameworks", {}).get(framework)
     if spec is None:
@@ -361,18 +390,31 @@ def _parse_registry_entries(repo_root: Path, rev: str, manifest: dict[str, Any],
             kwargs = {kw.arg: kw.value for kw in element.keywords if kw.arg}
             op = _ast_str(kwargs.get("op"))
             module = _ast_str(kwargs.get("module"))
-            if module is None and "versions" in kwargs:
-                # Versioned entries (module=None, versions=(VersionRoute(...), ...))
-                # are not parsed — fail closed rather than silently omitting the
-                # op from its family's module set (see "Known gaps" above).
-                raise NotImplementedError(
-                    "changed_ops does not support VersionRoute-versioned registry entries; "
-                    f"extend the parser (op: {op})"
-                )
+            versions = _parse_version_routes(kwargs["versions"], op) if "versions" in kwargs else ()
+            if versions:
+                module_node = kwargs.get("module")
+                if element.args or any(kw.arg is None for kw in element.keywords):
+                    raise NotImplementedError(f"VersionRoute entry requires explicit keyword arguments (op: {op})")
+                if (
+                    module_node is not None
+                    and module is None
+                    and not (isinstance(module_node, ast.Constant) and module_node.value is None)
+                ):
+                    raise NotImplementedError(f"VersionRoute entry has a dynamic module (op: {op})")
+            if versions and module:
+                raise ValueError(f"OpEntry {op}: cannot specify both module and VersionRoute entries")
+            if "versions" in kwargs and not (versions or module):
+                raise NotImplementedError(f"Empty VersionRoute entries without a literal module (op: {op})")
             perf_filename = _resolve_perf_filename(kwargs.get("perf_filename"), perf_file_map)
-            if not (op and module and perf_filename):
+            if versions and not (op and perf_filename):
+                raise NotImplementedError(f"VersionRoute entry requires literal op and perf_filename (op: {op})")
+            if not (op and perf_filename):
                 continue
-            entries.append(RegistryEntry(op=op, module=module, table_stem=Path(perf_filename).stem))
+            modules = [route_module for _, route_module in versions] if versions else [module] if module else []
+            for route_module in modules:
+                entries.append(
+                    RegistryEntry(op=op, module=route_module, table_stem=Path(perf_filename).stem, versions=versions)
+                )
     return entries
 
 
@@ -551,7 +593,16 @@ def _diff_framework(
         reasons: list[str] = []
         if _resolve_pin(base_ctx.manifest, framework, family) != _resolve_pin(head_ctx.manifest, framework, family):
             reasons.append(REASON_PIN_VERSION)
-        if _collector_code_differs(repo_root, base_ctx, head_ctx, base_modules, head_modules):
+        base_routes = {
+            entry for entry in base_entries if entry.versions and base_ctx.family_map.get(entry.table_stem) == family
+        }
+        head_routes = {
+            entry for entry in head_entries if entry.versions and head_ctx.family_map.get(entry.table_stem) == family
+        }
+        if (
+            _collector_code_differs(repo_root, base_ctx, head_ctx, base_modules, head_modules)
+            or base_routes != head_routes
+        ):
             reasons.append(REASON_COLLECTOR_CODE)
         base_case_hash = None
         if not (base_modules - base_ctx.closures.keys()):
