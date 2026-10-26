@@ -867,6 +867,34 @@ def test_finalize_merge_attests_deduplicated_current_identity_count(tmp_path):
     )
 
 
+def test_first_finalize_recovers_rows_replayed_after_stale_checkpoint(tmp_path):
+    perf = tmp_path / "gemm_perf.txt"
+    # The live snapshot has a completed row and an appended row whose callback
+    # is absent from its older checkpoint. Resume appends that callback again.
+    perf.write_text("kernel_source,shape,latency\ncutlass,done,1.0\ndeepgemm,pending,2.0\n")
+    with perf.open("a") as stream:
+        stream.write("deepgemm,pending,3.0\ncutlass,pending,4.0\n")
+    raw = perf.read_bytes()
+    source_stat = perf.stat()
+    finalization_info = {}
+
+    [parquet] = finalize_perf_files([perf], delete_source=False, finalization_info=finalization_info)
+
+    assert pq.read_table(parquet).to_pylist() == [
+        {"kernel_source": "cutlass", "shape": "done", "latency": 1.0},
+        {"kernel_source": "deepgemm", "shape": "pending", "latency": 3.0},
+        {"kernel_source": "cutlass", "shape": "pending", "latency": 4.0},
+    ]
+    assert perf.read_bytes() == raw
+    assert finalization_info[parquet.resolve()] == PerfFinalizationInfo(
+        new_rows=3,
+        merged_existing=False,
+        source_digest="sha256:" + hashlib.sha256(raw).hexdigest(),
+        source_device=source_stat.st_dev,
+        source_inode=source_stat.st_ino,
+    )
+
+
 def test_convert_without_merge_overwrites(tmp_path):
     perf = tmp_path / "gemm_perf.txt"
     parquet = perf.with_suffix(".parquet")

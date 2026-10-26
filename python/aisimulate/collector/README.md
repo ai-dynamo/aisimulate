@@ -837,6 +837,14 @@ Only tasks that never finished are re-queued on `--resume`;
 `--resume-retry-failed` additionally re-runs previously failed tasks.
 Running without `--resume` always starts fresh (overwrites old checkpoint).
 
+A live snapshot can contain a measurement appended before its callback reached
+the checkpoint. On resume, that callback can append another measurement. Default
+Parquet finalization keeps the last row per existing measurement identity, even
+when no Parquet exists yet, and attests the unique current-row count. It does not
+choose the fastest timing or combine different kernel identities. Keep the raw
+snapshot for audit; `delete_source=False` preserves staging when using the helper.
+Explicit `merge_existing=False` retains its overwrite behavior.
+
 ## For SGLang
 
 Use the pinned stock image, `lmsysorg/sglang:v0.5.14` (or its `-cu130`

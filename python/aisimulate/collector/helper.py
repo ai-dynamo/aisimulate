@@ -994,8 +994,9 @@ def convert_perf_csv_to_parquet(
     ``finalization_info``, when provided, is populated with the current event's
     finalized row contribution and whether an existing parquet took the
     compatible merge path. Compatible merges count unique current identity
-    keys after deduplication; no-existing and schema-replacement paths count
-    the rows actually written. The mapping is keyed by the resolved parquet
+    keys after deduplication. With merging enabled, a missing target also
+    deduplicates replayed staging rows; schema replacement counts rows as written.
+    The mapping is keyed by the resolved parquet
     path. Finalization deletes the source ``.txt``, so without merging a
     partial run after an earlier finalize would silently shrink the complete
     file. A full fresh run still yields the complete file either way because
@@ -1920,6 +1921,10 @@ def _prepare_perf_file(
             locked_root.stat(parquet_path)
         except FileNotFoundError:
             merge_target_was_absent = True
+            # A live checkpoint snapshot can retain rows whose tasks will be
+            # replayed. Apply the existing newest-row policy on first finalize too.
+            deduplicated, _, new_rows = _merge_perf_rows(table, table.slice(0, 0), parquet_path, pa=pa)
+            table = deduplicated.cast(table.schema)
         else:
             old_table, merge_target = _read_attested_parquet(parquet_path, pq=pq, locked_root=locked_root)
             table, merged_existing, new_rows = _merge_perf_rows(table, old_table, parquet_path, pa=pa)
