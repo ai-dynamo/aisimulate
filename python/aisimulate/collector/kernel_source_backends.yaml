@@ -239,7 +239,7 @@ mappings:
   - {framework: vllm, kernel_source: deepep, backend: deepep, source: "collector/wideep/vllm/collect_moe_a2a.py (vLLM prepare/finalize paths)"}
   - {framework: vllm, kernel_source: vllm_flash_attn, backend: flash_attn, source: "collector/vllm/collect_attn_v1.py (FLASH_ATTN)"}
   - {framework: vllm, kernel_source: vllm_flashinfer, backend: flashinfer, source: "collector/vllm/collect_attn_v1.py (FLASHINFER)"}
-  - {framework: vllm, kernel_source: vllm_vit_flash_attn, backend: flash_attn, source: "collector/vllm/collect_attn_encoder.py"}
+  - {framework: vllm, kernel_source: vllm_vit_flash_attn, backend: flash_attn, source: "collector/vllm/collect_attn_encoder_v1.py"}
   - {framework: vllm, kernel_source: vllm_flash_attn_mla, backend: flash_attn, source: "collector/vllm/collect_mla* (FLASH_ATTN_MLA)"}
   - {framework: vllm, kernel_source: vllm_flashmla, backend: flashmla, source: "collector/vllm (FLASHMLA)"}
   - {framework: vllm, kernel_source: vllm_triton_mla, backend: triton, source: "collector/vllm (TRITON_MLA)"}

@@ -376,6 +376,14 @@ The measured boundary remains the production KV update plus attention forward,
 with history population outside timing and CUDA graph capture required.
 Run the GPU smoke gate before collecting the remaining qualified Triton cases.
 
+`encoder_attention` also has an exact 0.31.0 route for the existing BF16 grid.
+It retains the native ViT selector, selected FlashAttention version, and wrapper
+calls, whose signatures match the target source. The target wrapper adds
+[output initialization during CUDA graph capture](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/ops/vit_attn_wrappers.py#L64);
+collect fresh measurements after its smoke gate. FP8 encoder attention is
+outside this grid. A backend unsupported by the collector remains an explicit
+failure instead of being replaced.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)

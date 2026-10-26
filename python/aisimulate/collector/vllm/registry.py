@@ -48,7 +48,10 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="encoder_attention",
-        module="collector.vllm.collect_attn_encoder",
+        versions=(
+            VersionRoute("0.31.0", "collector.vllm.collect_attn_encoder_v2"),
+            VersionRoute("0.0.0", "collector.vllm.collect_attn_encoder_v1"),
+        ),
         get_func="get_encoder_attention_test_cases",
         run_func="run_encoder_attention_torch",
         perf_filename=PerfFile.ENCODER_ATTENTION,

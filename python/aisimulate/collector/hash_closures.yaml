@@ -235,7 +235,11 @@ collector.vllm.collect_attn_xpu:
   - collector/cases/base_ops/attention_generation.yaml
   - collector/vllm/utils_xpu.py
   - __model_cases__
-collector.vllm.collect_attn_encoder:
+collector.vllm.collect_attn_encoder_v1:
+  - collector/cases/base_ops/attention_encoder.yaml
+  - __model_cases__
+collector.vllm.collect_attn_encoder_v2:
+  - collector/vllm/collect_attn_encoder_v1.py
   - collector/cases/base_ops/attention_encoder.yaml
   - __model_cases__
 collector.vllm.collect_computescale:

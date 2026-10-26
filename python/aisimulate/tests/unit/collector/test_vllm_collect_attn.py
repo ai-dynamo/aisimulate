@@ -17,7 +17,7 @@ pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[3]
 ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_v1.py"
-ENCODER_ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_encoder.py"
+ENCODER_ATTN_SOURCE = ROOT / "collector/vllm/collect_attn_encoder_v1.py"
 MLA_ATTN_SOURCE = ROOT / "collector/vllm/collect_mla_module.py"
 UTILS_SOURCE = ROOT / "collector/vllm/utils.py"
 BF16, FP8, UINT8 = object(), object(), object()
@@ -329,6 +329,49 @@ def test_encoder_attention_rejects_missing_flash_attention_version():
 
     with pytest.raises(RuntimeError, match="without a concrete FA version"):
         run(1, 64, 4, 128, perf_filename="encoder_attention_perf.txt")
+
+
+def test_encoder_031_route_keeps_native_version_wrapper_and_timing():
+    calls = {}
+    flash_attn = object()
+    cu_seqlens = object()
+
+    @contextmanager
+    def benchmark(**kwargs):
+        calls["timing"] = kwargs
+        kwargs["kernel_func"]()
+        yield {"latency_ms": 0.01, "power_stats": None}
+
+    namespace = {
+        "torch": SimpleNamespace(
+            bfloat16=BF16,
+            int32=object(),
+            cuda=SimpleNamespace(set_device=lambda _: None, get_device_name=lambda _: "B200"),
+            randn=lambda *_args, **_kwargs: FakeTensor(),
+            arange=lambda *_args, **_kwargs: cu_seqlens,
+        ),
+        "get_vit_attn_backend": lambda **kwargs: calls.setdefault("selector", kwargs) and flash_attn,
+        "AttentionBackendEnum": SimpleNamespace(FLASH_ATTN=flash_attn),
+        "get_flash_attn_version": lambda **kwargs: calls.setdefault("fa_selector", kwargs) and 4,
+        "vit_flash_attn_wrapper": lambda *args, **kwargs: calls.setdefault("wrapper", kwargs),
+        "benchmark_with_power": benchmark,
+        "log_perf": lambda **kwargs: calls.setdefault("row", kwargs),
+        "vllm_version": "0.31.0",
+    }
+    implementation = _load_function(ENCODER_ATTN_SOURCE, "run_encoder_attention_torch", namespace)
+    wrapper = _load_function(
+        ROOT / "collector/vllm/collect_attn_encoder_v2.py",
+        "run_encoder_attention_torch",
+        {"collect_attn_encoder_v1": SimpleNamespace(run_encoder_attention_torch=implementation)},
+    )
+    wrapper(2, 64, 4, 128, perf_filename="encoder_attention_perf.txt")
+    assert calls["selector"] == {"head_size": 128, "dtype": BF16}
+    assert calls["fa_selector"] == {"head_size": 128}
+    assert calls["wrapper"]["fa_version"] == 4
+    assert calls["wrapper"]["cu_seqlens"] is cu_seqlens
+    assert calls["wrapper"]["batch_size"] == 2
+    assert (calls["timing"]["num_warmups"], calls["timing"]["num_runs"], calls["timing"]["repeat_n"]) == (3, 6, 1)
+    assert calls["row"]["kernel_source"] == "vllm_vit_flash_attn_fa4"
 
 
 class _FIPrefill:
