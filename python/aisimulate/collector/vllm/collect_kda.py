@@ -250,18 +250,23 @@ def run_kda_context_benchmark(
                 # 14.3ms for the same traffic — both within the 8TB/s byte
                 # model margin).
                 cu = torch.arange(0, nt + 1, seq_len, dtype=torch.int32, device=device)
-                idx = torch.arange(batch_size, dtype=torch.int32, device=device)
+                target_runtime = _check_compat("vllm==0.31.0", vllm_version)
+                # v0.31 db9527a4 causal_conv1d.py:491,145-151,751 reserves
+                # NULL_BLOCK_ID=0 and returns without processing that slot.
+                # Serving's block allocator reserves it; keep preview IDs intact.
+                first_slot = 1 if target_runtime else 0
+                idx = torch.arange(first_slot, batch_size + first_slot, dtype=torch.int32, device=device)
                 has_init = torch.zeros(batch_size, dtype=torch.bool, device=device)
-                if _check_compat("vllm==0.31.0", vllm_version):
+                if target_runtime:
                     from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
 
                     # kda.py:860-861 uses the configured native cache layout.
                     if is_conv_state_dim_first():
-                        conv_state = torch.zeros(batch_size, 3 * proj, cw - 1, dtype=dtype, device=device)
+                        conv_state = torch.zeros(batch_size + 1, 3 * proj, cw - 1, dtype=dtype, device=device)
                     else:
-                        conv_state = torch.zeros(batch_size, cw - 1, 3 * proj, dtype=dtype, device=device).transpose(
-                            1, 2
-                        )
+                        conv_state = torch.zeros(
+                            batch_size + 1, cw - 1, 3 * proj, dtype=dtype, device=device
+                        ).transpose(1, 2)
                 else:
                     conv_state = torch.zeros(batch_size, 3 * proj, cw - 1, dtype=dtype, device=device)
                 q_cs, k_cs, v_cs = conv_state.split([proj] * 3, dim=-2)
