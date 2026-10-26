@@ -58,10 +58,10 @@ Output:
 # The file-level range spans the two audited routes (PEP 440 clauses are
 # conjunctive, so it cannot name the two releases alone). Each KDA
 # architecture is additionally gated at runtime to its own audited release by
-# _KDA_ARCHITECTURE_COMPAT: Kimi-K3 only on the 0.1.dev19262 preview, GLM-5.3-
-# Flash only on stock 0.31.0 (no overlay); every release in between
-# (including 0.30.0, where the GLM layer lived under glm5next/nvidia/) raises
-# KdaRuntimeNotAuditedError.
+# _KDA_ARCHITECTURE_COMPAT: the preview and GLM routes remain unchanged.
+# A separate fixed-profile gate admits Kimi context/nonspec generation on
+# B200 0.31.0 with SD convolution state; verify remains preview-only.
+# Intervening releases still raise KdaRuntimeNotAuditedError.
 __compat__ = "vllm>=0.1.dev19262,<=0.31.0"
 
 import gc
@@ -897,8 +897,29 @@ def _kda_architecture(model_name: str) -> str:
     return GLM5_NEXT_KDA_ARCHITECTURE if _is_glm5_next_kda(model_name) else KIMI_K3_KDA_ARCHITECTURE
 
 
-def _require_audited_runtime(model_name: str, runtime_version: str) -> None:
+def _require_audited_runtime(
+    model_name: str, runtime_version: str, *, phase: str | None = None, device: str = "cuda:0"
+) -> None:
     architecture = _kda_architecture(model_name)
+    if model_name == "moonshotai/Kimi-K3" and _check_compat("vllm==0.31.0", runtime_version):
+        # Fixed target profile, not a blanket architecture/version admission.
+        # db9527a4 kda.py:160-185,217-269 selects native decode for BF16
+        # input/conv, FP32 recurrence, width4/dim128, num_spec=0. Those dtypes
+        # and no-spec inputs are constructed by our callbacks. Prefill uses
+        # the same FP32 state and auto resolver (kda.py:394-433), with no
+        # exported checkpoints. kda.py:858-861 honors the native SD/DS layout;
+        # only SD is qualified here. No additional row dimensions are needed
+        # for this one profile; verify/RecoverSSM and DS need separate audits.
+        if phase not in {"context", "generation"}:
+            raise KdaRuntimeNotAuditedError(
+                "Kimi KDA 0.31.0 is not an audited KDA runtime for verify or unspecified phase; "
+                "only the fixed context/nonspec generation profile is qualified"
+            )
+        from vllm.model_executor.layers.mamba.mamba_utils import is_conv_state_dim_first
+
+        if torch.cuda.get_device_name(device) != "NVIDIA B200" or is_conv_state_dim_first():
+            raise KdaRuntimeNotAuditedError("Kimi KDA 0.31.0 qualification requires NVIDIA B200 and SD conv state")
+        return
     compat = _KDA_ARCHITECTURE_COMPAT[architecture]
     if not _check_compat(compat, runtime_version):
         raise KdaRuntimeNotAuditedError(
@@ -1336,7 +1357,7 @@ def run_kda_torch(
     """Main entry point: routes phases and reports the installed vLLM version."""
     from vllm.version import __version__ as vllm_version
 
-    _require_audited_runtime(model_name, vllm_version)
+    _require_audited_runtime(model_name, vllm_version, phase=phase, device=device)
     if _is_glm5_next_kda(model_name):
         run_glm5_next_kda_torch(
             phase,
