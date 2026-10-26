@@ -70,7 +70,8 @@ class BatchSpec:
 
 @pytest.mark.parametrize("use_fp8_kv_cache", [False, True])
 @pytest.mark.parametrize("native_runtime", [False, True])
-def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache, native_runtime):
+@pytest.mark.parametrize("window_size", [0, 128])
+def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_kv_cache, native_runtime, window_size):
     calls, events = {}, []
     slot_mapping = object()
     history_slot_mapping = SimpleNamespace(numel=lambda: 128)
@@ -111,8 +112,8 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
         supports_quant_query_input = False
         vllm_flash_attn_version = 3
 
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *_args, **kwargs):
+            calls["impl"] = kwargs
 
         def do_kv_cache_update(self, layer, key, value, cache, slots):
             events.append(("update", layer, key, value, cache, slots))
@@ -127,7 +128,7 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
 
     config = SimpleNamespace(
         cache_config=SimpleNamespace(block_size=64, num_gpu_blocks=8192),
-        model_config=SimpleNamespace(get_sliding_window=lambda: None),
+        model_config=SimpleNamespace(get_sliding_window=lambda: window_size or None),
     )
 
     def create_config(**kwargs):
@@ -192,12 +193,15 @@ def test_generation_uses_total_runtime_length_and_production_call_order(use_fp8_
             head_dim=128,
             use_fp8_kv_cache=use_fp8_kv_cache,
             is_context_phase=False,
+            window_size=window_size,
             perf_filename="generation_attention_perf.txt",
             _runtime=runtime,
         )
 
     assert calls["batch"] == BatchSpec(seq_lens=[65, 65], query_lens=[1, 1])
     assert calls["config"]["max_model_len"] == 65
+    assert calls["config"]["sliding_window"] == (window_size or None)
+    assert calls["impl"]["sliding_window"] == (window_size or None)
     assert calls["selector"].kv_cache_dtype == ("fp8" if use_fp8_kv_cache else "auto")
     assert calls["log"]["item_list"][0]["isl"] == 1
     assert calls["log"]["item_list"][0]["step"] == 64

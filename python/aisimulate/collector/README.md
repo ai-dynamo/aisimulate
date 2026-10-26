@@ -360,10 +360,10 @@ old output layout or claim post-BMM coverage from a pre-only table.
 
 With the same opt-in manifest, `attention_context` and `attention_generation`
 select the exact 0.31.0 adapter. It accepts the framework-selected,
-non-windowed `TRITON_ATTN` path; other selected backends and windowed cases
-raise explicit errors. The legacy 0.24–0.25 route retains its prior behavior.
+`TRITON_ATTN` path, including native sliding-window handling; other selected
+backends raise explicit errors. The legacy 0.24–0.25 route retains its prior behavior.
 Use the reviewed exact case filters for the initial eight context and eight
-generation cases (BF16 query, FP8 KV, head dimension 192). This does not qualify
+generation cases (BF16 query, FP8 KV, head dimension 192, window 0 or 128). This does not qualify
 an unrestricted attention sweep.
 
 These 16 cases are fresh-path smoke measurements. They cannot establish reuse
