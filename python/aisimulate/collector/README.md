@@ -433,6 +433,26 @@ collect fresh measurements after its smoke gate. FP8 encoder attention is
 outside this grid. A backend unsupported by the collector remains an explicit
 failure instead of being replaced.
 
+### B200 MLA and DSA module qualification
+
+The four `mla_*_module` and `dsa_*_module` operations select an exact 0.31.0
+adapter through the campaign manifest. Older runtimes keep their legacy routes.
+The adapter fills the current public common metadata, delegates cache layout and
+views to vLLM, calls each production layer's `bind_kv_cache`, and populates cached
+MLA history through the native `update_kv_cache` method. The indexer retains its
+native quantized cache producer. See the target
+[MLA cache contract](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L733)
+and [indexer binding](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/models/deepseek_v2.py#L647).
+
+Model construction, native backend selection, precision checks, case identities,
+and the complete module-forward CUDA graph timing remain unchanged. The existing
+explicit FP8-prefill configuration is retained. HiSparse/offloaded cache state
+raises an explicit error because this harness allocates a single-device cache.
+CPU tests cover cache binding, history slots, worker forwarding, legacy routing,
+and provenance. Run exact small cases for each model and precision before a
+full sweep; a source-qualified adapter does not establish runtime support for
+all declared cases. Failures remain visible and must not become broad skips.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)
