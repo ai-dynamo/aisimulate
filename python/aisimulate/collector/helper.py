@@ -2608,8 +2608,8 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
     # the accumulated dataset. Metric types are reconciled for concatenation;
     # the finalizer then casts power metrics to double and replaces nulls with
     # the repository's 0.0 unavailable-measurement sentinel. Order-insensitive
-    # (the merge realigns column order below); Arrow metadata is ignored
-    # (pandas round-trips change it).
+    # (the merge realigns column order below); Arrow metadata is not an
+    # identity key, but the validated existing schema is retained on output.
     def fields(schema):
         return sorted(
             (f.name, str(f.type)) if f.name not in PERF_METRIC_COLUMNS else (f.name, "<metric>") for f in schema
@@ -2672,7 +2672,12 @@ def _merge_perf_rows(new_table, old_table, parquet_path: Path, *, pa):
         len(deduped),
         len(combined) - len(deduped),
     )
-    return pa.Table.from_pandas(deduped, preserve_index=False), True, current_event_rows
+    # Pandas 3 infers large_string from Arrow string identities. Preserve the
+    # validated schema so the next merge cannot mistake our own output for an
+    # incompatible dataset and overwrite earlier measurements.
+    merged = pa.Table.from_pandas(deduped, schema=old_table.schema, preserve_index=False)
+    merged = merged.replace_schema_metadata(old_table.schema.metadata)
+    return merged, True, current_event_rows
 
 
 def find_perf_csv_outputs(output_root: str | os.PathLike = ".", *, recursive: bool = False) -> list[Path]:
