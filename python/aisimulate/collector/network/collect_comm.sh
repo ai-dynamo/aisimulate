@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+set -euo pipefail
+
 # Default backend
 all_reduce_backend="trtllm"
 all_reduce_backend_set=false
@@ -113,15 +115,15 @@ fi
 # NCCL
 if [[ "$skip_nccl" == "true" ]]; then
     echo "Skipping NCCL benchmarks (--skip-nccl enabled)"
-elif [[ "$device" == "cuda" ]] && ! command -v all_reduce_perf >/dev/null 2>&1; then
-    # Fail closed: silently producing no nccl_perf.txt looks identical to a
-    # successful skip. Images without nccl-tests (e.g. lmsysorg/sglang) must
-    # opt out explicitly.
-    echo "Error: nccl-tests binaries (all_reduce_perf ...) not found in PATH."
-    echo "This image cannot run the NCCL benchmarks; pass --skip-nccl to collect"
-    echo "only the framework custom-allreduce data."
-    exit 1
 elif [[ "$device" == "cuda" ]]; then
+    # Check every required binary before spending any GPU time.
+    for binary in all_gather_perf alltoall_perf reduce_scatter_perf all_reduce_perf; do
+        if ! command -v "$binary" >/dev/null 2>&1; then
+            echo "Error: required nccl-tests binary $binary not found in PATH."
+            echo "Install the pinned nccl-tests provider or explicitly pass --skip-nccl."
+            exit 1
+        fi
+    done
     nccl_ops=("all_gather" "alltoall" "reduce_scatter" "all_reduce")
     dtypes=("half" "int8")
 

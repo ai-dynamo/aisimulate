@@ -163,6 +163,25 @@ network/collect_comm.sh #all_reduce data will be collected using default trtllm 
 network/collect_comm.sh --all_reduce_backend vllm #all_reduce data will be collected using vllm backend
 network/collect_comm.sh --all_reduce_backend vllm --device xpu #all_reduce data will be collected using vllm backend on XPU
 ```
+The communication driver stops on the first failed subprocess and checks all four
+NCCL binaries before beginning. Previously a failed child could be followed by a
+misleading completion message. NCCL subprocess stdout/stderr, command and exit
+status are retained under `communication_evidence/`, including failures. Its
+performance sweep still uses the historical `-c 0` timing contract; run separate
+`nccl-tests -c 1` correctness probes before accepting the sweep.
+
+For CUDA vLLM, `<perf-filename>.rank<N>.evidence.jsonl` records the Python
+communicator calls that actually return outputs during graph capture or an
+untimed same-shape eager probe. These distinguish native FlashInfer, custom AR,
+PyNccl and symmetric-memory paths without changing perf keys or forcing a backend.
+They identify the Python dispatch path, not a device-kernel binary or tactic.
+The captured graph outputs and eager probe must reduce the benchmark's all-ones
+input to `world_size` on every rank. Checks and tracing are outside timing; graph
+replay counts and eager clone costs are unchanged. Preserve these sidecars with
+library/image provenance, and validate a rank-distinct smoke input separately
+when checking rank wiring. A missing dispatch observation or wrong result stops
+publication. Existing generic `kernel_source` labels remain for compatibility.
+
 Today we only collect intra-node comm. This script will collect custom allreduce data for trtllm within a node.
 It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using nccl.
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and

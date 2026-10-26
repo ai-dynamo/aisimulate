@@ -9,6 +9,7 @@ output into AIC perf rows and optionally samples representative GPU power while
 each collective size is measured.
 """
 
+import json
 import math
 import os
 import re
@@ -22,6 +23,20 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from helper import PowerMonitor, log_perf
+
+
+def record_nccl_run(command, dtype, op, num_gpus, size, result):
+    """Preserve actual runtime/version and failure output beside perf artifacts."""
+    directory = Path("communication_evidence")
+    directory.mkdir(exist_ok=True)
+    path = directory / f"nccl-{op}-{dtype}-tp{num_gpus}-{size}.json"
+    path.write_text(
+        json.dumps(
+            {"command": command, "returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr},
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def parse_nccl_latency(stdout: str, stderr: str, size: int, expected_version: str) -> float:
@@ -141,6 +156,8 @@ def nccl_benchmark(
             )
         except BaseException as error:
             benchmark_error = error
+            if isinstance(error, subprocess.CalledProcessError):
+                record_nccl_run(cmd_args, dtype, nccl_op, num_gpus, size, error)
             raise
         finally:
             if power_monitor:
@@ -153,6 +170,7 @@ def nccl_benchmark(
                     # secondary sampling-cleanup failure.
                     print(f"Warning: power sampling cleanup also failed: {cleanup_error}", file=sys.stderr)
 
+        record_nccl_run(cmd_args, dtype, nccl_op, num_gpus, size, result)
         latency = parse_nccl_latency(result.stdout, result.stderr, size, nccl_version)
 
         print(nccl_test_bin, f"{size=}, {latency=}")

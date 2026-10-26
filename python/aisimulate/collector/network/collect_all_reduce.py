@@ -31,10 +31,12 @@ Usage:
 
 import gc
 import inspect
+import json
+import math
 import os
 import sys
 from argparse import ArgumentParser
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +60,65 @@ from helper import (
     log_perf,
     xpu_graph_measure_enabled,
 )
+
+
+@contextmanager
+def _observe_vllm_dispatch(events):
+    """Observe executed Python dispatch outside timing; never override selection."""
+    previous = sys.getprofile()
+
+    def observe(frame, event, result):
+        module = frame.f_globals.get("__name__", "")
+        name = frame.f_code.co_name
+        # vLLM db9527a, cuda_communicator.py:335-407 selects these
+        # communicator calls. A None return can be a declined fast path.
+        if event == "return" and "all_reduce" in name:
+            if module.startswith("vllm.distributed.device_communicators.") and not module.endswith("cuda_communicator"):
+                if result is not None:
+                    events.add(f"{module}.{frame.f_code.co_qualname}")
+            elif module == "torch.distributed.distributed_c10d" and name == "all_reduce":
+                events.add("torch.distributed.all_reduce")
+        if previous is not None:
+            previous(frame, event, result)
+
+    sys.setprofile(observe)
+    try:
+        yield
+    finally:
+        sys.setprofile(previous)
+
+
+def _record_vllm_evidence(perf_filename, rank, dtype, size, world_size, mode, events, outputs):
+    """Validate the benchmark's all-ones sum after timing; keep perf keys stable."""
+    record = {
+        "rank": rank,
+        "dtype": dtype,
+        "message_size": size,
+        "num_gpus": world_size,
+        "mode": mode,
+        "observed_python_dispatch": sorted(events),
+        "identity_scope": "capture dispatch for graph; untimed same-shape probe for eager",
+        "expected_sum": world_size,
+        "outputs": [],
+    }
+    for output in outputs:
+        low, high = output.amin().item(), output.amax().item()
+        record["outputs"].append(
+            {
+                "min": low if math.isfinite(low) else str(low),
+                "max": high if math.isfinite(high) else str(high),
+                "shape": list(output.shape),
+            }
+        )
+    record["numerical_passed"] = all(x["min"] == world_size and x["max"] == world_size for x in record["outputs"])
+    record["dispatch_observed"] = bool(events)
+    path = Path(f"{perf_filename}.rank{rank}.evidence.jsonl")
+    with path.open("a") as handle:
+        handle.write(json.dumps(record, allow_nan=False) + "\n")
+    if not record["numerical_passed"]:
+        raise RuntimeError(f"vLLM {mode} all-reduce numerical check failed at {size} elements; see {path}")
+    if not events:
+        raise RuntimeError(f"vLLM {mode} dispatch could not be observed; see {path}")
 
 
 def _init_process_group_with_device_id(backend: str, init_method: str, world_size: int, rank: int, local_rank: int):
@@ -562,7 +623,9 @@ def benchmark_vllm_allreduce(
 
     # Map dtype string to torch dtype
     dtype_map = {"float32": torch.float32, "bfloat16": torch.bfloat16}
-    torch_dtype = dtype_map.get(dtype, torch.bfloat16)
+    if dtype not in dtype_map:
+        raise ValueError(f"Unsupported vLLM all-reduce dtype: {dtype}")
+    torch_dtype = dtype_map[dtype]
 
     # Benchmark parameters
     repeat_n = 5
@@ -591,6 +654,7 @@ def benchmark_vllm_allreduce(
             flag_lst = [True, False]
         for use_graph in flag_lst:
             mode_str = "graph" if use_graph else "eager"
+            dispatch_events = set()
 
             if use_graph:
                 # CUDA-only serving parity; XPU warms inside the capture below.
@@ -653,7 +717,7 @@ def benchmark_vllm_allreduce(
                         if is_cuda
                         else graph_ctx(graph, stream=graph_capture_context.stream)
                     )
-                    with capture:
+                    with capture, _observe_vllm_dispatch(dispatch_events) if is_cuda else nullcontext():
                         outputs = []
                         for inp in input_tensors:
                             out = vllm_mods["tensor_model_parallel_all_reduce"](inp)
@@ -728,6 +792,10 @@ def benchmark_vllm_allreduce(
             else:
                 # Eager mode
                 input_tensor = torch.ones(input_shape, dtype=torch_dtype, device=get_device_str())
+                if is_cuda:
+                    with _observe_vllm_dispatch(dispatch_events):
+                        evidence_output = vllm_mods["tensor_model_parallel_all_reduce"](input_tensor.clone())
+                    dev_mod.synchronize()
 
                 # Adaptive num_runs calculation for power measurement
                 actual_num_runs = num_runs
@@ -792,6 +860,17 @@ def benchmark_vllm_allreduce(
                     power_stats = power_monitor.stop_sampling()
 
             latency = start_event.elapsed_time(end_event) / actual_num_runs / repeat_n
+            if is_cuda:
+                _record_vllm_evidence(
+                    perf_filename,
+                    rank,
+                    dtype,
+                    size,
+                    world_size,
+                    mode_str,
+                    dispatch_events,
+                    outputs if use_graph else [evidence_output],
+                )
 
             if rank == 0:
                 print(f"[vLLM-{mode_str}] Size: {size}, Latency: {latency:.4f} ms")

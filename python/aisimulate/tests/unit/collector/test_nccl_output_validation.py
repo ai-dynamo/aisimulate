@@ -70,7 +70,8 @@ def test_nccl_failure_always_stops_sampling_and_preserves_process_error(cleanup_
         "torch": SimpleNamespace(cuda=SimpleNamespace(nccl=SimpleNamespace(version=lambda: (2, 28, 9)))),
         "runtime_nccl_version": lambda: "2.28.9",
         "PowerMonitor": Monitor,
-        "subprocess": SimpleNamespace(run=run),
+        "subprocess": SimpleNamespace(run=run, CalledProcessError=subprocess.CalledProcessError),
+        "record_nccl_run": lambda *args: calls.append("record"),
         "os": os,
         "sys": sys,
     }
@@ -78,7 +79,7 @@ def test_nccl_failure_always_stops_sampling_and_preserves_process_error(cleanup_
     with pytest.raises(subprocess.CalledProcessError) as result:
         namespace[fn.name]("half", test_range="512,1024,2", measure_power=True)
     assert result.value is failure
-    assert calls == ["start", "stop"]
+    assert calls == ["start", "record", "stop"]
 
 
 def _runtime_version_fn(cdll, torch_version=(2, 29, 7)):
