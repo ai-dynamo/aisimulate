@@ -476,3 +476,52 @@ class TestCollectGdnImportSurface:
 
         _install_fake_vllm(monkeypatch, VLLM_0240_GDN_SURFACE)
         _import_fresh(monkeypatch, _COLLECT_GDN_DOTTED, scratch_file)
+
+
+@pytest.mark.parametrize("dtypes", [("mxfp8", "mxfp8"), (None, "mxfp8"), ("fp8", None)])
+def test_moe_rejects_native_quantized_activation_after_loading(monkeypatch, dtypes):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.31.0+build"
+    method = types.SimpleNamespace(
+        mxfp4_backend="FLASHINFER_TRTLLM_MXFP4_MXFP8",
+        moe_quant_config=types.SimpleNamespace(
+            _a1=types.SimpleNamespace(dtype=dtypes[0]), _a2=types.SimpleNamespace(dtype=dtypes[1])
+        ),
+    )
+    with pytest.raises(ValueError, match="selects activation quantization"):
+        module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+    # The same selected MXFP8 format is valid under the explicit W4A8 identity.
+    module._require_moe_activation_precision("w4a8_mxfp4_mxfp8", method, loaded=True)
+
+
+def test_moe_preserves_explicit_weight_only_native_precision(monkeypatch):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    module.vllm_version = "0.31.0"
+    method = types.SimpleNamespace(
+        moe_quant_config=types.SimpleNamespace(
+            _a1=types.SimpleNamespace(dtype=None), _a2=types.SimpleNamespace(dtype=None)
+        )
+    )
+    module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+
+
+@pytest.mark.parametrize("config", [None, types.SimpleNamespace(), types.SimpleNamespace(_a1=None, _a2=None)])
+def test_moe_unknown_loaded_precision_fails_closed_for_target_runtime(monkeypatch, config):
+    _install_fake_vllm(monkeypatch, VLLM_0271_MOE_SURFACE)
+    module = _import_fresh(monkeypatch, _COLLECT_MOE_DOTTED, _COLLECT_MOE_PATH)
+    method = types.SimpleNamespace(moe_quant_config=config)
+    module.vllm_version = "0.27.1"
+    module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+    module.vllm_version = "0.31.0"
+    with pytest.raises(ValueError, match="Cannot verify selected W4A16"):
+        module._require_moe_activation_precision("w4a16_mxfp4", method, loaded=True)
+
+
+def test_moe_checks_selected_precision_after_loading_before_timing():
+    source = _COLLECT_MOE_PATH.read_text()
+    loaded = source.index("quant_method.process_weights_after_loading(routed_experts)")
+    guard = source.index("_require_moe_activation_precision(moe_type, quant_method, loaded=True)")
+    timing = source.index("benchmark_with_power(", guard)
+    assert loaded < guard < timing
