@@ -188,16 +188,19 @@ Reports add the mean time to first token split by milestone: `mean_frontend_ms`
 `mean_scheduler_inbox_wait_ms` (frontend exit to the scheduler draining the
 request), `mean_receive_to_admit_ms` (received to selected, the waiting-queue
 time when the batch budget is full), `mean_prefill_elapsed_ms` (selected to the
-prompt's last forward finishing on the device, across all its chunks), and
+prompt's last forward finishing on the device, across all its chunks),
 `mean_result_observation_delay_ms` (device completion to the scheduler
 observing the result: the first token on an aggregated rank, the prefill rank
-releasing the request to the KV handoff in disaggregated prefill), and
+releasing the request to the KV handoff in disaggregated prefill),
 `mean_handoff_to_first_token_ms` (that release to the decode rank's first
-token; zero on an aggregated rank). The six spans sum to per-request TTFT for
-requests that reached every milestone; with a native encoder pool they start
-at the pool's delivery and `encoder_latency_ms` covers the wait. These are
-server-internal latencies to scheduler observation, not client-visible ones,
-and they are reported with or without per-request capture. Stage means
+token; zero on an aggregated rank), and `mean_detokenization_ms` (the engine emitting
+the first token to the client receiving it with
+[`engine.detokenization`](README.md#detokenization); zero without it). The seven spans
+sum to per-request TTFT for requests that reached every milestone; with a
+native encoder pool they start at the pool's delivery and `encoder_latency_ms`
+covers the wait. Without `engine.detokenization` these are server-internal
+latencies to scheduler observation, not client-visible ones. They are reported
+with or without per-request capture. Stage means
 describe a request's first prefill attempt; a retraction before the first
 token lands in the result-observation span.
 
@@ -333,8 +336,9 @@ the model; a deployment matches its table only when launched with that flag.
 
 Not modeled: the GPU image processor path, video, speculative decoding, mixed image resolutions in one
 workload, and the output side (detokenizer and tokenizer-manager work after the
-scheduler observes a token): the reported latencies end at scheduler
-observation. Every replica is assumed to have its own, sufficient CPU for its
+scheduler observes a token) unless
+[`engine.detokenization`](README.md#detokenization) prices it: without that block the
+reported latencies end at scheduler observation. Every replica is assumed to have its own, sufficient CPU for its
 frontend stages; a search over TP and replicas on one shared node has no common
 CPU budget in this model.
 

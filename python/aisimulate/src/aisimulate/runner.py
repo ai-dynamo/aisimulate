@@ -392,6 +392,7 @@ class EngineReplayRunnerFactory:
             supports_state_cache=True,
             supports_grouped_kv_cache=True,
             supports_tokenization=True,
+            supports_client_path=True,
             supports_sglang_host_loop=True,
             supported_trace_formats=(
                 "mooncake",
@@ -587,6 +588,10 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["tokenization"] = dict(spec.backend_deployment.tokenization)
+        if spec.backend_deployment.detokenization is not None:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["detokenization"] = dict(spec.backend_deployment.detokenization)
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,

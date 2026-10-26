@@ -17,8 +17,8 @@ use crate::replay::artifact::{
     ReplayArtifactKvEventVisibility, ReplayArtifactSink, ReplayArtifacts,
 };
 use crate::replay::components::{
-    AdmissionQueue, NoReplayMetadata, ReplayAdmissionMetadata, ReplayEngineObservation, ReplayMode,
-    TokenizationLatency,
+    AdmissionQueue, ClientPath, DetokenizationLatency, NoReplayMetadata, ReplayAdmissionMetadata,
+    ReplayEngineObservation, ReplayMode, TokenizationLatency,
 };
 use crate::replay::core::round_robin::{AggregatedRoundRobinPlacement, PoolRoundRobinPlacement};
 use crate::replay::core::{NoEngineEvents, PlacementPolicy, WorkerTopology};
@@ -308,6 +308,7 @@ pub struct Replayer<C = RoundRobinComposition> {
     capture: ReplayCaptureOptions,
     telemetry: Option<(f64, Box<dyn ReplayTelemetryObserver>)>,
     tokenization: Option<TokenizationLatency>,
+    detokenization: Option<DetokenizationLatency>,
 }
 
 impl Replayer<RoundRobinComposition> {
@@ -357,6 +358,7 @@ impl<C: ReplayComposition> Replayer<C> {
             capture: ReplayCaptureOptions::default(),
             telemetry: None,
             tokenization: None,
+            detokenization: None,
         })
     }
 
@@ -418,6 +420,40 @@ impl<C: ReplayComposition> Replayer<C> {
             }
         }
         self.tokenization = TokenizationLatency::new(workers, base_ms, per_input_token_ms);
+        Ok(self)
+    }
+
+    /// Detokenize each pass's outputs before the client receives them. Every
+    /// worker that emits tokens (aggregated, or decode) has `workers`
+    /// detokenizer servers, shared by its attention-DP ranks, and each request
+    /// belongs to one of them. A server takes the outputs of one pass that
+    /// belong to it as one job, after its earlier jobs, for
+    /// `base_ms + per_output_ms * outputs`, and the client receives them when
+    /// the job ends. Token times, latency metrics and request completion use
+    /// the client's receive time. Both costs zero, the default, keeps every
+    /// output at its pass end.
+    pub fn with_detokenization(
+        mut self,
+        workers: usize,
+        base_ms: f64,
+        per_output_ms: f64,
+    ) -> ReplayResult<Self> {
+        if workers == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "detokenization workers must be positive".to_string(),
+            ));
+        }
+        for (name, value) in [
+            ("detokenization base_ms", base_ms),
+            ("detokenization per_output_ms", per_output_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "{name} must be finite and non-negative, got {value}"
+                )));
+            }
+        }
+        self.detokenization = DetokenizationLatency::new(workers, base_ms, per_output_ms);
         Ok(self)
     }
 
@@ -492,6 +528,13 @@ impl<C: ReplayComposition> Replayer<C> {
                 "tokenization does not support worker scaling".to_string(),
             ));
         }
+        let client = self.detokenization.map(ClientPath::new);
+        if client.is_some() && (scaling.is_some() || self.spec.adapters.scaling.provider != "none")
+        {
+            return Err(ReplayError::InvalidSpec(
+                "detokenization does not support worker scaling".to_string(),
+            ));
+        }
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
@@ -552,7 +595,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
-                .with_tokenization(tokenization);
+                .with_tokenization(tokenization)
+                .with_client_path(client);
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
@@ -629,7 +673,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 )
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
                 .with_encoder(encoder.clone())
-                .with_tokenization(tokenization);
+                .with_tokenization(tokenization)
+                .with_client_path(client);
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }

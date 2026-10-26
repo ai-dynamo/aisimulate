@@ -1268,14 +1268,17 @@ fn canceled_handoff_completion_does_not_refinalize_a_finished_request() {
 
     let decode_completed_at = runtime.now_ms;
     runtime
-        .process_decode_signal(OutputSignal {
-            uuid,
-            token_id: Some(42),
-            completed: true,
-            rejected: false,
-            handoff_delay_ms: None,
-            cached_tokens: None,
-        })
+        .process_decode_signal(
+            OutputSignal {
+                uuid,
+                token_id: Some(42),
+                completed: true,
+                rejected: false,
+                handoff_delay_ms: None,
+                cached_tokens: None,
+            },
+            decode_completed_at,
+        )
         .unwrap();
     assert!(!runtime.state(uuid).unwrap().counted_in_flight);
     assert!(!runtime.state(uuid).unwrap().coordinator.is_complete());
@@ -3943,7 +3946,8 @@ mod agentic_pd_qualification {
                     if prefill {
                         replay.process_prefill_signal(signal).unwrap();
                     } else {
-                        replay.process_decode_signal(signal).unwrap();
+                        let now_ms = replay.now_ms;
+                        replay.process_decode_signal(signal, now_ms).unwrap();
                     }
                 }
                 assert_eq!(replay.admission.agentic_phase_evidence().unwrap(), before);

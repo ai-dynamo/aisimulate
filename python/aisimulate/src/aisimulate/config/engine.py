@@ -740,6 +740,16 @@ class TokenizationConfig(StrictModel):
     per_input_token_us: NonNegativeFloat = 0.0
 
 
+class DetokenizationConfig(StrictModel):
+    workers: PositiveInt = 1
+    base_ms: NonNegativeFloat = 0.0
+    per_output_us: NonNegativeFloat = 0.0
+
+    @property
+    def active(self) -> bool:
+        return bool(self.base_ms or self.per_output_us)
+
+
 class EstimatorPolicyConfig(StrictModel):
     nextn: NonNegativeInt = Field(default=0, le=5)
     nextn_accepted: NonNegativeFloat | None = None
@@ -873,6 +883,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
     kv_transfer: KvTransferConfig | None = None
     tokenization: TokenizationConfig | None = None
+    detokenization: DetokenizationConfig | None = None
     afd: AFDTopologyPredictionConfig | None = None
 
     @field_validator("model", "hardware")
@@ -903,6 +914,12 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.tokenization is not None and (self.mode == "afd" or self.workers.encoder is not None):
             raise ValueError("engine.tokenization requires token replay; AFD and analytical EPD are unsupported")
+        if (
+            self.detokenization is not None
+            and self.detokenization.active
+            and (self.mode == "afd" or self.workers.encoder is not None)
+        ):
+            raise ValueError("engine.detokenization requires token replay; AFD and analytical EPD are unsupported")
         if self.tokenization is not None and any(
             worker is not None and (worker.frontend is not None or worker.host_profile is not None)
             for worker in (self.workers.aggregated, self.workers.prefill)

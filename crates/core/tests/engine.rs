@@ -2202,8 +2202,10 @@ fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff(
         + stages.mean_receive_to_admit_ms
         + stages.mean_prefill_elapsed_ms
         + stages.mean_result_observation_delay_ms
-        + stages.mean_handoff_to_first_token_ms;
+        + stages.mean_handoff_to_first_token_ms
+        + stages.mean_detokenization_ms;
     assert!((total - report.latency.ttft.mean_ms).abs() < 1e-9);
+    assert_eq!(stages.mean_detokenization_ms, 0.0);
     for record in &report.per_request {
         assert!(record.source_held_ms >= record.prefill_complete_ms);
         assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
@@ -2215,6 +2217,73 @@ fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff(
             assert_eq!(record.first_token_ms, Some(25.0));
         }
     }
+}
+
+/// The seven TTFT stages of `report`, in report order.
+fn ttft_stage_spans(report: &ReplayReport) -> [f64; 7] {
+    let stages = report.latency.ttft_milestones.unwrap();
+    [
+        stages.mean_frontend_ms,
+        stages.mean_scheduler_inbox_wait_ms,
+        stages.mean_receive_to_admit_ms,
+        stages.mean_prefill_elapsed_ms,
+        stages.mean_result_observation_delay_ms,
+        stages.mean_handoff_to_first_token_ms,
+        stages.mean_detokenization_ms,
+    ]
+}
+
+#[rstest::rstest]
+#[case::aggregated(false)]
+#[case::disaggregated(true)]
+fn sglang_ttft_stages_attribute_detokenization_to_its_own_stage(#[case] disagg: bool) {
+    let timing = TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    };
+    let host_loop = SglangConfig {
+        host_loop: true,
+        ..SglangConfig::default()
+    };
+    let mut replay = if disagg {
+        let mut prefill = role_config(Backend::Sglang, timing.clone());
+        prefill.rank.sglang = host_loop;
+        let mut replay = spec(ReplayEngineConfig {
+            prefill: Some(prefill),
+            decode: Some(role_config(Backend::Sglang, timing)),
+            ..ReplayEngineConfig::default()
+        });
+        replay.topology = ReplayTopology::Disaggregated {
+            prefill: WorkerPoolSpec::default(),
+            decode: WorkerPoolSpec::default(),
+            handoff_latency_ms: 1.0,
+        };
+        replay
+    } else {
+        let mut config = engine_config(timing);
+        config.rank.backend = Backend::Sglang;
+        config.rank.sglang = host_loop;
+        spec(config)
+    };
+    replay.requests = vec![request("only", 0.0, 4, 2)];
+    let direct = run_engine_replay(replay.clone()).unwrap();
+    // The lone first output's job takes 0.75 + 0.25 on the detokenizer.
+    let streamed = Replayer::new(replay, ReplayEngineFactory::new())
+        .unwrap()
+        .with_detokenization(1, 0.75, 0.25)
+        .unwrap()
+        .run()
+        .unwrap();
+    let (direct_spans, streamed_spans) = (ttft_stage_spans(&direct), ttft_stage_spans(&streamed));
+    let response_ms = streamed.latency.ttft.mean_ms - direct.latency.ttft.mean_ms;
+    assert!((response_ms - 1.0).abs() < 1e-9, "{response_ms}");
+    // The engine-side stages are unchanged; detokenization is its own stage
+    // and the stages still add up to TTFT.
+    assert_eq!(direct_spans[6], 0.0);
+    assert_eq!(streamed_spans[..6], direct_spans[..6]);
+    assert!((streamed_spans[6] - response_ms).abs() < 1e-9);
+    let total: f64 = streamed_spans.iter().sum();
+    assert!((total - streamed.latency.ttft.mean_ms).abs() < 1e-9);
 }
 
 fn encoder_replay() -> (ReplaySpec, Arc<FixedExternalTiming>) {
