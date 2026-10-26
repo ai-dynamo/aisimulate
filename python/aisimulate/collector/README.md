@@ -333,6 +333,61 @@ registered op resolves to exactly one pinned runtime. See
 `docs/perf_database/collector-v3-op-centric-design.md` §4 for the full
 design.
 
+## vLLM 0.31.0 MLA BMM qualification
+
+`--ops mla_bmm_gen_pre` selects the 0.31.0 route when an external, hash-bound
+runtime manifest declares that version. The repository's default runtime pins
+remain unchanged. The B200 qualification manifest is
+`collector/campaigns/vllm031-b200-runtime.json` (relative to `python/aisimulate`).
+Supply its absolute in-container path through `AISIM_COLLECTOR_RUNTIME_MANIFEST`
+and its file SHA-256 through `AISIM_COLLECTOR_RUNTIME_MANIFEST_SHA256`.
+The campaign must separately select `b200_sxm` and `mla_bmm_gen_pre`; the manifest
+declares runtime identity and does not grant compatibility to other ops or GPUs.
+The new route measures BF16 `torch.bmm` with token-major
+output storage, matching the unpadded serving branch at
+[vLLM db9527a4](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/model_executor/layers/attention/mla_attention.py#L1080).
+Older qualified versions retain head-major pre-BMM output. The 0.31.0
+`--ops mla_bmm_gen_post` route shares the existing post-BMM implementation:
+its token-major output view and timed operation are unchanged. This enables
+the 48 B200 reuse probes; it does not approve performance reuse before their
+results are reviewed. The padded `CUTLASS_MLA` branch is outside this dataset's scope.
+
+The full pre-BMM sweep contains 300 cases: 25 token counts × 12 head counts,
+BF16 only, with two warmups and ten measured runs under CUDA graph replay.
+Explicit `--ops` uses this complete base sweep without `--model-cases-full`.
+For the B200 refresh, first smoke-test the pinned target image, then remove the
+sample limit for the full sweep. CPU tests qualify layout and routing, not GPU
+performance. Retain failures and provenance; do not reuse checkpoints from the
+old output layout or claim post-BMM coverage from a pre-only table.
+
+### B200 native Triton attention qualification
+
+With the same opt-in manifest, `attention_context` and `attention_generation`
+select the exact 0.31.0 adapter. It accepts the framework-selected,
+non-windowed `TRITON_ATTN` path; other selected backends and windowed cases
+raise explicit errors. The legacy 0.24–0.25 route retains its prior behavior.
+Use the reviewed exact case filters for the initial eight context and eight
+generation cases (BF16 query, FP8 KV, head dimension 192). This does not qualify
+an unrestricted attention sweep.
+
+These 16 cases are fresh-path smoke measurements. They cannot establish reuse
+of the old Triton measurements: although the ordinary kernel math is stable,
+[vLLM 0.31 packs K/V together](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/backends/triton_attn.py#L615)
+and changes their strides. The adapter delegates layout negotiation and cache
+views to vLLM and populates the current
+[serving metadata fields](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/worker/gpu_model_runner.py#L2426).
+The measured boundary remains the production KV update plus attention forward,
+with history population outside timing and CUDA graph capture required.
+Run the GPU smoke gate before collecting the remaining qualified Triton cases.
+
+`encoder_attention` also has an exact 0.31.0 route for the existing BF16 grid.
+It retains the native ViT selector, selected FlashAttention version, and wrapper
+calls, whose signatures match the target source. The target wrapper adds
+[output initialization during CUDA graph capture](https://github.com/vllm-project/vllm/blob/db9527a46873454610df6dbedf79a36d6bf1a7f6/vllm/v1/attention/ops/vit_attn_wrappers.py#L64);
+collect fresh measurements after its smoke gate. FP8 encoder attention is
+outside this grid. A backend unsupported by the collector remains an explicit
+failure instead of being replaced.
+
 ## File Naming Convention
 
 - **No version fork**: `collect_{op}.py` (no suffix)

@@ -156,7 +156,8 @@ def test_dsa_collector_hash_covers_worker_binding(tmp_path, backend, binding_fil
 @pytest.mark.parametrize(
     "module_name",
     [
-        "collect_attn",
+        "collect_attn_v1",
+        "collect_attn_v2",
         "collect_computescale",
         "collect_dsv4_attn",
         "collect_gemm",
