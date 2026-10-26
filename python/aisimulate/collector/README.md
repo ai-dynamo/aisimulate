@@ -55,6 +55,20 @@ CPU regression checks include the strict import-surface tests and the shared
 getter/GLM case-plan tests. Their fake vLLM tree includes the BF16 expert module
 import without running or replacing its GPU implementation.
 
+The vLLM MoE callback collects unreachable cyclic objects after a successful
+return, once its native setup/timing frame has been released. Native parameters
+can retain their owning expert layer through bound weight loaders, keeping
+weight tensors alive across callbacks. This cleanup runs once per complete
+token sweep, outside timing. It does not empty the CUDA allocator cache, force
+dispatch, alter case identities, or catch callback exceptions. Existing worker
+failure handling and periodic cleanup remain unchanged.
+
+This changes the MoE collector content hash, even though the native callback
+body, case grid and timing contract remain unchanged. Use a fresh output and
+checkpoint directory for qualification. Preserving prior successful data for
+a continuation requires an explicit per-case provenance/compatibility review;
+do not relabel old measurements or silently clear failed checkpoint entries.
+
 SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
 On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
 so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed

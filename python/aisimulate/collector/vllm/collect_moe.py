@@ -164,8 +164,10 @@ approximation must be retired.
 __compat__ = "vllm>=0.24.0,<=0.31.0,!=0.25.1,!=0.26.0,!=0.27.0,!=0.28.0,!=0.29.0,!=0.30.0"
 
 import contextlib
+import gc
 import json
 import os
+from functools import wraps
 from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
@@ -550,6 +552,19 @@ def _require_moe_input_weighting(runtime_config, leaf_experts):
         )
 
 
+def _collect_after_success(callback):
+    @wraps(callback)
+    def wrapped(*args, **kwargs):
+        result = callback(*args, **kwargs)
+        # The returned frame must release its locals before collecting native
+        # layer -> parameter -> bound weight_loader -> layer cycles.
+        gc.collect()
+        return result
+
+    return wrapped
+
+
+@_collect_after_success
 def run_moe_torch(
     moe_type,
     num_tokens_lists,
