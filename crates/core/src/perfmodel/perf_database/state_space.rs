@@ -36,16 +36,14 @@ pub struct StateSpaceTable {
     mamba2_sources: Vec<PerfSource>,
     gdn_sources: Vec<PerfSource>,
     kda_sources: Vec<PerfSource>,
-    /// vLLM versions whose collected tables persist per-system physical
-    /// context-scan labels (`chunk_gated_delta_rule_{flashinfer,triton,cutedsl}`)
-    /// instead of the logical `chunk_gated_delta_rule`. The 0.22.0-era
-    /// tables persist the logical label directly and stay outside this gate.
-    vllm_gdn_physical_aliases: bool,
+    /// Qualified context-scan labels for each vLLM version. 0.31 currently
+    /// qualifies only FlashInfer; older versions also collected Triton/CuteDSL.
+    vllm_gdn_context_aliases: &'static [&'static str],
     /// SM-major-10 (sm 100/103, NOT sm 120) sglang serving auto-selects the
     /// FlashInfer bf16-state GDN decode kernel when the model's
     /// `mamba_ssm_dtype` is bfloat16 (see `query_gdn`'s alias branch below —
     /// the dtype half of the predicate is per-query). Computed once at
-    /// construction, same convention as `vllm_gdn_physical_aliases`.
+    /// construction, same convention as `vllm_gdn_context_aliases`.
     sglang_sm100_gdn_flashinfer_lane: bool,
     mamba2: OnceLock<Result<Mamba2Grids, AicError>>,
     gdn: OnceLock<Result<GdnGrids, AicError>>,
@@ -154,7 +152,15 @@ impl StateSpaceTable {
             mamba2_sources,
             gdn_sources,
             kda_sources,
-            vllm_gdn_physical_aliases: backend == "vllm" && matches!(version, "0.24.0" | "0.27.1"),
+            vllm_gdn_context_aliases: match (backend, version) {
+                ("vllm", "0.24.0" | "0.27.1") => &[
+                    "chunk_gated_delta_rule_flashinfer",
+                    "chunk_gated_delta_rule_triton",
+                    "chunk_gated_delta_rule_cutedsl",
+                ],
+                ("vllm", "0.31.0") => &["chunk_gated_delta_rule_flashinfer"],
+                _ => &[],
+            },
             // Mirror sglang's `is_sm100_supported` (utils/common.py @ pinned
             // v0.5.14 clone): device capability major EXACTLY 10, so sm
             // 100/103 qualify and sm 120 (rtx_pro_6000_server) does not.
@@ -308,20 +314,16 @@ impl StateSpaceTable {
         // physical-alias hit) only; any miss surfaces as `PerfDatabase` so
         // the operator degrades to SOL.
         //
-        // The framework's own persisted physical kernels (vLLM 0.24/0.27.1
+        // The framework's own persisted physical kernels (vLLM 0.24/0.27.1/0.31
         // name their context scan chunk_gated_delta_rule_*; capability-major-10 sglang
         // BF16 decode requires flashinfer_gated_delta_rule_decode) take
         // precedence: after the
         // shared-layer merge the logical lane can hold cross-backend donor
         // rows, which only serve as gap fill when no own physical lane covers
         // the shape. Ambiguous physical data fails closed.
-        let aliases: &[&str] = if self.vllm_gdn_physical_aliases {
+        let aliases: &[&str] = if !self.vllm_gdn_context_aliases.is_empty() {
             match (key.kernel_source.as_str(), key.phase.as_str()) {
-                ("chunk_gated_delta_rule", "context") => &[
-                    "chunk_gated_delta_rule_flashinfer",
-                    "chunk_gated_delta_rule_triton",
-                    "chunk_gated_delta_rule_cutedsl",
-                ],
+                ("chunk_gated_delta_rule", "context") => self.vllm_gdn_context_aliases,
                 ("fused_sigmoid_gating_delta_rule_update", "generation") => {
                     &["fused_recurrent_gated_delta_rule_packed_decode"]
                 }
@@ -975,6 +977,56 @@ mod tests {
     }
 
     #[test]
+    fn vllm_031_gdn_resolves_only_qualified_physical_lanes() {
+        // Deliberately distinct stored latencies expose a logical-donor fallback.
+        for (logical, physical, phase, measured) in [
+            (
+                "chunk_gated_delta_rule",
+                "chunk_gated_delta_rule_flashinfer",
+                "context",
+                2.0,
+            ),
+            (
+                "fused_sigmoid_gating_delta_rule_update",
+                "fused_recurrent_gated_delta_rule_packed_decode",
+                "generation",
+                3.0,
+            ),
+        ] {
+            let table = in_memory_gdn_table(
+                "vllm",
+                "0.31.0",
+                &[(logical, phase, 48, 1.0), (physical, phase, 48, measured)],
+            );
+            assert_eq!(
+                query_gdn_test_shape(&table, logical, phase, 48).unwrap(),
+                measured
+            );
+            assert_eq!(
+                query_gdn_test_shape(&table, physical, phase, 48).unwrap(),
+                measured
+            );
+            assert!(query_gdn_test_shape(&table, logical, phase, 32).is_err());
+            for dtype in ["bfloat16", "float16"] {
+                assert!(
+                    query_gdn_test_shape_with_dtype(&table, logical, phase, 48, dtype).is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vllm_031_gdn_does_not_alias_unqualified_context_lanes() {
+        for physical in [
+            "chunk_gated_delta_rule_triton",
+            "chunk_gated_delta_rule_cutedsl",
+        ] {
+            let table = in_memory_gdn_table("vllm", "0.31.0", &[(physical, "context", 48, 2.0)]);
+            assert!(query_gdn_test_shape(&table, "chunk_gated_delta_rule", "context", 48).is_err());
+        }
+    }
+
+    #[test]
     fn gdn_causal_conv_rows_are_state_dtype_independent() {
         let table = in_memory_gdn_table(
             "sglang",
@@ -1056,7 +1108,14 @@ mod tests {
 
     #[test]
     fn gdn_physical_aliases_are_version_gated() {
-        for (backend, version) in [("vllm", "0.22.0"), ("vllm", "0.23.0"), ("sglang", "0.24.0")] {
+        for (backend, version) in [
+            ("vllm", "0.22.0"),
+            ("vllm", "0.23.0"),
+            ("vllm", "0.30.0"),
+            ("vllm", "0.32.0"),
+            ("sglang", "0.24.0"),
+            ("sglang", "0.31.0"),
+        ] {
             let table = in_memory_gdn_table(
                 backend,
                 version,

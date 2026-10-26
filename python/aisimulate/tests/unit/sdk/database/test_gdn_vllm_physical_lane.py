@@ -21,9 +21,14 @@ explicit synthetic table by the Rust unit tests in ``perf_database/state_space.r
 synthetic in-memory tables; this file is the real-data-grounded companion.
 """
 
+import shutil
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from aisimulate.sdk.perf_database import get_database
+from aisimulate.sdk.perf_database import PerfDatabase, get_database, get_systems_paths
 from aisimulate_core.sdk.operations.mamba import GDNKernel
 
 pytestmark = pytest.mark.unit
@@ -67,3 +72,44 @@ def test_query_gdn_vllm_0240_context_scan_still_resolves_own_flashinfer_rows():
     result = _gdn_context_op("chunk_gated_delta_rule", model_key)._engine_query(db, batch_size=1, s=1024)
     assert result.source == "silicon"
     assert float(result) == pytest.approx(own_raw, rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    "logical,physical,phase,latency",
+    [
+        ("chunk_gated_delta_rule", "chunk_gated_delta_rule_flashinfer", "context", 2.0),
+        (
+            "fused_sigmoid_gating_delta_rule_update",
+            "fused_recurrent_gated_delta_rule_packed_decode",
+            "generation",
+            3.0,
+        ),
+    ],
+)
+def test_vllm_031_logical_query_uses_own_measured_lane(tmp_path, logical, physical, phase, latency):
+    """Synthetic stored values expose SOL fallback without claiming GPU evidence."""
+    shutil.copyfile(Path(get_systems_paths()[0]) / "b200_sxm.yaml", tmp_path / "b200_sxm.yaml")
+    path = tmp_path / "data/b200_sxm/linear_attention/vllm/0.31.0/gdn_perf.parquet"
+    path.parent.mkdir(parents=True)
+    row = {
+        "kernel_source": physical,
+        "phase": phase,
+        "batch_size": 1,
+        "seq_len": 1024 if phase == "context" else 1,
+        "d_model": 5120,
+        "d_conv": 4,
+        "num_k_heads": 16,
+        "head_k_dim": 128,
+        "num_v_heads": 48,
+        "head_v_dim": 128,
+        "latency": latency,
+    }
+    pq.write_table(pa.Table.from_pylist([row]), path)
+    db = PerfDatabase("b200_sxm", "vllm", "0.31.0", str(tmp_path), shared_layer=False)
+    # Packed decode is normalized to its logical name by the existing loader;
+    # only context keeps a physical table key and needs the 0.31 alias repair.
+    for source in (logical, physical) if phase == "context" else (logical,):
+        op = GDNKernel("gdn", 1.0, source, phase, 5120, 16, 128, 48, 128, 4)
+        result = op._engine_query(db, batch_size=1, s=row["seq_len"])
+        assert result.source == "silicon"
+        assert float(result) == pytest.approx(latency, rel=1e-9)
