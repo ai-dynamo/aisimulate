@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 import types
@@ -19,6 +20,56 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODEL_PATH = "MiniMaxAI/MiniMax-M3"
 ARCHITECTURE = "MiniMaxM3ForCausalLM"
+
+
+@pytest.mark.parametrize("native_scale", [1.0, 0.25])
+def test_vllm_dummy_weights_preserve_native_attention_scales(native_scale):
+    """Execute the real initialization loop without importing a CUDA runtime."""
+    source = REPO_ROOT / "collector/vllm/collect_msa_module.py"
+    tree = ast.parse(source.read_text())
+    loops = [
+        node for node in ast.walk(tree) if isinstance(node, ast.For) and ast.unparse(node.target) == "(name, tensor)"
+    ]
+    assert len(loops) == 1
+
+    class Tensor:
+        def __init__(self, value, dtype="float32", is_meta=False):
+            self.value, self.dtype, self.is_meta = value, dtype, is_meta
+            self.data = self
+
+        def fill_(self, value):
+            self.value = value
+
+        def zero_(self):
+            self.fill_(0)
+
+    scales = {name: Tensor(native_scale) for name in ("_q_scale", "_k_scale", "_v_scale", "_prob_scale")}
+    weights = {
+        "qkv_proj.weight_scale": Tensor(99),
+        "qkv_proj._q_scale": Tensor(99),
+        "qkv_proj.weight": Tensor(99, "bfloat16"),
+        "packed.weight": Tensor(99, "uint8"),
+        "unmaterialized": Tensor(99, is_meta=True),
+    }
+    host = {name + "_float": native_scale for name in scales}
+    module = SimpleNamespace(
+        **scales,
+        **host,
+        named_parameters=lambda: weights.items(),
+        named_buffers=lambda: scales.items(),
+    )
+    fake_torch = SimpleNamespace(float8_e4m3fn="e4m3", float8_e5m2="e5m2", uint8="uint8", float32="float32")
+    exec(
+        compile(ast.Module(body=loops, type_ignores=[]), str(source), "exec"),
+        {"attn_module": module, "torch": fake_torch},
+    )
+    for name, tensor in scales.items():
+        assert getattr(module, name) is tensor
+        assert tensor.value == getattr(module, name + "_float") == native_scale
+    assert weights["qkv_proj.weight_scale"].value == weights["qkv_proj._q_scale"].value == 0.5
+    assert weights["qkv_proj.weight"].value == 0.01
+    assert weights["packed.weight"].value == 0
+    assert weights["unmaterialized"].value == 99
 
 
 class _Dummy:
